@@ -1,0 +1,211 @@
+name: Fork upstream sync
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The fork's worker: keep a thin patch layer on top of pristine upstream.
+#
+#   daily (or manual):  fetch oblien/openship main → merge into fork main →
+#                       guard our patches + run their tests → push → build &
+#                       push images to our registry (fork-images.yml).
+#
+# Conflict handling ("make fixes and keep our stuff"):
+#   • rerere is ON and its memory (.git/rr-cache) is cached across runs — the
+#     FIRST time you resolve a conflict in a file, record it with
+#     `git rerere` locally (see docs/fork-maintenance.md) or let a manual run
+#     of this workflow learn it; every later merge auto-resolves the same
+#     hunk pair the same way.
+#   • conflicts rerere cannot solve stop the job BEFORE anything is pushed:
+#     a GitHub issue lists the files and the run link. Fix by hand, push, and
+#     rerere remembers for next time.
+#
+# Patch safety: after every merge (clean or rerere-resolved), patch-guard.mjs
+# asserts our three Podman patches are still structurally intact, then the
+# type-check + their test files run. Any failure → issue, no push, no images.
+#
+# NOTES
+#   • Actions must be enabled on the fork for `schedule:` to fire (Actions tab
+#     → enable). GitHub also disables cron workflows after 60 days without
+#     repo activity — the sync pushes themselves reset that clock.
+#   • The merge is pushed with GITHUB_TOKEN, which by design does NOT retrigger
+#     `push:` workflows — that is why the image build is chained here via
+#     workflow_call instead of relying on fork-images.yml's push trigger
+#     (which stays for hand-pushed commits).
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  schedule:
+    - cron: "23 3 * * *" # daily, quiet UTC hour
+  workflow_dispatch:
+
+concurrency:
+  group: fork-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: write # push the merge
+  issues: write # open the "needs manual resolution" issue
+
+jobs:
+  sync:
+    name: Merge upstream/main
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    outputs:
+      merged: ${{ steps.decide.outputs.merged }}
+      upstream: ${{ steps.fetch.outputs.upstream }}
+    steps:
+      - name: Checkout fork main
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # merge needs history; rr-cache lives in .git
+
+      - name: Restore rerere memory
+        uses: actions/cache@v4
+        with:
+          path: .git/rr-cache
+          key: rr-cache-${{ github.run_id }}
+          restore-keys: |
+            rr-cache-
+
+      - name: Fetch upstream
+        id: fetch
+        run: |
+          set -eu
+          git config user.name "fork-sync[bot]"
+          git config user.email "fork-sync[bot]@users.noreply.github.com"
+          git config rerere.enabled true
+          git remote add upstream https://github.com/oblien/openship.git
+          git fetch upstream main
+          echo "upstream=$(git rev-parse --short upstream/main)" >> "$GITHUB_OUTPUT"
+          echo "behind=$(git rev-list --count HEAD..upstream/main)" >> "$GITHUB_OUTPUT"
+
+      - name: Decide whether to merge
+        id: decide
+        run: |
+          if [ "${{ steps.fetch.outputs.behind }}" = "0" ]; then
+            echo "merged=false" >> "$GITHUB_OUTPUT"
+            echo "Already contains upstream/main (${{ steps.fetch.outputs.upstream }}) — nothing to merge."
+          else
+            echo "merged=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Merge upstream/main
+        if: steps.decide.outputs.merged == 'true'
+        id: merge
+        run: |
+          set -euo pipefail
+          echo "Merging upstream/main (${{ steps.fetch.outputs.upstream }})…"
+          # rerere (enabled above) silently replays every conflict resolution it
+          # has memorized; anything left over makes git exit non-zero below.
+          if ! git merge --no-edit upstream/main; then
+            {
+              echo "## Upstream sync needs manual conflict resolution"
+              echo ""
+              echo "Merge of \`oblien/openship@${{ steps.fetch.outputs.upstream }}\` into fork main conflicted and rerere could not resolve everything."
+              echo ""
+              echo "**Unmerged files:**"
+              git diff --name-only --diff-filter=U | awk '{ print "- `" $0 "`" }'
+              echo ""
+              echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+              echo ""
+              echo "Fix (see docs/fork-maintenance.md): merge locally, keep our patches where upstream only moved code, then push. \`git rerere\` records the resolution so this never asks again."
+            } > /tmp/issue-body.md
+            echo "conflicted=true" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          echo "conflicted=false" >> "$GITHUB_OUTPUT"
+          echo "Merge clean (rerere may have replayed memorized resolutions)."
+
+      - name: Open (or update) the conflict issue
+        if: failure() && steps.merge.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="upstream sync needs manual conflict resolution"
+          existing="$(gh issue list --state open --search "in:title $title" --json number --jq '.[0].number' || true)"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file /tmp/issue-body.md
+          else
+            gh issue create --title "$title" --body-file /tmp/issue-body.md
+          fi
+
+      # A guard failure means the merge LANDED but our patches broke — different
+      # message, same loop: nothing was pushed; fix locally, push, rerere remembers.
+      - name: Open (or update) the patch-guard issue
+        if: failure() && steps.merge.outcome != 'failure' && steps.decide.outputs.merged == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > /tmp/guard-issue.md <<'EOF'
+          ## Upstream merge broke a fork patch (or its tests)
+
+          The merge itself was clean, but the patch guard / type-check / tests
+          failed afterwards — upstream refactored code our patches live in.
+          **Nothing was pushed and no images were built.**
+
+          See the failed step in the run log, and docs/fork-maintenance.md
+          ("when a merge breaks a patch").
+
+          Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EOF
+          title="upstream merge broke a fork patch"
+          existing="$(gh issue list --state open --search "in:title $title" --json number --jq '.[0].number' || true)"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file /tmp/guard-issue.md
+          else
+            gh issue create --title "$title" --body-file /tmp/guard-issue.md
+          fi
+
+      # ── Guards: OUR patches + the code they live in still work ────────────
+      - name: Read pinned Bun version
+        if: steps.decide.outputs.merged == 'true'
+        run: echo "BUN_VERSION=$(cat .bun-version)" >> "$GITHUB_ENV"
+
+      - name: Set up Bun
+        if: steps.decide.outputs.merged == 'true'
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "${{ env.BUN_VERSION }}"
+
+      - name: Install dependencies
+        if: steps.decide.outputs.merged == 'true'
+        run: bun install --frozen-lockfile
+
+      - name: Patch guard (are our three patches still intact?)
+        if: steps.decide.outputs.merged == 'true'
+        run: node scripts/fork/patch-guard.mjs
+
+      - name: Type-check the patched package
+        if: steps.decide.outputs.merged == 'true'
+        working-directory: packages/adapters
+        run: bunx tsc --noEmit -p tsconfig.json
+
+      - name: Run the patches' tests
+        if: steps.decide.outputs.merged == 'true'
+        working-directory: packages/adapters
+        run: |
+          bunx vitest run \
+            src/runtime/docker-builder-mode.test.ts \
+            src/runtime/docker-build-cancellation.test.ts \
+            src/infra/nginx.test.ts \
+            src/infra/edge-baked-conf.test.ts
+
+      # ── Publish: push the merge, then chain the image build ───────────────
+      # Save rr-cache AFTER a successful merge too — a rerere resolution only
+      # gets memorized when the merge that recorded it completes.
+      - name: Save rerere memory
+        if: steps.decide.outputs.merged == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .git/rr-cache
+          key: rr-cache-${{ github.run_id }}
+
+      - name: Push merge to fork main
+        if: steps.decide.outputs.merged == 'true'
+        run: git push origin main
+
+  images:
+    name: Build + push fork images
+    needs: sync
+    if: needs.sync.outputs.merged == 'true'
+    uses: ./.github/workflows/fork-images.yml
+    secrets: inherit

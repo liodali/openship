@@ -146,3 +146,14 @@ All three Option-A patches are implemented in this fork's tree:
 Next: push to the fork, build `openship-api`/`openship-edge` images in Gitea,
 and retire the "Currently live in-container patches" 1–3 once the new images
 run on the VPS.
+
+## 2026-10-14 — sync worker + fork-registry updates built
+
+`docs/fork-maintenance.md` is now the runbook. Mechanism:
+- `.github/workflows/fork-sync.yml` — daily upstream merge (rerere replays
+  learned conflict fixes), patch guard + tests, push, chain image build.
+- `.github/workflows/fork-images.yml` — api/dashboard/edge → Gitea, tagged
+  `<upstream-version>` (+ `-<shortsha>` immutable, `latest`) so
+  `openship update`'s repin resolves to OUR registry.
+- `scripts/fork/patch-guard.mjs` — fails the worker if a patch stops being
+  intact; also the ledger of what is still ours vs upstream's.

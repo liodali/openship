@@ -1,0 +1,106 @@
+name: Fork images
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Builds the FORK's control-plane images and pushes them to our own registry
+# (Gitea). This is what makes `openship update` on the VPS pull OUR images:
+# the compose template pins `image: ${OPENSHIP_IMAGE_REGISTRY:-ghcr.io/oblien}/
+# openship-api:${OPENSHIP_VERSION:-latest}`, and the VPS `.env` sets
+# OPENSHIP_IMAGE_REGISTRY to this registry. Tagging rule that makes update work:
+#
+#   <package.json version>   e.g. 0.9.2 — `openship update` repins
+#                            OPENSHIP_VERSION to the version of the CLI it just
+#                            installed, so the plain-version tag MUST exist in
+#                            our registry for the pull to resolve. This tag
+#                            MOVES with every sync (that is the point).
+#   <version>-<shortsha>     immutable, for rollback pins
+#   latest                   convenience
+#
+# Triggers:
+#   • workflow_dispatch  — manual
+#   • push to main       — a hand-pushed commit (patch fixes, guard updates)
+#   • workflow_call      — chained from fork-sync.yml after an upstream merge
+#
+# Needs repo secrets: FORK_REGISTRY (host, e.g. gitea.example.com),
+# FORK_REGISTRY_USER, FORK_REGISTRY_TOKEN (write). The namespace is the repo
+# variable FORK_NAMESPACE (default: medali).
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  workflow_call:
+
+concurrency:
+  group: fork-images-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build + push ${{ matrix.image }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        # The three images a VPS compose install runs. Add mail/webmail/
+        # cluster-tasks here if the box ever needs them.
+        image: [api, dashboard, edge]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          # The rollback tag names the merged commit — needs the real SHA.
+          fetch-depth: 0
+
+      - name: Resolve image tags
+        id: tags
+        run: |
+          set -eu
+          version="$(node -p "require('./package.json').version")"
+          sha="$(git rev-parse --short HEAD)"
+          registry="${{ secrets.FORK_REGISTRY }}"
+          ns="${{ vars.FORK_NAMESPACE || 'medali' }}"
+          [ -n "$registry" ] || { echo "FORK_REGISTRY secret is not set"; exit 1; }
+          name="$registry/$ns/openship-${{ matrix.image }}"
+          {
+            echo "version=$version"
+            echo "images<<EOF"
+            echo "$name:$version"
+            echo "$name:$version-$sha"
+            echo "$name:latest"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to the fork registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.FORK_REGISTRY }}
+          username: ${{ secrets.FORK_REGISTRY_USER }}
+          password: ${{ secrets.FORK_REGISTRY_TOKEN }}
+
+      # Context is the repo root: the Dockerfiles COPY packages/ and sibling
+      # apps/. amd64 only — the VPS is x86_64; add a platform axis (and native
+      # arm runners, like upstream's docker-images.yml) before pointing an arm
+      # box at this registry.
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/${{ matrix.image }}/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.tags.outputs.images }}
+          cache-from: type=gha,scope=fork-${{ matrix.image }}
+          cache-to: type=gha,scope=fork-${{ matrix.image }},mode=max
+
+      - name: Print what the VPS can pin
+        run: |
+          echo "Pushed ${{ matrix.image }}:"
+          echo "  moving:     ${{ secrets.FORK_REGISTRY }}/${{ vars.FORK_NAMESPACE || 'medali' }}/openship-${{ matrix.image }}:${{ steps.tags.outputs.version }}"
+          echo "  rollback:   …:${{ steps.tags.outputs.version }}-$(git rev-parse --short HEAD)"
