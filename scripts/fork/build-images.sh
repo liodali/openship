@@ -7,7 +7,7 @@
 #   scripts/fork/build-images.sh                     # api + dashboard + edge
 #   scripts/fork/build-images.sh api edge            # subset
 #   scripts/fork/build-images.sh --no-push api       # build only
-#   scripts/fork/build-images.sh --tag 0.9.3-rc1     # custom tag(s)
+#   scripts/fork/build-images.sh --tag 0.9.3-rc1     # REPLACES <version>/<sha>/latest
 #
 # Tags pushed (same contract as CI): <version>, <version>-<shortsha>, latest.
 # NOTE: local builds target linux/amd64 (the VPS). On an arm64 machine that
@@ -49,6 +49,10 @@ FORK_NAMESPACE="${FORK_NAMESPACE:-medali}"
 VERSION="$(node -p "require('./package.json').version")"
 SHA="$(git rev-parse --short HEAD)"
 [ ${#TAGS[@]} -gt 0 ] || TAGS=("$VERSION" "$VERSION-$SHA" "latest")
+if [ ${#TAGS[@]} -gt 0 ] && ! printf '%s\n' "${TAGS[@]}" | grep -qx "$VERSION"; then
+  echo "note: --tag was given — pushing ONLY ${TAGS[*]}; the <version> tag that" >&2
+  echo "      'openship update' resolves is NOT included." >&2
+fi
 
 ENGINE="$(command -v podman || command -v docker || true)"
 : "${ENGINE:?neither podman nor docker is installed}"

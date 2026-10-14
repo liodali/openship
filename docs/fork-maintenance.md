@@ -38,6 +38,23 @@ Files that make this up:
 | `FORK_REGISTRY_USER`  | **secret**          | registry username with push rights                                                                                                                                 |
 | `FORK_REGISTRY_TOKEN` | **secret**          | registry token (push auth can never be public)                                                                                                                     |
 
+Or with the `gh` CLI:
+
+```sh
+gh variable set FORK_REGISTRY   --repo liodali/openship --body "gitea.example.com"
+gh variable set FORK_NAMESPACE  --repo liodali/openship --body "medali"
+# push auth stays a secret — never a variable
+gh secret set FORK_REGISTRY_USER  --repo liodali/openship
+gh secret set FORK_REGISTRY_TOKEN --repo liodali/openship
+```
+
+If `FORK_REGISTRY` was ever created as a **secret** (pre-`45db33db` setups),
+delete it after creating the variable — the workflow reads the VARIABLE only:
+
+```sh
+gh secret delete FORK_REGISTRY --repo liodali/openship
+```
+
 Local builds read the same keys from a gitignored `fork.env` — see
 [Local builds](#local-builds) below.
 
