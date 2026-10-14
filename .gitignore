@@ -63,3 +63,5 @@ pnpm-debug.log*
 .react-router
 .wrangler
 next-env.d.ts
+# Local fork registry config (contains a push token) — see fork.env.example
+/fork.env

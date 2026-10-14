@@ -143,7 +143,7 @@ worker.
 The same images can be built and pushed from a laptop, no GitHub round-trip:
 
 ```sh
-cp fork.env.example fork.env   # fill in the real host; gitignored via .git/info/exclude
+cp fork.env.example fork.env   # fill in the real host; gitignored (has the push token)
 podman login gitea.example.com   # or put user/token in fork.env
 
 scripts/fork/build-images.sh                 # api + dashboard + edge
