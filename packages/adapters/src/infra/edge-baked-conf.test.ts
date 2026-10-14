@@ -198,6 +198,22 @@ describe("baked edge nginx.conf", () => {
     expect(conf).toContain(`include ${OPENRESTY_DEFAULT_PATHS.sitesDir}/*.conf;`);
   });
 
+  test("defines $connection_upgrade at http scope for hand-written site confs", () => {
+    // The canonical WebSocket map, so a conf an operator drops into sites-enabled
+    // that uses the conventional $connection_upgrade name works instead of
+    // failing `nginx -t` with "unknown variable". Managed vhosts carry their own
+    // copy in their prelude (see nginx.ts writeRoute) — redeclaring the same map
+    // is accepted by nginx, last declaration wins, and both are identical.
+    expect(conf).toContain("map $http_upgrade $connection_upgrade {");
+    // Inside http {}: the map directive is http-scope only.
+    const httpStart = conf.indexOf("http {");
+    const mapAt = conf.indexOf("map $http_upgrade $connection_upgrade {");
+    expect(mapAt).toBeGreaterThan(httpStart);
+    // Before the sites-enabled include, so a vhost's own (identical) declaration
+    // is the one that wins — harmless either way, but deterministic.
+    expect(mapAt).toBeLessThan(conf.indexOf(`include ${OPENRESTY_DEFAULT_PATHS.sitesDir}/*.conf;`));
+  });
+
   test("binds the management API to loopback only", () => {
     // Analytics, raw request logs and the live-log pipe. A bare `listen 9145;`
     // would publish all three.

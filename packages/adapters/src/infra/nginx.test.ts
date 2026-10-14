@@ -334,6 +334,74 @@ describe("NginxProvider path-only routes", () => {
 });
 
 /**
+ * The proxied Connection header must FOLLOW the request, not be hardcoded:
+ * `Connection "upgrade"` on a plain POST tells strict RFC-faithful upstreams
+ * (Dart's shelf is the measured case) that the connection is being upgraded,
+ * and they refuse to read the request body — an app's login arriving EMPTY.
+ * The fix is the canonical nginx map, carried in the vhost's OWN prelude so the
+ * file defines every variable it references on any edge image.
+ */
+describe("NginxProvider proxied Connection header", () => {
+  test("sends Connection $connection_upgrade and defines it in the same file", async () => {
+    const { nginx, conf } = setup({ certDomains: ["app.example.com"] });
+    await nginx.registerRoute(OURS);
+    const c = conf("app-example-com")!;
+    expect(c).toContain("proxy_set_header Connection $connection_upgrade;");
+    expect(c).not.toContain('proxy_set_header Connection "upgrade"');
+    // The map rides in the vhost's own prelude — above the server block, so it
+    // lands at the http scope sites-enabled is included at.
+    expect(c).toContain("map $http_upgrade $connection_upgrade {");
+    expect(c.indexOf("map $http_upgrade")).toBeLessThan(c.indexOf("server {"));
+    // Exactly one map per FILE, even though a TLS vhost carries both the :80 and
+    // the :443 blocks — nginx accepts the redeclaration across files, but there
+    // is no reason to emit it twice in one.
+    expect(c.split("map $http_upgrade $connection_upgrade {").length - 1).toBe(1);
+    // The empty-branch matters as much as the default: an empty value REMOVES the
+    // header for plain requests instead of sending `Connection: ` verbatim.
+    expect(c).toContain("''      '';");
+  });
+
+  test("a redirecting host emits neither the header nor the map", async () => {
+    // Nothing proxies, so nothing may reference (or define) a proxying variable.
+    const { nginx, conf } = setup();
+    await nginx.registerRoute({
+      domain: "old.example.com",
+      tls: false,
+      targetUrl: "http://127.0.0.1:3009",
+      redirectHost: { target: "new.example.com", statusCode: 301 },
+    });
+    const c = conf("old-example-com")!;
+    expect(c).not.toContain("proxy_set_header Connection");
+    expect(c).not.toContain("map $http_upgrade");
+  });
+
+  test("a static route emits neither the header nor the map", async () => {
+    const { nginx, conf } = setup();
+    await nginx.registerRoute({
+      domain: "static.example.com",
+      tls: false,
+      staticRoot: "/opt/openship/static/site",
+    });
+    const c = conf("static-example-com")!;
+    expect(c).not.toContain("proxy_set_header Connection");
+    expect(c).not.toContain("map $http_upgrade");
+  });
+
+  test("vercel.json proxy locations inherit the header and the map", async () => {
+    const { nginx, conf } = setup();
+    await nginx.registerRoute({
+      domain: "app.example.com",
+      tls: false,
+      notFound: true,
+      proxyLocations: [{ pathPrefix: "/api", targetUrl: "http://10.0.0.2:9000" }],
+    });
+    const c = conf("app-example-com")!;
+    expect(c).toContain("proxy_set_header Connection $connection_upgrade;");
+    expect(c).toContain("map $http_upgrade $connection_upgrade {");
+  });
+});
+
+/**
  * Openship Cloud's shared edge proves this box controls a routing target by fetching
  * a token over plain HTTP from the target. Every `:80` shape must answer it, because
  * any of them can be the vhost the probe lands on — and a `:443` block must NOT,

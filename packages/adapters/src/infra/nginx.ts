@@ -56,6 +56,7 @@ import {
   EDGE_CHALLENGE_DIR,
   EDGE_CHALLENGE_LOCATION,
   EDGE_CHALLENGE_URL_PREFIX,
+  EDGE_CONNECTION_UPGRADE_MAP,
   EDGE_SAME_PATH_MOUNTS,
   OPENRESTY_DEFAULT_PATHS,
   edgeChallengeVhostConf,
@@ -144,6 +145,16 @@ const CTL = "\\x00-\\x1f\\x7f";
  * all (GH-570). Re-exposing the header costs nothing for a response that doesn't set
  * it, which is every response but a stream.
  *
+ * `Connection $connection_upgrade`, not a hardcoded `Connection "upgrade"`: the
+ * literal sends `Connection: upgrade` on EVERY request, and a strict RFC-faithful
+ * upstream then refuses to read the body of a plain POST — Dart's shelf returned an
+ * empty body for an app's admin login until this was fixed. The variable evaluates
+ * to `upgrade` only when the request itself carries an `Upgrade:` (the canonical
+ * nginx WebSocket recipe) and to the empty string otherwise. Unlike the vars in
+ * FORWARD_VARS, it needs an http-scope `map` — which is why every conf that embeds
+ * these headers also carries {@link EDGE_CONNECTION_UPGRADE_MAP} in its own prelude,
+ * keeping the file valid on ANY edge (see writeRoute).
+ *
  * Hop 2 is NOT configured from this repo (managed-edge-proxy only hands Cloud a slug
  * and a target), so that it honours the header is inference from nginx's defaults, not
  * something a test here can prove. Confirm it once against a live `*.opsh.io` SSE
@@ -156,7 +167,7 @@ const PROXY_HEADERS = `proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto $openship_fwd_proto;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
+        proxy_set_header Connection $connection_upgrade;
         proxy_pass_header X-Accel-Buffering;`;
 
 /**
@@ -177,6 +188,10 @@ const PROXY_HEADERS = `proxy_set_header Host $host;
  * already-deployed edge doesn't define fails `openresty -t` — which means the
  * reload is refused and registerRoute rolls the route back. This template has to
  * stay valid on an edge running an older image.
+ *
+ * $connection_upgrade in PROXY_HEADERS is the one deliberate exception to that
+ * rule: its map (EDGE_CONNECTION_UPGRADE_MAP) is written into the vhost's own
+ * prelude by writeRoute, so the file still defines everything it references.
  *
  * Only an EXACT "https" is honoured, and the literal `https` is what gets forwarded
  * — never the client's own string. A chained-proxy header is legally a list
@@ -2159,8 +2174,20 @@ ${serveLocation}
     // The prelude carries http-scope `map` blocks, so it goes ABOVE the server
     // block(s) — one file may hold both the :80 and :443 blocks, and a map may
     // appear only once for the pair.
+    //
+    // $connection_upgrade (PROXY_HEADERS) gets its map the same way: in THIS
+    // file, not the edge's nginx.conf, so the conf stays valid on an edge image
+    // that predates the variable — the failure mode FORWARD_VARS documents (an
+    // undefined variable fails `openresty -t`, the reload is refused, the route
+    // rolls back). Gated on the emitted block actually referencing it: a
+    // redirecting host or a static route proxies nothing and emits neither the
+    // header nor the map. Every vhost repeating the identical map is accepted
+    // by nginx (last declaration wins) — see EDGE_CONNECTION_UPGRADE_MAP.
+    const content = serverBlock.includes("$connection_upgrade")
+      ? `${EDGE_CONNECTION_UPGRADE_MAP}\n${prelude}${serverBlock}`
+      : `${prelude}${serverBlock}`;
     await this.updateConfig([
-      { path: configPath, content: `${prelude}${serverBlock}` },
+      { path: configPath, content },
       { path: this.routeStatePath(slug), content: JSON.stringify(route) },
       ...challenges.map((path) => ({ path, content: null })),
     ]);

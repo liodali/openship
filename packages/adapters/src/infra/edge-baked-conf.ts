@@ -31,6 +31,7 @@ import { EDGE_NOT_FOUND_LOCATION } from "./edge-not-found";
 import {
   ACME_CHALLENGE_LOCATION,
   EDGE_CHALLENGE_LOCATION,
+  EDGE_CONNECTION_UPGRADE_MAP,
   EDGE_LUA_PACKAGE_PATH,
   EDGE_MGMT_SERVER_BLOCK,
   EDGE_CLIENT_MAX_BODY_SIZE,
@@ -114,6 +115,15 @@ http {
 ${dicts}
     # OpenResty default lualib + the baked openship modules.
     lua_package_path "${EDGE_LUA_PACKAGE_PATH}";
+
+    # Connection header for proxied requests: upgrade ONLY when the request
+    # itself upgrades (WebSocket), empty otherwise. See EDGE_CONNECTION_UPGRADE_MAP.
+    # The managed vhosts each repeat this map in their own prelude, so an edge
+    # running an OLDER image still accepts them; this copy serves hand-written
+    # site confs that use the conventional $connection_upgrade name. Declaring
+    # the same map twice is accepted by nginx (last one wins) and both
+    # declarations are identical.
+${indent(EDGE_CONNECTION_UPGRADE_MAP, 4)}
 
 ${indent(edgeRealIpConf().trimEnd(), 4)}
 

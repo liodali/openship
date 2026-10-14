@@ -100,6 +100,37 @@ export const EDGE_SERVER_NAMES_HASH_BUCKET_SIZE = 128;
 export const EDGE_CLIENT_MAX_BODY_SIZE = "50m";
 
 /**
+ * The http-scope `map` that makes the proxied `Connection` header follow the
+ * request: `upgrade` when the client is actually switching protocols (WebSocket,
+ * SSE-with-upgrade), EMPTY otherwise. This is the canonical nginx WebSocket
+ * recipe, applied to EVERY proxied request rather than only upgrade ones.
+ *
+ * Why not a hardcoded `Connection "upgrade"`: `Connection` is a hop-by-hop
+ * header — it tells the peer which connections options apply and (with
+ * HTTP/1.1 keepalive) that the connection will close after the response. A
+ * plain GET/POST that arrives at the app carrying `Connection: upgrade` with
+ * no `Upgrade:` is a contradiction, and strict, RFC-faithful servers act on it:
+ * Dart's shelf refuses to read the request body (a login POST arrives EMPTY —
+ * measured: an app's admin login broke exactly this way), and other strict
+ * stacks close the connection or disable keepalive. Lenient servers ignore it,
+ * which is why the bug shipped quietly.
+ *
+ * Consumers: the baked edge conf (edge-baked-conf.ts) and every generated
+ * vhost's prelude (nginx.ts writeRoute). A vhost cannot reference a variable
+ * its edge doesn't define — `openresty -t` fails and the reload is refused —
+ * which is why the vhost carries its own copy in the SAME file, above the
+ * server block. nginx does not reject the redeclaration: `map` registers its
+ * variable as changeable and the last (identical) declaration wins (measured
+ * on nginx 1.27.5 / OpenResty 1.27.1.1 — see the note in nginx.ts's
+ * renderHeaderMaps). The baked copy exists for hand-written site confs on the
+ * box that already reference the conventional `$connection_upgrade` name.
+ */
+export const EDGE_CONNECTION_UPGRADE_MAP = `map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      '';
+}`;
+
+/**
  * Shared-memory zones the openship Lua depends on, and the ONE definition of
  * their sizes.
  *
