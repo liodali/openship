@@ -215,6 +215,10 @@ import {
   type LegacyBuildContainerInspect,
   type LegacyBuildContainerTermination,
 } from "./docker-build-container-tracker";
+import {
+  isBuildKitSessionUnavailable,
+  resolveDockerodeBuilderMode,
+} from "./docker-builder-mode";
 
 // ─── Connection config ───────────────────────────────────────────────────────
 export type { DockerConnectionOptions } from "./docker-transport";
@@ -2158,7 +2162,33 @@ export class DockerRuntime implements RuntimeAdapter {
     config: BuildConfig,
     requiresBuildKit: boolean,
     log: BuildLogger,
+    opts: { forceClassic?: boolean } = {},
   ): { options: { version?: "2" }; trace?: BuildKitTraceDecoder } {
+    const mode = resolveDockerodeBuilderMode();
+
+    // The internal fallback after a BuildKit-session 404, or an operator's
+    // explicit OPENSHIP_BUILDER_MODE=classic: same result, different reason.
+    if (opts.forceClassic || mode === "classic") {
+      if (requiresBuildKit && mode === "classic") {
+        log.log(
+          "OPENSHIP_BUILDER_MODE=classic — building with the classic builder despite BuildKit-only syntax (RUN --mount, a heredoc or a syntax directive). The build fails if this daemon's classic builder cannot handle that syntax.",
+          "warn",
+        );
+      }
+      return { options: {} };
+    }
+
+    if (mode === "buildkit") {
+      log.log("OPENSHIP_BUILDER_MODE=buildkit — building with BuildKit.");
+      if (Object.keys(dockerBuildResourceLimits(config.resources)).length > 0) {
+        log.log(
+          "Build CPU/memory limits are not enforced under BuildKit — this build runs uncapped.",
+          "warn",
+        );
+      }
+      return { options: { version: "2" }, trace: new BuildKitTraceDecoder() };
+    }
+
     if (!requiresBuildKit) return { options: {} };
 
     log.log(
@@ -2251,67 +2281,103 @@ export class DockerRuntime implements RuntimeAdapter {
   ): Promise<void> {
     log.log(`Streaming build context to Docker daemon - image tag: ${tag}`);
 
-    const { body, abortSignal, abort, detachCancellation, takeError } = packBuildContext(
-      buildContext.buildContextDir,
-      buildContext.contextEntries,
-      cancelSignal,
-      buildContext.ignoreContextPath,
-    );
-
-    const builder = this.selectDockerodeBuilder(config, buildContext.requiresBuildKit, log);
-    const buildLimits = dockerBuildResourceLimits(config.resources);
-    const ownershipHost = builder.options.version !== "2" ? newBuildOwnershipHost() : null;
-    const diagnosticContext: DockerBuildDiagnosticContext = {
-      configuredMemoryMb: config.resources.memoryMb,
-      // Engine API build limits work only with the classic builder. The
-      // BuildKit selection above already logs that its build runs uncapped.
-      memoryLimitApplied: builder.options.version !== "2" && buildLimits.memory !== undefined,
-    };
-
+    // One build, at most two attempts. When BuildKit was selected and the
+    // daemon turns out to have no `/session` endpoint (Podman implements the
+    // Docker compat API but not dockerd's embedded buildkit), the first
+    // attempt fails before a single layer compiles — the same context is then
+    // re-sent through the classic builder. Each attempt packs its own tar
+    // stream: a request body can be consumed only once.
     try {
-      const stream = await this.docker.buildImage(body, {
-        t: tag,
-        dockerfile: buildContext.dockerfileName,
-        labels: this.labels({ projectId: config.projectId, sessionId: config.sessionId }),
-        buildargs: resolveDockerBuildArgs(config),
-        // Omitted entirely unless the project set a build cap — a self-hosted
-        // build should be free to use the machine (a production build often
-        // needs several GB). Opt-in only; see dockerBuildResourceLimits.
-        ...buildLimits,
-        ...(ownershipHost && { extrahosts: engineApiExtraHosts(ownershipHost) }),
-        forcerm: true,
-        ...builder.options,
-        abortSignal,
-      });
-      detachCancellation();
+      for (let attempt = 0; ; attempt++) {
+        const forceClassic = attempt > 0;
+        const { body, abortSignal, abort, detachCancellation, takeError } = packBuildContext(
+          buildContext.buildContextDir,
+          buildContext.contextEntries,
+          cancelSignal,
+          buildContext.ignoreContextPath,
+        );
+        const builder = this.selectDockerodeBuilder(config, buildContext.requiresBuildKit, log, {
+          forceClassic,
+        });
+        const buildLimits = dockerBuildResourceLimits(config.resources);
+        const ownershipHost = builder.options.version !== "2" ? newBuildOwnershipHost() : null;
+        const diagnosticContext: DockerBuildDiagnosticContext = {
+          configuredMemoryMb: config.resources.memoryMb,
+          // Engine API build limits work only with the classic builder. The
+          // BuildKit selection above already logs that its build runs uncapped.
+          memoryLimitApplied: builder.options.version !== "2" && buildLimits.memory !== undefined,
+        };
 
-      log.log("Connected to Docker daemon. Build output follows:");
-      await this.streamDockerodeBuild(stream, log, {
-        trace: builder.trace,
-        diagnosticContext,
-        abortBuild: abort,
-        cancelSignal,
-        ...(ownershipHost && {
-          legacyBuilder: { expectedMemoryBytes: buildLimits.memory, ownershipHost },
-        }),
-      });
-      log.log("Docker daemon finished streaming build output. Finalizing image...\n");
-    } catch (err) {
-      observeCaughtError(err, "adapters/runtime/docker");
-      // A context-pack failure aborts the request, so the rejection here is the
-      // abort, not the real cause — prefer the captured pack error.
-      const contextErr = takeError();
-      throw contextErr
-        ? new Error(`Failed to read Docker build context: ${safeErrorMessage(contextErr)}`, {
-            cause: contextErr,
-          })
-        : err;
+        try {
+          const stream = await this.docker.buildImage(body, {
+            t: tag,
+            dockerfile: buildContext.dockerfileName,
+            labels: this.labels({ projectId: config.projectId, sessionId: config.sessionId }),
+            buildargs: resolveDockerBuildArgs(config),
+            // Omitted entirely unless the project set a build cap — a self-hosted
+            // build should be free to use the machine (a production build often
+            // needs several GB). Opt-in only; see dockerBuildResourceLimits.
+            ...buildLimits,
+            ...(ownershipHost && { extrahosts: engineApiExtraHosts(ownershipHost) }),
+            forcerm: true,
+            ...builder.options,
+            abortSignal,
+          });
+          detachCancellation();
+
+          log.log("Connected to Docker daemon. Build output follows:");
+          await this.streamDockerodeBuild(stream, log, {
+            trace: builder.trace,
+            diagnosticContext,
+            abortBuild: abort,
+            cancelSignal,
+            ...(ownershipHost && {
+              legacyBuilder: { expectedMemoryBytes: buildLimits.memory, ownershipHost },
+            }),
+          });
+          log.log("Docker daemon finished streaming build output. Finalizing image...\n");
+          return;
+        } catch (err) {
+          observeCaughtError(err, "adapters/runtime/docker");
+          // A context-pack failure aborts the request, so the rejection here is the
+          // abort, not the real cause — prefer the captured pack error.
+          const contextErr = takeError();
+          const failure = contextErr
+            ? new Error(`Failed to read Docker build context: ${safeErrorMessage(contextErr)}`, {
+                cause: contextErr,
+              })
+            : err;
+          // The BuildKit→classic fallback: only for a session-endpoint 404 on a
+          // BuildKit attempt, never for a context failure (ours, not the
+          // daemon's) or a genuine build error.
+          if (
+            !forceClassic &&
+            !contextErr &&
+            builder.options.version === "2" &&
+            isBuildKitSessionUnavailable(err)
+          ) {
+            log.log(
+              "This daemon has no BuildKit session endpoint (Podman's Docker-compat API, or dockerd without buildkit) — retrying with the classic builder.",
+              "warn",
+            );
+            // The daemon never consumed this attempt's tar — stop tar-fs walking
+            // the context it would keep alive for the retry.
+            abort();
+            detachCancellation();
+            continue;
+          }
+          throw failure;
+        } finally {
+          detachCancellation();
+        }
+      }
     } finally {
-      detachCancellation();
       // Clean up only AFTER the daemon has fully consumed the context. dockerode's
       // buildImage promise resolves as soon as the response starts, while tar-fs
       // may still be walking contextDir — deleting it here (the old `finally`
-      // around buildImage alone) is exactly what raced the pack in #448.
+      // around buildImage alone) is exactly what raced the pack in #448. On the
+      // fallback path this runs only after the LAST attempt, so the re-pack has
+      // the same directory to walk again.
       await buildContext.cleanup();
     }
   }
@@ -3452,56 +3518,84 @@ export class DockerRuntime implements RuntimeAdapter {
             // failure fails just this service instead of crashing the API — see
             // packBuildContext (#448). tree.cleanup() only runs after the whole
             // loop (outer finally), so the context stays put while tar-fs walks.
-            const { body, abortSignal, abort, detachCancellation, takeError } = packBuildContext(
-              buildContextDir ?? tree!.contextDir,
-              contextEntries ?? [],
-              signal,
-              ignoreContextPath,
-            );
-            const builder = this.selectDockerodeBuilder(spec.config, requiresBuildKit, spec.logger);
-            const buildLimits = dockerBuildResourceLimits(spec.config.resources);
-            const ownershipHost = builder.options.version !== "2" ? newBuildOwnershipHost() : null;
-            const diagnosticContext: DockerBuildDiagnosticContext = {
-              configuredMemoryMb: spec.config.resources.memoryMb,
-              memoryLimitApplied:
-                builder.options.version !== "2" && buildLimits.memory !== undefined,
-            };
-            try {
-              const stream = await this.docker.buildImage(body, {
-                t: tag,
-                dockerfile: dockerfileName,
-                labels: this.labels({
-                  projectId: spec.config.projectId,
-                  sessionId: spec.config.sessionId,
-                }),
-                buildargs: resolveDockerBuildArgs(spec.config),
-                ...buildLimits,
-                ...(ownershipHost && { extrahosts: engineApiExtraHosts(ownershipHost) }),
-                forcerm: true,
-                ...builder.options,
-                abortSignal,
-              });
-              detachCancellation();
-              await this.streamDockerodeBuild(stream, spec.logger, {
-                trace: builder.trace,
-                diagnosticContext,
-                abortBuild: abort,
-                cancelSignal: signal,
-                ...(ownershipHost && {
-                  legacyBuilder: { expectedMemoryBytes: buildLimits.memory, ownershipHost },
-                }),
-              });
-            } catch (err) {
-              observeCaughtError(err, "adapters/runtime/docker");
-              const contextErr = takeError();
-              throw contextErr
-                ? new Error(
-                    `Failed to read Docker build context: ${safeErrorMessage(contextErr)}`,
-                    { cause: contextErr },
-                  )
-                : err;
-            } finally {
-              detachCancellation();
+            //
+            // At most two attempts per service, for the same reason as
+            // buildViaDockerode: a BuildKit-selected build against a daemon
+            // with no `/session` endpoint (Podman) is retried once through the
+            // classic builder, re-packing the tar — a body is single-use.
+            for (let attempt = 0; ; attempt++) {
+              const forceClassic = attempt > 0;
+              const { body, abortSignal, abort, detachCancellation, takeError } = packBuildContext(
+                buildContextDir ?? tree!.contextDir,
+                contextEntries ?? [],
+                signal,
+                ignoreContextPath,
+              );
+              const builder = this.selectDockerodeBuilder(
+                spec.config,
+                requiresBuildKit,
+                spec.logger,
+                { forceClassic },
+              );
+              const buildLimits = dockerBuildResourceLimits(spec.config.resources);
+              const ownershipHost = builder.options.version !== "2" ? newBuildOwnershipHost() : null;
+              const diagnosticContext: DockerBuildDiagnosticContext = {
+                configuredMemoryMb: spec.config.resources.memoryMb,
+                memoryLimitApplied:
+                  builder.options.version !== "2" && buildLimits.memory !== undefined,
+              };
+              try {
+                const stream = await this.docker.buildImage(body, {
+                  t: tag,
+                  dockerfile: dockerfileName,
+                  labels: this.labels({
+                    projectId: spec.config.projectId,
+                    sessionId: spec.config.sessionId,
+                  }),
+                  buildargs: resolveDockerBuildArgs(spec.config),
+                  ...buildLimits,
+                  ...(ownershipHost && { extrahosts: engineApiExtraHosts(ownershipHost) }),
+                  forcerm: true,
+                  ...builder.options,
+                  abortSignal,
+                });
+                detachCancellation();
+                await this.streamDockerodeBuild(stream, spec.logger, {
+                  trace: builder.trace,
+                  diagnosticContext,
+                  abortBuild: abort,
+                  cancelSignal: signal,
+                  ...(ownershipHost && {
+                    legacyBuilder: { expectedMemoryBytes: buildLimits.memory, ownershipHost },
+                  }),
+                });
+                break;
+              } catch (err) {
+                observeCaughtError(err, "adapters/runtime/docker");
+                const contextErr = takeError();
+                if (
+                  !forceClassic &&
+                  !contextErr &&
+                  builder.options.version === "2" &&
+                  isBuildKitSessionUnavailable(err)
+                ) {
+                  spec.logger.log(
+                    "This daemon has no BuildKit session endpoint (Podman's Docker-compat API, or dockerd without buildkit) — retrying with the classic builder.",
+                    "warn",
+                  );
+                  abort();
+                  detachCancellation();
+                  continue;
+                }
+                throw contextErr
+                  ? new Error(
+                      `Failed to read Docker build context: ${safeErrorMessage(contextErr)}`,
+                      { cause: contextErr },
+                    )
+                  : err;
+              } finally {
+                detachCancellation();
+              }
             }
           }
 
