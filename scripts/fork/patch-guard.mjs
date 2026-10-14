@@ -11,7 +11,7 @@
  *   node scripts/fork/patch-guard.mjs
  *
  * The three patches (openship-podman-compatibility.md, Option A):
- *   1. extrahoots JSON        — dockerode build request is spec-correct
+ *   1. extrahosts JSON        — dockerode build request is spec-correct
  *   2. builder mode/fallback  — OPENSHIP_BUILDER_MODE + /session-404 fallback
  *   3. nginx Connection map   — $connection_upgrade instead of "upgrade"
  *
@@ -35,15 +35,15 @@ const check = (name, ok, hint) => {
   if (!ok) failures.push(hint ? `${name}: ${hint}` : name);
 };
 
-// ── Patch 1: extrahoots sent as a JSON array string ─────────────────────────
+// ── Patch 1: extrahosts sent as a JSON array string ─────────────────────────
 const dockerTs = read("packages/adapters/src/runtime/docker.ts") ?? "";
 check(
-  "patch 1 (extrahoots JSON)",
+  "patch 1 (extrahosts JSON)",
   dockerTs.includes("engineApiExtraHosts(ownershipHost)"),
-  "docker.ts no longer routes the build's extrahoots through engineApiExtraHosts() — the bare `host:ip` form is back (Podman 400s the build).",
+  "docker.ts no longer routes the build's extrahosts through engineApiExtraHosts() — the bare `host:ip` form is back (Podman 400s the build).",
 );
 check(
-  "patch 1 (no bare extrahoots)",
+  "patch 1 (no bare extrahosts)",
   !/extrahosts: `\$\{ownershipHost\}/.test(dockerTs),
   "docker.ts contains a bare `extrahosts: `${ownershipHost}:…` literal again — strict daemons reject it.",
 );
@@ -55,6 +55,15 @@ check(
   builderMode.includes("isBuildKitSessionUnavailable") &&
     builderMode.includes("OPENSHIP_BUILDER_MODE"),
   "docker-builder-mode.ts is missing or no longer exports the /session-404 detector + env resolver.",
+);
+check(
+  "patch 2 (regex tolerates the real status line)",
+  // String-contains, deliberately: the needle is the literal SOURCE text of the
+  // matcher (escaped for JS), which exists only in the code line — a regex test
+  // would also match the prose in the doc comment, where the same words appear
+  // unescaped, and pass even when the code was tampered with (found the hard way).
+  builderMode.includes("docker \\/session failed: (?:HTTP\\/[\\d.]+ )?40[45]"),
+  "the /session matcher no longer tolerates the 'HTTP/1.1 ' prefix upgradeRequest() emits — the fallback is dead again.",
 );
 check(
   "patch 2 (wired into docker.ts)",
@@ -105,5 +114,5 @@ if (failures.length > 0) {
   process.exit(1);
 }
 console.log(
-  "✔ fork patch guard: all three patches intact (extrahoots JSON, builder fallback, nginx Connection map).",
+  "✔ fork patch guard: all three patches intact (extrahosts JSON, builder fallback, nginx Connection map).",
 );

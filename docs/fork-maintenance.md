@@ -21,22 +21,25 @@ the how. Created with the Option A patches (2026-10).
 
 Files that make this up:
 
-| File | Role |
-|---|---|
-| `.github/workflows/fork-sync.yml` | the worker: daily merge, guards, push, chain images |
+| File                                | Role                                                                             |
+| ----------------------------------- | -------------------------------------------------------------------------------- |
+| `.github/workflows/fork-sync.yml`   | the worker: daily merge, guards, push, chain images                              |
 | `.github/workflows/fork-images.yml` | build `openship-api/dashboard/edge` → our registry (also on manual push to main) |
-| `scripts/fork/patch-guard.mjs` | structural check that the three patches survived the merge |
+| `scripts/fork/patch-guard.mjs`      | structural check that the three patches survived the merge                       |
 
 ## One-time setup
 
 **On the GitHub fork** (Settings → Secrets and variables → Actions):
 
-| Name | Kind | Value |
-|---|---|---|
-| `FORK_REGISTRY` | secret | your registry host, e.g. `gitea.example.com` |
-| `FORK_REGISTRY_USER` | secret | registry username with push rights |
-| `FORK_REGISTRY_TOKEN` | secret | registry token (Gitea: a personal access token with `write:package`… on Gitea it's a regular PAT + collaborator/push rights on the package namespace) |
-| `FORK_NAMESPACE` | variable (optional) | namespace under the registry; default `medali` |
+| Name                  | Kind                | Value                                                                                                                                                              |
+| --------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `FORK_REGISTRY`       | **variable**        | registry host, e.g. `gitea.example.com` (non-secret config — GitHub variables are the pipeline's ".env"; a committed file would leak the host in this public fork) |
+| `FORK_NAMESPACE`      | variable (optional) | namespace under the registry; default `medali`                                                                                                                     |
+| `FORK_REGISTRY_USER`  | **secret**          | registry username with push rights                                                                                                                                 |
+| `FORK_REGISTRY_TOKEN` | **secret**          | registry token (push auth can never be public)                                                                                                                     |
+
+Local builds read the same keys from a gitignored `fork.env` — see
+[Local builds](#local-builds) below.
 
 Enable Actions on the fork (Actions tab → enable workflows). `schedule:` does
 not fire until Actions is enabled; GitHub also pauses cron workflows after 60
@@ -110,8 +113,10 @@ gh issue close <n>
 ```
 
 From now on the same file/hunk conflict auto-resolves — locally AND in the
-worker (whose `.git/rr-cache` is cached across runs, so it replays anything it
-has seen complete).
+worker, whose `.git/rr-cache` is cached across runs. The worker completes a
+fully replayed merge itself (`git commit --no-edit` after rerere stages the
+memorized resolutions); it only files an issue when a **novel** conflict
+remains.
 
 ## When a merge breaks a patch (guard red, merge clean)
 
@@ -132,6 +137,40 @@ OPENSHIP_VERSION=0.9.2-<shortsha> openship up --compose
 
 The `-<shortsha>` tags are immutable; `<version>` and `latest` move with the
 worker.
+
+## Local builds
+
+The same images can be built and pushed from a laptop, no GitHub round-trip:
+
+```sh
+cp fork.env.example fork.env   # fill in the real host; gitignored via .git/info/exclude
+podman login gitea.example.com   # or put user/token in fork.env
+
+scripts/fork/build-images.sh                 # api + dashboard + edge
+scripts/fork/build-images.sh --no-push edge  # build one, don't push
+scripts/fork/build-images.sh --tag 0.9.3-rc1 # custom tag
+```
+
+Tags follow the CI contract (`<version>`, `<version>-<shortsha>`, `latest`).
+Local builds target `linux/amd64` (the VPS) — emulated and slow on arm64 Macs,
+so CI remains the cheap path; this is for hand-pushed commits and Dockerfile
+experiments.
+
+## Public or private registry?
+
+Gitea container registries can serve packages **publicly** (anonymous pull).
+What that buys and costs:
+
+- **Public**: the VPS (or any box) pulls without `podman login` — one less
+  setup step, and `pinnedImagesReady`'s `docker manifest inspect` probe works
+  anonymously. **Push always needs the token either way** — a public package
+  changes nothing about CI auth. Cost: anyone who learns the hostname can pull
+  your images and the registry's bandwidth is your VPS's bandwidth.
+- **Private** (recommended): `podman login` once per box (the runbook above),
+  and the host stays off the public internet's radar.
+
+To go public: Gitea → package (`openship-api` etc.) → Settings → Visibility →
+Public. Nothing in this repo changes — the same refs work anonymous.
 
 ## Known limits
 

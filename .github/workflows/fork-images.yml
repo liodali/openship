@@ -20,9 +20,14 @@ name: Fork images
 #   • push to main       — a hand-pushed commit (patch fixes, guard updates)
 #   • workflow_call      — chained from fork-sync.yml after an upstream merge
 #
-# Needs repo secrets: FORK_REGISTRY (host, e.g. gitea.example.com),
-# FORK_REGISTRY_USER, FORK_REGISTRY_TOKEN (write). The namespace is the repo
-# variable FORK_NAMESPACE (default: medali).
+# Needs repo VARIABLES (non-secret, GitHub's ".env" for workflows — the real
+# host must not live in a committed file, this fork is public):
+#   FORK_REGISTRY   host, e.g. gitea.example.com
+#   FORK_NAMESPACE  optional, default medali
+# and repo SECRETS (push auth — can never be public):
+#   FORK_REGISTRY_USER, FORK_REGISTRY_TOKEN (write)
+# Local builds use the same keys from a gitignored `fork.env` — see
+# scripts/fork/build-images.sh and docs/fork-maintenance.md.
 # ─────────────────────────────────────────────────────────────────────────────
 
 on:
@@ -61,9 +66,9 @@ jobs:
           set -eu
           version="$(node -p "require('./package.json').version")"
           sha="$(git rev-parse --short HEAD)"
-          registry="${{ secrets.FORK_REGISTRY }}"
+          registry="${{ vars.FORK_REGISTRY }}"
+          [ -n "$registry" ] || { echo "FORK_REGISTRY repo variable is not set (Settings → Secrets and variables → Actions → Variables)"; exit 1; }
           ns="${{ vars.FORK_NAMESPACE || 'medali' }}"
-          [ -n "$registry" ] || { echo "FORK_REGISTRY secret is not set"; exit 1; }
           name="$registry/$ns/openship-${{ matrix.image }}"
           {
             echo "version=$version"
@@ -80,7 +85,7 @@ jobs:
       - name: Log in to the fork registry
         uses: docker/login-action@v3
         with:
-          registry: ${{ secrets.FORK_REGISTRY }}
+          registry: ${{ vars.FORK_REGISTRY }}
           username: ${{ secrets.FORK_REGISTRY_USER }}
           password: ${{ secrets.FORK_REGISTRY_TOKEN }}
 
@@ -102,5 +107,5 @@ jobs:
       - name: Print what the VPS can pin
         run: |
           echo "Pushed ${{ matrix.image }}:"
-          echo "  moving:     ${{ secrets.FORK_REGISTRY }}/${{ vars.FORK_NAMESPACE || 'medali' }}/openship-${{ matrix.image }}:${{ steps.tags.outputs.version }}"
+          echo "  moving:     ${{ vars.FORK_REGISTRY }}/${{ vars.FORK_NAMESPACE || 'medali' }}/openship-${{ matrix.image }}:${{ steps.tags.outputs.version }}"
           echo "  rollback:   …:${{ steps.tags.outputs.version }}-$(git rev-parse --short HEAD)"

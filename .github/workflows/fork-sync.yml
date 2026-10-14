@@ -59,7 +59,7 @@ jobs:
           fetch-depth: 0 # merge needs history; rr-cache lives in .git
 
       - name: Restore rerere memory
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .git/rr-cache
           key: rr-cache-${{ github.run_id }}
@@ -94,26 +94,36 @@ jobs:
         run: |
           set -euo pipefail
           echo "Merging upstream/main (${{ steps.fetch.outputs.upstream }})…"
-          # rerere (enabled above) silently replays every conflict resolution it
-          # has memorized; anything left over makes git exit non-zero below.
+          # rerere (enabled in the Fetch step) replays memorized resolutions, and
+          # autoUpdate STAGES them — but `git merge` still exits non-zero whenever
+          # it hit a conflict, even a fully-replayed one, leaving MERGE_HEAD
+          # behind. So: empty unmerged list after a failed merge = rerere solved
+          # everything, and the merge must be COMPLETED here. Only a NON-empty
+          # list is a genuine novel conflict.
+          git config rerere.autoUpdate true
           if ! git merge --no-edit upstream/main; then
-            {
-              echo "## Upstream sync needs manual conflict resolution"
-              echo ""
-              echo "Merge of \`oblien/openship@${{ steps.fetch.outputs.upstream }}\` into fork main conflicted and rerere could not resolve everything."
-              echo ""
-              echo "**Unmerged files:**"
-              git diff --name-only --diff-filter=U | awk '{ print "- `" $0 "`" }'
-              echo ""
-              echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-              echo ""
-              echo "Fix (see docs/fork-maintenance.md): merge locally, keep our patches where upstream only moved code, then push. \`git rerere\` records the resolution so this never asks again."
-            } > /tmp/issue-body.md
-            echo "conflicted=true" >> "$GITHUB_OUTPUT"
-            exit 1
+            if [ -z "$(git diff --name-only --diff-filter=U)" ]; then
+              echo "rerere replayed every conflict; completing the merge."
+              git commit --no-edit
+            else
+              {
+                echo "## Upstream sync needs manual conflict resolution"
+                echo ""
+                echo "Merge of \`oblien/openship@${{ steps.fetch.outputs.upstream }}\` into fork main conflicted and rerere could not resolve everything."
+                echo ""
+                echo "**Unmerged files:**"
+                git diff --name-only --diff-filter=U | awk '{ print "- `" $0 "`" }'
+                echo ""
+                echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                echo ""
+                echo "Fix (see docs/fork-maintenance.md): merge locally, keep our patches where upstream only moved code, then push. \`git rerere\` records the resolution so this never asks again."
+              } > /tmp/issue-body.md
+              echo "conflicted=true" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
           fi
           echo "conflicted=false" >> "$GITHUB_OUTPUT"
-          echo "Merge clean (rerere may have replayed memorized resolutions)."
+          echo "Merge clean (rerere may have replayed and completed memorized resolutions)."
 
       - name: Open (or update) the conflict issue
         if: failure() && steps.merge.outcome == 'failure'
@@ -194,7 +204,7 @@ jobs:
       # gets memorized when the merge that recorded it completes.
       - name: Save rerere memory
         if: steps.decide.outputs.merged == 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: .git/rr-cache
           key: rr-cache-${{ github.run_id }}
