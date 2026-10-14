@@ -210,12 +210,13 @@ async function installSupabase(tier: "pro" | "starter" = "pro") {
   const projectId = result.data?.projectId as string;
   expect(projectId).toBeTruthy();
   const services = await repos.service.listByProject(projectId);
+  expect(services.every(service => service.advanced?.resources === undefined)).toBe(true);
   expect(services).toHaveLength(getAppTemplate("supabase")!.services!.length);
   expect(
     cloudDockerResources({
       services: services.map((service) => ({ resources: service.advanced?.resources })),
     }),
-  ).toEqual({ cpuCores: 4, memoryMb: 8192, diskMb: 40960 });
+  ).toEqual({ cpuCores: 0.25, memoryMb: 1024, diskMb: 8192 });
   expect(services.find((service) => service.name === "kong")?.publicEndpoints).toEqual([
     { port: 8000, domainType: "free", domain: "supabase-kong" },
   ]);
@@ -316,6 +317,28 @@ describe("Supabase Cloud installation failure and deletion", () => {
     expect(await repos.project.listEnvVars(projectId)).toEqual(secrets);
     expect(requests.some((request) => request.startsWith("POST "))).toBe(false);
   });
+  it("installs WordPress with uncapped services and preserves explicit settings when adopting a draft", async () => {
+    const owner = await seedOwner();
+    const input = { templateId: "wordpress", serverId: owner.serverId, name: "WordPress",
+      config: { OPENSHIP_ADMIN_EMAIL: "owner@example.test", OPENSHIP_SITE_TITLE: "Our site", OPENSHIP_ADMIN_USER: "owner" },
+      routes: [{ service: "wordpress", port: 80, mode: "free" }] };
+    const install = async () => {
+      const response = await app.request("/api/apps", { method: "POST", headers: { ...owner.auth, "Content-Type": "application/json" }, body: JSON.stringify(input) });
+      const body = await response.json(); expect(response.status, JSON.stringify(body)).toBe(200);
+      return body.data.projectId as string;
+    };
+    const projectId = await install();
+    const services = await repos.service.listByProject(projectId);
+    expect(services).toHaveLength(2);
+    expect(services.every(service => service.advanced?.resources === undefined)).toBe(true);
+    const database = services.find(service => service.name === "wordpress-db")!;
+    const explicit = { cpuCores: 2, memoryMb: 2048, diskMb: 8192 };
+    await repos.service.update(database.id, { advanced: { ...database.advanced, resources: explicit } });
+    expect(await install()).toBe(projectId);
+    expect((await repos.service.findById(database.id))?.advanced?.resources).toEqual(explicit);
+    expect((await repos.service.listByProject(projectId)).find(service => service.name === "wordpress")?.advanced?.resources).toBeUndefined();
+  });
+
   it("previews the plan and actual draft resources without provisioning or changing saved settings", async () => {
     const { owner, projectId, secrets } = await installSupabase("starter");
     const preview = async () => {
@@ -329,7 +352,7 @@ describe("Supabase Cloud installation failure and deletion", () => {
     };
     expect(await preview()).toMatchObject({
       status: "ready",
-      resources: { cpuCores: 4, memoryMb: 8192, diskMb: 40960 },
+      resources: { cpuCores: 0.25, memoryMb: 1024, diskMb: 8192 },
     });
     await db
       .update(schema.cloudWorkspace)
@@ -338,7 +361,7 @@ describe("Supabase Cloud installation failure and deletion", () => {
     expect(await preview()).toMatchObject({ status: "ready" });
     const services = await repos.service.listByProject(projectId);
     const database = services.find((service) => service.name === "db")!;
-    for (const [cpuCores, workspaceCpu, status] of [[8, 11, "ready"], [9, 12, "upgrade"]] as const) {
+    for (const [cpuCores, workspaceCpu, status] of [[8, 8, "ready"], [9, 9, "upgrade"]] as const) {
       await repos.service.update(database.id, {
         advanced: { ...database.advanced, resources: { cpuCores, memoryMb: 3072, diskMb: 40960 } },
       });

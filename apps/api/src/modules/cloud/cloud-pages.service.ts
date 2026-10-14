@@ -1,13 +1,15 @@
 import type { ExecutionContext as RequestContext } from "@repo/platform";
 import { ensureNamespace } from "@repo/platform/engine/lib/openship-cloud";
 import { createTenantCloudAdmin } from "@repo/platform/engine/lib/cloud-tenant-admin";
+import { authorizeCloudRelayWorkspace } from "./cloud-relay-access";
 
 export async function createCloudPage(
   ctx: RequestContext,
   input: { workspace_id: string; path: string; name: string; slug: string; domain?: string },
 ): Promise<unknown> {
-  const namespace = await ensureNamespace(ctx.organizationId, null);
-  return createTenantCloudAdmin(ctx.organizationId, namespace, null).pages!.create(input);
+  const workspaceId = await authorizeCloudRelayWorkspace(ctx);
+  const namespace = await ensureNamespace(ctx.organizationId, workspaceId);
+  return createTenantCloudAdmin(ctx.organizationId, namespace, workspaceId).pages!.create(input);
 }
 
 export type CloudPageAction = "disable" | "enable" | "delete";
@@ -15,8 +17,9 @@ export type CloudPageAction = "disable" | "enable" | "delete";
 export async function dispatchCloudPageAction(
   ctx: RequestContext, slug: string, action: CloudPageAction,
 ): Promise<{ ok: true } | { ok: false; status: 403; error: string }> {
-  const namespace = await ensureNamespace(ctx.organizationId, null);
-  const pages = createTenantCloudAdmin(ctx.organizationId, namespace, null).pages!;
+  const workspaceId = await authorizeCloudRelayWorkspace(ctx);
+  const namespace = await ensureNamespace(ctx.organizationId, workspaceId);
+  const pages = createTenantCloudAdmin(ctx.organizationId, namespace, workspaceId).pages!;
   try {
     await pages[action](slug);
     return { ok: true };

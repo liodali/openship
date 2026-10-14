@@ -101,6 +101,7 @@
     }
   },
   "plansRoute": {
+    "requestedPlanUnavailable": "Seçilen plan artık mevcut değil. Aşağıdan başka bir plan seçin.",
     "loadError": "Planlar yüklenemedi",
     "genericError": "Bir sorun oluştu",
     "tryAgain": "Tekrar dene",
@@ -826,7 +827,8 @@
     "monthly": "aylık",
     "annual": "yıllık",
     "oneTime": "tek seferlik ödeme",
-    "cancelUnavailable": "Bu ödeme şu anda iptal edilemiyor. Yenileyin veya destekle iletişime geçin.",
+    "cancelUnavailable": "İptal durumu doğrulanamadı. Ödeme durumunu yenileyin.",
+    "cancelUnsupported": "Bu ödeme buradan iptal edilemez. Başka bir plan seçmeden önce ödemeyi tamamlayın veya süresinin dolmasını bekleyin.",
     "support": "Destekle iletişime geçin",
     "cancelHint": "Ödeme bağlantısı kapatılacak. Ardından başka bir plan seçebilirsiniz.",
     "confirmCancel": "İptali onayla",

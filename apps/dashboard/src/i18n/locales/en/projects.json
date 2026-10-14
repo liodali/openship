@@ -116,6 +116,8 @@
     "unlinkedTitle": "Connected projects updated"
   },
   "connections": {
+    "nativeClusterHint": "Choose a project on this database’s cluster. Only linked projects receive private access.",
+    "nativeNoTargets": "No other project uses this cluster yet.",
     "useInProject": "Use in a project",
     "title": "Use in a project",
     "subtitle": "Share this service with another project using a connection.",

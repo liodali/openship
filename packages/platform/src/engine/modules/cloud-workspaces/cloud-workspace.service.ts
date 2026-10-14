@@ -178,20 +178,32 @@ export async function create(
 ) {
   if (!env.CLOUD_MODE) return createLinkedCloudServer(ctx.organizationId, input);
   requireSaas();
-  const rows = await repos.cloudWorkspace.listByOrganization(ctx.organizationId);
-  // Draft identities don't reserve machines. Bound abandoned checkout drafts.
-  if (rows.filter((row) => !row.namespace && row.planTierId === "free").length >= 10)
-    throw new AppError(
-      "Finish setup or remove an unused server before adding another",
-      409,
-      "CLOUD_WORKSPACE_DRAFT_LIMIT",
+  // A pricing handoff must recover a lost create response, including after reload.
+  // Keys resolve only within the authenticated organization; callers cannot supply IDs.
+  return createProvisionLock(`cloud:workspace:create:${ctx.organizationId}`).run(async () => {
+    const id = input.idempotencyKey ? `cws_${digest([ctx.organizationId, input.idempotencyKey])}` : undefined;
+    if (id) {
+      const existing = await repos.cloudWorkspace.findByIdInOrganization(id, ctx.organizationId);
+      if (existing?.deletionInProgress || await repos.cloudWorkspace.findWorkspaceDeletion(id, ctx.organizationId))
+        throw new AppError("This server purchase was removed. Start a new purchase from Pricing.", 409, "CLOUD_WORKSPACE_PURCHASE_REMOVED");
+      if (existing) return summary(existing);
+    }
+    const rows = await repos.cloudWorkspace.listByOrganization(ctx.organizationId);
+    // Draft identities don't reserve machines. Bound abandoned checkout drafts.
+    if (rows.filter((row) => !row.namespace && row.planTierId === "free").length >= 10)
+      throw new AppError(
+        "Finish setup or remove an unused server before adding another",
+        409,
+        "CLOUD_WORKSPACE_DRAFT_LIMIT",
+      );
+    return summary(
+      await repos.cloudWorkspace.create({
+        organizationId: ctx.organizationId,
+        name: input.name.trim(),
+        ...(id ? { id } : {}),
+      }),
     );
-  return summary(
-    await repos.cloudWorkspace.create({
-      organizationId: ctx.organizationId,
-      name: input.name.trim(),
-    }),
-  );
+  });
 }
 export async function rename(ctx: ExecutionContext, id: string, input: { name: string }) {
   if (!env.CLOUD_MODE) {

@@ -55,7 +55,7 @@ describeDockerE2E("Cloud builds use a bounded, temporary Docker worker", () => {
     vi.unstubAllEnvs();
   });
 
-  async function build(outcome: "success" | "failure" | "cancel") {
+  async function build(outcome: "success" | "failure" | "cancel", limits = resources) {
     const marker = `running-${randomUUID()}`;
     const image = `openship/capacity-e2e:${randomUUID()}`;
     images.add(image);
@@ -85,7 +85,7 @@ describeDockerE2E("Cloud builds use a bounded, temporary Docker worker", () => {
     };
     const result = remote
       .buildImageOnRemote(
-        { projectId, sessionId: marker, resources } as BuildConfig,
+        { projectId, sessionId: marker, resources: limits } as BuildConfig,
         root,
         "Dockerfile",
         image,
@@ -103,10 +103,10 @@ describeDockerE2E("Cloud builds use a bounded, temporary Docker worker", () => {
       });
       const active = await inspect(worker);
       expect(active.State.Running).toBe(true);
-      expect(active.HostConfig.Memory).toBe(512 * 1024 * 1024);
-      expect(active.HostConfig.MemorySwap).toBe(512 * 1024 * 1024);
-      expect(active.HostConfig.CpuQuota).toBe(25_000);
-      expect(active.HostConfig.CpuPeriod).toBe(100_000);
+      expect(active.HostConfig.Memory).toBe(limits.memoryMb * 1024 * 1024);
+      expect(active.HostConfig.MemorySwap).toBe(limits.memoryMb * 1024 * 1024);
+      expect(active.HostConfig.CpuQuota).toBe(limits.cpuCores * 100_000);
+      expect(active.HostConfig.CpuPeriod).toBe(limits.cpuCores ? 100_000 : 0);
       expect((await inspect(sibling)).State.Running).toBe(true);
       if (outcome === "cancel") controller.abort();
       const finished = await result;
@@ -131,4 +131,9 @@ describeDockerE2E("Cloud builds use a bounded, temporary Docker worker", () => {
     "enforces the selected budget and removes the worker after %s",
     build,
   );
+  it.each(["success", "failure", "cancel"] as const)(
+    "keeps the real Cloud build worker uncapped and removes it after %s",
+    outcome => build(outcome, { cpuCores: 0, memoryMb: 0, diskMb: 0 }),
+  );
+
 });

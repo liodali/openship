@@ -111,6 +111,7 @@ export const AppConnectionSchema = Type.Object({
     id: Type.String(), label: Type.String(), help: Type.Optional(Type.String()), secret: Type.Boolean(), value: Type.String(),
     envKey: Type.Optional(Type.String()), service: nullableString, recommended: Type.Optional(Type.Boolean()), sourceLabel: Type.Optional(localized),
     sourceServiceId: Type.Optional(Type.String()),
+    sourceDatabaseId: Type.Optional(Type.String()), clusterId: Type.Optional(Type.String()),
     variants: Type.Optional(Type.Array(Type.Object({ id: Type.String(), label: localized, value: Type.String() }))),
     width: Type.Optional(Type.Union([Type.Literal("full"), Type.Literal("half")])), kind: Type.Optional(Type.Union([Type.Literal("text"), Type.Literal("url")])), internal: Type.Optional(Type.Boolean()),
   })),

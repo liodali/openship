@@ -101,6 +101,7 @@
     }
   },
   "plansRoute": {
+    "requestedPlanUnavailable": "El plan seleccionado ya no está disponible. Elige otro plan a continuación.",
     "loadError": "No se pudieron cargar los planes",
     "genericError": "Algo salió mal",
     "tryAgain": "Intentar de nuevo",
@@ -826,7 +827,8 @@
     "monthly": "al mes",
     "annual": "al año",
     "oneTime": "pago único",
-    "cancelUnavailable": "Este pago no se puede cancelar ahora. Actualiza el estado o contacta con soporte.",
+    "cancelUnavailable": "No se pudo verificar la cancelación. Actualiza el estado del pago.",
+    "cancelUnsupported": "Este pago no se puede cancelar aquí. Complétalo o espera a que caduque antes de elegir otro plan.",
     "support": "Contactar con soporte",
     "cancelHint": "El enlace de pago se cerrará. Después podrás elegir otro plan.",
     "confirmCancel": "Confirmar cancelación",

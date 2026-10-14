@@ -215,6 +215,21 @@ export interface OpenshipConfig {
    * existing project never gains a process on redeploy (#935 Q2).
    */
   roles?: StackRole[];
+  /**
+   * Opt-in Laravel cache warming (issue #19). When `true`, the resolved WEB role
+   * command gains a `php artisan optimize && ` prefix, which warms Laravel's
+   * config/route/event/view caches once at startup for higher per-request
+   * throughput. Default `false`: an absent or `false` flag keeps the web command
+   * byte-identical, so existing projects are unaffected. Laravel web role only —
+   * workers and schedulers stay unwarmed. It applies only to the `laravel` stack.
+   *
+   * Warming must run at startup, never at build or in `releaseCommands`:
+   * `config:cache` (inside `optimize`) freezes the env present when it runs and
+   * makes every `env()` call outside `config/*.php` return `null`, so it is only
+   * correct after Openship injects the runtime env. See `resolveWebCommand` in
+   * `../stack-roles`.
+   */
+  optimize?: boolean;
   // ── Env ──
   env?: OpenshipEnv;
   // ── Domains + routing ──

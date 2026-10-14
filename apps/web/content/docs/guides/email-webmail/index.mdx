@@ -1,6 +1,6 @@
 ---
 title: Email & webmail
-description: Run your own self-hosted mail server and a webmail app with Openship — provision it, manage domains and mailboxes, and put an inbox in the browser.
+description: Connect existing IMAP/SMTP mailboxes through webmail on Cloud, or run and manage your own mail server with Desktop and self-hosted Openship.
 ---
 
 import { Step, Steps } from 'fumadocs-ui/components/steps';
@@ -19,11 +19,26 @@ This is a big, hands-on feature, so this guide stays at the map level: what each
 go through them. The fiddly bits — the exact DNS records and the reverse-DNS setup — are called out where they
 happen, because the wizard walks you through those live.
 
-<Callout title="Self-hosted only" type="warn">
-Email lives entirely in **self-hosted Openship**. The **Emails** item only appears in the sidebar when you're
-running Openship on your own infrastructure — it isn't part of the managed cloud. If you don't see it, you're
-on a hosted plan. See [Installation](/docs/getting-started/installation) to self-host.
+<Callout title="Cloud webmail and self-hosted mail servers">
+**Emails** is available on Cloud, Desktop and self-hosted Openship. On Cloud, it connects your existing
+IMAP/SMTP mailboxes through the webmail app. **Managed email is coming soon**: Cloud application plans
+do not provision SMTP/IMAP servers or mailboxes. Mail-server setup and administration remain available
+through Desktop and self-hosted Openship. See [Installation](/docs/getting-started/installation).
 </Callout>
+
+## Connect existing mailboxes on Cloud
+
+Open **Emails → Connect existing mail server**. The standard webmail app installer asks for your
+IMAP and SMTP hosts, the managed server that will run the client, and its public route. You can configure
+ports in the backend's advanced fields; IMAP and SMTP connections require TLS. Confirming installation
+deploys the webmail app through the normal application pipeline.
+
+Sign in to the deployed webmail with your mailbox email address and password. Your existing provider
+keeps the mailboxes and mail delivery; Openship hosts the browser client. Manage that client through
+**Apps** or its project page, including domains, settings, logs and redeployment. This flow does not
+install a new mail server, change MX records or create a mailbox at your provider.
+
+The remaining steps in this guide apply to mail-server setup on Desktop and self-hosted instances.
 
 <Callout title="What you need first">
 - Openship running self-hosted, with at least one **connected server** (a clean Ubuntu or Debian machine is

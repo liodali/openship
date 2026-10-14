@@ -88,7 +88,7 @@ export async function assertClusterWorkloadSupported(input: {
     ...(await repos.projectConnection.listBySource(input.projectId)),
     ...(await repos.projectConnection.listByTarget(input.projectId)),
   ];
-  if (links.some(usesPrivateNetwork))
+  if (links.some((link) => usesPrivateNetwork(link) && !link.sourceDatabaseId))
     throw new AppError(
       "This project has connections on a Docker private network. Configure connections reachable from the server cluster before moving this application.",
       422,
@@ -203,6 +203,11 @@ export async function resolveClusterDeploymentRuntime(
       edgeSourceIps,
       servers: runtime.plan.hosts,
       config: snapshot.clusterConfig,
+      sharedDatabases: async () => {
+        const { sharedNativeDatabases } =
+          await import("../modules/projects/cluster-database-connections");
+        return sharedNativeDatabases(organizationId, snapshot.clusterProjectId!, runtime.id);
+      },
       resolveRegistryAuth: registryAuthResolver(organizationId),
       builder: async () => {
         const builderPlatform = await resolveTargetPlatform(

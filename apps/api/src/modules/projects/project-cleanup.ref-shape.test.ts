@@ -193,6 +193,7 @@ describe("Cloud Docker project teardown", () => {
     connection: { state: hostState },
     supports: (cap: string) => ["projectContainerSweep", "hostContainerQuery"].includes(cap),
     listProjectContainerIds: vi.fn(async () => []), listAllContainers: vi.fn(async () => []),
+    listAllVolumes: vi.fn(async (): Promise<Array<{ name: string; labels: Record<string, string> }>> => []),
     listProjectImages: vi.fn(async () => []), inspectNamedVolumes: vi.fn(async () => ["project-data"]),
     destroy: vi.fn(async () => {}), removeImage: vi.fn(async () => {}),
     removeVolume: vi.fn(async () => {}), removeNetwork: vi.fn(async () => {}), cleanupProject,
@@ -210,6 +211,7 @@ describe("Cloud Docker project teardown", () => {
     listRoutes.mockResolvedValue(["app.opsh.io", "console.opsh.io"]);
     cleanupProject.mockResolvedValue();
     hostState.mockReset().mockResolvedValue("running");
+    cloudDocker.listAllVolumes.mockReset().mockResolvedValue([]);
     h.removeRoute.mockResolvedValue();
     h.resolveCloudPlatform.mockResolvedValue({ platform: { runtime: cloudDocker, routing } });
   });
@@ -235,6 +237,60 @@ describe("Cloud Docker project teardown", () => {
     expect(cloudDocker.removeVolume).not.toHaveBeenCalled();
     expect(cleanupProject).not.toHaveBeenCalled();
   });
+  it("previews and optionally wipes only owned unattached volumes after a failed first deployment", async () => {
+    h.deployments[0]!.containerId = null;
+    h.serviceRows.dep_1 = [serviceRow({ containerId: null })];
+    h.projectServices = [{ id: "svc_1", name: "wordpress-db", image: "mariadb:11" }];
+    h.resolvedByDeployment.dep_1 = { runtime: cloudDocker };
+    cloudDocker.listAllVolumes.mockResolvedValue([
+      { name: "wordpress-data", labels: { "openship.project": "p1" } },
+      { name: "wordpress-db-data", labels: { "openship.project": "p1" } },
+      { name: "another-project-data", labels: { "openship.project": "p2" } },
+      { name: "unlabelled-data", labels: {} },
+    ]);
+    const preview = await previewProjectDeletion(ownedProject as never);
+    expect(preview.totalVolumes).toBe(2);
+    expect(preview.deploymentVolumes).toEqual(["wordpress-data", "wordpress-db-data"]);
+    cloudDocker.listAllVolumes.mockClear();
+    const retained = await collectProjectManifest(ownedProject as never);
+    expect(retained.resources.filter((resource) => resource.type === "volume")).toEqual([]);
+    expect(cloudDocker.listAllVolumes).not.toHaveBeenCalled();
+    const wiped = await collectProjectManifest(ownedProject as never, { wipeVolumes: true });
+    expect(
+      wiped.resources
+        .filter((resource) => resource.type === "volume")
+        .map((resource) => resource.ref),
+    ).toEqual(["wordpress-data", "wordpress-db-data"]);
+    expect((await executeCleanup(wiped)).failed).toEqual([]);
+    expect(cloudDocker.removeVolume.mock.calls.map(([name]: [string]) => name)).toEqual([
+      "wordpress-data",
+      "wordpress-db-data",
+    ]);
+  });
+  it("retains cleanup ownership when the unattached volume inventory cannot be read", async () => {
+    cloudDocker.listAllVolumes.mockRejectedValue(new Error("Docker inventory unavailable"));
+    await expect(
+      collectProjectManifest(ownedProject as never, { wipeVolumes: true }),
+    ).rejects.toThrow("inventory unavailable");
+    expect(cloudDocker.destroy).not.toHaveBeenCalled();
+    expect(cloudDocker.removeVolume).not.toHaveBeenCalled();
+  });
+  it("counts and cleans an owned volume once when both mounts and inventory report it", async () => {
+    h.projectServices = [{ id: "svc_1", name: "web", image: "test:1" }];
+    h.resolvedByDeployment.dep_1 = { runtime: cloudDocker };
+    cloudDocker.listAllVolumes.mockResolvedValue([
+      { name: "project-data", labels: { "openship.project": "p1" } },
+    ]);
+    const preview = await previewProjectDeletion(ownedProject as never);
+    expect(preview.totalVolumes).toBe(1);
+    const manifest = await collectProjectManifest(ownedProject as never, { wipeVolumes: true });
+    expect(
+      manifest.resources
+        .filter((resource) => resource.type === "volume")
+        .map((resource) => resource.ref),
+    ).toEqual(["project-data"]);
+  });
+
   it("cleans owned routes after the provider confirms its VM is gone without contacting Docker", async () => {
     hostState.mockRejectedValue(Object.assign(new Error("Workspace not found"), { status: 404 }));
     h.localRuntime = docker;

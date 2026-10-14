@@ -106,6 +106,8 @@ export type LocalizedString = string | { [locale: string]: string };
 export interface AppConnectionOutput {
   id: string;
   sourceServiceId?: string;
+  sourceDatabaseId?: string;
+  clusterId?: string;
   label: string;
   help?: string;
   secret: boolean;

@@ -3,7 +3,7 @@ title: Cloud as source
 description: Cloud projects are owned by Openship Cloud; your self-hosted instance is a gateway in front of it — plus how projects promote up and come back home.
 ---
 
-When a project runs on **Openship Cloud** (our hosted service), the cloud is the one true copy — the
+For a **Cloud-owned project**, Openship Cloud (our hosted service) holds the one true copy — the
 **canonical** owner. Its record, deployments, domains, environment variables, and logs all live on the
 cloud, and the cloud runs its builds and lifecycle. Your self-hosted instance keeps **no local copy** of
 that project. Instead it acts as a **gateway** — a thin pass-through that forwards requests for that project
@@ -28,6 +28,23 @@ Your dashboard can keep talking to your local API. Requests for a Cloud project 
 upstream and returned through the gateway. SDK and CLI credentials fixed to an organization
 must connect directly to that organization's API; a local scoped credential cannot borrow
 its owner's Cloud session.
+
+### Creating a project from Desktop
+
+In the connected dashboard, selecting a managed Cloud server for a new catalog app or
+Git project creates its configuration through the Cloud API. Capacity checks, installation
+and subsequent project operations use that Cloud account and organization. The project,
+services and routes are stored in Cloud; the desktop controller keeps no project copy.
+An existing verified server link is translated to its canonical Cloud server ID.
+
+Local folders, upload sessions and custom app definitions uploaded to this instance keep
+their local controller because their source is available there. Existing local projects retain
+their owner, even when they run on a linked managed server. Use an explicit transfer to move an existing project's ownership.
+Credentials scoped to the local installation keep their existing execution path; connect
+SDK and CLI clients directly to the Cloud API to create Cloud-owned projects.
+
+A failed Cloud creation or capacity check remains an error. Openship does not fall back
+to creating a local project or selecting a different Cloud account.
 
 <Callout title="Your local permission checks still run first" type="info">
 Forwarding does **not** skip your rules. The local permission plane gates every call — checking the caller's
@@ -91,11 +108,8 @@ left behind.
 
 There are two ways it happens:
 
-- **Born-on-cloud (automatic).** When you deploy a still-local project to the cloud *and let the cloud
-  build it*, Openship promotes the project **first**, then runs the deploy upstream — so it becomes
-  cloud-canonical from its very first cloud deploy. If the copy-up fails, the promote stops **before**
-  anything local is torn down, leaving your project exactly as it was. (Choosing *build on this machine* is
-  the one exception — see [What your box still does](#what-your-box-still-does-for-a-cloud-project).)
+- **Born on Cloud.** New catalog apps and Git projects created from the connected dashboard with a
+  managed Cloud server are created directly in Cloud. There is no local project to copy or delete.
 - **Explicit transfer.** You can also promote on demand from the CLI or API (see
   [Doing it yourself](#doing-it-yourself)).
 
@@ -124,12 +138,12 @@ containers back up are operator follow-up steps, not part of the data transfer i
 
 ## What your box still does for a cloud project
 
-For a cloud-owned project, your local instance does **zero** orchestration — with one opt-in exception:
-**build locally, upload the artifact.** If you choose "build on this machine," your box builds the app with
-its own credentials and uploads the result to an Openship Cloud workspace to run. In that case the project
-stays local-canonical and is *not* promoted. Everything else — routing, TLS, running the containers —
-belongs to the cloud. See [Runtime model](/docs/architecture/runtime-model) for how a runtime target is
-chosen.
+For a Cloud-owned project, your local instance forwards operations to Cloud. A local project can
+also use a verified managed server as its execution destination: the local controller owns its
+configuration and orchestration, while the managed server and its billing belong to Cloud.
+This supports local-folder sources and credentials scoped to the installation without giving
+them the owner's Cloud account permissions. See [Runtime model](/docs/architecture/runtime-model)
+for how a runtime target is chosen.
 
 ## On Openship Cloud itself
 

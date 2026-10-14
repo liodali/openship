@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ClusterDatabase } from "@repo/contracts";
 import { ClusterDatabasePanel } from "./ClusterDatabasePanel";
+import { ProjectConnectionForm } from "@/app/(dashboard)/projects/[id]/components/UseInProjectModal";
 
 const h = vi.hoisted(() => ({
   create: vi.fn(),
@@ -15,7 +16,15 @@ const h = vi.hoisted(() => ({
   backup: vi.fn(),
   saved: vi.fn(),
   deploy: vi.fn(),
+  getConnection: vi.fn(),
+  candidates: vi.fn(),
+  bundle: vi.fn(),
 }));
+vi.mock("@/lib/api/apps", () => ({ appsApi: { getConnection: h.getConnection } }));
+vi.mock("@/lib/api/connections", () => ({
+  connectionsApi: { candidates: h.candidates, bundle: h.bundle },
+}));
+vi.mock("@/context/ToastContext", () => ({ useToast: () => ({ showToast: vi.fn() }) }));
 vi.mock("@/lib/api/cluster-databases", () => ({ clusterDatabasesApi: h }));
 vi.mock("@/lib/api/cluster-storage", () => ({
   clusterStorageApi: { get: vi.fn(async () => null) },
@@ -68,6 +77,40 @@ beforeEach(() => {
   root = createRoot(host);
   h.create.mockResolvedValue(row({ status: "provisioning" }));
   h.remove.mockResolvedValue(row({ status: "deleting", intent: "remove" }));
+  h.getConnection.mockResolvedValue({
+    data: {
+      outputs: [
+        {
+          id: "cluster-database:db",
+          sourceDatabaseId: "db",
+          clusterId: "cluster",
+          label: "postgres",
+          envKey: "DATABASE_URL",
+          value: "postgres://private",
+          secret: true,
+          internal: true,
+        },
+        {
+          id: "cluster-database:other",
+          sourceDatabaseId: "other",
+          clusterId: "cluster",
+          label: "other database",
+          envKey: "REDIS_URL",
+          value: "redis://private",
+          secret: true,
+          internal: true,
+        },
+      ],
+    },
+  });
+  h.candidates.mockResolvedValue({
+    data: [
+      { id: "consumer", name: "Compatible app", description: "", clusterId: "cluster" },
+      { id: "different", name: "Other cluster", description: "", clusterId: "different-cluster" },
+      { id: "docker", name: "Docker app", description: "", clusterId: null },
+    ],
+  });
+  h.bundle.mockResolvedValue({});
 });
 afterEach(async () => {
   await act(async () => root.unmount());
@@ -101,6 +144,81 @@ async function input(element: HTMLInputElement, value: string) {
 }
 
 describe("project database controls", () => {
+  it("shares the selected native database through the existing form with compatible projects only", async () => {
+    await render(row());
+    await click(button("Use in a project"));
+    const dialog = document.querySelector<HTMLElement>("[data-modal-surface]")!;
+    expect(dialog.textContent).toContain("DATABASE_URL");
+    expect(dialog.textContent).not.toContain("other database");
+    expect(dialog.textContent).not.toContain("Public address");
+    const select = dialog.querySelector<HTMLElement>('[aria-haspopup="listbox"]')!;
+    await click(select);
+    const options = [...document.querySelectorAll<HTMLElement>('[role="option"]')];
+    expect(options.map((option) => option.textContent)).toEqual(["Compatible app"]);
+    await click(options[0]);
+    await click(
+      [...dialog.querySelectorAll<HTMLButtonElement>("button")].find(
+        (button) => button.textContent?.trim() === "Connect",
+      )!,
+    );
+    expect(h.bundle).toHaveBeenCalledWith("consumer", {
+      sourceProjectId: "project",
+      items: [{ outputId: "cluster-database:db", envKey: "DATABASE_URL" }],
+      mode: "internal",
+    });
+    expect(h.connect).not.toHaveBeenCalled();
+  });
+
+  it("keeps sharing disabled while the native database is not ready", async () => {
+    await render(row({ status: "provisioning" }));
+    expect(button("Use in a project").disabled).toBe(true);
+    expect(h.getConnection).not.toHaveBeenCalled();
+  });
+
+  it("preserves Docker target choices until a native database is selected", async () => {
+    await act(async () =>
+      root.render(
+        <ProjectConnectionForm
+          sourceProjectId="project"
+          onClose={() => {}}
+          outputs={[
+            {
+              id: "dbUrl",
+              service: "postgres",
+              label: "Docker database",
+              value: "postgres://docker",
+              secret: true,
+              recommended: true,
+              envKey: "DOCKER_URL",
+            },
+            {
+              id: "cluster-database:db",
+              service: null,
+              sourceDatabaseId: "db",
+              clusterId: "cluster",
+              label: "Native database",
+              value: "postgres://native",
+              secret: true,
+              internal: true,
+              envKey: "NATIVE_URL",
+            },
+          ]}
+        />,
+      ),
+    );
+    await click(host.querySelector<HTMLElement>('[aria-haspopup="listbox"]')!);
+    let options = [...document.querySelectorAll<HTMLElement>('[role="option"]')];
+    expect(options).toHaveLength(3);
+    await click(options.find((option) => option.textContent === "Other cluster")!);
+    await click(
+      host.querySelector<HTMLElement>('[role="checkbox"][aria-label="Native database"]')!,
+    );
+    await click(host.querySelector<HTMLElement>('[aria-haspopup="listbox"]')!);
+    options = [...document.querySelectorAll<HTMLElement>('[role="option"]')];
+    expect(options.map((option) => option.textContent)).toEqual(["Compatible app"]);
+    expect(button("Connect").disabled).toBe(true);
+  });
+
   it("requires an explicit review before switching an existing application connection", async () => {
     const original = row({
       id: "original",

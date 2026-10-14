@@ -1,4 +1,13 @@
 {
+  "cloudClient": {
+    "title": "E-mails",
+    "subtitle": "Utilisez vos boîtes mail existantes avec Openship Webmail.",
+    "connectTitle": "Connecter votre serveur mail",
+    "description": "Connectez tout serveur IMAP/SMTP. Vos boîtes mail et la livraison des messages restent chez votre fournisseur.",
+    "connectAction": "Connecter un serveur mail existant",
+    "signInHint": "Connectez-vous au webmail avec votre adresse e-mail et le mot de passe de votre boîte mail.",
+    "manageAction": "Gérer les applications webmail"
+  },
   "cloudComingSoon": {
     "title": "Messagerie gérée",
     "badge": "Bientôt disponible",

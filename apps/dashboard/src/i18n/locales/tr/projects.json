@@ -462,6 +462,8 @@
     "cancel": "İptal"
   },
   "connections": {
+    "nativeClusterHint": "Bu veritabanının kümesindeki bir projeyi seçin. Yalnızca bağlı projeler özel erişim alır.",
+    "nativeNoTargets": "Henüz başka bir proje bu kümeyi kullanmıyor.",
     "useInProject": "Bir projede kullan",
     "title": "Bir projede kullan",
     "subtitle": "Bu hizmeti bir bağlantıyla başka bir projeyle paylaşın.",

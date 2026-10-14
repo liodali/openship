@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { Oblien } from "oblien";
+import { AppError } from "@repo/core";
 import { CloudInfraProvider } from "./cloud";
 import { managedRoutingFixture } from "../../test/managed-routing-fixture";
 
@@ -82,4 +83,61 @@ it("publishes path-only routes through the SDK without a static or SPA fallback"
       }],
     },
   });
+});
+
+// Both relay transports must preserve provider failures without treating
+// ownership failures or a missing API endpoint as an absent provider Page.
+const relayFailure = (transport: "linked" | "unscoped", status: number, code?: string) =>
+  transport === "linked"
+    ? new AppError("Cloud resource operation failed", status, code)
+    : Object.assign(new Error("Cloud resource operation failed"), {
+      name: "CloudRequestError", status, ...(code ? { code } : {}),
+    });
+
+it.each([
+  ["linked", "missing"], ["linked", "create-conflict"],
+  ["unscoped", "missing"], ["unscoped", "create-conflict"],
+] as const)("recovers a missing route anchor through %s Cloud RPC (%s)", async (transport, outcome) => {
+  const client = new Oblien({ token: "test-namespace-token", baseUrl: "https://oblien.test" });
+  const pages = new Proxy(client.pages, {
+    get(target, key) {
+      if (key === "get") return async (slug: string) => {
+        try { return await target.get(slug); }
+        catch { throw relayFailure(transport, 404, "CLOUD_PROVIDER_ERROR"); }
+      };
+      if (key === "create") return async (input: Parameters<typeof target.create>[0]) => {
+        const result = await target.create(input);
+        // Another publisher won creation; the owned Page can still be reused.
+        if (outcome === "create-conflict") throw relayFailure(transport, 409, "CLOUD_PROVIDER_ERROR");
+        return result;
+      };
+      const value = Reflect.get(target, key);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  provider = new CloudInfraProvider(client, { namespace: h.namespace, scope: h.scope, adminProxy: { pages } });
+  await provider.registerRoute({ domain: hostname, targetUrl: "http://127.0.0.1:3000", tls: true });
+  expect(writes.filter(request => request.path === "/pages")).toHaveLength(1);
+  expect(writes.filter(request => request.path === `/domain/routes/${hostname}`)).toHaveLength(1);
+  await provider.registerRoute({ domain: hostname, targetUrl: "http://127.0.0.1:3000", tls: true });
+  expect(writes.filter(request => request.path === "/pages")).toHaveLength(1);
+});
+
+it.each([
+  ["linked", "CLOUD_RESOURCE_NOT_FOUND"], ["linked", "SERVER_NOT_FOUND"],
+  ["linked", "CLOUD_SERVER_REQUEST_FAILED"], ["unscoped", "CLOUD_RESOURCE_NOT_FOUND"],
+  ["unscoped", "SERVER_NOT_FOUND"], ["unscoped", "CLOUD_SERVER_REQUEST_FAILED"],
+  ["unscoped", undefined],
+] as const)("does not turn an ownership or endpoint 404 into a new Page (%s, %s)", async (transport, code) => {
+  const client = new Oblien({ token: "test-namespace-token", baseUrl: "https://oblien.test" });
+  const failure = relayFailure(transport, 404, code);
+  const pages = new Proxy(client.pages, { get(target, key) {
+    if (key === "get") return async () => { throw failure; };
+    const value = Reflect.get(target, key);
+    return typeof value === "function" ? value.bind(target) : value;
+  } });
+  provider = new CloudInfraProvider(client, { namespace: h.namespace, scope: h.scope, adminProxy: { pages } });
+  await expect(provider.registerRoute({ domain: hostname, targetUrl: "http://127.0.0.1:3000", tls: true })).rejects.toBe(failure);
+  expect(writes).toEqual([]);
+  expect(h.scope.executor.writeFile).not.toHaveBeenCalled();
 });

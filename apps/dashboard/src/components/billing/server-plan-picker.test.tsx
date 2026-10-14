@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { act, type ReactNode } from "react";
+import { act, StrictMode, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PRICING, pricingUi, resolvePlan, type CustomServerResources, type PlanTierId } from "@repo/core";
@@ -24,11 +24,11 @@ import { ApiError } from "@/lib/api/client";
 
 const h = vi.hoisted(() => ({
   get: vi.fn(), post: vi.fn(), create: vi.fn(), available: vi.fn(), connect: vi.fn(), readServer: vi.fn(), selected: vi.fn(), remove: vi.fn(),
-  user: "user-a", org: "org-a", connected: true,
+  user: "user-a", org: "org-a", connected: true, sessionPending: false,
 }));
 vi.mock("@/lib/api/client", async original => ({ ...await original<typeof import("@/lib/api/client")>(), api: { get: h.get, post: h.post } }));
 vi.mock("@/lib/api/system", () => ({ systemApi: { createManagedServer: h.create, availableManagedServers: h.available, connectManagedServer: h.connect, getServerById: h.readServer, removeManagedServer: h.remove } }));
-vi.mock("@/lib/auth-client", () => ({ useSession: () => ({ data: { user: { id: h.user }, session: { activeOrganizationId: h.org } } }) }));
+vi.mock("@/lib/auth-client", () => ({ useSession: () => ({ isPending: h.sessionPending, data: { user: { id: h.user }, session: { activeOrganizationId: h.org } } }) }));
 vi.mock("@/context/CloudContext", () => ({ useCloud: () => ({ connected: h.connected, startConnect: vi.fn() }) }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: vi.fn(), push: vi.fn() }) }));
 
@@ -102,7 +102,8 @@ function AddServerFromProject() {
 
 beforeEach(() => {
   vi.resetAllMocks(); vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  h.user = "user-a"; h.org = "org-a"; h.connected = true;
+  h.user = "user-a"; h.org = "org-a"; h.connected = true; h.sessionPending = false;
+  window.location.href = "http://localhost:3000/";
   h.get.mockImplementation(async (path, options) => path.endsWith("/quote")
     ? { data: customQuote(options.params) } : catalog);
   h.create.mockResolvedValue(server);
@@ -460,6 +461,129 @@ describe("buying another managed server", () => {
     await render(<ManagedServerPurchase requestedPlanId="not-a-live-plan" />);
     expect(planNames()).toEqual(["Hobby", "Starter", "Pro", "Scale"]);
     expect(h.create).not.toHaveBeenCalled();
+    expect(h.post).not.toHaveBeenCalled();
+  });
+
+  it("continues the website's selected preset to checkout once, including Strict Mode effect replay", async () => {
+    const key = "72e918ec-8d9c-4b81-bf43-7a5790ca239a";
+    const page = () => <StrictMode><ManagedServerPurchase requestedPlanId="starter" autoCheckout checkoutIntent={key} /></StrictMode>;
+    await render(page());
+    expect(h.create).toHaveBeenCalledExactlyOnceWith({ name: copy.workspaces.defaultName, idempotencyKey: key });
+    expect(h.post).toHaveBeenCalledExactlyOnceWith("billing/subscription", {
+      planTierId: "starter", interval: "monthly", workspaceId: server.id, idempotencyKey: `${key}-starter-monthly`,
+    });
+    expect(window.location.href).toBe("https://checkout.example.test/new-server");
+    expect(window.open).not.toHaveBeenCalled();
+    await render(page());
+    expect(h.create).toHaveBeenCalledOnce();
+    expect(h.post).toHaveBeenCalledOnce();
+  });
+
+  it("waits for authentication and the live catalog before continuing a pricing selection", async () => {
+    h.sessionPending = true;
+    let finish!: (value: unknown) => void;
+    h.get.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    const page = () => <ManagedServerPurchase requestedPlanId="starter" autoCheckout />;
+    await render(page());
+    expect(h.create).not.toHaveBeenCalled();
+    await act(async () => finish(catalog));
+    expect(h.create).not.toHaveBeenCalled();
+    h.sessionPending = false;
+    await render(page());
+    expect(h.create).toHaveBeenCalledOnce();
+    expect(h.post).toHaveBeenCalledOnce();
+  });
+
+  it.each(["missing-plan", "free", "enterprise"])("does not substitute another checkout for an unavailable pricing selection (%s)", async requestedPlanId => {
+    await render(<ManagedServerPurchase requestedPlanId={requestedPlanId} autoCheckout />);
+    expect(host.textContent).toContain(copy.plansRoute.requestedPlanUnavailable);
+    expect(h.create).not.toHaveBeenCalled();
+    expect(h.post).not.toHaveBeenCalled();
+  });
+
+  it("keeps disabled purchases inactive even with an explicit pricing selection", async () => {
+    await render(<ManagedServerPurchase requestedPlanId="starter" autoCheckout billingEnabled={false} />);
+    expect(host.textContent).toContain(copy.plansRoute.billingUnavailable);
+    expect(h.create).not.toHaveBeenCalled();
+    expect(h.post).not.toHaveBeenCalled();
+  });
+
+  it("replays the same server and payment identities after an uncertain response and page reload", async () => {
+    h.post.mockRejectedValueOnce(new Error("Lost payment response"));
+    const page = () => <ManagedServerPurchase requestedPlanId="starter" autoCheckout />;
+    await render(page());
+    const key = new URL(window.location.href).searchParams.get("checkoutIntent");
+    expect(key).toMatch(/^[a-f0-9-]{36}$/);
+    expect(new URL(window.location.href).searchParams.get("organizationId")).toBe("org-a");
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain("Lost payment response");
+    const originalCreate = h.create.mock.calls[0];
+    const originalCheckout = h.post.mock.calls[0];
+    await act(async () => root.unmount());
+    root = createRoot(host);
+    await render(page());
+    expect(h.create.mock.calls[1]).toEqual(originalCreate);
+    expect(h.post.mock.calls[1]).toEqual(originalCheckout);
+  });
+
+  it("requires a new choice after confirmed cancellation and keeps the server on refresh", async () => {
+    const key = "72e918ec-8d9c-4b81-bf43-7a5790ca239a";
+    window.location.href = `http://localhost:3000/billing/plans?newServer=1&plan=starter&startCheckout=1&checkoutIntent=${key}`;
+    h.get.mockImplementation(async path => path === "billing/checkouts" ? { data: { items: [{
+      id: "a".repeat(64), checkoutId: "cs_pending", server, kind: "subscription", name: "Starter", amountCents: 2000,
+      currency: "usd", interval: "monthly", state: "open", canResume: true, canCancel: true,
+    }] } } : catalog);
+    h.post.mockRejectedValueOnce(new ApiError(409, "Already pending", { code: "CLOUD_WORKSPACE_CHECKOUT_PENDING" }));
+    await render(<ManagedServerPurchase requestedPlanId="starter" autoCheckout checkoutIntent={key} />);
+    const first = h.post.mock.calls[0][1].idempotencyKey;
+    await click(copy.pendingPayments.cancel);
+    h.post.mockResolvedValueOnce({ data: { status: "expired", checkoutId: "cs_pending", checkoutUrl: null } });
+    await click(copy.pendingPayments.confirmCancel);
+    const url = new URL(window.location.href);
+    expect(url.searchParams.has("startCheckout")).toBe(false);
+    expect(url.searchParams.get("checkoutIntent")).toBe(key);
+    expect(url.searchParams.get("checkoutAttempt")).not.toBe(key);
+    expect(h.post).toHaveBeenCalledTimes(2);
+    await act(async () => root.unmount()); root = createRoot(host);
+    await render(<ManagedServerPurchase requestedPlanId="starter" checkoutIntent={key} />);
+    expect(h.post).toHaveBeenCalledTimes(2);
+    await click("Choose Starter");
+    expect(h.create.mock.calls[1]).toEqual(h.create.mock.calls[0]);
+    expect(h.post.mock.calls[2][1].idempotencyKey).not.toBe(first);
+    expect(h.post.mock.calls[2][1].workspaceId).toBe(server.id);
+  });
+
+  it("starts a fresh explicit purchase after removing the cancelled draft", async () => {
+    const key = "72e918ec-8d9c-4b81-bf43-7a5790ca239a";
+    window.location.href = `http://localhost:3000/billing/plans?newServer=1&startCheckout=1&checkoutIntent=${key}`;
+    h.get.mockImplementation(async path => path === "billing/checkouts" ? { data: { items: [{
+      id: "a".repeat(64), checkoutId: "cs_pending", server, kind: "subscription", name: "Starter", amountCents: 2000,
+      currency: "usd", interval: "monthly", state: "open", canResume: true, canCancel: true,
+    }] } } : catalog);
+    h.post.mockRejectedValueOnce(new ApiError(409, "Already pending", { code: "CLOUD_WORKSPACE_CHECKOUT_PENDING" }));
+    await render(<ManagedServerPurchase requestedPlanId="starter" autoCheckout checkoutIntent={key} />);
+    await click(copy.pendingPayments.cancel);
+    h.post.mockResolvedValueOnce({ data: { status: "expired", checkoutId: "cs_pending", checkoutUrl: null } });
+    await click(copy.pendingPayments.confirmCancel);
+    h.remove.mockResolvedValueOnce({ data: { accepted: true } });
+    await click(copy.pendingPayments.deleteServer);
+    await click(copy.workspaces.confirmDelete);
+    expect(h.create).toHaveBeenCalledOnce();
+    expect(new URL(window.location.href).searchParams.get("checkoutIntent")).not.toBe(key);
+    expect(new URL(window.location.href).searchParams.has("startCheckout")).toBe(false);
+    await click("Choose Starter");
+    expect(h.create.mock.calls[1][0].idempotencyKey).not.toBe(key);
+  });
+
+  it("does not continue a pending pricing purchase in another account or organization", async () => {
+    let finish!: (value: CloudWorkspaceSummary) => void;
+    h.create.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    const page = () => <ManagedServerPurchase requestedPlanId="starter" autoCheckout />;
+    await render(page());
+    expect(h.create).toHaveBeenCalledOnce();
+    h.org = "org-b";
+    await render(page());
+    await act(async () => finish(server));
+    expect(h.create).toHaveBeenCalledOnce();
     expect(h.post).not.toHaveBeenCalled();
   });
 

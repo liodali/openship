@@ -185,6 +185,18 @@ export interface CleanupResult {
 
 // ─── Manifest Collectors ─────────────────────────────────────────────────────
 
+/** Failed container creation can leave claimed volumes without any mounts. */
+async function ownedCloudVolumeNames(
+  runtime: CloudDockerRuntime,
+  projectId: string,
+): Promise<string[]> {
+  if (runtime.projectId !== projectId)
+    throw new Error("Cloud volume inventory belongs to another project");
+  return (await runtime.listAllVolumes())
+    .filter((volume) => volume.labels["openship.project"] === projectId)
+    .map((volume) => volume.name);
+}
+
 /**
  * Collect ALL resources owned by a project into a flat manifest.
  * Single pass: queries DB once per resource type, no per-item queries in loops.
@@ -324,6 +336,24 @@ export async function collectProjectManifest(
     });
   };
 
+  const pushVolume = (
+    name: string,
+    runtime: DockerRuntime,
+    labelPrefix: string,
+    target: CollectedTarget,
+  ) => {
+    const key = resourceKey(target, name);
+    if (seenVolumes.has(key)) return;
+    seenVolumes.add(key);
+    resources.push({
+      type: "volume",
+      ref: name,
+      label: `${labelPrefix} volume ${name}`,
+      runtime,
+      ...targetFields(target),
+    });
+  };
+
   /** When wipeVolumes=true, enumerate named volumes attached to this container
    *  and add them as separate cleanup resources. Must run BEFORE the container
    *  is destroyed - once the container is gone, the volume names are lost. */
@@ -343,16 +373,7 @@ export async function collectProjectManifest(
       `inspect volumes ${labelPrefix}`,
     );
     for (const name of names) {
-      const key = resourceKey(target, name);
-      if (seenVolumes.has(key)) continue;
-      seenVolumes.add(key);
-      resources.push({
-        type: "volume",
-        ref: name,
-        label: `${labelPrefix} volume ${name}`,
-        runtime,
-        ...targetFields(target),
-      });
+      pushVolume(name, runtime, labelPrefix, target);
     }
   };
 
@@ -730,6 +751,20 @@ export async function collectProjectManifest(
     }
   }
 
+  // Claimed Cloud volumes can survive a failed deployment without any container.
+  // Enumerate them only on an explicit wipe, after confirming the owned host.
+  if (wipeVolumes)
+    for (const runtime of dockerRuntimes) {
+      if (!(runtime instanceof CloudDockerRuntime)) continue;
+      const target = runtimeTargets.get(runtime);
+      if (!target) throw new Error("Cloud volume cleanup has no owned target");
+      const names = await authoritativeRead(
+        ownedCloudVolumeNames(runtime, project.id),
+        "inspect managed project volumes",
+      );
+      for (const name of names) pushVolume(name, runtime, "project", target);
+    }
+
   // ── Adopted-container sweep (identity-based, not label-based) ─────
   // A migration can adopt a container IN PLACE, and docker labels are immutable
   // in place — so it still carries the PREVIOUS project's `openship.project` and
@@ -881,6 +916,8 @@ export async function previewProjectDeletion(project: Project): Promise<Deletion
 
   const previewServices: DeletionPreviewService[] = [];
   const deploymentVolumes: string[] = [];
+  const cloudVolumes = new Set<string>();
+  const cloudVolumeTargets = new Set<string>();
   const networkSlugs = new Set<string>();
   // Self-hosted is a STATIC fact of the project (anything not cloud-managed), not
   // something to infer from a live runtime probe: an imported/migrated project on
@@ -909,6 +946,21 @@ export async function previewProjectDeletion(project: Project): Promise<Deletion
     // through the preview and release every opened runtime on all exit paths.
     openedRuntimes.add(runtime);
     if (runtime instanceof DockerRuntime) networkSlugs.add(project.slug);
+    if (runtime instanceof CloudDockerRuntime && !cloudVolumeTargets.has(runtime.workspaceId)) {
+      cloudVolumeTargets.add(runtime.workspaceId);
+      const names = await withTimeout(
+        ownedCloudVolumeNames(runtime, project.id),
+        INSPECT_TIMEOUT_MS,
+        `preview managed project volumes ${project.id}`,
+      ).catch((diagnosticFailure) => {
+        observeCaughtError(
+          diagnosticFailure,
+          "platform/engine/modules/projects/project-cleanup.service",
+        );
+        return [] as string[];
+      });
+      for (const name of names) cloudVolumes.add(name);
+    }
 
     if (dep.containerId && runtime instanceof DockerRuntime) {
       const vols = await withTimeout(
@@ -976,8 +1028,11 @@ export async function previewProjectDeletion(project: Project): Promise<Deletion
     });
   }
 
-  const totalVolumes =
-    deploymentVolumes.length + previewServices.reduce((n, s) => n + s.volumes.length, 0);
+  const attachedVolumes = new Set([...deploymentVolumes, ...previewServices.flatMap(service => service.volumes)]);
+  for (const name of cloudVolumes) {
+    if (!attachedVolumes.has(name)) deploymentVolumes.push(name);
+  }
+  const totalVolumes = new Set([...attachedVolumes, ...cloudVolumes]).size;
 
   return {
     projectId: project.id,

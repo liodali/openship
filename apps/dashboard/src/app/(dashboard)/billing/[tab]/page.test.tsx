@@ -223,6 +223,23 @@ describe("billing page failure recovery", () => {
     expect(findElement<{ layout: string; sidebar: unknown }>(page, BillingContent)?.props).toMatchObject({ layout: "plans", sidebar: null });
   });
 
+  it("continues pricing checkout explicitly and preserves it through organization activation", async () => {
+    const query = { newServer: "1", plan: "starter", startCheckout: "1",
+      checkoutIntent: "72e918ec-8d9c-4b81-bf43-7a5790ca239a" };
+    const page = await BillingTabPage({ params: Promise.resolve({ tab: "plans" }), searchParams: Promise.resolve(query) });
+    expect(findElement<{ autoCheckout: boolean; checkoutIntent: string }>(page, ManagedServerPurchase)?.props)
+      .toMatchObject({ autoCheckout: true, checkoutIntent: query.checkoutIntent, requestedPlanId: "starter" });
+    const other = await BillingTabPage({ params: Promise.resolve({ tab: "plans" }), searchParams: Promise.resolve({ ...query, organizationId: "org-b" }) });
+    expect(findElement<{ purchase: unknown }>(other, CloudBillingLink)?.props.purchase)
+      .toEqual({ planId: "starter", startCheckout: true, checkoutIntent: query.checkoutIntent });
+  });
+
+  it("does not automatically checkout a malformed retry identity", async () => {
+    const page = await BillingTabPage({ params: Promise.resolve({ tab: "plans" }),
+      searchParams: Promise.resolve({ newServer: "1", plan: "starter", startCheckout: "1", checkoutIntent: "invalid" }) });
+    expect(findElement<{ autoCheckout: boolean }>(page, ManagedServerPurchase)?.props.autoCheckout).toBe(false);
+  });
+
   it("reconciles a checkout return even if the new-server query remains in the URL", async () => {
     mocks.get.mockResolvedValue({ data: { ...free, workspace: { id: "cws-paid" } } });
     const page = await BillingTabPage({ params: Promise.resolve({ tab: "plans" }), searchParams: Promise.resolve({

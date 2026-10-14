@@ -67,16 +67,11 @@ describe("retrying an app without rerunning the installer", () => {
     expect(h.seed).not.toHaveBeenCalled();
     expect(h.rows.every((row) => row.advanced?.resources === undefined)).toBe(true);
   });
-  it("repairs a legacy Supabase draft before freezing its deployment allocation", async () => {
-    expect(await allocation()).toMatchObject({ cpuCores: 4, memoryMb: 8192, diskMb: 40960 });
-    expect(h.seed).toHaveBeenCalledWith(
-      expect.objectContaining({
-        projectId: "project-a",
-        organizationId: "org-a",
-        appTemplateId: "supabase",
-      }),
-    );
-    expect(h.rows.every((s) => s.advanced?.stopGracePeriod === "30s")).toBe(true);
+  it("keeps a Cloud draft uncapped when Retry bypasses the installer", async () => {
+    expect(await allocation()).toMatchObject({ cpuCores: 0.25, memoryMb: 1024, diskMb: 8192 });
+    expect(h.seed).not.toHaveBeenCalled();
+    expect(h.rows.every((row) => row.advanced?.resources === undefined)).toBe(true);
+    expect(h.rows.every((row) => row.advanced?.stopGracePeriod === "30s")).toBe(true);
   });
 
   it("does not resize an already deployed app or rewrite an explicitly frozen service snapshot", async () => {

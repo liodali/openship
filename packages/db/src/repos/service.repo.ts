@@ -8,7 +8,6 @@ import {
   resolveCommandArgv,
   resolveWorkload,
   type ComposeAdvanced,
-  type ResourceValues,
 } from "@repo/core";
 import type { Database } from "../connection";
 import { createConfigurationSecrets, type ConfigurationEncryption } from "../configuration-secrets";
@@ -487,15 +486,16 @@ function normalizeRoutePort(port?: number | string | null): number | null {
 }
 
 /** Normalize a wire/UI public-endpoint array into stored {@link ServicePublicEndpoint}s:
- *  drop entries missing a valid port or their domain value, dedupe by port. */
+ *  drop entries missing a valid port or domain, dedupe by normalized hostname.
+ *  Distinct hostnames may share one container port. */
 export function normalizeServicePublicEndpoints(
   endpoints?: PublicEndpointInputLike[] | null,
 ): ServicePublicEndpoint[] {
   const out: ServicePublicEndpoint[] = [];
-  const seenPorts = new Set<number>();
+  const seenHostnames = new Set<string>();
   for (const endpoint of endpoints ?? []) {
     const port = normalizeRoutePort(endpoint.port);
-    if (port === null || seenPorts.has(port)) continue;
+    if (port === null) continue;
     const domainType = endpoint.domainType === "custom" ? "custom" : "free";
     const domain = domainType === "free" ? endpoint.domain?.trim() || undefined : undefined;
     const customDomain =
@@ -504,7 +504,9 @@ export function normalizeServicePublicEndpoints(
         : undefined;
     if (domainType === "free" && !domain) continue;
     if (domainType === "custom" && !customDomain) continue;
-    seenPorts.add(port);
+    const identity = `${domainType}:${(domain ?? customDomain)!.toLowerCase()}`;
+    if (seenHostnames.has(identity)) continue;
+    seenHostnames.add(identity);
     out.push({
       port,
       domainType,
@@ -834,67 +836,6 @@ export function createServiceRepo(db: Database, encryption: ConfigurationEncrypt
 
     async update(id: string, data: Partial<NewService>) {
       await writeUpdate(id, data);
-    },
-
-    /** Apply a catalog's initial profiles to an unfinished app as one write set.
-     * Lock the project and services before decrypting/merging configuration so
-     * existing resource settings and concurrent edits cannot be overwritten. */
-    async seedDraftAppResourceDefaults(input: {
-      projectId: string;
-      organizationId: string;
-      appTemplateId: string;
-      profiles: readonly { name: string; resources: Readonly<ResourceValues> }[];
-    }): Promise<string[]> {
-      if (input.profiles.length === 0) return [];
-      return db.transaction(async (tx) => {
-        const [owner] = await tx
-          .select({ id: project.id })
-          .from(project)
-          .where(
-            and(
-              eq(project.id, input.projectId),
-              eq(project.organizationId, input.organizationId),
-              eq(project.appTemplateId, input.appTemplateId),
-              sql`${project.resources} IS NULL`,
-              sql`${project.activeDeploymentId} IS NULL`,
-              sql`${project.deletedAt} IS NULL`,
-              eq(project.deletionInProgress, false),
-            ),
-          )
-          .for("update");
-        if (!owner) return [];
-        const rows = await tx
-          .select()
-          .from(service)
-          .where(
-            and(
-              eq(service.projectId, owner.id),
-              inArray(
-                service.name,
-                input.profiles.map((profile) => profile.name),
-              ),
-            ),
-          )
-          .orderBy(asc(service.id))
-          .for("update");
-        const byName = new Map(rows.map((row) => [row.name, codec.openService(row)]));
-        const changed: string[] = [];
-        for (const profile of input.profiles) {
-          const row = byName.get(profile.name);
-          if (!row || row.advanced?.resources != null) continue;
-          await tx
-            .update(service)
-            .set(
-              codec.sealService({
-                advanced: { ...row.advanced, resources: { ...profile.resources } },
-                updatedAt: new Date(),
-              }),
-            )
-            .where(and(eq(service.id, row.id), eq(service.projectId, owner.id)));
-          changed.push(row.id);
-        }
-        return changed;
-      });
     },
 
     async remove(id: string) {

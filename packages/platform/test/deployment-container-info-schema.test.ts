@@ -67,6 +67,7 @@ describe.each(["Docker", "Cloud"] as const)("%s container-info responses", (kind
     vi.spyOn(runtime, "docker", "get").mockReturnValue({
       getContainer: () => ({
         inspect: async () => ({
+          Image: "sha256:image-a",
           Config: { Labels: { "openship.project": "project-a" } },
           HostConfig: hostConfig,
           State: { Status: "exited", Running: false },
@@ -76,7 +77,12 @@ describe.each(["Docker", "Cloud"] as const)("%s container-info responses", (kind
     } as never);
     const info = await runtime.getContainerInfo("service-a");
     for (const result of present(info)) {
-      expect(result).toEqual({ containerId: "service-a", status: "stopped", resources: expected });
+      expect(result).toEqual({
+        containerId: "service-a",
+        status: "stopped",
+        imageId: "sha256:image-a",
+        resources: expected,
+      });
     }
   });
 
@@ -105,4 +111,20 @@ it("accepts a stopped Cloud server without inspecting or inventing container lim
     expect(result).toEqual({ containerId: "service-a", status: "stopped" });
   }
   expect(getContainer).not.toHaveBeenCalled();
+});
+
+// Guards the recurring class: ContainerInfo grew a field the closed schema lacked.
+it("accepts every optional ContainerInfo field", () => {
+  const full = {
+    containerId: "service-a",
+    status: "running",
+    imageId: "sha256:image-a",
+    ip: "172.18.0.2",
+    hostPort: 3000,
+    hostPortByContainerPort: { "3000": 3000 },
+    uptimeSeconds: 10,
+    usage: { cpuPercent: 1, memoryMb: 2, diskMb: 3, networkRxBytes: 4, networkTxBytes: 5 },
+    resources: { cpuCores: 1, memoryMb: 512 },
+  } satisfies Required<ContainerInfo>;
+  for (const result of present(full)) expect(result).toEqual(full);
 });

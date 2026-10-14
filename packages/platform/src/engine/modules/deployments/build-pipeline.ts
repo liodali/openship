@@ -220,18 +220,6 @@ export async function resolveServicePipelineMode(
     return { useSingleAppPipeline: true, useServicePipeline: false, servicePreflightServices: [] };
   }
 
-  // A failed catalog install can reach this path directly from Retry. Seed only
-  // missing draft profiles before reading/finalizing the next snapshot; an
-  // explicit or restored service snapshot must keep its original allocation.
-  if (
-    project.appTemplateId &&
-    !project.activeDeploymentId &&
-    !snapshot.composeServices?.length &&
-    (env.CLOUD_MODE || snapshot.deployTarget === "cloud")
-  ) {
-    const { ensureDraftAppResourceDefaults } = await import("../apps/app-resource-defaults");
-    await ensureDraftAppResourceDefaults(project);
-  }
   const [servicePreflightServices, useServicePipeline] = await Promise.all([
     resolveProjectServicePreflightServices(project.id, snapshot.composeServices),
     shouldUseProjectServicePipeline(project, snapshot.composeServices),
@@ -957,25 +945,23 @@ async function executeBuildAndDeploy(
       errorDiagnostics.warn("platform/engine/modules/deployments/build-pipeline", `[build] preCreateServiceDeployments crashed for ${dep.id}:`, err);
     });
 
-    // Both server types use the host's available capacity unless the project
-    // sets a limit. Managed builds get measured headroom below.
+    // Only the saved build configuration becomes Docker limits. Cloud admission
+    // reservations coordinate host activity; they must not replace those limits.
     const prodResources = resolveRuntimeResources(snapshot.resources);
-    let buildResources = resolveBuildResources(snapshot.buildResources);
+    const buildResources = resolveBuildResources(snapshot.buildResources);
     const needsBuild = !snapshot.releaseImageRef && !snapshot.refreshAppDeploymentId &&
       (willRunServices ? cloudDockerNeedsBuild(serviceMode.servicePreflightServices, strictRefreshImages(snapshot)) : true);
     if (reservedBuildResources !== undefined && needsBuild) {
       if (!reservedBuildResources) throw new AppError("The build has no resource reservation. Submit a new deployment.", 409, "CLOUD_BUILD_RESERVATION_MISSING");
-      buildResources = reservedBuildResources;
       buildResourcesForRecovery = buildResources;
-      logger.log(`→ Reserved build capacity: ${buildResources.cpuCores} vCPU · ${buildResources.memoryMb} MB.\n`);
+      logger.log("→ Cloud build admitted on the selected server.\n");
     } else if (snapshot.managedServer?.ownerWorkspaceId && needsBuild) {
       const { sampleCloudWorkspaceResources, workspaceBuildResources } = await import("../../lib/cloud-workspace-host");
       const id = snapshot.managedServer.ownerWorkspaceId;
-      const { usage, capacity } = await sampleCloudWorkspaceResources(dep.organizationId, id);
-      buildResources = workspaceBuildResources(capacity, usage, snapshot.buildResources ?? undefined);
+      const { usage, capacity } = await sampleCloudWorkspaceResources(dep.organizationId, id, buildResources.cpuCores > 0 || buildResources.memoryMb > 0);
+      workspaceBuildResources(capacity, usage, buildResources);
       buildResourcesForRecovery = buildResources;
-      snapshot.buildResources = buildResources;
-      logger.log(`→ Building inside the workspace using available capacity: ${buildResources.cpuCores} vCPU · ${buildResources.memoryMb} MB.\n`);
+      logger.log("→ Building inside the selected workspace.\n");
     }
 
     // Decrypt env vars from deployment (self-contained). decryptEnvMap

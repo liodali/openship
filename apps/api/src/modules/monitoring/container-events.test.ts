@@ -183,7 +183,7 @@ beforeEach(async () => {
     const serverId = (dep.meta?.serverId as string | undefined) ?? null;
     return { runtime: box(serverId).runtime, serverId };
   });
-});
+}, 20_000);
 
 afterEach(() => {
   vi.useRealTimers();

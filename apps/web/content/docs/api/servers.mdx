@@ -21,12 +21,14 @@ The normal Cloud flow creates the first shared server automatically when a
 customer chooses a plan or creates a project. To create an additional server:
 
 ```ts
-const managed = await ship.servers.createManaged({ name: "Production" });
+const purchaseKey = crypto.randomUUID();
+const managed = await ship.servers.createManaged({ name: "Production", idempotencyKey: purchaseKey });
+const checkoutKey = crypto.randomUUID();
 const checkout = await ship.billing.createSubscription({
   workspaceId: managed.id,
   planTierId: "pro",
   interval: "monthly",
-  idempotencyKey: crypto.randomUUID(),
+  idempotencyKey: checkoutKey,
 });
 ```
 
@@ -34,6 +36,9 @@ Complete checkout through the [billing workflow](/docs/api/billing). Verified
 payment queues server setup. Use `managed.serverId` for project placement,
 server usage, terminal access and lifecycle operations. `managed.id` is the
 subscription owner identifier used only for billing.
+Keep the creation key and checkout key for retries after an uncertain response.
+Creation reuses the same server within your organization, including its current
+name; a deleted purchase cannot be recreated with its old key.
 
 Self-hosted and desktop installations can use these same managed servers after
 connecting an Openship Cloud account. Create a new server with `createManaged`,

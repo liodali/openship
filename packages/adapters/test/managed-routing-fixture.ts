@@ -1,5 +1,6 @@
 import { vi, type Mock } from "vitest";
 import type { Oblien } from "oblien";
+import { NotFoundError } from "oblien";
 import type { CommandExecutor } from "../src/types";
 import { CloudInfraProvider, type CloudProjectRoutingScope } from "../src/infra/cloud";
 import { cloudDockerProjectPaths } from "../src/runtime/cloud/docker-paths";
@@ -22,7 +23,7 @@ export function managedRoutingFixture(): {
   const pages = {
     list: vi.fn(async () => ({ pages: [...records.values()] })),
     get: vi.fn(async (slug: string) => {
-      if (!records.has(slug)) throw Object.assign(new Error("missing Page"), { status: 404 });
+      if (!records.has(slug)) throw new NotFoundError("missing Page");
       return { page: records.get(slug)! };
     }),
     create: vi.fn(async (input: { slug: string; domain: string; path: string; workspace_id: string }) => {

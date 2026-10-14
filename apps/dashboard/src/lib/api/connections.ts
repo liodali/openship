@@ -11,6 +11,7 @@ export interface ProjectConnection {
   sourceName: string;
   sourceAppTemplateId: string | null;
   sourceServiceId?: string | null;
+  sourceDatabaseId?: string | null;
   sourceServiceName?: string | null;
   targetProjectId: string;
   outputId: string;
@@ -22,6 +23,7 @@ export interface ProjectConnection {
 export interface ConnectionConsumer {
   id: string;
   sourceServiceId?: string | null;
+  sourceDatabaseId?: string | null;
   targetProjectId: string;
   targetName: string;
   targetSlug: string | null;
@@ -45,9 +47,16 @@ async function notifyConnections<T>(request: Promise<T>): Promise<T> {
 }
 
 export const connectionsApi = {
-  candidates: (projectId: string) => api.get<{ data: Array<{ id: string; name: string; description: string; appTemplateId: string | null }> }>(
-    `${endpoints.projects.connections(projectId)}/candidates`,
-  ),
+  candidates: (projectId: string) =>
+    api.get<{
+      data: Array<{
+        id: string;
+        name: string;
+        description: string;
+        appTemplateId: string | null;
+        clusterId?: string | null;
+      }>;
+    }>(`${endpoints.projects.connections(projectId)}/candidates`),
   /** Connections wired INTO a project (`projectId` = the consumer). */
   list: (projectId: string) =>
     api.get<{ data: ProjectConnection[] }>(endpoints.projects.connections(projectId)),

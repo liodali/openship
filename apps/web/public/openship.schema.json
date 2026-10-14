@@ -145,6 +145,10 @@
       "minimum": 1,
       "maximum": 65535
     },
+    "optimize": {
+      "description": "Laravel only. Opt-in cache warming for the web role (default false). true prefixes the web command with \"php artisan optimize && \" to warm Laravel's config/route/event/view caches. Web role only; an absent or false flag keeps the web command byte-identical. Warms per-request throughput, not cold start. Runs at startup only — config:cache freezes the env present when it runs, so never place it in buildCommand or releaseCommands.",
+      "type": "boolean"
+    },
 
     "env": {
       "description": "Environment variables. A string is a plain value; { \"value\", \"secret\" } marks a secret.",

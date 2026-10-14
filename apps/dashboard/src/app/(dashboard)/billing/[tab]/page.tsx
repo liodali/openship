@@ -17,6 +17,7 @@ import { getSession } from "@/lib/server/session";
 import { billingTabHref } from "@/lib/billing-links";
 import { BillingPageView, type BillingView } from "../_components/BillingViewContext";
 import { ManagedServerPurchase } from "@/components/servers/managed/ManagedServerPurchase";
+import { isCloudPurchaseIntent } from "@/lib/cloud-purchase-intent";
 
 export default async function BillingTabPage({
   params,
@@ -37,6 +38,10 @@ export default async function BillingTabPage({
   const organizationId = (Array.isArray(query.organizationId) ? query.organizationId[0] : query.organizationId) || undefined;
   const checkoutReturn = ["checkout", "topup", "session_id"].some(key => query[key] !== undefined);
   const newServer = activeTab === "plans" && query.newServer === "1" && !checkoutReturn;
+  const requestedPlanId = typeof query.plan === "string" ? query.plan : undefined;
+  const autoCheckout = query.startCheckout === "1" && (query.checkoutIntent === undefined || isCloudPurchaseIntent(query.checkoutIntent));
+  const checkoutIntent = isCloudPurchaseIntent(query.checkoutIntent) ? query.checkoutIntent : undefined;
+  const checkoutAttempt = isCloudPurchaseIntent(query.checkoutAttempt) ? query.checkoutAttempt : undefined;
   const session = await getSession();
   const view: BillingView = {
     contextKey: `${session?.user.id ?? "local"}:${session?.session.activeOrganizationId ?? ""}`,
@@ -46,13 +51,19 @@ export default async function BillingTabPage({
     newServer,
   };
   if (organizationId && session?.session.activeOrganizationId !== organizationId) {
-    return <BillingPageView view={view}><CloudBillingLink organizationId={organizationId} tab={activeTab} workspaceId={workspaceId} newServer={newServer} embedded /></BillingPageView>;
+    return <BillingPageView view={view}><CloudBillingLink organizationId={organizationId} tab={activeTab} workspaceId={workspaceId} newServer={newServer}
+      purchase={newServer ? { planId: requestedPlanId, startCheckout: autoCheckout, checkoutIntent, checkoutAttempt } : undefined} embedded /></BillingPageView>;
   }
   // Buying another server is separate from inspecting an existing subscription.
   // The shared purchase component creates an explicitly scoped identity on selection.
   if (newServer) return <BillingPageView view={{ ...view, plansOnly: true }}>
     <BillingWorkspaceProvider>
-      <BillingContent layout="purchase" sidebar={null}><ManagedServerPurchase requestedPlanId={typeof query.plan === "string" ? query.plan : undefined} /></BillingContent>
+      <BillingContent layout="purchase" sidebar={null}><ManagedServerPurchase
+        requestedPlanId={requestedPlanId}
+        autoCheckout={autoCheckout}
+        checkoutIntent={checkoutIntent}
+        checkoutAttempt={checkoutAttempt}
+      /></BillingContent>
     </BillingWorkspaceProvider>
   </BillingPageView>;
   let result = await getBillingPageState(workspaceId);

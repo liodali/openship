@@ -213,6 +213,30 @@ exact name. Pause application writes when a consistent file backup requires it.
 
 Fetch `cluster-database` for managed PostgreSQL/Redis operations. Database replicas are independent of application replicas. Database mutations use `expectedSequence`; creation uses a stable UUID `requestId`. Connection changes save environment values, and applying them requires a separate app redeploy.
 
+To share a ready native PostgreSQL or Redis database, open its panel and select
+**Use in a project**. Choose a consumer in the same organization and native
+cluster. You need write access to both projects. OpenShip saves an encrypted
+connection URL and an explicit database reference, then grants the consumer's
+application namespace private access to the database port. The source project
+keeps ownership of the database, backups and storage.
+
+The existing SDK, HTTP and CLI connection operations use the same flow. Read the
+source's `projects.getAppConnection(sourceProjectId)` and select an output with
+`sourceDatabaseId`. Pass its `id` to `projects.createConnection(targetProjectId, input)`
+or `projects.connectBundle(targetProjectId, input)` with `mode: "internal"`.
+The [CLI connection commands](/docs/cli/reference/project/connections) accept
+the same input as JSON. Credentials stay in secret environment values; copying a
+private URL without creating a connection does not grant another native project access.
+
+If a network-policy update fails, the operation reports failure. Retry with the
+same inputs to reconcile the saved grant without duplicating it. Disconnect
+revokes private access before removing the reference and its environment value.
+Redeploy consumers to remove old connection values from their running releases.
+Kubernetes network policies do not guarantee termination of established database
+sessions. Database removal is blocked while a connection or a running managed
+application still references it; moving a consumer to another destination requires
+disconnecting its native database links first.
+
 PostgreSQL and Redis backups use an eligible S3 destination. Observe native backup
 completion before creating a **new** database with `restoreFrom.databaseId` and
 `restoreFrom.backupName`. Redis snapshots are consistent per shard, rather than a

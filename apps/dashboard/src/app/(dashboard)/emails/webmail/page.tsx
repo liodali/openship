@@ -37,6 +37,9 @@ import { Skeleton } from "../_components/admin/_shared/skeleton";
 import { interpolate, useI18n } from "@/components/i18n-provider";
 import { mailApi } from "@/lib/api";
 import { needsMailServerChoice, pickActiveMailServer } from "@/lib/mail-active-server";
+import { usePlatform } from "@/context/PlatformContext";
+import { canManageMailServers } from "@/lib/mail-availability";
+import { CloudMailClient } from "../_components/cloud-mail-client";
 
 type MailServerRow = Awaited<
   ReturnType<typeof mailApi.listMailServers>
@@ -59,6 +62,12 @@ type WebmailView =
   | { kind: "install"; server: MailServerRow; runningUrl: string | null; runningHost: string };
 
 export default function WebmailPage() {
+  const platform = usePlatform();
+  if (!canManageMailServers(platform)) return <CloudMailClient />;
+  return <WebmailInner />;
+}
+
+function WebmailInner() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const { t } = useI18n();

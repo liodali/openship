@@ -1,4 +1,13 @@
 {
+  "cloudClient": {
+    "title": "Correo electrónico",
+    "subtitle": "Usa tus buzones actuales con Openship Webmail.",
+    "connectTitle": "Conecta tu servidor de correo",
+    "description": "Conecta cualquier servidor IMAP/SMTP. Tus buzones y la entrega del correo siguen con tu proveedor.",
+    "connectAction": "Conectar un servidor existente",
+    "signInHint": "Inicia sesión en webmail con la dirección de correo y la contraseña de tu buzón.",
+    "manageAction": "Gestionar aplicaciones de webmail"
+  },
   "cloudComingSoon": {
     "title": "Correo gestionado",
     "badge": "Próximamente",

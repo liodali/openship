@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { BillingPlansSkeleton } from "@/app/(dashboard)/billing/_components/BillingTabSkeleton";
 import { BillingPlanSummary } from "@/app/(dashboard)/billing/_components/billing-shared";
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { PricingCards } from "@/components/billing/PricingCards";
 import type { PlanTierId } from "@repo/core";
 import { useI18n } from "@/components/i18n-provider";
@@ -55,8 +55,14 @@ function PlanPicker({
   purchaseDisabled = false,
   billingState,
   requestedPlanId,
+  autoCheckout = false,
+  checkoutKey,
+  onCheckoutSettled,
 }: {
   requestedPlanId?: string;
+  autoCheckout?: boolean;
+  checkoutKey?: string;
+  onCheckoutSettled?: () => void;
   /** Existing server's saved terms, supplied by the billing route. */
   billingState?: BillingState;
   workspaceId?: string;
@@ -118,7 +124,7 @@ function PlanPicker({
   const selectConfiguration = (configuration: "plans" | "custom", other = showOtherPlans) =>
     setChoice({ key: choiceKey, configuration, other });
   const [expandedRequest, setExpandedRequest] = useState<string | null>(null);
-  const requestedPlan = !hasPlan && choices.available.find((plan) => plan.id === requestedPlanId);
+  const requestedPlan = hasPlan ? undefined : choices.available.find((plan) => plan.id === requestedPlanId);
   const showRequestedPlan = requestedPlan && expandedRequest !== requestedPlanId;
   const visiblePlans = showRequestedPlan
     ? [requestedPlan]
@@ -191,7 +197,24 @@ function PlanPicker({
     workspaceId,
     prepareWorkspace,
     onWorkspaceRemoved,
+    idempotencyKey: checkoutKey,
+    onCheckoutSettled,
   });
+  const autoStarted = useRef(false);
+  useEffect(() => {
+    let disposed = false;
+    // The website click selected this preset. Wait for authenticated scope and
+    // live availability, and schedule after effect replay so Strict Mode cannot
+    // cancel the only attempt during its initial mount cleanup.
+    if (autoCheckout && requestedPlan && !loading && !error && canPurchase && !purchaseDisabled && !payg && !preserveProject && configuration === "plans") {
+      void Promise.resolve().then(() => {
+        if (disposed || autoStarted.current) return;
+        autoStarted.current = true;
+        void startCheckout(requestedPlan.id, "monthly");
+      });
+    }
+    return () => { disposed = true; };
+  }, [autoCheckout, requestedPlan?.id, loading, error, canPurchase, purchaseDisabled, payg, preserveProject, configuration, startCheckout]);
   const selectedCurrentPlan =
     hasPlan && subscription?.configuration !== "custom" ? choices.current : null;
   const busy = subscribing !== null || changes.busy;
@@ -383,6 +406,11 @@ function PlanPicker({
             {checkoutError && (
               <p role="alert" className="text-sm text-danger">
                 {checkoutError}
+              </p>
+            )}
+            {requestedPlanId && !hasPlan && !requestedPlan && (
+              <p role="status" className="rounded-xl bg-muted/40 p-3 text-sm text-muted-foreground">
+                {t.billing.plansRoute.requestedPlanUnavailable}
               </p>
             )}
             {changes.error && !changes.open && (

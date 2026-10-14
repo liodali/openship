@@ -411,6 +411,8 @@
     "fixStep3": "Verifique o domínio e implemente."
   },
   "connections": {
+    "nativeClusterHint": "Escolha um projeto no cluster deste banco de dados. Apenas projetos vinculados recebem acesso privado.",
+    "nativeNoTargets": "Nenhum outro projeto usa este cluster ainda.",
     "useInProject": "Usar em um projeto",
     "title": "Usar em um projeto",
     "subtitle": "Compartilhe este serviço com outro projeto por meio de uma conexão.",

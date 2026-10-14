@@ -96,13 +96,17 @@ export const cloudWorkspace = pgTable(
     // Durable purchase intents, not a payment ledger. Provider status alone
     // decides when a checkout can no longer charge this workspace.
     pendingCheckouts: jsonb("pending_checkouts")
-      .$type<Array<{
-        request: Record<string, unknown>;
-        checkoutId?: string;
-        /** Persist before asking the provider to cancel; uncertain responses
-         * must keep the same quote and retry key, with payment resumption blocked. */
-        cancellation?: { quoteId: string; idempotencyKey: string };
-      }>>()
+      .$type<
+        Array<{
+          request: Record<string, unknown>;
+          checkoutId?: string;
+          /** Persist before asking the provider to cancel; uncertain responses
+           * must keep the same purchase and retry key, with payment resumption blocked. */
+          cancellation?:
+            | { checkoutId: string; idempotencyKey: string }
+            | { quoteId: string; idempotencyKey: string };
+        }>
+      >()
       .notNull()
       .default([]),
     subscriptionChange: jsonb("subscription_change").$type<CloudSubscriptionChangeIntent>(),

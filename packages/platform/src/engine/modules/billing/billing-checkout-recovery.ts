@@ -39,18 +39,41 @@ export async function listCheckouts(ctx: ExecutionContext, input: BillingScopeIn
     ? [await requireCloudWorkspace(ctx.organizationId, input.workspaceId)]
     : await repos.cloudWorkspace.listByOrganization(ctx.organizationId);
   const billing = getOblienBillingApi();
+  let catalogReadFailed = false;
+  const genericCancellation = owners.some((owner) =>
+    owner.pendingCheckouts.some((intent) => intent.checkoutId && !intent.cancellation),
+  )
+    ? await billing
+        .getCatalog()
+        .then((catalog) => catalog.reseller?.checkoutCancellation === true)
+        .catch((error) => {
+          catalogReadFailed = true;
+          observeCaughtError(error, "platform/engine/modules/billing/billing-checkout-recovery");
+          return false;
+        })
+    : false;
   const { summary } = await import("../cloud-workspaces/cloud-workspace.service");
   const rows = await mapWithLimit(
     owners.filter((owner) => owner.pendingCheckouts.length > 0),
     3,
     async (owner) => {
       const server = await summary(owner);
+      let capacityReadFailed = false;
       const capacity =
+        !genericCancellation &&
         owner.namespace &&
         owner.pendingCheckouts.some(
-          (intent) => intent.checkoutId && intent.request.kind === "subscription",
+          (intent) =>
+            intent.checkoutId && !intent.cancellation && intent.request.kind === "subscription",
         )
-          ? await billing.getPendingCapacityCheckout(owner.namespace).catch((diagnosticFailure) => { observeCaughtError(diagnosticFailure, "platform/engine/modules/billing/billing-checkout-recovery"); return null; })
+          ? await billing.getPendingCapacityCheckout(owner.namespace).catch((diagnosticFailure) => {
+              capacityReadFailed = true;
+              observeCaughtError(
+                diagnosticFailure,
+                "platform/engine/modules/billing/billing-checkout-recovery",
+              );
+              return null;
+            })
           : null;
       return mapWithLimit(
         owner.pendingCheckouts,
@@ -69,6 +92,17 @@ export async function listCheckouts(ctx: ExecutionContext, input: BillingScopeIn
           const matchingQuote =
             capacity?.pendingCheckout?.checkoutId === intent.checkoutId &&
             capacity?.pendingCheckout?.quote.paymentSource === "stripe";
+          const canCancel = Boolean(
+            checkout &&
+            payable(checkout) &&
+            (intent.cancellation || genericCancellation || matchingQuote),
+          );
+          const cancelUnavailableReason: BillingPendingCheckout["cancelUnavailableReason"] =
+            !canCancel && checkout && payable(checkout) && !intent.cancellation
+              ? catalogReadFailed || (capacityReadFailed && request.kind === "subscription")
+                ? "provider_unavailable"
+                : "unsupported"
+              : undefined;
           return {
             id: identity(owner, intent),
             checkoutId: intent.checkoutId ?? null,
@@ -93,9 +127,8 @@ export async function listCheckouts(ctx: ExecutionContext, input: BillingScopeIn
                     ? "open"
                     : "processing",
             canResume,
-            canCancel: Boolean(
-              checkout && payable(checkout) && (intent.cancellation || matchingQuote),
-            ),
+            canCancel,
+            ...(cancelUnavailableReason ? { cancelUnavailableReason } : {}),
           };
         },
       );
@@ -196,7 +229,7 @@ export async function resumeCheckout(
   );
 }
 
-/** Cancel through the provider's capacity quote, then verify the original
+/** Cancel the saved provider checkout (or a legacy capacity quote), then verify the original
  * checkout is terminal. Unknown outcomes remain tracked and block another sale. */
 export async function cancelCheckout(
   ctx: ExecutionContext,
@@ -220,21 +253,31 @@ export async function cancelCheckout(
         return terminal;
       }
       if (!intent.cancellation) {
-        const { pendingCheckout } = await billing.getPendingCapacityCheckout(owner.namespace!);
-        if (
-          !pendingCheckout ||
-          pendingCheckout.checkoutId !== intent.checkoutId ||
-          pendingCheckout.quote.paymentSource !== "stripe"
-        )
-          throw new AppError(
-            "The provider has no cancelable capacity checkout for this payment. Resume it, allow it to expire, or contact support.",
-            409,
-            "BILLING_CHECKOUT_CANCEL_UNAVAILABLE",
-          );
-        const cancellation = {
-          quoteId: pendingCheckout.quote.id,
-          idempotencyKey: `openship:cancel:${identity(owner, intent)}`,
-        };
+        const genericCancellation = await billing
+          .getCatalog()
+          .then((catalog) => catalog.reseller?.checkoutCancellation === true)
+          .catch((error) => {
+            observeCaughtError(error, "platform/engine/modules/billing/billing-checkout-recovery");
+            return false;
+          });
+        let cancellation: NonNullable<Intent["cancellation"]>;
+        const idempotencyKey = `openship:cancel:${identity(owner, intent)}`;
+        if (genericCancellation) {
+          cancellation = { checkoutId: intent.checkoutId, idempotencyKey };
+        } else {
+          const { pendingCheckout } = await billing.getPendingCapacityCheckout(owner.namespace!);
+          if (
+            !pendingCheckout ||
+            pendingCheckout.checkoutId !== intent.checkoutId ||
+            pendingCheckout.quote.paymentSource !== "stripe"
+          )
+            throw new AppError(
+              "The provider has no cancelable checkout for this payment. Resume it, allow it to expire, or contact support.",
+              409,
+              "BILLING_CHECKOUT_CANCEL_UNAVAILABLE",
+            );
+          cancellation = { quoteId: pendingCheckout.quote.id, idempotencyKey };
+        }
         const pending = owner.pendingCheckouts.map((item) =>
           identity(owner, item) === input.id ? { ...item, cancellation } : item,
         );
@@ -244,7 +287,20 @@ export async function cancelCheckout(
       }
       let error: unknown;
       try {
-        await billing.cancelCapacityCheckout(owner.namespace!, intent.cancellation!);
+        const cancellation = intent.cancellation!;
+        if ("checkoutId" in cancellation) {
+          if (cancellation.checkoutId !== intent.checkoutId)
+            throw new AppError(
+              "Saved cancellation does not match this payment",
+              409,
+              "BILLING_CHECKOUT_IDENTITY_MISMATCH",
+            );
+          await billing.cancelCheckout(owner.namespace!, cancellation.checkoutId, {
+            idempotencyKey: cancellation.idempotencyKey,
+          });
+        } else {
+          await billing.cancelCapacityCheckout(owner.namespace!, cancellation);
+        }
       } catch (caught) {
         observeCaughtError(caught, "platform/engine/modules/billing/billing-checkout-recovery");
         error = caught;

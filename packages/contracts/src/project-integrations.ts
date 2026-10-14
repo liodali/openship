@@ -10,15 +10,26 @@ const mode = Type.Union([Type.Literal("internal"), Type.Literal("public")]);
 const provider = Type.Union(OBJECT_STORAGE_PROVIDERS.map(value => Type.Literal(value)));
 
 export const ProjectConnectionSchema = Type.Object({
-  id: Type.String(), sourceProjectId: Type.String(), sourceName: Type.String(), sourceAppTemplateId: nullableString,
-  sourceServiceId: Type.Optional(nullableString), sourceServiceName: Type.Optional(nullableString),
-  targetProjectId: Type.String(), outputId: Type.String(), envKey: Type.String(), mode,
+  id: Type.String(),
+  sourceProjectId: Type.String(),
+  sourceName: Type.String(),
+  sourceAppTemplateId: nullableString,
+  sourceServiceId: Type.Optional(nullableString),
+  sourceServiceName: Type.Optional(nullableString),
+  sourceDatabaseId: Type.Optional(nullableString),
+  targetProjectId: Type.String(),
+  outputId: Type.String(),
+  envKey: Type.String(),
+  mode,
 });
 export type ProjectConnection = Static<typeof ProjectConnectionSchema>;
 export const ProjectConnectionConsumerSchema = Type.Object({
   id: Type.String(), targetProjectId: Type.String(), targetName: Type.String(), targetSlug: nullableString,
   sourceServiceId: Type.Optional(nullableString),
-  outputId: Type.String(), envKey: Type.String(), mode,
+  sourceDatabaseId: Type.Optional(nullableString),
+  outputId: Type.String(),
+  envKey: Type.String(),
+  mode,
 });
 export const ProjectObjectStorageSchema = Type.Object({
   provider, bucket: Type.String(), endpoint: Type.Optional(nullableString), region: Type.Optional(nullableString),
@@ -45,7 +56,18 @@ export const ProjectEdgeConfigSchema = Type.Object({
 });
 
 export const ProjectIntegrationSchemas = {
-  listConnectionCandidates: { action: "write", output: Type.Array(Type.Object({ id: Type.String(), name: Type.String(), description: Type.String(), appTemplateId: nullableString })) },
+  listConnectionCandidates: {
+    action: "write",
+    output: Type.Array(
+      Type.Object({
+        id: Type.String(),
+        name: Type.String(),
+        description: Type.String(),
+        appTemplateId: nullableString,
+        clusterId: Type.Optional(nullableString),
+      }),
+    ),
+  },
   listConnections: { action: "read", output: Type.Array(ProjectConnectionSchema) },
   listConnectionConsumers: { action: "read", output: Type.Array(ProjectConnectionConsumerSchema) },
   createConnection: { action: "write", input: CreateConnectionBody, output: Type.Object({ connection: ProjectConnectionSchema, requiresRedeploy: Type.Literal(true) }) },

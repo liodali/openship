@@ -8,7 +8,7 @@ const config = {
   sessionId: "build",
   resources: { cpuCores: 0.25, memoryMb: 512, diskMb: 8192 },
 } as BuildConfig;
-function fixture(transport = "cloud", buildKit = true) {
+function fixture(transport = "cloud", buildKit = true, resources = config.resources) {
   const executor = {
     exec: vi.fn(async (command: string) =>
       command.includes("buildx version") && buildKit ? "OPENSHIP_BUILDKIT_OK\n" : "",
@@ -26,7 +26,7 @@ function fixture(transport = "cloud", buildKit = true) {
     executor,
     run: (signal?: AbortSignal, onLog?: LogCallback) =>
       runtime.buildImageOnRemote(
-        config,
+        { ...config, resources },
         "/tmp/build dir",
         "Dockerfile",
         "openship/test:build",
@@ -53,6 +53,22 @@ describe("Cloud Docker build execution limits", () => {
     await h.run(undefined, entry => logs.push(entry));
     const streamed = logs.filter(entry => entry.rawData !== undefined);
     expect(Buffer.concat(streamed.map(entry => Buffer.from(entry.rawData!, "base64"))).toString()).toBe(original);
+  });
+  it.each(["cloud", "ssh"])("omits all build limits when unset on %s", async transport => {
+    const h = fixture(transport, true, { cpuCores: 0, memoryMb: 0, diskMb: 0 });
+    await h.run();
+    const command = h.executor.streamExec.mock.calls[0]![0];
+    expect(command).not.toContain("--driver-opt"); expect(command).not.toContain("--memory"); expect(command).not.toContain("--cpu-quota");
+    if (transport === "cloud") {
+      expect(command).toContain("--driver docker-container");
+      expect(h.executor.exec.mock.calls.at(-1)![0]).toContain("buildx rm --force");
+    }
+  });
+  it("applies only an explicitly configured dimension", async () => {
+    const h = fixture("cloud", true, { cpuCores: 0, memoryMb: 512, diskMb: 0 });
+    await h.run();
+    const command = h.executor.streamExec.mock.calls[0]![0];
+    expect(command).toContain("memory=536870912"); expect(command).not.toContain("cpu-quota=");
   });
   it("runs BuildKit inside the selected CPU/RAM budget and loads its image into the project's Docker host", async () => {
     const h = fixture();

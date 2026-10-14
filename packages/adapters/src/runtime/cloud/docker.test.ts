@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PassThrough } from "node:stream";
 import type { Oblien } from "oblien";
+import { NotFoundError } from "oblien";
 import { CloudDockerRuntime } from "./docker";
 import { DockerRuntime } from "../docker";
 import { BuildLogger } from "../build-pipeline";
@@ -43,7 +44,7 @@ beforeEach(async () => {
     list: vi.fn(async () => ({ pages: [...pageRows.values()] })),
     get: vi.fn(async (slug: string) => {
       const page = pageRows.get(slug);
-      if (!page) throw Object.assign(new Error("missing"), { status: 404 });
+      if (!page) throw new NotFoundError("missing");
       return { page };
     }),
     create: vi.fn(async (input: { slug: string; workspace_id: string; path: string }) => {
@@ -76,7 +77,11 @@ beforeEach(async () => {
       NetworkSettings: { Ports: {} },
     }) }),
     getImage: () => ({ inspect: async () => ({ Config: { Volumes: { "/image-data": {} } } }) }),
-    getVolume: () => ({ inspect: async () => ({ Labels: { "openship.project": "project-a" } }) }),
+    getVolume: (name: string) => ({ inspect: async () => {
+      if (!name.startsWith("openship-project-a-"))
+        throw Object.assign(new Error("missing volume"), { statusCode: 404 });
+      return { Labels: { "openship.project": "project-a" } };
+    } }),
   } as never);
   vi.spyOn(DockerRuntime.prototype, "deployServiceWorkload").mockImplementation(async (_group, input) => {
     captures.push(input);
@@ -355,6 +360,103 @@ describe("containers on one Oblien Docker workspace", () => {
     expect(captures[1]!.volumes).toEqual(captures[0]!.volumes);
     expect(ws.delete).not.toHaveBeenCalled();
   });
+  it("isolates a new WordPress installation from a previous project's volumes and keeps backup identities stable", async () => {
+    vi.mocked(DockerRuntime.prototype.deployServiceWorkload).mockRestore();
+    const legacy = "openship-wordpress-wordpress_db_data";
+    const stored = new Map<string, { Labels: Record<string, string> }>([
+      [legacy, { Labels: { "openship.project": "deleted-project" } }],
+    ]);
+    const createVolume = vi.fn(async (input: { Name: string; Labels: Record<string, string> }) => {
+      stored.set(input.Name, { Labels: input.Labels });
+    });
+    const docker = {
+      ...runtime.docker,
+      getContainer: () => ({
+        inspect: async () => {
+          throw Object.assign(new Error("missing container"), { statusCode: 404 });
+        },
+        stop: async () => {
+          throw Object.assign(new Error("missing container"), { statusCode: 404 });
+        },
+        remove: async () => {
+          throw Object.assign(new Error("missing container"), { statusCode: 404 });
+        },
+      }),
+      createContainer: vi.fn(async (_input: { HostConfig: { Binds: string[] } }) => ({
+        id: "wordpress-container",
+        start: async () => {},
+        inspect: async () => ({ NetworkSettings: { Networks: {}, Ports: {} } }),
+      })),
+      getVolume: (name: string) => ({
+        inspect: async () => {
+          const volume = stored.get(name);
+          if (!volume) throw Object.assign(new Error("missing volume"), { statusCode: 404 });
+          return volume;
+        },
+      }),
+      createVolume,
+    };
+    vi.spyOn(runtime, "docker", "get").mockReturnValue(docker as never);
+    const wordpress = {
+      ...config,
+      slug: "wordpress",
+      serviceName: "wordpress-db",
+      volumes: ["wordpress_db_data:/var/lib/mysql"],
+    };
+    await runtime.deployServiceWorkload(group, wordpress);
+    await runtime.deployServiceWorkload(group, { ...wordpress, deploymentId: "d2" });
+    const binds = docker.createContainer.mock.calls.map(([input]) => input.HostConfig.Binds);
+    const source = binds[0]!.find((volume) => volume.endsWith(":/var/lib/mysql"))!.split(":")[0]!;
+    expect(source).toMatch(/^openship-project-[a-f0-9]{32}-wordpress_db_data$/);
+    expect(binds[1]).toEqual(binds[0]);
+    expect(stored.get(legacy)).toEqual({ Labels: { "openship.project": "deleted-project" } });
+    expect(stored.get(source)).toEqual({ Labels: { "openship.project": "project-a" } });
+    const creates = createVolume.mock.calls.length;
+    const backup = new DockerBackupExecutor(runtime);
+    const sources = await backup.listSources({
+      id: "wordpress-db",
+      projectId: "project-a",
+      projectSlug: "wordpress",
+      name: "wordpress-db",
+      image: "test:1",
+      env: {},
+      volumes: wordpress.volumes,
+      containerId: null,
+      namespaceVolumes: true,
+    });
+    expect(sources.map((volume) => volume.source)).toEqual([source]);
+    expect(createVolume).toHaveBeenCalledTimes(creates);
+  });
+  it.each(["project-a", "project-b"])(
+    "preserves explicit backup source identity and checks its owner (%s)",
+    async (owner) => {
+      const source = "openship-project-00000000000000000000000000000000-data";
+      vi.spyOn(runtime, "docker", "get").mockReturnValue({
+        ...runtime.docker,
+        getVolume: (name: string) => ({
+          inspect: async () => {
+            if (name !== source)
+              throw Object.assign(new Error("missing volume"), { statusCode: 404 });
+            return { Labels: { "openship.project": owner } };
+          },
+        }),
+      } as never);
+      const pending = new DockerBackupExecutor(runtime).listSources({
+        id: "db",
+        projectId: "project-a",
+        projectSlug: "project-a",
+        name: "db",
+        image: "test:1",
+        env: {},
+        volumes: [`${source}:/data`],
+        containerId: null,
+        namespaceVolumes: false,
+      });
+      if (owner === "project-a")
+        expect((await pending).map((volume) => volume.source)).toEqual([source]);
+      else await expect(pending).rejects.toMatchObject({ code: "CLOUD_STORAGE_FORBIDDEN" });
+    },
+  );
   it("reserves a stopped sibling's ports and restores them when that service is redeployed", async () => {
     const first = await runtime.deployServiceWorkload(group, config);
     const reservedPort = first.hostPortByContainerPort![8080];

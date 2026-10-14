@@ -37,11 +37,20 @@ import {
 } from "@/lib/api";
 import { getApiErrorCode, getApiErrorMessage } from "@/lib/api/client";
 import { mailHostname } from "@repo/core";
+import { usePlatform } from "@/context/PlatformContext";
+import { canManageMailServers } from "@/lib/mail-availability";
+import { CloudMailClient } from "@/app/(dashboard)/emails/_components/cloud-mail-client";
 
 /** The API's code for "this webmail predates the catalog app". */
 const LEGACY_WEBMAIL_CODE = "LEGACY_WEBMAIL";
 
 export default function DeployMailPage() {
+  const platform = usePlatform();
+  if (!canManageMailServers(platform)) return <CloudMailClient />;
+  return <DeployMailInner />;
+}
+
+function DeployMailInner() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const toast = useToast();

@@ -65,6 +65,7 @@ type DatabaseTarget = {
   backupStorage?: ClusterDatabaseBackupStorage;
   restoreSource?: ClusterDatabaseRestoreSource | null;
   restoreStorage?: ClusterDatabaseBackupStorage;
+  consumerProjectIds?: () => Promise<readonly string[]>;
 };
 const managed = "openship.io/database";
 const conflict = (message: string) =>
@@ -125,6 +126,8 @@ export class ClusterDatabaseAdapter {
   private assertOwned(object: KubernetesObject) {
     if (
       object.metadata.labels?.[managed] !== this.target.id ||
+      object.metadata.labels?.["openship.io/project"] !==
+        kubernetesIdLabel(this.target.projectId) ||
       object.metadata.labels?.["openship.io/runtime"] !== this.target.runtimeId ||
       object.metadata.deletionTimestamp
     )
@@ -418,6 +421,59 @@ export class ClusterDatabaseAdapter {
     };
   }
 
+  /** Keep private access limited to the owner and explicit consumers. */
+  async reconcileConnections(consumerProjectIds: readonly string[]) {
+    await this.fence();
+    const namespace = await clusterObject(this.api, this.base(), this.signal);
+    if (!namespace) throw conflict("The database namespace is unavailable. Retry database setup.");
+    this.assertOwned(namespace);
+    const c = this.target.config;
+    const fromNamespace = (name: string) => ({
+      namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": name } },
+    });
+    await this.declare(
+      `/apis/networking.k8s.io/v1/namespaces/${this.namespace}/networkpolicies`,
+      {
+        apiVersion: "networking.k8s.io/v1",
+        kind: "NetworkPolicy",
+        metadata: this.metadata("database-ingress"),
+        spec: {
+          podSelector: {},
+          policyTypes: ["Ingress"],
+          ingress: [
+            { from: [{ podSelector: {} }] },
+            {
+              from: [
+                fromNamespace(kubernetesProjectNamespace(this.target.projectId)),
+                ...[...new Set(consumerProjectIds)]
+                  .filter((projectId) => projectId !== this.target.projectId)
+                  .sort()
+                  .map((projectId) => ({
+                    ...fromNamespace(kubernetesProjectNamespace(projectId)),
+                    podSelector: {
+                      matchLabels: {
+                        "openship.io/project": kubernetesIdLabel(projectId),
+                        "openship.io/runtime": this.target.runtimeId,
+                      },
+                    },
+                  })),
+              ],
+              ports: [{ protocol: "TCP", port: c.engine === "postgres" ? 5432 : 6379 }],
+            },
+            {
+              from: [fromNamespace(c.engine === "postgres" ? "cnpg-system" : "ot-operators")],
+              ports: (c.engine === "postgres" ? [5432, 8000] : [6379, 16379]).map((port) => ({
+                protocol: "TCP",
+                port,
+              })),
+            },
+          ],
+        },
+      },
+      true,
+    );
+  }
+
   async apply(password: string) {
     if (this.target.config.backup && !this.target.backupStorage)
       throw new Error("The database backup destination could not be loaded.");
@@ -431,33 +487,8 @@ export class ClusterDatabaseAdapter {
         labels: { ...this.labels, "pod-security.kubernetes.io/enforce": "baseline" },
       },
     });
+    await this.reconcileConnections((await this.target.consumerProjectIds?.()) ?? []);
     const c = this.target.config;
-    const fromNamespace = (name: string) => ({
-      namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": name } },
-    });
-    await this.declare(`/apis/networking.k8s.io/v1/namespaces/${this.namespace}/networkpolicies`, {
-      apiVersion: "networking.k8s.io/v1",
-      kind: "NetworkPolicy",
-      metadata: this.metadata("database-ingress"),
-      spec: {
-        podSelector: {},
-        policyTypes: ["Ingress"],
-        ingress: [
-          { from: [{ podSelector: {} }] },
-          {
-            from: [fromNamespace(kubernetesProjectNamespace(this.target.projectId))],
-            ports: [{ protocol: "TCP", port: c.engine === "postgres" ? 5432 : 6379 }],
-          },
-          {
-            from: [fromNamespace(c.engine === "postgres" ? "cnpg-system" : "ot-operators")],
-            ports: (c.engine === "postgres" ? [5432, 8000] : [6379, 16379]).map((port) => ({
-              protocol: "TCP",
-              port,
-            })),
-          },
-        ],
-      },
-    });
     const secret = {
       username: Buffer.from("app").toString("base64"),
       password: Buffer.from(password).toString("base64"),
@@ -1099,62 +1130,84 @@ export class ClusterDatabaseAdapter {
   }
 
   private async assertNoApplicationReferences() {
-    const appNamespace = kubernetesProjectNamespace(this.target.projectId);
-    if (!(await clusterObject(this.api, `/api/v1/namespaces/${appNamespace}`, this.signal))) return;
-    const [deployments, secrets, pods] = await Promise.all([
-      this.api.request<{ items: KubernetesObject[] }>(
-        "GET",
-        `/apis/apps/v1/namespaces/${appNamespace}/deployments`,
-        undefined,
-        this.signal,
-      ),
-      this.api.request<{ items: KubernetesObject[] }>(
-        "GET",
-        `/api/v1/namespaces/${appNamespace}/secrets`,
-        undefined,
-        this.signal,
-      ),
-      this.api.request<{ items: KubernetesObject[] }>(
-        "GET",
-        `/api/v1/namespaces/${appNamespace}/pods`,
-        undefined,
-        this.signal,
-      ),
-    ]);
-    const hosts = Object.values(clusterDatabaseHosts(this.target.id, this.target.config)).filter(
-      Boolean,
-    ) as string[];
-    const referenced = new Set(
-      secrets.items
-        .filter((secret) =>
-          Object.values(secret.data ?? {}).some((value) =>
-            hosts.some((host) => Buffer.from(String(value), "base64").toString().includes(host)),
-          ),
-        )
-        .map((secret) => secret.metadata.name),
+    // A disconnected consumer can still have an old running release. Inspect
+    // managed application namespaces on this runtime, not only current links.
+    const selector = encodeURIComponent(
+      `app.kubernetes.io/managed-by=openship,openship.io/runtime=${this.target.runtimeId}`,
     );
-    const usesDatabase = (spec: any) =>
-      spec?.containers?.some(
-        (container: any) =>
-          container.envFrom?.some((source: any) => referenced.has(source.secretRef?.name)) ||
-          container.env?.some(
-            (env: any) =>
-              referenced.has(env.valueFrom?.secretKeyRef?.name) ||
-              hosts.some((host) => String(env.value ?? "").includes(host)),
-          ),
-      );
-    if (
-      deployments.items.some(
-        (deployment) =>
-          deployment.spec?.replicas > 0 && usesDatabase(deployment.spec?.template?.spec),
-      ) ||
-      (pods.items ?? []).some(
-        (pod) => !["Succeeded", "Failed"].includes(pod.status?.phase) && usesDatabase(pod.spec),
+    const namespaces = await this.api.request<{ items: KubernetesObject[] }>(
+      "GET",
+      `/api/v1/namespaces?labelSelector=${selector}`,
+      undefined,
+      this.signal,
+    );
+    if (!Array.isArray(namespaces.items))
+      throw new Error("Could not verify the cluster's application references.");
+    const names = namespaces.items
+      .filter(
+        (namespace) =>
+          /^os-[a-f0-9]{24}$/.test(namespace.metadata.name ?? "") &&
+          namespace.metadata.labels?.["app.kubernetes.io/managed-by"] === "openship" &&
+          namespace.metadata.labels?.["openship.io/runtime"] === this.target.runtimeId &&
+          !!namespace.metadata.labels?.["openship.io/project"],
       )
-    )
-      throw conflict(
-        "An application release still uses this database. Deploy its new connection, or stop the application and wait for its instances to exit, before removing the database.",
+      .map((namespace) => namespace.metadata.name!);
+    for (const appNamespace of names) {
+      const [deployments, secrets, pods] = await Promise.all([
+        this.api.request<{ items: KubernetesObject[] }>(
+          "GET",
+          `/apis/apps/v1/namespaces/${appNamespace}/deployments`,
+          undefined,
+          this.signal,
+        ),
+        this.api.request<{ items: KubernetesObject[] }>(
+          "GET",
+          `/api/v1/namespaces/${appNamespace}/secrets`,
+          undefined,
+          this.signal,
+        ),
+        this.api.request<{ items: KubernetesObject[] }>(
+          "GET",
+          `/api/v1/namespaces/${appNamespace}/pods`,
+          undefined,
+          this.signal,
+        ),
+      ]);
+      const hosts = Object.values(clusterDatabaseHosts(this.target.id, this.target.config)).filter(
+        Boolean,
+      ) as string[];
+      const referenced = new Set(
+        secrets.items
+          .filter((secret) =>
+            Object.values(secret.data ?? {}).some((value) =>
+              hosts.some((host) => Buffer.from(String(value), "base64").toString().includes(host)),
+            ),
+          )
+          .map((secret) => secret.metadata.name),
       );
+      const usesDatabase = (spec: any) =>
+        spec?.containers?.some(
+          (container: any) =>
+            container.envFrom?.some((source: any) => referenced.has(source.secretRef?.name)) ||
+            container.env?.some(
+              (env: any) =>
+                referenced.has(env.valueFrom?.secretKeyRef?.name) ||
+                hosts.some((host) => String(env.value ?? "").includes(host)),
+            ),
+        );
+      if (
+        deployments.items.some(
+          (deployment) =>
+            deployment.spec?.replicas > 0 && usesDatabase(deployment.spec?.template?.spec),
+        ) ||
+        (pods.items ?? []).some(
+          (pod) => !["Succeeded", "Failed"].includes(pod.status?.phase) && usesDatabase(pod.spec),
+        )
+      )
+        throw conflict(
+          "An application release still uses this database. Deploy its new connection, or stop the application and wait for its instances to exit, before removing the database.",
+        );
+    }
   }
 
   private async waitForNamespaceRemoval(log: (message: string) => Promise<void>) {

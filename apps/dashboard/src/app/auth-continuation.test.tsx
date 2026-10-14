@@ -1,3 +1,5 @@
+import type { ReactNode } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, expect, it, vi } from "vitest";
 
 const h = vi.hoisted(() => ({
@@ -16,6 +18,7 @@ vi.mock("next/navigation", () => ({
 vi.mock("@/lib/server/session", () => ({
   getSession: h.session,
   getDeploymentInfoOrNull: h.deployment,
+  getDeploymentInfo: h.deployment,
   needsOrgSelection: h.needsOrgSelection,
 }));
 vi.mock("@/lib/server/api", () => ({
@@ -23,16 +26,21 @@ vi.mock("@/lib/server/api", () => ({
   ServerApiError: class extends Error {},
 }));
 vi.mock("@/lib/server/product-view", () => ({ resolveRequestProductView: vi.fn() }));
-vi.mock("@/app/(dashboard)/providers", () => ({ DashboardProviders: () => null }));
+vi.mock("@/app/(dashboard)/providers", () => ({ DashboardProviders: ({ children }: { children: ReactNode }) => children }));
 vi.mock("@/app/(auth)/providers", () => ({ AuthProviders: () => null }));
-vi.mock("@/components/dashboard-shell", () => ({ DashboardShell: () => null }));
+vi.mock("@/components/dashboard-shell", () => ({ DashboardShell: ({ children }: { children: ReactNode }) => children }));
 vi.mock("@/components/updates/UpdateCenter", () => ({ UpdateCenter: () => null }));
 vi.mock("@/components/migrated-launcher", () => ({ MigratedLauncher: () => null }));
 vi.mock("@/components/migration-in-progress", () => ({ MigrationInProgress: () => null }));
 vi.mock("@/components/instance/InstanceRecovery", () => ({ InstanceRecovery: () => null }));
 vi.mock("@/components/api-unavailable", () => ({ ApiUnavailable: () => null }));
 
+vi.mock("@/components/auth-shell", () => ({ AuthShell: ({ children }: { children: ReactNode }) => children }));
+vi.mock("@/components/sidebar", () => ({ Sidebar: () => null }));
+vi.mock("@/components/not-found-content", () => ({ NotFoundContent: () => <p>Page not found</p> }));
+
 import DashboardLayout from "./(dashboard)/layout";
+import NotFound from "./not-found";
 import AuthLayout from "./(auth)/layout";
 
 const app = "/apps/new/minio?projectId=proj_draft";
@@ -85,4 +93,19 @@ it("retains the app if the session expires while choosing an organization", asyn
   await expect(AuthLayout({ children: null })).rejects.toEqual({
     redirect: `/login?${new URLSearchParams({ returnTo: app })}`,
   });
+});
+
+it.each([
+  ["dashboard", () => DashboardLayout({ children: <p>Project list</p> }), "Project list"],
+  ["global 404", NotFound, "Page not found"],
+] as const)("renders the %s before GitHub home responds", async (_name, render, content) => {
+  h.session.mockResolvedValue({ user: { id: "user-1" }, session: { activeOrganizationId: "org_one" } });
+  h.get.mockImplementation((path: string) =>
+    path === "github/home" ? new Promise(() => {}) : Promise.resolve([{ id: "org_one" }]),
+  );
+  const html = await Promise.race([
+    render().then(renderToStaticMarkup),
+    new Promise<string>((resolve) => setImmediate(() => resolve("Waiting for GitHub home"))),
+  ]);
+  expect(html).toContain(content);
 });

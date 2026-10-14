@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { buildCatalog } from "../packages/core/scripts/gen-catalog";
 import type { AppTemplate, TemplateServiceSpec } from "../packages/core/src/app-templates";
 import { runAppPrepareCommand } from "../packages/platform/src/engine/modules/deployments/compose/app-prepare";
+import retiredBuilds from "./fixtures/catalog-retired-builds.json";
 
 export const OFFICIAL_APP_STACKS = [
   "wordpress",
@@ -53,12 +54,30 @@ const docker = async (...args: string[]) => {
  * comes from the canonical template. App-specific checks exercise real login
  * and data APIs; no production API, Cloud purchase, or customer data is used. */
 async function smokeApp(app: AppTemplate) {
+  const testRetired = process.env.CATALOG_TEST_FROM_RETIRED_BUILD === "1";
+  if (testRetired && app.id !== "wordpress" && app.id !== "odoo")
+    throw new Error("Retired-build conversion tests support only WordPress and Odoo");
+  const retired = testRetired ? retiredBuilds[app.id as keyof typeof retiredBuilds] : undefined;
+  // Start with the actual historical recipe, then replace only the application
+  // with today's official image and mounted helper on the same data volumes.
+  let runtimeRecipe = retired
+    ? {
+        ...app,
+        services: app.services!.map((s) => {
+          if (s.name !== app.id) return s;
+          const { image, commandArgv, ...rest } = s;
+          return { ...rest, build: retired };
+        }),
+        files: (app.files ?? []).filter((f) => f.service !== app.id),
+      }
+    : app;
   const prefix = "openship-app-smoke-" + randomUUID().slice(0, 8);
   const dir = await mkdtemp(join(tmpdir(), prefix));
   const names = new Map(app.services!.map((s) => [s.name, prefix + "-" + s.name]));
   const volumes = new Map<string, string>();
   const configVolumes = new Map<string, string>();
   const images = new Map<string, string>();
+  const generatedImages = new Set<string>();
   const environment = new Map<string, Record<string, string>>();
   const urls = new Map<string, string>();
   const config = new Map<string, string>();
@@ -171,7 +190,7 @@ async function smokeApp(app: AppTemplate) {
       ] as const)
         if (value) args.push(flag, value);
     }
-    const files = (app.files ?? []).filter((f) => f.service === s.name);
+    const files = (runtimeRecipe.files ?? []).filter((f) => f.service === s.name);
     if (files.length) {
       const fileRoot = join(dir, "config", s.name);
       const volume = configVolumes.get(s.name) ?? prefix + "-" + s.name + "-config";
@@ -224,7 +243,7 @@ async function smokeApp(app: AppTemplate) {
     await docker(...args);
   };
   const start = async () => {
-    for (const s of app.services!) {
+    for (const s of runtimeRecipe.services!) {
       operation = app.id + "/start/" + s.name;
       await create(s);
       await docker("start", names.get(s.name)!);
@@ -236,13 +255,28 @@ async function smokeApp(app: AppTemplate) {
     }
   };
   const replace = async () => {
+    if (runtimeRecipe !== app) {
+      const applications = app.services!.filter((s) => s.name === app.id);
+      for (const s of applications) {
+        await docker("pull", s.image!);
+        images.set(s.name, s.image!);
+        await docker("rm", "-f", names.get(s.name)!);
+      }
+      runtimeRecipe = app;
+      for (const s of applications) {
+        await create(s);
+        await docker("start", names.get(s.name)!);
+        await waitHealthy(s);
+      }
+      return;
+    }
     for (const s of [...app.services!].reverse()) await docker("rm", "-f", names.get(s.name)!);
     await start();
   };
   try {
     operation = app.id + "/provision";
     await docker("network", "create", "--label", "openship.test=catalog-apps", prefix);
-    for (const s of app.services!) {
+    for (const s of runtimeRecipe.services!) {
       const values: Record<string, string> = {};
       for (const [key, value] of Object.entries(s.environment ?? {})) values[key] = resolve(value);
       for (const f of app.configFields ?? [])
@@ -274,6 +308,7 @@ async function smokeApp(app: AppTemplate) {
         }
         const image = prefix + "/" + s.name + ":test";
         await docker("build", "--label", "openship.test=catalog-apps", "-t", image, context);
+        generatedImages.add(image);
         images.set(s.name, image);
       } else {
         images.set(s.name, s.image!);
@@ -284,31 +319,59 @@ async function smokeApp(app: AppTemplate) {
     operation = app.id + "/login-and-write";
     switch (app.id) {
       case "wordpress": {
-        const login = await request("wordpress", "/wp-login.php", {
-          method: "POST",
-          redirect: "manual",
-          body: new URLSearchParams({
-            log: env("wordpress", "OPENSHIP_ADMIN_USER"),
-            pwd: env("wordpress", "OPENSHIP_ADMIN_PASSWORD"),
-            "wp-submit": "Log In",
-            redirect_to: url("wordpress", "/wp-admin/"),
-            testcookie: "1",
-          }),
-          headers: { Cookie: "wordpress_test_cookie=WP%20Cookie%20check" },
-        });
+        const loginAs = (password: string) =>
+          request("wordpress", "/wp-login.php", {
+            method: "POST",
+            redirect: "manual",
+            body: new URLSearchParams({
+              log: env("wordpress", "OPENSHIP_ADMIN_USER"),
+              pwd: password,
+              "wp-submit": "Log In",
+              redirect_to: url("wordpress", "/wp-admin/"),
+              testcookie: "1",
+            }),
+            headers: { Cookie: "wordpress_test_cookie=WP%20Cookie%20check" },
+          });
+        const login = await loginAs(env("wordpress", "OPENSHIP_ADMIN_PASSWORD"));
         assert(
           login.headers.getSetCookie().some((c) => c.startsWith("wordpress_logged_in_")),
           "WordPress admin login failed",
         );
+        const php = (code: string) =>
+          exec(
+            "wordpress",
+            "su -s /bin/sh www-data -c " +
+              quote("php -r " + quote("require '/var/www/html/wp-load.php'; " + code)),
+          );
+        await php(`update_option('openship_smoke', '${marker}');`);
+        const changedPassword = randomBytes(32).toString("hex");
+        await php(
+          `wp_set_password('${changedPassword}', get_user_by('login', getenv('OPENSHIP_ADMIN_USER'))->ID);`,
+        );
         await exec(
           "wordpress",
-          `su -s /bin/sh www-data -c 'wp option add openship_smoke ${quote(marker)}'`,
+          `printf '%s' '${marker}' > /var/www/html/wp-content/openship-smoke`,
         );
         await replace();
         assert(
-          (await exec("wordpress", "su -s /bin/sh www-data -c 'wp option get openship_smoke'")) ===
-            marker,
+          (await php("echo get_option('openship_smoke');")) === marker,
           "WordPress content did not persist",
+        );
+        assert(
+          (await exec("wordpress", "cat /var/www/html/wp-content/openship-smoke")) === marker,
+          "WordPress uploaded files did not persist",
+        );
+        assert(
+          (await loginAs(changedPassword)).headers
+            .getSetCookie()
+            .some((c) => c.startsWith("wordpress_logged_in_")),
+          "WordPress reset the administrator's changed password on redeploy",
+        );
+        assert(
+          !(await loginAs(env("wordpress", "OPENSHIP_ADMIN_PASSWORD"))).headers
+            .getSetCookie()
+            .some((c) => c.startsWith("wordpress_logged_in_")),
+          "WordPress restored the initial administrator password",
         );
         break;
       }
@@ -577,8 +640,7 @@ async function smokeApp(app: AppTemplate) {
     for (const volume of configVolumes.values())
       await docker("volume", "rm", volume).catch(() => {});
     await docker("network", "rm", prefix).catch(() => {});
-    for (const image of images.values())
-      if (image.startsWith(prefix + "/")) await docker("image", "rm", image).catch(() => {});
+    for (const image of generatedImages) await docker("image", "rm", image).catch(() => {});
     await rm(dir, { recursive: true, force: true });
   }
 }

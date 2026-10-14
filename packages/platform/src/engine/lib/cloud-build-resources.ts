@@ -9,11 +9,11 @@ export type CloudBuildResourceUsage = Readonly<
 
 export interface CloudBuildResourceInput {
   capacity: CloudBuildReservation;
-  /** Caller must supply a fresh sample; null represents an unavailable sample. */
+  /** Explicit limits need a fresh sample. Uncapped builds need no usage sample. */
   usage: CloudBuildResourceUsage | null;
   /** All outstanding reservations on this host, excluding this candidate. */
   reservations: readonly CloudBuildReservation[];
-  /** Missing or zero dimensions mean automatic, as in persisted resource settings. */
+  /** Missing or zero dimensions mean no Docker cap, as in saved settings. */
   requested?: Readonly<Partial<CloudBuildReservation>> | null;
   /** Validate the plan ceiling; admission slots remain owned by the caller.
    * It must not divide or cap the resources of an automatic build. */
@@ -41,20 +41,10 @@ const MIN_MEMORY_MB = 128;
 const MIN_CPU_CORES = 0.25;
 const finiteNonnegative = (value: number) => Number.isFinite(value) && value >= 0;
 
-/**
- * Pure preflight, not a reservation write. Call and persist the admitted allocation
- * under the same host admission lock. Plan slots and lifecycle exclusion belong
- * to that caller. Never turn a wait into a running worker or shrink an explicit cap.
- *
- * Subtract the FULL memory ledger from sampled free memory (bounded by capacity).
- * Samples may already include running builders: this deliberately double-counts
- * their memory until per-builder attribution exists, but also protects reservations
- * whose builders have not started yet. Memory headroom is 5%, clamped to 128–512 MB.
- * Automatic CPU subtracts full reservations from sampled idle capacity, just
- * like memory. Running builders can therefore be counted twice until attributed.
- * Explicit CPU stays unchanged. Extreme pressure (>=95%) gates both modes.
- * A sample cannot guarantee protection against future growth of unrelated apps.
- */
+/** Admission ledger only; never a Docker resource configuration. Missing limits
+ * reserve the full host dimension so uncapped builds do not overlap siblings.
+ * Fully automatic builds need only verified host capacity, not a usage sample.
+ * Explicit caps remain unchanged and use live usage for admission. */
 export function decideCloudBuildResources(
   input: CloudBuildResourceInput,
 ): CloudBuildResourceDecision {
@@ -91,16 +81,6 @@ export function decideCloudBuildResources(
     (!Number.isSafeInteger(concurrencyLimit) || concurrencyLimit <= 0)
   )
     return { kind: "wait", reason: "concurrency-unavailable" };
-  if (
-    !usage?.available ||
-    usage.memoryAvailableMb === null ||
-    usage.cpuPercent === null ||
-    !finiteNonnegative(usage.memoryAvailableMb) ||
-    !finiteNonnegative(usage.cpuPercent) ||
-    usage.cpuPercent > 100
-  ) {
-    return { kind: "wait", reason: "usage-unavailable" };
-  }
   let reservedMemory = 0;
   let reservedCpu = 0;
   for (const reservation of reservations) {
@@ -118,28 +98,33 @@ export function decideCloudBuildResources(
   if (!Number.isFinite(reservedMemory) || !Number.isFinite(reservedCpu))
     return { kind: "wait", reason: "reservations-unavailable" };
 
-  const freeMemory =
-    Math.floor(Math.min(capacity.memoryMb, usage.memoryAvailableMb) - headroomMb) - reservedMemory;
-  if (freeMemory < MIN_MEMORY_MB || memory > freeMemory)
+  const reservationCpu = cpu || capacity.cpuCores;
+  const reservationMemory = memory || memoryBudget;
+  const tolerance = Number.EPSILON * capacity.cpuCores * (reservations.length + 2);
+  if (reservationMemory > memoryBudget - reservedMemory)
     return { kind: "wait", reason: "memory-pressure" };
-  const freeCpu = capacity.cpuCores - reservedCpu;
-  const automaticCpu = capacity.cpuCores * (1 - usage.cpuPercent / 100) - reservedCpu;
-  // Fractional shares (e.g. 8 CPUs / 20 slots) accumulate floating-point noise.
-  const cpuRoundingTolerance = Number.EPSILON * capacity.cpuCores * (reservations.length + 2);
-  if (
-    usage.cpuPercent >= 95 ||
-    freeCpu + cpuRoundingTolerance < MIN_CPU_CORES ||
-    (!cpu && automaticCpu <= cpuRoundingTolerance) ||
-    cpu - freeCpu > cpuRoundingTolerance
-  )
+  if (reservationCpu - (capacity.cpuCores - reservedCpu) > tolerance)
     return { kind: "wait", reason: "cpu-pressure" };
-  const resources: ResourceConfig = {
-    // Retain the minimum useful CPU ceiling on small/busy hosts. CPU quotas
-    // share scheduling time; never exceed the unreserved physical capacity.
-    cpuCores: cpu || Math.min(freeCpu, Math.max(MIN_CPU_CORES, automaticCpu)),
-    memoryMb: memory || freeMemory,
-    // No additional disk cap: this helper neither reserves nor measures disk.
-    diskMb: 0,
+  if (cpu || memory) {
+    if (
+      !usage?.available ||
+      usage.memoryAvailableMb === null ||
+      usage.cpuPercent === null ||
+      !finiteNonnegative(usage.memoryAvailableMb) ||
+      !finiteNonnegative(usage.cpuPercent) ||
+      usage.cpuPercent > 100
+    ) {
+      return { kind: "wait", reason: "usage-unavailable" };
+    }
+    const freeMemory =
+      Math.floor(Math.min(capacity.memoryMb, usage.memoryAvailableMb) - headroomMb) -
+      reservedMemory;
+    if (freeMemory < MIN_MEMORY_MB || memory > freeMemory)
+      return { kind: "wait", reason: "memory-pressure" };
+    if (usage.cpuPercent >= 95) return { kind: "wait", reason: "cpu-pressure" };
+  }
+  return {
+    kind: "admit",
+    resources: { cpuCores: reservationCpu, memoryMb: reservationMemory, diskMb: 0 },
   };
-  return { kind: "admit", resources };
 }

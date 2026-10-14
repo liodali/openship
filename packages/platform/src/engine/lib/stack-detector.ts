@@ -34,6 +34,7 @@ import {
   collectDependencies,
   detectPort as detectPortFromLanguages,
   parseDeploymentMetadata,
+  resolveWebCommand,
   type StackId,
   type ProjectType,
   type StackDefinition,
@@ -664,6 +665,16 @@ export function applyMetadataOverrides(
   if (declaresOutputDir && !isTrueServerStack(out)) {
     out = classifyAsStaticOutput(out);
   }
+
+  // Resolve the selected stack's opt-in startup optimization once, after the
+  // final web command and stack classification. A nonLocal file describes a
+  // different directory, so its flag is ignored like its build-shaping fields.
+  const optimize = metadataList.some((m) => !m.nonLocal && m.optimize === true);
+  const { optimizeCommand } = STACKS[out.stack] as StackDefinition;
+  out = {
+    ...out,
+    startCommand: resolveWebCommand({ command: out.startCommand, optimize, optimizeCommand }),
+  };
 
   return out;
 }

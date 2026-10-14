@@ -4,6 +4,9 @@ import { CLOUD_DASHBOARD_URL } from "@repo/core";
 export function cloudPlanHref(planId?: string): string {
   const url = new URL("/billing/plans", CLOUD_DASHBOARD_URL);
   url.searchParams.set("newServer", "1");
-  if (planId) url.searchParams.set("plan", planId);
+  if (planId) {
+    url.searchParams.set("plan", planId);
+    url.searchParams.set("startCheckout", "1");
+  }
   return url.toString();
 }

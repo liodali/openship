@@ -64,7 +64,7 @@ describe("app installation post-auth return", () => {
 });
 
 it("preserves a landing-page plan purchase through login without allowing arbitrary billing routes", () => {
-  const destination = "/billing/plans?newServer=1&plan=starter";
+  const destination = "/billing/plans?newServer=1&plan=starter&startCheckout=1&checkoutIntent=72e918ec-8d9c-4b81-bf43-7a5790ca239a";
   const login = authContinuationHref("/login", destination);
   const signup = buildAuthPageHref("/register", new URL(login, "https://app.openship.io").searchParams);
   expect(getPostAuthRedirect(new URL(signup, "https://app.openship.io").searchParams)).toBe(destination);

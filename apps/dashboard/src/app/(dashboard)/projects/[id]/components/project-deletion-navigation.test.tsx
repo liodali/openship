@@ -69,7 +69,11 @@ vi.mock("./OverviewTab", () => ({ OverviewTab: () => null }));
 vi.mock("./ServicesTab", () => ({ ServicesTab: () => null }));
 vi.mock("./ProjectSidebar", () => ({ ProjectSidebar: () => null, ProjectMobileTabs: () => null }));
 vi.mock("./ProjectTabSections", () => ({ ProjectTabSections: () => null }));
-vi.mock("./DraftProjectView", () => ({ DraftProjectView: () => null }));
+vi.mock("./DraftProjectView", () => ({
+  DraftProjectView: ({ onDeleteProject }: { onDeleteProject(wipeVolumes: boolean, recordOnly: boolean): void }) => (
+    <button onClick={() => void onDeleteProject(true, false)}>Delete failed project and data</button>
+  ),
+}));
 vi.mock("@/components/topology/ProjectTopologyPage", () => ({ ProjectTopologyPage: () => null }));
 vi.mock("@/components/HelpMenu", () => ({ HelpMenu: () => null }));
 
@@ -168,6 +172,27 @@ const outcomes = [
 ];
 
 describe("project deletion completion", () => {
+  it("preserves a failed Cloud project's explicit volume cleanup choice at the API boundary", async () => {
+    seed("failed-cloud");
+    Object.assign(h.projects.get("failed-cloud")!.project, {
+      activeDeploymentId: null,
+      latestDeploymentStatus: "failed",
+      deployTarget: "cloud",
+    });
+    h.remove.mockResolvedValue({ ok: true });
+    await renderProject("failed-cloud");
+    const remove = [...host.querySelectorAll("button")].find(
+      (node) => node.textContent === "Delete failed project and data",
+    )!;
+    await act(async () => remove.click());
+    expect(h.remove).toHaveBeenCalledExactlyOnceWith("failed-cloud", {
+      wipeVolumes: true,
+      recordOnly: false,
+      force: false,
+      forceOrphan: false,
+    });
+  });
+
   it.each(outcomes)(
     "keeps the normal redirect after $name when still viewing the deleted project",
     async (outcome) => {

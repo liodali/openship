@@ -55,6 +55,7 @@ interface TargetProject {
   description: string;
   appTemplateId?: string;
   favicon?: string | null;
+  clusterId?: string | null;
 }
 
 interface ConnectionFormProps {
@@ -62,6 +63,7 @@ interface ConnectionFormProps {
   hideHeader?: boolean;
   sourceProjectId?: string;
   sourceServiceId?: string;
+  sourceDatabaseId?: string;
   sourceAppTemplateId?: string | null;
   outputs?: AppConnectionOutput[];
   guide?: AppConnectionGuide;
@@ -82,6 +84,7 @@ export function ProjectConnectionForm({
   hideHeader = false,
   sourceProjectId: fixedSourceId,
   sourceServiceId,
+  sourceDatabaseId,
   sourceAppTemplateId: fixedTemplateId,
   outputs: suppliedOutputs,
   guide: suppliedGuide,
@@ -97,8 +100,9 @@ export function ProjectConnectionForm({
   const view = loaded?.id === sourceProjectId ? loaded.view : null;
   const guide = suppliedGuide ?? view?.guide;
   const injectable = useMemo(() => (suppliedOutputs ?? view?.outputs ?? []).filter(
-    output => output.value && (!sourceServiceId || output.sourceServiceId === sourceServiceId),
-  ), [suppliedOutputs, view, sourceServiceId]);
+    output => output.value && (!sourceServiceId || output.sourceServiceId === sourceServiceId) &&
+      (!sourceDatabaseId || output.sourceDatabaseId === sourceDatabaseId),
+  ), [suppliedOutputs, view, sourceServiceId, sourceDatabaseId]);
 
   const [targets, setTargets] = useState<TargetProject[]>([]);
   const [loadingProjects, setLoadingProjects] = useState(true);
@@ -168,6 +172,11 @@ export function ProjectConnectionForm({
   }, [fixedSourceId, fixedTargetId, c.failed]);
 
   const selected = injectable.filter((o) => rows[o.id]?.checked && rows[o.id]?.envKey.trim());
+  const nativeClusters = new Set(selected.filter(output => output.sourceDatabaseId).map(output => output.clusterId));
+  const choices = fixedTargetId || !nativeClusters.size ? targets : targets.filter(project => nativeClusters.size === 1 && !!project.clusterId && nativeClusters.has(project.clusterId));
+  useEffect(() => {
+    if (!fixedTargetId && targetId && !loadingProjects && !loading && !choices.some(project => project.id === targetId)) setTargetId("");
+  }, [fixedTargetId, targetId, loadingProjects, loading, choices]);
   const privateOnly = selected.some(output => output.internal);
   useEffect(() => { if (privateOnly) setMode("internal"); }, [privateOnly]);
   const intro = resolveLocalized(guide?.intro, locale) || c.guideIntroFallback;
@@ -223,7 +232,7 @@ export function ProjectConnectionForm({
                   searchPlaceholder={t.dashboard.pages.projects.searchPlaceholder}
                   emptySearchMessage={query => interpolate(t.dashboard.pages.projects.noResultsFound, { query })}
                   value={fixedTargetId ? sourceProjectId : targetId}
-                  options={targets.map((p) => ({
+                  options={choices.map((p) => ({
                     value: p.id,
                     label: p.name,
                     description: p.description || undefined,
@@ -243,8 +252,8 @@ export function ProjectConnectionForm({
             {!loading && !loadError && sourceProjectId && injectable.length === 0 && (
               <p className="rounded-xl border border-border/50 p-4 text-sm text-muted-foreground">{c.noConnections}</p>
             )}
-            {!loadingProjects && !loading && targets.length === 0 && !loadError && (
-              <p className="text-sm text-muted-foreground">{c.noSources}</p>
+            {!loadingProjects && !loading && choices.length === 0 && !loadError && (
+              <p className="text-sm text-muted-foreground">{nativeClusters.size && !fixedTargetId ? c.nativeNoTargets : c.noSources}</p>
             )}
             <div>
               <div className="flex items-center justify-between">
@@ -348,7 +357,7 @@ export function ProjectConnectionForm({
                 onSelect={() => setMode("internal")}
                 icon={<UiIcon name="network" className="size-4" />}
                 label={c.modeInternal}
-                desc={c.modeInternalDesc}
+                desc={nativeClusters.size ? c.nativeClusterHint : c.modeInternalDesc}
               />
               {!privateOnly && <ModeCard
                 selected={mode === "public"}

@@ -234,6 +234,37 @@ async function renderApp(
   await render();
 }
 
+it("installs Cloud webmail with external IMAP/SMTP settings through the normal app and deployment APIs", async () => {
+  await renderApp({ appId: "webmail", cloud: true });
+  for (const [label, value] of [
+    ["IMAP host", "imap.provider.example"],
+    ["SMTP host", "smtp.provider.example"],
+  ]) {
+    const fieldLabel = [...container.querySelectorAll<HTMLLabelElement>("label")].find(item => item.textContent?.trim() === label)!;
+    const input = document.getElementById(fieldLabel.htmlFor) as HTMLInputElement;
+    expect(input, label).toBeDefined();
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+  await click("Install");
+  await click("Use free domains");
+  expect(h.install).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+    templateId: "webmail",
+    serverId: "managed-server",
+    routes: [{ service: "webmail", port: 4080, mode: "free" }],
+  }));
+  expect(h.updateSettings).toHaveBeenCalledExactlyOnceWith("installed-app", expect.arrayContaining([
+    { service: "webmail", key: "DEFAULT_IMAP_HOST", value: "imap.provider.example" },
+    { service: "webmail", key: "DEFAULT_SMTP_HOST", value: "smtp.provider.example" },
+  ]));
+  expect(h.build).toHaveBeenCalledExactlyOnceWith({
+    projectId: "installed-app", serviceDeploymentMode: "services", deployTarget: "cloud", serverId: "managed-server",
+  });
+  expect(h.updateSettings.mock.invocationCallOrder[0]).toBeLessThan(h.build.mock.invocationCallOrder[0]);
+});
+
 it("restores saved routes when a catalog refresh interrupts the draft read", async () => {
   const catalog = deferred<{ data: AppTemplate }>();
   const services = deferred<typeof saved>();

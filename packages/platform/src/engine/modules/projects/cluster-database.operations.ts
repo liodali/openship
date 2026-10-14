@@ -54,6 +54,7 @@ import {
 } from "./cluster-database.events";
 import { databaseImportSource, listDatabaseImports } from "./cluster-database-import";
 import { withBackupRunLock } from "../backups/backup-lock";
+import { nativeDatabaseConsumers } from "./cluster-database-connections";
 
 export function presentClusterDatabase(row: ClusterDatabaseRecord): ClusterDatabase {
   return {
@@ -180,6 +181,7 @@ export async function runClusterDatabase(
       {
         ...row,
         hosts: connection!.runtime.plan.hosts,
+        consumerProjectIds: () => nativeDatabaseConsumers(row),
         ...(row.intent !== "remove" && row.config.backup
           ? { backupStorage: await backupStorage(ctx, row.config.backup.destinationId) }
           : {}),

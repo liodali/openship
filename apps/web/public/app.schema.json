@@ -188,8 +188,23 @@
           "description": "Container image to pull. Pin a version — unpinned tags are rejected in review. Exactly one of image|build per service.",
           "type": "string"
         },
+        "replacesImages": {
+          "description": "Exact retired image names eligible for explicit operator-reviewed repair. Never automatically applied to installed services.",
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "replacesBuilds": {
+          "description": "SHA-256 fingerprints of exact retired inline recipes eligible for explicit operator-reviewed conversion to this image and its runtime setup files. Never automatically applied.",
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+        },
+        "commandArgv": {
+          "description": "Exact container command arguments, without a shell wrapper. Can invoke a mounted startup script through its interpreter.",
+          "type": "array",
+          "items": { "type": "string" }
+        },
         "resources": {
-          "description": "Initial container CPU, memory and disk limits. Saved as editable service resources; explicit settings survive a failed-install retry.",
+          "description": "Advisory sizing recommendation. Never copied into installed container limits; explicit user settings remain independent.",
           "type": "object",
           "required": ["cpuCores", "memoryMb", "diskMb"],
           "additionalProperties": false,

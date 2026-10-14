@@ -114,6 +114,16 @@ describe("Cloud server and billing commands", () => {
     });
   });
 
+  it("passes a stable server creation key through the public SDK and rejects malformed keys before HTTP", async () => {
+    fetchStub = stubFetch(() => ({ json: { ...workspace, state: "needs_plan", planTierId: "free" } }));
+    const result = await runCommand(serverCommand, ["managed", "create", "Demo", "--idempotency-key", "purchase-fixture-0001"]);
+    expect(result.code, result.err).toBe(0);
+    expect(fetchStub.calls[0]).toMatchObject({ method: "POST", body: { name: "Demo", idempotencyKey: "purchase-fixture-0001" } });
+    const invalid = await runCommand(serverCommand, ["managed", "create", "Demo", "--idempotency-key", "short"]);
+    expect(invalid.code).toBe(1);
+    expect(fetchStub.calls).toHaveLength(1);
+  });
+
   it("rejects an invalid plan before resolving a server or creating a payment", async () => {
     fetchStub = stubFetch(() => {
       throw new Error("Must validate before network access");

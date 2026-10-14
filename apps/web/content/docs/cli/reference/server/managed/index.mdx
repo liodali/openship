@@ -20,7 +20,7 @@ openship server managed [options] [command]
 | [`list\|ls`](/docs/cli/reference/server/managed#openship-server-managed-list) | List managed servers visible to this connection |
 | [`available`](/docs/cli/reference/server/managed#openship-server-managed-available) | List Cloud servers available to link to this installation |
 | [`connect <id>`](/docs/cli/reference/server/managed#openship-server-managed-connect) | Connect an existing Cloud server using the verified installation binding |
-| [`create <name>`](/docs/cli/reference/server/managed#openship-server-managed-create) | Create a managed server entry; use billing subscription create to purchase its plan |
+| [`create [options] <name>`](/docs/cli/reference/server/managed#openship-server-managed-create) | Create a managed server entry; use billing subscription create to purchase its plan |
 | [`ensure <id>`](/docs/cli/reference/server/managed#openship-server-managed-ensure) | Ensure this subscribed server is provisioned through its lifecycle worker |
 | [`resize-preview <id>`](/docs/cli/reference/server/managed#openship-server-managed-resize-preview) | Inspect pending capacity changes, their revision and affected projects |
 | [`resize [options] <id>`](/docs/cli/reference/server/managed#openship-server-managed-resize) | Apply the exact reviewed capacity revision through the existing server worker |
@@ -58,6 +58,10 @@ openship server managed create [options] <name>
 | Argument | Meaning |
 | --- | --- |
 | `name` | New managed server name |
+
+| Option | Meaning |
+| --- | --- |
+| `--idempotency-key <key>` | Reuse this server entry after an uncertain create response |
 
 ## openship server managed ensure
 

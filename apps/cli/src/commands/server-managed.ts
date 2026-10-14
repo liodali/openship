@@ -71,7 +71,8 @@ managedServerCommand
   .description(
     "Create a managed server entry; use billing subscription create to purchase its plan",
   )
-  .action((name: string) => printResult(() => getShipClient().servers.createManaged({ name })));
+  .option("--idempotency-key <key>", "Reuse this server entry after an uncertain create response")
+  .action((name: string, opts) => printResult(() => getShipClient().servers.createManaged({ name, idempotencyKey: opts.idempotencyKey })));
 managedServerCommand
   .command("ensure")
   .argument("<id>", "Managed server ID")

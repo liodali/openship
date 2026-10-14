@@ -43,9 +43,9 @@ Connected and managed servers default to **Full capacity**: a container uses the
 CPU and RAM, shared with its other projects. Select a preset or **Custom** only when you need an
 additional per-container limit. Choosing a limit does not change the server's plan or disk size.
 
-Managed builds use measured CPU and memory headroom on the same host. An optional build cap can
-lower that budget; it does not reserve a second server. Connected-server builds retain their
-existing uncapped default.
+Builds also have no additional CPU or memory limits unless you configure them.
+Cloud admission prevents an uncapped build from overlapping another build on the same
+server; configured build limits can share capacity. Builds do not provision a second VM.
 </Callout>
 
 <Tabs items={['Deploy wizard (Cloud)', 'Project settings', 'API']}>
@@ -129,9 +129,8 @@ on your instance (for example `https://your-host/api/...`). Authenticate with a 
 
 You can set **production** resources for your live app and **build** resources for compilation.
 Sizes are given as `cpuCores`, `memoryMb`, and `diskMb`. On Openship Cloud, build CPU/RAM
-are optional upper limits: the engine selects an allocation from the pool's remaining capacity
-without taking resources reserved for running apps. Send `{"build": null}` to restore
-automatic sizing. A saved build cap does not change production resources.
+are optional upper limits. Only configured values become Docker limits; omitted or zero
+dimensions remain uncapped. Send `{"build": null}` to remove the additional build limits. A saved build cap does not change production resources.
 
 ```bash
 curl -X PATCH https://your-host/api/projects/PROJECT_ID/resources \
@@ -154,8 +153,8 @@ usable in full. Managed server storage is controlled by its subscription, not th
 `GET /api/projects/PROJECT_ID/resources` reads the current values, and also reports the detected
 machine `capacity` when available, plus `requiresLimit: false` for connected and managed hosts.
 Openship Cloud also returns `buildMode`: `automatic` or `custom`. In automatic mode, the
-returned build CPU/RAM values are zero because no cap is saved; each build receives a
-concrete allocation from Oblien's current limits and usage.
+returned build CPU/RAM values are zero and Docker receives no additional build limits.
+Cloud reservation accounting stays separate from those container settings.
 
 </Tab>
 

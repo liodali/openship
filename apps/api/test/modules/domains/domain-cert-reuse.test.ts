@@ -198,7 +198,7 @@ describe("reuseServerCertForDomain", () => {
     // A local read here would answer about the CONTROL PLANE's certs and adopt a cert
     // the serving box doesn't have.
     const { sshManager } = await import("@repo/platform/engine/lib/ssh-manager");
-    serverRepo.getInOrganization.mockResolvedValue({ id: "srv_1", isLocal: false });
+    serverRepo.getInOrganization.mockResolvedValue({ id: "srv_1", isLocal: false, sshHost: "203.0.113.7", organizationId: "org_1" });
     serverRepo.get.mockResolvedValue({
       id: "srv_1",
       isLocal: false,

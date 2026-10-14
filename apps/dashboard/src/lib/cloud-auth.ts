@@ -207,8 +207,9 @@ export function getPostAuthRedirect(searchParams: SearchParamsLike) {
  *   - Must NOT start with `//` (protocol-relative URLs).
  *   - Path must match an allowlisted auth continuation. Invitation claims are
  *     accepted only in the exact `/accept-invite/<opaque-id>` shape. App install
- *     and plan selection also have exact paths; neither starts a purchase on
- *     arrival. Arbitrary dashboard paths are not accepted.
+ *     and plan purchases also have exact paths. A pricing selection continues
+ *     only after authentication and live offer validation. Arbitrary dashboard
+ *     paths are not accepted.
  *
  * Returns the validated path, or `null` when the input is unsafe or
  * missing. Callers should treat `null` as "no returnTo" and fall back

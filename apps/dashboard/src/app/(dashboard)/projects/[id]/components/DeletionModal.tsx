@@ -1,10 +1,11 @@
 import { reportCaughtError as observeCaughtError } from "@repo/core/diagnostics";
 import { Icon as UiIcon } from "@repo/ui/icons";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useId, useState } from "react";
 import { projectsApi } from "@/lib/api";
 import { connectionsApi, type ConnectionConsumer } from "@/lib/api/connections";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { useI18n, interpolate } from "@/components/i18n-provider";
+import { useDialogFocus } from "@/hooks/useDialogFocus";
 
 interface Props {
   isOpen: boolean;
@@ -34,7 +35,10 @@ interface Preview {
   totalVolumes: number;
 }
 
-export const DeletionModal = ({
+export const DeletionModal = (props: Props) =>
+  props.isOpen ? <DeletionModalContent {...props} /> : null;
+
+const DeletionModalContent = ({
   isOpen,
   onClose,
   onConfirm,
@@ -43,6 +47,8 @@ export const DeletionModal = ({
   selfHosted,
 }: Props) => {
   const { t } = useI18n();
+  const titleId = useId();
+  const { dialog, onKeyDown } = useDialogFocus(onClose);
   const [inputValue, setInputValue] = useState("");
   const [wipeVolumes, setWipeVolumes] = useState(false);
   // Record-only ("soft") delete: keep the workload + data on the server, drop
@@ -116,7 +122,7 @@ export const DeletionModal = ({
   // caller's static signal when given (so an imported/unreachable-server project
   // still shows it), else fall back to the live preview.
   const canRecordOnly = selfHosted ?? (!previewLoading && !!preview?.selfHosted);
-  const showWipeBlock = !previewLoading && preview?.selfHosted && hasVolumes && !recordOnly;
+  const showWipeBlock = !previewLoading && hasVolumes && !recordOnly;
 
   const handleConfirm = () => {
     if (isConfirmDisabled) return;
@@ -129,8 +135,19 @@ export const DeletionModal = ({
   };
 
   return (
-    <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+    <div
+      className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50"
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
       <div
+        ref={dialog}
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        onKeyDown={onKeyDown}
         className="border border-border/60 rounded-2xl max-w-lg w-full shadow-xl overflow-hidden"
         style={{ backgroundColor: "var(--th-card-bg-solid, var(--card))" }}
       >
@@ -140,7 +157,7 @@ export const DeletionModal = ({
             <UiIcon name="warning" className="size-[18px] text-warning" />
           </div>
           <div className="min-w-0">
-            <h3 className="text-[15px] font-semibold text-foreground">{t.projectSettings.deletion.title}</h3>
+            <h3 id={titleId} className="text-[15px] font-semibold text-foreground">{t.projectSettings.deletion.title}</h3>
             <p className="text-xs text-muted-foreground mt-0.5 truncate">
               {recordOnly
                 ? t.projectSettings.deletion.recordOnlyReversible

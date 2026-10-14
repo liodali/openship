@@ -2,19 +2,21 @@ import { describe, expect, it } from "vitest";
 
 import { phpLanguageDetector } from "./languages/php";
 import { parseOpenshipConfig } from "./openship-config/parse";
-import { resolveStackRoles } from "./stack-roles";
+import { resolveStackRoles, resolveWebCommand } from "./stack-roles";
 import { STACKS, type StackRole } from "./stacks";
 
 const jobs: StackRole = {
   name: "jobs",
   kind: "worker",
   command: "exec bin/jobs",
+  stopGracePeriod: "10s",
   when: { deps: ["solid_queue"], files: ["bin/jobs"] },
 };
 const sidekiq: StackRole = {
   name: "sidekiq",
   kind: "worker",
   command: "exec bundle exec sidekiq",
+  stopGracePeriod: "45s",
   when: { deps: ["sidekiq"] },
 };
 const defaultRoles = [jobs, sidekiq];
@@ -118,6 +120,22 @@ describe("STACKS.rails.defaultRoles (issue #935)", () => {
     const roles = STACKS.rails.defaultRoles;
     expect(roles?.map((r) => r.name)).toEqual(["jobs", "sidekiq"]);
     expect(roles?.every((r) => r.kind === "worker")).toBe(true);
+  });
+
+  it("gives sidekiq more stop grace than Solid Queue, both parser-valid", () => {
+    const roles: readonly StackRole[] = STACKS.rails.defaultRoles ?? [];
+    expect(roles.map((r) => r.stopGracePeriod)).toEqual(["10s", "45s"]);
+    // Presets bypass the parser, so run each value through it here.
+    const { config, errors } = parseOpenshipConfig({
+      roles: roles.map(({ name, kind, command, stopGracePeriod }) => ({
+        name,
+        kind,
+        command,
+        stopGracePeriod,
+      })),
+    });
+    expect(errors).toEqual([]);
+    expect(config?.roles?.map((r) => r.stopGracePeriod)).toEqual(["10s", "45s"]);
   });
 
   it("resolves against Gemfile-shaped deps end to end", () => {
@@ -271,5 +289,45 @@ describe("STACKS.laravel.defaultRoles", () => {
         configRoles: [horizonWorker, queueWorker],
       }),
     ).toEqual([horizonWorker, queueWorker]);
+  });
+});
+
+describe("resolveWebCommand", () => {
+  const laravelWeb = STACKS.laravel.defaultStartCommand;
+  const laravel = { command: laravelWeb, optimizeCommand: STACKS.laravel.optimizeCommand };
+
+  it("leaves the command byte-identical when optimize is absent", () => {
+    expect(resolveWebCommand(laravel)).toBe(laravelWeb);
+  });
+
+  it("leaves the command byte-identical when optimize is false", () => {
+    expect(resolveWebCommand({ ...laravel, optimize: false })).toBe(laravelWeb);
+  });
+
+  it("prefixes the Laravel web command when optimize is true", () => {
+    const resolved = resolveWebCommand({ ...laravel, optimize: true });
+    expect(resolved).toBe(`php artisan optimize && ${laravelWeb}`);
+  });
+
+  it("keeps the exec/PID-1 frankenphp invocation at the end when warmed", () => {
+    const resolved = resolveWebCommand({ ...laravel, optimize: true });
+    expect(resolved.startsWith("php artisan optimize && ")).toBe(true);
+    expect(resolved.endsWith(laravelWeb)).toBe(true);
+    expect(resolved).toContain("exec frankenphp run");
+  });
+
+  it("leaves stacks without an optimization command unchanged even when enabled", () => {
+    const nextWeb = STACKS.nextjs.defaultStartCommand;
+    expect(resolveWebCommand({ command: nextWeb, optimize: true })).toBe(nextWeb);
+  });
+
+  it("supports another stack's optimization command without framework branching", () => {
+    expect(
+      resolveWebCommand({
+        command: "exec node server.js",
+        optimize: true,
+        optimizeCommand: "node scripts/warm-cache.mjs",
+      }),
+    ).toBe("node scripts/warm-cache.mjs && exec node server.js");
   });
 });

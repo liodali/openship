@@ -561,7 +561,7 @@
     "projects.listConnectionCandidates": {
       "page": "projects",
       "section": "Connections, storage, and apps",
-      "description": "List accessible projects and apps for a service connection.",
+      "description": "List writable projects and apps for a connection, including cluster IDs for native database placement.",
       "route": "GET /api/projects/:id/connections/candidates"
     },
     "projects.listConnectionConsumers": {
@@ -573,13 +573,13 @@
     "projects.createConnection": {
       "page": "projects",
       "section": "Connections, storage, and apps",
-      "description": "Connect an output to a target environment variable.",
+      "description": "Connect an output to a target secret environment variable. Native database outputs require source and target write access and the same organization and cluster; ownership stays with the source.",
       "route": "POST /api/projects/:id/connections"
     },
     "projects.connectBundle": {
       "page": "projects",
       "section": "Connections, storage, and apps",
-      "description": "Apply a group of compatible resource connections.",
+      "description": "Save a group of compatible resource connections and encrypted environment values in one transaction. Native database links reconcile private namespace access before reporting success; a failed reconciliation can be retried with the same inputs.",
       "route": "POST /api/projects/:id/connections/bundle"
     },
     "projects.removeConnection": {

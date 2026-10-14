@@ -9,6 +9,7 @@ import { DraftProjectView } from "./DraftProjectView";
 const h = vi.hoisted(() => ({
   remove: vi.fn(),
   deployments: vi.fn(),
+  preview: vi.fn(),
   navigate: vi.fn(),
   project: {
     id: "draft-a",
@@ -16,13 +17,16 @@ const h = vi.hoisted(() => ({
     gitOwner: "acme",
     gitRepo: "demo",
     activeDeploymentId: null,
+    latestDeploymentStatus: null as string | null,
+    deployTarget: "cloud",
   },
 }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: h.navigate }) }));
 vi.mock("@/context/ProjectSettingsContext", () => ({
   useProjectSettings: () => ({ id: h.project.id, projectData: h.project }),
 }));
-vi.mock("@/lib/api", () => ({ projectsApi: { getDeployments: h.deployments } }));
+vi.mock("@/lib/api", () => ({ projectsApi: { getDeployments: h.deployments, deletionPreview: h.preview } }));
+vi.mock("@/lib/api/connections", () => ({ connectionsApi: { consumers: async () => ({ data: [] }) } }));
 vi.mock("@/app/(dashboard)/deployments/components", () => ({ DeploymentsContent: () => null }));
 
 let host: HTMLDivElement;
@@ -56,6 +60,10 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   h.deployments.mockResolvedValue({ data: [] });
   h.remove.mockResolvedValue(undefined);
+  h.project.latestDeploymentStatus = null;
+  h.preview.mockResolvedValue({ success: true, preview: {
+    selfHosted: false, services: [], deploymentVolumes: ["wordpress-db-data"], networks: [], totalVolumes: 1,
+  } });
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -67,6 +75,38 @@ afterEach(async () => {
 });
 
 describe("draft project deletion", () => {
+  it.each([false, true])(
+    "offers data cleanup for a failed Cloud installation and forwards wipe=%s",
+    async (wipeData) => {
+      h.project.latestDeploymentStatus = "failed";
+      await open();
+      const wipe = host.querySelector<HTMLElement>(
+        `[aria-label="${baseDictionary.projectSettings.deletion.wipeAria}"]`,
+      );
+      expect(wipe).not.toBeNull();
+      expect(
+        host.querySelector(
+          `[aria-label="${baseDictionary.projectSettings.deletion.recordOnlyLabel}"]`,
+        ),
+      ).toBeNull();
+      if (wipeData) await act(async () => wipe!.click());
+      const input = host.querySelector<HTMLInputElement>('input[type="text"]')!;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+          input,
+          "Draft A",
+        );
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      const copy = baseDictionary.projectSettings.deletion;
+      await act(async () =>
+        button(wipeData ? copy.confirmDeleteEnvWipe : copy.confirmDeleteEnv).click(),
+      );
+      expect(h.remove).toHaveBeenCalledExactlyOnceWith(wipeData, false);
+      expect(dialog()).toBeNull();
+    },
+  );
+
   it("requires confirmation before calling the existing deletion handler", async () => {
     await open();
     expect(h.remove).not.toHaveBeenCalled();

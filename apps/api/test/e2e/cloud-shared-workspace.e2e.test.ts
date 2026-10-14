@@ -1,3 +1,4 @@
+import { NotFoundError } from "oblien";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createConnection } from "node:net";
@@ -173,7 +174,7 @@ describeDockerE2E("multiple projects on one subscribed Docker workspace", () => 
       }),
       pages: {
         get: async (slug: string) => {
-          if (!pages.has(slug)) throw Object.assign(new Error("missing"), { status: 404 });
+          if (!pages.has(slug)) throw new NotFoundError("missing");
           return { page: pages.get(slug) };
         },
         list: async () => ({ pages: [...pages.values()] }),

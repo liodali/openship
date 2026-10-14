@@ -218,13 +218,13 @@ export function InstanceLocation({
     );
   const remote = ["retired", "connected"].includes(state.role) && !!state.connection;
   const retiredServer = !state.desktop && state.role === "retired";
-  const primary: Action = retiredServer
-    ? "receive"
+  const visibleActions: Action[] = retiredServer
+    ? ["receive"]
     : remote && state.desktop
-      ? "return"
+      ? ["return", "connect"]
       : state.desktop
-        ? "move"
-        : "pair";
+        ? ["connect", "move"]
+        : ["pair", "move", "send"];
   const labels: Record<Action, string> = {
     move: state.desktop ? copy.moveToServer : copy.moveToAnotherServer,
     connect: remote ? copy.reconnect : copy.connectExisting,
@@ -234,23 +234,29 @@ export function InstanceLocation({
     return: copy.returnToDesktop,
     previous: copy.previousServer,
   };
+  const icons: Record<Action, IconName> = {
+    move: "server",
+    connect: "link",
+    pair: "monitor",
+    receive: "download",
+    send: "monitor",
+    return: "monitor",
+    previous: "history",
+  };
   const openAction = (next: Action) => setAction(next);
   const options: MenuAction[] = [];
-  const addOption = (next: Action, icon: IconName) => {
-    if (next !== primary)
+  const addOption = (next: Action) => {
+    if (!visibleActions.includes(next))
       options.push({
         id: next,
         label: labels[next],
-        icon: <Icon name={icon} className="size-4" />,
+        icon: <Icon name={icons[next]} className="size-4" />,
         onClick: () => openAction(next),
       });
   };
-  if (state.desktop) addOption("connect", "link");
-  if (!remote && !retiredServer) addOption("move", "server");
-  if (state.previousInstance) addOption("previous", "history");
-  if (!retiredServer && (!state.desktop || remote)) addOption("pair", "monitor");
-  if (!remote || retiredServer) addOption("receive", "download");
-  if (!remote && !state.desktop && !retiredServer) addOption("send", "monitor");
+  if (state.previousInstance) addOption("previous");
+  if (!retiredServer && (!state.desktop || remote)) addOption("pair");
+  if (!remote || retiredServer) addOption("receive");
   if (state.role === "connected")
     options.push(
       { id: "connection-divider", divider: true },
@@ -268,7 +274,7 @@ export function InstanceLocation({
     );
   return (
     <section className="@container space-y-4 rounded-2xl bg-card p-5" aria-label={copy.title}>
-      <div className="flex flex-col gap-4 @min-[640px]:flex-row @min-[640px]:items-center @min-[640px]:justify-between">
+      <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-start gap-3">
           <span className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-muted/40 text-foreground">
             <Icon name={remote || !state.desktop ? "server" : "monitor"} className="size-5" />
@@ -295,24 +301,30 @@ export function InstanceLocation({
             )}
           </div>
         </div>
-        {!pending(state) && (
-          <div className="flex items-center gap-2 @min-[640px]:shrink-0">
-            <Button
-              className="min-h-10 h-auto flex-1 whitespace-normal @min-[640px]:flex-none"
-              onClick={() => openAction(primary)}
-            >
-              {labels[primary]}
-            </Button>
-            {options.length > 0 && (
-              <DropdownMenu
-                actions={options}
-                triggerLabel={copy.moreOptions}
-                triggerClassName="flex size-10 shrink-0 items-center justify-center rounded-xl bg-muted/40 text-muted-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              />
-            )}
-          </div>
+        {!pending(state) && options.length > 0 && (
+          <DropdownMenu
+            className="shrink-0"
+            actions={options}
+            triggerLabel={copy.moreOptions}
+            triggerClassName="flex size-10 shrink-0 items-center justify-center rounded-xl bg-muted/40 text-muted-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          />
         )}
       </div>
+      {!pending(state) && (
+        <div className="flex flex-wrap gap-2">
+          {visibleActions.map((next, index) => (
+            <Button
+              key={next}
+              variant={index === 0 ? "default" : "secondary"}
+              className="h-auto min-h-10 w-full whitespace-normal @min-[480px]:w-auto"
+              onClick={() => openAction(next)}
+            >
+              <Icon name={icons[next]} />
+              {labels[next]}
+            </Button>
+          ))}
+        </div>
+      )}
       {pending(state) ? (
         <InstanceProgress state={state} refresh={refresh} />
       ) : actionError ? (
@@ -322,19 +334,21 @@ export function InstanceLocation({
       ) : null}
       {action === "connect" ? (
         <InstanceConnectDialog onClose={() => setAction(null)} />
-      ) : action && (
-        <InstanceMoveDialog
-          action={action}
-          localHosts={state.localHosts}
-          previousOrigin={state.previousInstance?.origin}
-          accountRequired={state.accountReady === false}
-          onAccountReady={() => void refresh()}
-          onClose={() => setAction(null)}
-          onStarted={async () => {
-            setAction(null);
-            await refresh();
-          }}
-        />
+      ) : (
+        action && (
+          <InstanceMoveDialog
+            action={action}
+            localHosts={state.localHosts}
+            previousOrigin={state.previousInstance?.origin}
+            accountRequired={state.accountReady === false}
+            onAccountReady={() => void refresh()}
+            onClose={() => setAction(null)}
+            onStarted={async () => {
+              setAction(null);
+              await refresh();
+            }}
+          />
+        )
       )}
     </section>
   );
@@ -399,9 +413,12 @@ export function InstanceMoveDialog({
 }) {
   const { t } = useI18n();
   const copy = t.settings.instance.location;
+  const transfer = t.settings.instance.transfer;
   const destinationId = useId();
+  const receiveId = useId();
   const confirmationId = useId();
   const [destination, setDestination] = useState<"server" | "existing">("server");
+  const [receiveMethod, setReceiveMethod] = useState<"code" | "offer">("code");
   const [server, setServer] = useState<ServerOption | null>(null);
   const [source, setSource] = useState<ServerOption | null>(null);
   const [access, setAccess] = useState<"desktop" | "browser">("desktop");
@@ -452,7 +469,7 @@ export function InstanceMoveDialog({
     : {
         move: accountCreated ? copy.reviewMove : "Move your instance",
         receive: copy.receiveInstance,
-        send: "Move to Desktop",
+        send: copy.moveToDesktop,
         pair: copy.pairDesktop,
         return: "Move back to Desktop",
         previous: "Move to previous server",
@@ -461,7 +478,7 @@ export function InstanceMoveDialog({
     ? copy.accountHint
     : {
         move: "Your settings, users and credentials move together. Apps and volumes stay where they run.",
-        receive: "Move another instance here, or create a code for it to send its data.",
+        receive: transfer.receiveDescription,
         send: interpolate(copy.sendHint, { action: copy.receiveInstance }),
         pair: copy.pairHint,
         return:
@@ -489,7 +506,7 @@ export function InstanceMoveDialog({
       if (action === "previous") await instanceApi.moveToPrevious(mapping);
       else if (action === "return") await instanceApi.returnToDesktop(mapping);
       else if (action === "receive") {
-        if (!code.trim()) {
+        if (receiveMethod === "offer") {
           setGenerated((await instanceApi.offer("target")).code);
           return;
         }
@@ -516,6 +533,7 @@ export function InstanceMoveDialog({
     busy ||
     (action === "return" && (remoteHosts === null || (sourceHosts.length > 0 && !source))) ||
     (needsConfirmation && !needsAccount && !confirmed) ||
+    (action === "receive" && receiveMethod === "code" && !code.trim()) ||
     (action === "move" && (destination === "server" ? !server || !hostname.trim() : !code.trim()));
   return (
     <Modal
@@ -572,11 +590,17 @@ export function InstanceMoveDialog({
               <>
                 <Tabs
                   tabs={[
-                    { key: "server", label: "Connected server" },
-                    { key: "existing", label: "Existing instance" },
+                    { key: "server", label: transfer.installOnServer },
+                    { key: "existing", label: transfer.existingInstance },
                   ]}
                   value={destination}
-                  onChange={setDestination}
+                  size="sm"
+                  fullWidth
+                  onChange={(next) => {
+                    setDestination(next);
+                    setConfirmed(false);
+                    setError("");
+                  }}
                   idPrefix={destinationId}
                   ariaLabel="Destination type"
                 />
@@ -650,8 +674,20 @@ export function InstanceMoveDialog({
                   id={`${destinationId}-panel-existing`}
                   aria-labelledby={`${destinationId}-tab-existing`}
                   hidden={destination !== "existing"}
+                  className="space-y-3"
                 >
-                  <CodeField value={code} onChange={setCode} label="Code from the other instance" />
+                  <p className="text-sm leading-relaxed text-muted-foreground">
+                    {interpolate(transfer.destinationCodeHint, {
+                      more: copy.moreOptions,
+                      receive: copy.receiveInstance,
+                      create: transfer.createReceiveCode,
+                    })}
+                  </p>
+                  <CodeField
+                    value={code}
+                    onChange={setCode}
+                    label={transfer.destinationCodeLabel}
+                  />
                 </div>
               </>
             )}
@@ -681,11 +717,54 @@ export function InstanceMoveDialog({
                 </div>
               )}
             {action === "receive" && !generated && (
-              <CodeField
-                value={code}
-                onChange={setCode}
-                label="Move code from the source (optional)"
-              />
+              <div className="space-y-3">
+                <Tabs
+                  tabs={[
+                    { key: "code", label: transfer.pasteMoveCode },
+                    { key: "offer", label: transfer.createReceiveCode },
+                  ]}
+                  value={receiveMethod}
+                  size="sm"
+                  fullWidth
+                  onChange={(next) => {
+                    setReceiveMethod(next);
+                    setConfirmed(false);
+                    setError("");
+                  }}
+                  idPrefix={receiveId}
+                  ariaLabel={copy.receiveInstance}
+                />
+                <div
+                  role="tabpanel"
+                  id={`${receiveId}-panel-code`}
+                  aria-labelledby={`${receiveId}-tab-code`}
+                  hidden={receiveMethod !== "code"}
+                  className="space-y-3"
+                >
+                  <p className="text-sm leading-relaxed text-muted-foreground">
+                    {interpolate(transfer.sourceCodeHint, {
+                      send: copy.moveToDesktop,
+                      create: transfer.createMoveCode,
+                      receive: transfer.createReceiveCode,
+                    })}
+                  </p>
+                  <CodeField value={code} onChange={setCode} label={transfer.sourceCodeLabel} />
+                </div>
+                <div
+                  role="tabpanel"
+                  id={`${receiveId}-panel-offer`}
+                  aria-labelledby={`${receiveId}-tab-offer`}
+                  hidden={receiveMethod !== "offer"}
+                >
+                  <p className="text-sm leading-relaxed text-muted-foreground">
+                    {interpolate(transfer.receiveCodeHint, {
+                      move: copy.moveToServer,
+                      another: copy.moveToAnotherServer,
+                      existing: transfer.existingInstance,
+                    })}
+                  </p>
+                </div>
+              </div>
             )}
             {action === "pair" && (
               <p className="text-xs leading-relaxed text-muted-foreground">{copy.pairOwnDevice}</p>
@@ -698,11 +777,36 @@ export function InstanceMoveDialog({
             )}
             {generated && (
               <>
-                <CodeField label="One-time code" value={generated} readOnly />
-                <p className="text-xs text-muted-foreground">
-                  Valid for 10 minutes. Paste it only into the Desktop or instance you want to
-                  connect.
+                <CodeField
+                  label={
+                    action === "pair"
+                      ? transfer.connectionCode
+                      : action === "send"
+                        ? transfer.moveCode
+                        : transfer.receiveCode
+                  }
+                  value={generated}
+                  readOnly
+                />
+                <p className="text-sm leading-relaxed text-muted-foreground">
+                  {action === "pair"
+                    ? interpolate(transfer.connectionCodeHint, {
+                        connect: copy.connectExisting,
+                        useCode: t.settings.instance.connection.useCode,
+                      })
+                    : action === "send"
+                      ? interpolate(transfer.moveCodeHint, {
+                          more: copy.moreOptions,
+                          receive: copy.receiveInstance,
+                          paste: transfer.pasteMoveCode,
+                        })
+                      : interpolate(transfer.receiveCodeHint, {
+                          move: copy.moveToServer,
+                          another: copy.moveToAnotherServer,
+                          existing: transfer.existingInstance,
+                        })}
                 </p>
+                <p className="text-xs text-muted-foreground">{transfer.codeExpiry}</p>
               </>
             )}
             {needsConfirmation && !needsAccount && !generated && (
@@ -716,7 +820,9 @@ export function InstanceMoveDialog({
                 <label htmlFor={confirmationId}>
                   {action === "receive" || action === "return"
                     ? "Replace this instance’s data with the incoming instance. A recovery snapshot is saved first."
-                    : "Move all workspaces, users and credentials, and pause changes during the handoff."}
+                    : action === "move" && destination === "existing"
+                      ? transfer.replaceDestinationConfirmation
+                      : "Move all workspaces, users and credentials, and pause changes during the handoff."}
                 </label>
               </div>
             )}
@@ -747,11 +853,13 @@ export function InstanceMoveDialog({
                     ? copy.continueSetup
                     : action === "pair"
                       ? "Create connection code"
-                      : action === "return"
-                        ? "Move to Desktop"
-                        : action === "receive" && !code.trim()
-                          ? "Create receive code"
-                          : "Move instance"}
+                      : action === "send"
+                        ? transfer.createMoveCode
+                        : action === "return"
+                          ? "Move to Desktop"
+                          : action === "receive" && receiveMethod === "offer"
+                            ? transfer.createReceiveCode
+                            : "Move instance"}
                 </Button>
               )
             )}

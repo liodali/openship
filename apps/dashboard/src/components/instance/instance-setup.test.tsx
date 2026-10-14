@@ -17,6 +17,7 @@ const h = vi.hoisted(() => ({
   provision: vi.fn(),
   move: vi.fn(),
   pair: vi.fn(),
+  offer: vi.fn(),
   connectedSource: vi.fn(),
   returnToDesktop: vi.fn(),
   get: vi.fn(),
@@ -52,6 +53,7 @@ vi.mock("@/lib/api/instance", () => ({
     provision: h.provision,
     move: h.move,
     pair: h.pair,
+    offer: h.offer,
     connectedSource: h.connectedSource,
     returnToDesktop: h.returnToDesktop,
   },
@@ -107,6 +109,7 @@ vi.mock("@/components/project-settings/ServerSideSwitch", () => ({
 }));
 
 const copy = baseDictionary.settings.instance.location;
+const transfer = baseDictionary.settings.instance.transfer;
 const fresh: InstanceStatus = {
   protocol: 1,
   role: "active",
@@ -136,6 +139,7 @@ beforeEach(() => {
   h.provision.mockResolvedValue({});
   h.move.mockResolvedValue({});
   h.pair.mockResolvedValue({ code: "one-time-fixture" });
+  h.offer.mockResolvedValue({ code: "move-code-fixture" });
   h.connectedSource.mockResolvedValue({ localHosts: [] });
   h.returnToDesktop.mockResolvedValue({});
   h.selfHosted = true;
@@ -167,10 +171,12 @@ async function click(node: HTMLElement) {
   await act(async () => node.click());
 }
 async function edit(selector: string, value: string) {
-  const input = visible<HTMLInputElement>(selector)[0];
+  const input = visible<HTMLInputElement | HTMLTextAreaElement>(selector)[0];
   expect(input).toBeDefined();
   await act(async () => {
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+    const prototype =
+      input.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(prototype, "value")!.set!.call(input, value);
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
 }
@@ -217,6 +223,100 @@ function expectNoMove() {
 }
 
 describe("instance move setup", () => {
+  it("opens connection directly from Desktop without entering move setup or duplicating menu actions", async () => {
+    await render(<InstanceLocation initial={fresh} />);
+    expect(button(copy.connectExisting)).toBeDefined();
+    expect(button(copy.moveToServer)).toBeDefined();
+    await click(document.querySelector<HTMLElement>(`[aria-label="${copy.moreOptions}"]`)!);
+    for (const label of [copy.connectExisting, copy.moveToServer])
+      expect(
+        visible<HTMLButtonElement>("button").filter((node) => node.textContent?.trim() === label),
+      ).toHaveLength(1);
+    await click(button(copy.connectExisting));
+    expect(document.querySelector('input[inputmode="url"]')).not.toBeNull();
+    expect(document.querySelector('input[aria-label="Instance address"]')).toBeNull();
+    expectNoMove();
+  });
+  it("shows both server move directions and creates a source code only after consent", async () => {
+    const state = { ...fresh, desktop: false, accountReady: true };
+    h.status.mockResolvedValue(state);
+    await render(<InstanceLocation initial={state} />);
+    expect(button(copy.pairDesktop)).toBeDefined();
+    expect(button(copy.moveToAnotherServer)).toBeDefined();
+    await click(button(copy.moveToDesktop));
+    expect(button(transfer.createMoveCode).disabled).toBe(true);
+    expect(h.offer).not.toHaveBeenCalled();
+    await click(visible<HTMLElement>('[role="checkbox"]')[0]!);
+    await click(button(transfer.createMoveCode));
+    expect(h.offer).toHaveBeenCalledExactlyOnceWith("source", undefined);
+    const moveCode = document.querySelector<HTMLTextAreaElement>(
+      `textarea[aria-label="${transfer.moveCode}"]`,
+    );
+    expect(moveCode?.value).toBe("move-code-fixture");
+    expect(moveCode?.readOnly).toBe(true);
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
+      transfer.pasteMoveCode,
+    );
+    expect(h.pair).not.toHaveBeenCalled();
+    expectNoMove();
+  });
+  it("requires fresh replacement consent when changing from installation to an existing instance", async () => {
+    const state = { ...fresh, accountReady: true };
+    h.status.mockResolvedValue(state);
+    await render(<InstanceLocation initial={state} />);
+    await click(button(copy.moveToServer));
+    await chooseDestination();
+    await click(visible<HTMLElement>('[role="checkbox"]')[0]!);
+    expect(button("Move instance").disabled).toBe(false);
+    await click(button(transfer.existingInstance));
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain(copy.receiveInstance);
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
+      transfer.replaceDestinationConfirmation,
+    );
+    await edit(
+      `textarea[aria-label="${transfer.destinationCodeLabel}"]`,
+      "destination-receive-code",
+    );
+    expect(button("Move instance").disabled).toBe(true);
+    expectNoMove();
+    await click(visible<HTMLElement>('[role="checkbox"]')[0]!);
+    await click(button("Move instance"));
+    expect(h.move).toHaveBeenCalledExactlyOnceWith("destination-receive-code", undefined);
+    expect(h.offer).not.toHaveBeenCalled();
+    expect(h.provision).not.toHaveBeenCalled();
+  });
+  it("separates incoming move codes from receive-code generation and resets consent between them", async () => {
+    const state = { ...fresh, accountReady: true };
+    h.status.mockResolvedValue(state);
+    await render(<InstanceLocation initial={state} />);
+    await click(document.querySelector<HTMLElement>(`[aria-label="${copy.moreOptions}"]`)!);
+    await click(button(copy.receiveInstance));
+    await click(visible<HTMLElement>('[role="checkbox"]')[0]!);
+    expect(button("Move instance").disabled).toBe(true);
+    expect(h.offer).not.toHaveBeenCalled();
+    await edit(`textarea[aria-label="${transfer.sourceCodeLabel}"]`, "source-move-code");
+    expect(button("Move instance").disabled).toBe(false);
+    await click(button(transfer.createReceiveCode));
+    const create = () =>
+      visible<HTMLButtonElement>('button:not([role="tab"])').find(
+        (node) => node.textContent?.trim() === transfer.createReceiveCode,
+      )!;
+    expect(create().disabled).toBe(true);
+    expect(visible("textarea")).toHaveLength(0);
+    expectNoMove();
+    await click(visible<HTMLElement>('[role="checkbox"]')[0]!);
+    await click(create());
+    expect(h.offer).toHaveBeenCalledExactlyOnceWith("target");
+    const receiveCode = document.querySelector<HTMLTextAreaElement>(
+      `textarea[aria-label="${transfer.receiveCode}"]`,
+    );
+    expect(receiveCode?.value).toBe("move-code-fixture");
+    expect(receiveCode?.readOnly).toBe(true);
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
+      transfer.existingInstance,
+    );
+    expectNoMove();
+  });
   const connected: InstanceStatus = {
     ...fresh,
     accountReady: true,

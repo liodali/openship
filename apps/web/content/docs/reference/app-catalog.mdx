@@ -133,7 +133,9 @@ name, never an IP or a localhost address.
   type={{
     name: { type: 'string', description: 'Service name, and its hostname on the project network.', required: true },
     image: { type: 'string', description: 'Prebuilt image to pull. Pin a version — unpinned tags are rejected in review. Exactly one of image | build per service.' },
-    resources: { type: '{ cpuCores, memoryMb, diskMb }', description: 'Initial editable Cloud service limits: CPU at least 0.25, whole MB of RAM at least 128, and whole MB of disk at least 64. All three fields are required when supplied.' },
+    replacesImages: { type: 'string[]', description: 'Exact retired image names eligible for explicit operator-reviewed repair. Never automatically applied to installed services.' },
+    replacesBuilds: { type: 'string[]', description: 'SHA-256 fingerprints of exact retired inline recipes eligible for explicit operator-reviewed conversion to this image. The repair tool requires the same official base and preserves custom recipes.' },
+    resources: { type: '{ cpuCores, memoryMb, diskMb }', description: 'Advisory sizing recommendation: CPU at least 0.25, whole MB of RAM at least 128, and whole MB of disk at least 64. All three fields are required when supplied. Never copied into installed container limits.' },
     build: { type: 'ServiceBuild', description: 'Inline Docker build context — for a service Openship must BUILD rather than pull. Mutually exclusive with image. See Building an image.' },
     ports: { type: 'string[]', description: 'Compose-style port strings, e.g. ["2368:2368"].' },
     exposedPort: { type: 'number', description: 'The container port that receives the public route.' },
@@ -146,36 +148,37 @@ name, never an IP or a localhost address.
     healthcheck: { type: 'ComposeHealthcheck', description: '{ test, interval, timeout, retries, startPeriod, disable }. disable:true turns off an image baked-in check.' },
     restart: { type: '"no" | "always" | "on-failure" | "unless-stopped"', description: 'Restart policy.' },
     command: { type: 'string', description: 'Override the container command.' },
+    commandArgv: { type: 'string[]', description: 'Exact container command arguments; useful for invoking a mounted startup script through its interpreter.' },
   }}
 />
 
-### Service resource defaults
+### Service sizing recommendations
 
-Declare `resources` for stacks whose components need different sizes. On Cloud, the installer
-saves each profile as the service's normal resource settings. Self-hosted services remain
-uncapped unless the operator configures limits. Reopening or retrying
-a failed install fills missing profiles in one transaction and preserves explicit
-service and project resource settings, files, environment and secrets. Catalog updates do not resize already
-deployed apps or change frozen deployment snapshots.
+Catalog `resources` profiles are advisory. They never become installed CPU or memory
+limits on Cloud, Desktop or a connected server, and retrying an installation does not
+copy them into saved settings. `minResources` describes recommended host capacity.
 
-On Cloud, enabled services share a workspace. Its CPU is the rounded-up sum of the
-service limits, RAM includes 512 MB for Docker and the OS, and disk uses the largest
-service disk request with an 8-GB floor. Source builds reserve additional resources.
-Oblien enforces the namespace's per-workspace and total limits; a template cannot
-raise them or grant credits.
+Installed services use the user's saved service limits, inheriting project limits only
+for omitted dimensions. Without either setting, Docker receives no additional CPU or
+memory cap. Existing saved settings and frozen deployment snapshots remain unchanged;
+reset a service's limits explicitly to Full capacity if an older installer saved a
+catalog profile there.
 
-Supabase's profile requests a 4-vCPU, 8-GB RAM, 40-GB disk workspace, following its
-[published system requirements](https://supabase.com/docs/guides/self-hosting/docker#system-requirements).
-With the current retail catalog it fits Team's per-workspace limits. Existing
-allocations, a stricter saved offer or explicit service overrides can still require
-a different allocation. Deploy an API version with resource-profile support before
-relying on a catalog update; older installers ignore this optional field.
+Cloud services share the selected managed server. Its purchased VM capacity and billing
+remain independent of per-container limits. Automatic builds have no additional Docker
+CPU or memory limits; Cloud admission keeps them from overlapping other builds on the
+same server. A catalog update cannot resize the server or grant credits.
 
 ## Building an image
 
-Most services **pull** a prebuilt `image`. Some can't: the upstream ships a base image that still
-needs extra packages and a provisioning entrypoint baked in — Neon's compute node is the canonical
-case. For those, set `build` instead of `image`. It is an inline Docker build context that Openship
+Prefer a published `image` with its supported environment settings. Use top-level `files` and
+`commandArgv` when a setup script can run with tools already in that image. WordPress and Odoo
+follow this path: their startup helpers are mounted read-only and run before the application
+starts, so the customer does not need an image build. Initial account creation must finish
+before exposing a public installer, and redeployment must preserve existing accounts and data.
+
+Use `build` when the image actually needs additional software or compiled assets, as with
+PocketBase's binary installation. It is an inline Docker build context that Openship
 materializes at deploy time and builds on the deploy host through the normal compose build pipeline.
 Building subsumes an entrypoint override: the Dockerfile sets its own `ENTRYPOINT`.
 

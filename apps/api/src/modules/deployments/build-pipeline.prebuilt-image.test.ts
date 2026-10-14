@@ -898,11 +898,17 @@ describe("single-app prebuilt release-image pipeline", () => {
       expect(mocks.acknowledgeBuildExecutionFinished).toHaveBeenCalledOnce();
     }));
 
-    it("claims the reservation and releases only after build completion, before deployment settles", async () => withCloud(async () => {
+    it.each([false, true])("keeps configured limits separate from the reservation and releases it after the build (configured: %s)", async configured => withCloud(async () => {
       let finishBuild!: () => void;
       let finishDeploy!: () => void;
       const building = new Promise<void>(resolve => { finishBuild = resolve; });
       const deploying = new Promise<void>(resolve => { finishDeploy = resolve; });
+      const workerResources = configured
+        ? { cpuCores: 0.5, memoryMb: 512, diskMb: 0 }
+        : { cpuCores: 0, memoryMb: 0, diskMb: 0 };
+      const row = source();
+      Object.assign(row.meta!, { buildResources: configured ? workerResources : null });
+      vi.mocked(resolveBuildResources).mockReturnValue(workerResources);
       mocks.admitQueue.mockImplementation(async (_project, _dep, start) => start(reservation));
       mocks.build.mockImplementationOnce(async () => {
         await building;
@@ -921,12 +927,13 @@ describe("single-app prebuilt release-image pipeline", () => {
         return { started: 0 };
       });
       try {
-        await run(source(), { workspaceId: "workspace-1" });
+        await run(row, { workspaceId: "workspace-1" });
         await vi.waitFor(() => expect(mocks.build).toHaveBeenCalledOnce());
         expect(mocks.claimBuildExecution).toHaveBeenCalledWith(expect.objectContaining({
           cloudBuildReservation: { workspaceId: "workspace-1", resources: reservation, exclusivePreparation: false },
         }));
-        expect(mocks.build.mock.calls[0]?.[0].resources).toEqual(reservation);
+        expect(mocks.build.mock.calls[0]?.[0].resources).toEqual(workerResources);
+        expect(row.meta).toMatchObject({ buildResources: configured ? workerResources : null });
         expect(releaseCloudBuildSlot).not.toHaveBeenCalled();
         finishBuild();
         await vi.waitFor(() => expect(mocks.deploy).toHaveBeenCalledOnce());
@@ -934,7 +941,10 @@ describe("single-app prebuilt release-image pipeline", () => {
         expect(releaseCloudBuildSlot).toHaveBeenCalledOnce();
         expect(dispatchContexts).toEqual([undefined]);
         expect(mocks.acknowledgeBuildExecutionFinished).not.toHaveBeenCalled();
-      } finally { finishBuild(); finishDeploy(); }
+      } finally {
+        finishBuild(); finishDeploy();
+        vi.mocked(resolveBuildResources).mockReturnValue({} as never);
+      }
     }));
 
     it.each([false, true])("passes the captured backup policies through admission (backups: %s)", async hasBackups => withCloud(async () => {
@@ -1102,12 +1112,12 @@ describe("single-app prebuilt release-image pipeline", () => {
     expect(mocks.deploy).not.toHaveBeenCalled();
   });
 
-  it.each([true, false])("source services reach the shared builder with the resolved budget (Cloud mode: %s)", async (cloudMode) => {
+  it.each([[true, true], [true, false], [false, true], [false, false]])("source services preserve saved build limits (Cloud: %s, configured: %s)", async (cloudMode, configured) => {
     const originalCloudMode = env.CLOUD_MODE;
     Object.assign(env, { CLOUD_MODE: cloudMode });
-    const resources = cloudMode
-      ? { cpuCores: 1.5, memoryMb: 2800, diskMb: 25_600 }
-      : { cpuCores: 0.5, memoryMb: 512, diskMb: 8192 };
+    const resources = configured
+      ? { cpuCores: 0.5, memoryMb: 512, diskMb: 8192 }
+      : { cpuCores: 0, memoryMb: 0, diskMb: 0 };
     const services = ["api", "worker"].map(name => ({
       id: `svc-${name}`, name, kind: "compose", enabled: true,
       image: null, build: `./${name}`, dockerfile: "Dockerfile", advanced: {},
@@ -1136,7 +1146,7 @@ describe("single-app prebuilt release-image pipeline", () => {
       await run(deployment({ meta: {
         ...snapshot(), releaseImageRef: undefined, source: "git", build: "dockerfile",
         serviceDeploymentMode: "services", repoUrl: "https://github.com/acme/services",
-        buildResources: cloudMode ? null : resources,
+        buildResources: configured ? resources : null,
         ...(cloudMode ? { managedServer: { ownerWorkspaceId: "workspace-1" } } : {}),
         composeServices: services,
       } }));
@@ -1147,7 +1157,7 @@ describe("single-app prebuilt release-image pipeline", () => {
         name: spec.serviceName, resources: spec.config.resources,
       }))).toEqual(services.map(service => ({ name: service.name, resources })));
       if (cloudMode) {
-        expect(mocks.sampleCloudWorkspaceResources).toHaveBeenCalledExactlyOnceWith("org-1", "workspace-1");
+        expect(mocks.sampleCloudWorkspaceResources).toHaveBeenCalledExactlyOnceWith("org-1", "workspace-1", configured);
       } else {
         expect(mocks.sampleCloudWorkspaceResources).not.toHaveBeenCalled();
       }

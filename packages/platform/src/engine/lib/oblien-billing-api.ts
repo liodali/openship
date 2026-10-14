@@ -41,6 +41,7 @@ export const oblienCatalogSchema = z.object({
   reseller: z
     .object({
       contractVersion: amount.int().positive(),
+      checkoutCancellation: z.boolean().optional(),
       offerPolicy: z.boolean(),
       resourceLimits: z.boolean(),
       effectiveResourceLimits: z.boolean().optional(),
@@ -365,6 +366,9 @@ export class OblienBillingApi {
         invalid_redirect_url: "Cloud billing requires a valid HTTPS return link. Contact Openship support.",
         billing_idempotency_conflict: "This checkout attempt no longer matches the original request. Contact Openship support before starting another payment.",
         billing_checkout_reconciliation_required: "An earlier checkout needs to be reviewed. Contact Openship support before starting another payment.",
+        checkout_cancellation_pending:
+          "Cancellation is still being confirmed. Retry the same payment before starting another checkout.",
+        checkout_already_paid: "Payment already completed. Refresh its verification status.",
         checkout_expired: "This checkout has expired. Choose your plan again to start a new checkout.",
         capacity_checkout_expired: "This checkout has expired. Choose your plan again to start a new checkout.",
         invalid_offer: "This Cloud offer is not configured correctly. Contact Openship support.",
@@ -457,9 +461,9 @@ export class OblienBillingApi {
     return this.validate(this.billing.entitlement(slug), oblienEntitlementSchema, slug);
   }
 
-  getCheckout(slug: string, checkoutId: string) {
+  private checkoutResponse(response: Promise<unknown>, slug: string, checkoutId: string) {
     return this.validate(
-      this.billing.checkoutStatus(slug, checkoutId),
+      response,
       z.object({
         success: z.literal(true),
         namespace,
@@ -484,6 +488,24 @@ export class OblienBillingApi {
         }),
       }),
       slug,
+    );
+  }
+
+  getCheckout(slug: string, checkoutId: string) {
+    return this.checkoutResponse(this.billing.checkoutStatus(slug, checkoutId), slug, checkoutId);
+  }
+
+  cancelCheckout(slug: string, checkoutId: string, input: { idempotencyKey: string }) {
+    // Use the existing authenticated, bounded transport until the provider SDK
+    // release includes this endpoint. Validate the original checkout identity.
+    return this.checkoutResponse(
+      this.request({
+        method: "POST",
+        path: `/billing/checkout/${encodeURIComponent(checkoutId)}/cancel`,
+        body: { namespace: slug, idempotencyKey: input.idempotencyKey },
+      }),
+      slug,
+      checkoutId,
     );
   }
 

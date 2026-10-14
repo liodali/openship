@@ -43,6 +43,36 @@ const multiRoute = [
 ];
 
 describe("normalizeRoutingFields", () => {
+  it("keeps distinct free and custom hostnames on the same port", () => {
+    const endpoints = [
+      { port: 4000, domainType: "free" as const, domain: "web" },
+      { port: 4000, domainType: "custom" as const, customDomain: "app.example.com" },
+      { port: 4000, domainType: "custom" as const, customDomain: "alias.example.com" },
+    ];
+    expect(normalizeRoutingFields({ publicEndpoints: endpoints })).toMatchObject({
+      exposed: true,
+      exposedPort: "4000",
+      domain: "web",
+      customDomain: null,
+      publicEndpoints: endpoints,
+    });
+  });
+
+  it("deduplicates normalized hostnames instead of their target ports", () => {
+    expect(
+      normalizeRoutingFields({
+        publicEndpoints: [
+          { port: 4000, domainType: "custom", customDomain: "https://APP.example.com/" },
+          { port: 5000, domainType: "custom", customDomain: "app.example.com" },
+          { port: 4000, domainType: "custom", customDomain: "alias.example.com" },
+        ],
+      }).publicEndpoints,
+    ).toEqual([
+      { port: 4000, domainType: "custom", customDomain: "app.example.com" },
+      { port: 4000, domainType: "custom", customDomain: "alias.example.com" },
+    ]);
+  });
+
   it("pauses without erasing on an explicit exposed:false, array notwithstanding", () => {
     // `exposed:false` is authoritative over a non-empty array (which used to flip
     // the row back to exposed:true, so it could never be paused) — but the route

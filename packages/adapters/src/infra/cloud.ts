@@ -1,5 +1,6 @@
 import { reportCaughtError as observeCaughtError } from "@repo/core/diagnostics";
 import type { Oblien, DomainRoute, RoutesInput } from "oblien";
+import { OblienError } from "oblien";
 import { posix } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { AppError, SYSTEM } from "@repo/core";
@@ -24,7 +25,13 @@ interface PageDomainInfo {
 }
 
 const normalizeHostname = (hostname: string) => hostname.trim().toLowerCase();
-const notFound = (error: unknown) => (error as { status?: number })?.status === 404;
+const httpStatus = (error: unknown) => error instanceof AppError
+  ? error.statusCode : (error as { status?: number } | null)?.status;
+// Direct SDK errors preserve the provider status; either Cloud relay transport
+// identifies provider errors by code. Ownership and endpoint 404s stay failures.
+const notFound = (error: unknown) => httpStatus(error) === 404 &&
+  (error instanceof OblienError ||
+    (error as { code?: unknown } | null)?.code === "CLOUD_PROVIDER_ERROR");
 const disconnected = () =>
   new AppError(
     "This domain has no Cloud route for this project. Retry routing from Domains & Routes, then verify HTTPS.",
@@ -160,7 +167,7 @@ export class CloudInfraProvider implements RoutingProvider, SslProvider {
     try {
       page = (await this.pages.get(matches[0].slug)).page;
     } catch (error) {
-      if ((error as { status?: number }).status === 404) return undefined;
+      if (notFound(error)) return undefined;
       throw error;
     }
     if (
@@ -413,7 +420,7 @@ export class CloudInfraProvider implements RoutingProvider, SslProvider {
             domain: this.publicDomain,
           });
         } catch (error) {
-          if ((error as { status?: number }).status !== 409) throw error;
+          if (httpStatus(error) !== 409) throw error;
         }
         page = (await this.pages.get(slug)).page;
         assertPage();

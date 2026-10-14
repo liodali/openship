@@ -1,4 +1,13 @@
 {
+  "cloudClient": {
+    "title": "E-Mails",
+    "subtitle": "Nutze deine vorhandenen Postfächer mit Openship Webmail.",
+    "connectTitle": "Mailserver verbinden",
+    "description": "Verbinde einen beliebigen IMAP/SMTP-Server. Postfächer und E-Mail-Zustellung bleiben bei deinem Anbieter.",
+    "connectAction": "Vorhandenen Mailserver verbinden",
+    "signInHint": "Melde dich mit deiner E-Mail-Adresse und dem Postfachpasswort bei Webmail an.",
+    "manageAction": "Webmail-Apps verwalten"
+  },
   "cloudComingSoon": {
     "title": "Verwaltete E-Mail",
     "badge": "Demnächst",

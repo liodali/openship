@@ -92,6 +92,7 @@ const name = Type.String({ minLength: 1, maxLength: 80, pattern: "\\S" });
 export const CreateManagedServerInputSchema = Type.Object(
   {
     name,
+    idempotencyKey: Type.Optional(operationKey),
   },
   { additionalProperties: false },
 );

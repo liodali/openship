@@ -35,6 +35,7 @@ vi.mock("@repo/db", () => ({
     project: { findById, listEnvVars },
     service: { listByProject },
     domain: { listByProject: listDomains },
+    clusterDatabase: { list: async () => [] },
   },
 }));
 

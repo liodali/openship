@@ -246,6 +246,11 @@ export interface StackDefinition {
   defaultBuildCommand: string;
   /** Default start command */
   defaultStartCommand: string;
+  /**
+   * Optional web startup optimization, enabled by openship.json `optimize`.
+   * Runs with the runtime environment before the resolved start command.
+   */
+  optimizeCommand?: string;
   /** Minimum tool versions required by this stack on bare metal. */
   requiredToolVersions?: Readonly<Record<string, string>>;
   /**
@@ -772,17 +777,29 @@ export const STACKS = {
     // Only one queue backend is registered per app in practice, but a repo can
     // carry both gems mid-migration - resolveStackRoles drops the worker role
     // entirely when that happens rather than guessing which one runs.
+    //
+    // Explicit shutdown budgets for the later runtime slice, sized to the
+    // workers' own timeouts: Solid Queue's `shutdown_timeout` defaults to 5s
+    // and Sidekiq's `timeout` to 25s, each measured to exit ~0.5s after it
+    // (solid_queue 1.7.0, sidekiq 8.1.7). 10s matches Docker's own default and
+    // is kept as explicit intent. Sidekiq gets 45s because exceeding the grace
+    // period loses the in-flight job rather than requeueing it, so the 4.5s a
+    // 30s budget left over one measured run was too thin. An explicit
+    // openship.json `roles` array replaces all presets, so declare grace
+    // periods there to keep these values.
     defaultRoles: [
       {
         name: "jobs",
         kind: "worker",
         command: "exec bin/jobs",
+        stopGracePeriod: "10s",
         when: { deps: ["solid_queue"], files: ["bin/jobs"] },
       },
       {
         name: "sidekiq",
         kind: "worker",
         command: "exec bundle exec sidekiq",
+        stopGracePeriod: "45s",
         when: { deps: ["sidekiq"] },
       },
     ],
@@ -819,6 +836,9 @@ export const STACKS = {
     defaultBuildCommand: "",
     defaultStartCommand:
       'SERVER_NAME=":$PORT" exec frankenphp run --config /etc/frankenphp/Caddyfile --adapter caddyfile',
+    // Opt-in web cache warming after runtime environment injection. Keep the
+    // normal start command separate so existing projects stay unchanged.
+    optimizeCommand: "php artisan optimize",
     // Everything a stock Laravel app writes lives here: uploads
     // (storage/app), sessions + cache when the drivers are `file`, and the
     // framework's own scratch space. `database/` is deliberately NOT persisted —

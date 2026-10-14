@@ -19,6 +19,7 @@ import {
   clusterStorage,
   project,
   envVar,
+  projectConnection,
 } from "../schema";
 import { isDeepStrictEqual } from "node:util";
 import { lockClusterBackupDestinations } from "./cluster-backup-destination";
@@ -253,6 +254,15 @@ export function createClusterDatabaseRepo(db: Database) {
           throw conflict("Configure database backups and finish setup first.");
         if (action === "remove" && current.envKey)
           throw conflict("Disconnect this database from the application before removing it.");
+        if (action === "remove") {
+          const [consumer] = await tx
+            .select({ id: projectConnection.id })
+            .from(projectConnection)
+            .where(eq(projectConnection.sourceDatabaseId, current.id))
+            .limit(1);
+          if (consumer)
+            throw conflict("Disconnect the projects using this database before removing it.");
+        }
         if (
           action === "remove" &&
           current.intent === "remove" &&

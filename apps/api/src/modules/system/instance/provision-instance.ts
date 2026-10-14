@@ -177,7 +177,13 @@ export function provisionInstance(
       return;
     }
     let plan = row.provisioning;
-    const ctx = freezeContext({ ...requestContext, organizationId: plan.organizationId });
+    // Keep the setup project with the source controller until the durable
+    // handoff transfers it, including when the destination is a linked Cloud server.
+    const ctx = freezeContext({
+      ...requestContext,
+      organizationId: plan.organizationId,
+      scopeMode: "fixed",
+    });
     await assertInstanceAdmin(ctx);
     const kernel = getPlatformKernel();
     await kernel.servers.get(ctx, plan.serverId); // re-authorize on every resume

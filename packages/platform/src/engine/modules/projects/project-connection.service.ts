@@ -33,17 +33,43 @@ import { encrypt, decrypt } from "../../lib/encryption";
 import { listAuthorizedProjects } from "../../lib/authorized-projects";
 import { withProjectRuntimeLock } from "../../lib/project-runtime-lock";
 import { withCloudWorkspaceActivity } from "../../lib/cloud-workspace-lock";
+import {
+  requireNativeDatabaseConnection,
+  reconcileNativeDatabaseConnections,
+} from "./cluster-database-connections";
 
 const ENVIRONMENT = "production";
 
 /** Match service/project deletion locks; a stable order also allows reciprocal links. */
-async function withConnectionLocks<T>(sourceId: string, targetId: string, run: () => Promise<T>): Promise<T> {
-  const [first, second] = [sourceId, targetId].sort();
-  const projects = await Promise.all([repos.project.findById(first), repos.project.findById(second)]);
-  const workspaces = [...new Set(projects.flatMap(project => project?.workspaceId ? [project.workspaceId] : []))].sort();
-  const acquire = (index: number): Promise<T> => index === workspaces.length
-    ? withProjectRuntimeLock(first, () => withProjectRuntimeLock(second, run))
-    : withCloudWorkspaceActivity(workspaces[index], () => acquire(index + 1), undefined, { scope: `connection:${first}:${second}` });
+async function withConnectionLocks<T>(
+  sourceId: string,
+  targetId: string,
+  run: () => Promise<T>,
+): Promise<T> {
+  // Include previous sources so replacing a binding can revoke its old native grant.
+  const links = await repos.projectConnection.listByTarget(targetId);
+  const ids = [
+    ...new Set([sourceId, targetId, ...links.map((link) => link.sourceProjectId)]),
+  ].sort();
+  const projects = await Promise.all(ids.map((id) => repos.project.findById(id)));
+  const workspaces = [
+    ...new Set(projects.flatMap((project) => (project?.workspaceId ? [project.workspaceId] : []))),
+  ].sort();
+  const lockProjects = (index: number): Promise<T> =>
+    index === ids.length
+      ? (async () => {
+          const current = await repos.projectConnection.listByTarget(targetId);
+          if (current.some((link) => !ids.includes(link.sourceProjectId)))
+            throw new ValidationError("Connections changed. Refresh before trying again.");
+          return run();
+        })()
+      : withProjectRuntimeLock(ids[index], () => lockProjects(index + 1));
+  const acquire = (index: number): Promise<T> =>
+    index === workspaces.length
+      ? lockProjects(0)
+      : withCloudWorkspaceActivity(workspaces[index], () => acquire(index + 1), undefined, {
+          scope: `connection:${ids.join(":")}`,
+        });
   return acquire(0);
 }
 
@@ -55,7 +81,13 @@ export async function listConnectionCandidates(ctx: RequestContext, projectId: s
     if (project.id === projectId || !(await authorization.checkPermissionOnResource(
       { ...ctx, scopeMode: "fixed" }, { resourceType: "project", resourceId: project.id, action: "write" },
     ))) continue;
-    candidates.push({ id: project.id, name: project.name, description: project.environmentName, appTemplateId: project.appTemplateId });
+    candidates.push({
+      id: project.id,
+      name: project.name,
+      description: project.environmentName,
+      appTemplateId: project.appTemplateId,
+      clusterId: project.clusterId,
+    });
   }
   return candidates.sort((a, b) => a.name.localeCompare(b.name));
 }
@@ -68,6 +100,7 @@ export interface ConnectionView {
   sourceName: string;
   sourceAppTemplateId: string | null;
   sourceServiceId: string | null;
+  sourceDatabaseId?: string | null;
   sourceServiceName: string | null;
   targetProjectId: string;
   outputId: string;
@@ -85,6 +118,7 @@ function toConnectionView(
     id: string;
     sourceProjectId: string;
     sourceServiceId?: string | null;
+    sourceDatabaseId?: string | null;
     targetProjectId: string;
     outputId: string;
     envKey: string;
@@ -99,6 +133,7 @@ function toConnectionView(
     sourceName: source?.name ?? "Unknown",
     sourceAppTemplateId: source?.appTemplateId ?? null,
     sourceServiceId: link.sourceServiceId ?? null,
+    sourceDatabaseId: link.sourceDatabaseId ?? null,
     sourceServiceName,
     targetProjectId: link.targetProjectId,
     outputId: link.outputId,
@@ -130,6 +165,7 @@ export async function listConnections(
 export interface ConnectionConsumerView {
   id: string;
   sourceServiceId: string | null;
+  sourceDatabaseId?: string | null;
   targetProjectId: string;
   targetName: string;
   targetSlug: string | null;
@@ -172,6 +208,7 @@ export async function listConsumers(
     out.push({
       id: l.id,
       sourceServiceId: l.sourceServiceId ?? null,
+      sourceDatabaseId: l.sourceDatabaseId ?? null,
       targetProjectId: l.targetProjectId,
       targetName: target?.name ?? "Unknown",
       targetSlug: target?.slug ?? null,
@@ -357,6 +394,8 @@ async function resolveProjectHost(project: Project): Promise<ProjectHost> {
 
 /** Also checked against the new deployment at network attachment, so moves cannot silently break a link. */
 export async function privateConnectionError(source: Project, target: Project): Promise<string | null> {
+  if (source.clusterId || target.clusterId)
+    return "Docker private networks cannot be used by native cluster applications. Choose a native database connection or a reachable endpoint.";
   const [sourceHost, targetHost, targetDeployment] = await Promise.all([
     resolveProjectHost(source), resolveProjectHost(target),
     target.activeDeploymentId ? findActiveDeployment(target) : null,
@@ -387,6 +426,11 @@ async function resolveInternalValue(ends: ConnectionEnds): Promise<InternalResol
   // re-break the case that was reported, and resolving hosts costs queries this
   // path has no use for.
   if (!isNetworkUrl(output.value)) return { value: output.value };
+
+  if (output.sourceDatabaseId) {
+    await requireNativeDatabaseConnection(source, target, output.sourceDatabaseId);
+    return { value: output.value };
+  }
 
   // Everything below hands the consumer a HOST to reach east-west, which rides on
   // joining the source app's docker network at deploy (attachLinkedNetworks). Those
@@ -524,6 +568,7 @@ async function prepareConnection(
         organizationId: target.organizationId,
         sourceProjectId: source.id,
         sourceServiceId: output.sourceServiceId ?? null,
+        sourceDatabaseId: output.sourceDatabaseId ?? null,
         targetProjectId: target.id,
         outputId: output.id,
         envKey,
@@ -534,6 +579,39 @@ async function prepareConnection(
   };
 }
 
+async function revokeReplacedNativeConnections(
+  organizationId: string,
+  previous: Awaited<ReturnType<typeof repos.projectConnection.listByTarget>>,
+  bindings: Array<Awaited<ReturnType<typeof prepareConnection>>["binding"]>,
+) {
+  const replaced = previous.filter(
+    (link) =>
+      link.sourceDatabaseId &&
+      bindings.some(
+        (binding) =>
+          binding.connection.envKey === link.envKey &&
+          binding.connection.sourceDatabaseId !== link.sourceDatabaseId,
+      ),
+  );
+  const excluded = new Set(replaced.map((link) => link.id));
+  for (const [databaseId, sourceId] of new Map(
+    replaced.map((link) => [link.sourceDatabaseId!, link.sourceProjectId]),
+  ))
+    await reconcileNativeDatabaseConnections(organizationId, sourceId, databaseId, excluded);
+}
+
+async function reconcileNativeConnections(
+  organizationId: string,
+  rows: Awaited<ReturnType<typeof repos.projectConnection.listByTarget>>,
+) {
+  for (const [databaseId, sourceId] of new Map(
+    rows
+      .filter((link) => link.sourceDatabaseId)
+      .map((link) => [link.sourceDatabaseId!, link.sourceProjectId]),
+  ))
+    await reconcileNativeDatabaseConnections(organizationId, sourceId, databaseId);
+}
+
 export async function createConnection(
   ctx: RequestContext,
   targetProjectId: string,
@@ -541,8 +619,11 @@ export async function createConnection(
   opts?: { defer?: boolean },
 ): Promise<{ connection: ConnectionView; requiresRedeploy: true }> {
   const connection = await withConnectionLocks(input.sourceProjectId, targetProjectId, async () => {
+    const previous = await repos.projectConnection.listByTarget(targetProjectId);
     const prepared = await prepareConnection(ctx, targetProjectId, input);
+    await revokeReplacedNativeConnections(ctx.organizationId, previous, [prepared.binding]);
     const [row] = await repos.projectConnection.saveBindings(targetProjectId, ENVIRONMENT, [prepared.binding]);
+    await reconcileNativeConnections(ctx.organizationId, [row]);
     return toConnectionView(row, prepared.source, prepared.sourceServiceName);
   });
   if (!opts?.defer) await applyConnectionToTarget(ctx, targetProjectId);
@@ -569,11 +650,18 @@ export async function connectBundle(
   const keys = input.items.map(item => item.envKey.trim());
   if (new Set(keys).size !== keys.length) throw new ValidationError("Choose a different environment variable name for each connection value.");
   const connections = await withConnectionLocks(input.sourceProjectId, targetProjectId, async () => {
+    const previous = await repos.projectConnection.listByTarget(targetProjectId);
     const prepared: Array<Awaited<ReturnType<typeof prepareConnection>>> = [];
     for (const item of input.items) prepared.push(await prepareConnection(ctx, targetProjectId, {
       sourceProjectId: input.sourceProjectId, ...item, mode: input.mode,
     }));
+    await revokeReplacedNativeConnections(
+      ctx.organizationId,
+      previous,
+      prepared.map((item) => item.binding),
+    );
     const rows = await repos.projectConnection.saveBindings(targetProjectId, ENVIRONMENT, prepared.map(item => item.binding));
+    await reconcileNativeConnections(ctx.organizationId, rows);
     return rows.map((row, index) => toConnectionView(row, prepared[index].source, prepared[index].sourceServiceName));
   });
   await applyConnectionToTarget(ctx, targetProjectId);
@@ -601,16 +689,29 @@ export async function deleteConnection(
   await withConnectionLocks(existing.sourceProjectId, targetProjectId, async () => {
     const link = await repos.projectConnection.findInTarget(linkId, targetProjectId);
     if (!link || link.sourceProjectId !== existing.sourceProjectId) throw new ValidationError("This connection changed. Refresh the project before disconnecting.");
+    if (link.sourceDatabaseId)
+      await reconcileNativeDatabaseConnections(
+        ctx.organizationId,
+        link.sourceProjectId,
+        link.sourceDatabaseId,
+        new Set([link.id]),
+      );
     if (usesPrivateNetwork(link) && link.sourceServiceId) {
       const source = await repos.project.findById(link.sourceProjectId);
       assertResourceInOrg(source, "Project", target.organizationId, link.sourceProjectId);
       await disconnectSharedServiceNetwork(source, target, link.sourceServiceId, link.id);
     }
 
-    await mergeEnvVars(targetProjectId, target.organizationId, {
-      environment: ENVIRONMENT, upserts: [], deletes: [link.envKey],
-    });
-    await repos.projectConnection.delete(linkId);
+    if (link.sourceDatabaseId) {
+      await repos.projectConnection.deleteBinding(targetProjectId, ENVIRONMENT, linkId);
+    } else {
+      await mergeEnvVars(targetProjectId, target.organizationId, {
+        environment: ENVIRONMENT,
+        upserts: [],
+        deletes: [link.envKey],
+      });
+      await repos.projectConnection.delete(linkId);
+    }
   });
   // Refresh the running consumer so the removed env leaves the live container.
   if (!opts?.defer) await applyConnectionToTarget(ctx, targetProjectId);
@@ -624,8 +725,9 @@ export async function refreshConnectionEnv(
   environment: string,
 ): Promise<Record<string, string>> {
   if (environment !== ENVIRONMENT) return {};
-  const links = (await repos.projectConnection.listByTarget(targetProjectId))
-    .filter(link => !!link.sourceServiceId);
+  const links = (await repos.projectConnection.listByTarget(targetProjectId)).filter(
+    (link) => !!link.sourceServiceId || !!link.sourceDatabaseId,
+  );
   if (!links.length) return {};
   const resolved: Record<string, string> = {};
   const rows = await repos.project.listEnvVars(targetProjectId, environment, null);

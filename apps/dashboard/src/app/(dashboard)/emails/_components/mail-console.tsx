@@ -53,6 +53,8 @@ import { resolveMailView } from "../_lib/view-gate";
 import { getMailSectionHeading, useMailRailOwnsTabs } from "../_lib/mail-section";
 import { canonicalMailTab } from "@/lib/mail-tabs";
 import { invalidateMailScope } from "@/lib/mail-scope-bus";
+import { canManageMailServers } from "@/lib/mail-availability";
+import { CloudMailClient } from "./cloud-mail-client";
 
 /** Identity the mail rail is built from: which servers exist and whether each
  *  is installed. Anything else changing here doesn't move the rail. */
@@ -65,24 +67,8 @@ const registrySignature = (servers: MailServerListItem[]) =>
  * here means neither route shell has to — and neither can forget it.
  */
 export function MailConsole() {
-  const { selfHosted, deployMode } = usePlatform();
-  const { t } = useI18n();
-  if (!selfHosted && deployMode !== "desktop") {
-    const copy = t.emails.cloudComingSoon;
-    return (
-      <PageContainer>
-        <h1 className="text-2xl font-medium text-foreground">{copy.title}</h1>
-        <section className="mt-6 max-w-2xl rounded-2xl bg-card p-6">
-          <div className="mb-5 flex size-12 items-center justify-center rounded-xl bg-muted">
-            <UiIcon name="mail" className="size-6 text-muted-foreground" />
-          </div>
-          <span className="inline-flex rounded-full bg-muted px-3 py-1 text-xs font-medium text-muted-foreground">{copy.badge}</span>
-          <p className="mt-4 text-base leading-relaxed text-foreground">{copy.description}</p>
-          <p className="mt-3 text-sm leading-relaxed text-muted-foreground">{copy.selfHosted}</p>
-        </section>
-      </PageContainer>
-    );
-  }
+  const platform = usePlatform();
+  if (!canManageMailServers(platform)) return <CloudMailClient />;
   return (
     <Suspense
       fallback={

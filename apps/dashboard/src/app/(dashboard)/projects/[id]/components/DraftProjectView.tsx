@@ -13,10 +13,11 @@ import { encodeLocalSlug, encodeRepoSlug, encodeProjectSlug } from "@/utils/repo
 import { useI18n, interpolate } from "@/components/i18n-provider";
 import type { Dictionary } from "@/i18n";
 import { DeleteConfirmationDialog } from "./DeleteConfirmationDialog";
+import { DeletionModal } from "./DeletionModal";
 
 interface DraftProjectViewProps {
   /** Deletes this environment using the page's normal cleanup policy. */
-  onDeleteProject: () => void | Promise<void>;
+  onDeleteProject: (wipeVolumes?: boolean, recordOnly?: boolean) => void | Promise<void>;
 }
 
 function relativeTime(iso: string | undefined, t: Dictionary): string {
@@ -113,11 +114,11 @@ export function DraftProjectView({ onDeleteProject }: DraftProjectViewProps) {
             : t.projects.draft.targetPending
   );
 
-  const handleConfirmDelete = async () => {
+  const handleConfirmDelete = async (...options: [wipeVolumes?: boolean, recordOnly?: boolean]) => {
     setShowDeleteDialog(false);
     setDeleting(true);
     try {
-      await onDeleteProject();
+      await onDeleteProject(...options);
     } finally {
       setDeleting(false);
     }
@@ -219,12 +220,23 @@ export function DraftProjectView({ onDeleteProject }: DraftProjectViewProps) {
           </section>
         </aside>
       </div>
-      <DeleteConfirmationDialog
-        isOpen={showDeleteDialog}
-        onClose={() => setShowDeleteDialog(false)}
-        onConfirm={handleConfirmDelete}
-        projectName={projectData.name || ""}
-      />
+      {hasAttempts ? (
+        <DeletionModal
+          isOpen={showDeleteDialog}
+          onClose={() => setShowDeleteDialog(false)}
+          onConfirm={handleConfirmDelete}
+          projectName={projectData.name || ""}
+          projectId={projectData.id}
+          selfHosted={projectData.deployTarget !== "cloud"}
+        />
+      ) : (
+        <DeleteConfirmationDialog
+          isOpen={showDeleteDialog}
+          onClose={() => setShowDeleteDialog(false)}
+          onConfirm={() => handleConfirmDelete()}
+          projectName={projectData.name || ""}
+        />
+      )}
     </>
   );
 }

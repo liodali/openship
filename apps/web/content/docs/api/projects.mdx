@@ -583,10 +583,10 @@ IDs.
 | Operation | SDK | REST API |
 | --- | --- | --- |
 | List the project’s outgoing resource connections. | `projects.listConnections(id)` | `GET /api/projects/:id/connections`<br />`project:read` |
-| List accessible projects and apps for a service connection. | `projects.listConnectionCandidates(id)` | `GET /api/projects/:id/connections/candidates`<br />`project:write` |
+| List writable projects and apps for a connection, including cluster IDs for native database placement. | `projects.listConnectionCandidates(id)` | `GET /api/projects/:id/connections/candidates`<br />`project:write` |
 | List projects consuming this project’s outputs. | `projects.listConnectionConsumers(id)` | `GET /api/projects/:id/connections/consumers`<br />`project:read` |
-| Connect an output to a target environment variable. | `projects.createConnection(id, input)` | `POST /api/projects/:id/connections`<br />`project:write` |
-| Apply a group of compatible resource connections. | `projects.connectBundle(id, input)` | `POST /api/projects/:id/connections/bundle`<br />`project:write` |
+| Connect an output to a target secret environment variable. Native database outputs require source and target write access and the same organization and cluster; ownership stays with the source. | `projects.createConnection(id, input)` | `POST /api/projects/:id/connections`<br />`project:write` |
+| Save a group of compatible resource connections and encrypted environment values in one transaction. Native database links reconcile private namespace access before reporting success; a failed reconciliation can be retried with the same inputs. | `projects.connectBundle(id, input)` | `POST /api/projects/:id/connections/bundle`<br />`project:write` |
 | Remove a resource connection. | `projects.removeConnection(id, input)` | `DELETE /api/projects/:id/connections/:linkId`<br />`project:admin` |
 | Read the project’s object-storage binding. | `projects.getStorage(id)` | `GET /api/projects/:id/storage`<br />`project:read` |
 | Bind a configured storage bucket. | `projects.bindStorage(id, input)` | `POST /api/projects/:id/storage`<br />`project:write` |

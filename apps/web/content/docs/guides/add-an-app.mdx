@@ -47,6 +47,8 @@ Expect review on exactly these points:
   it is before installing.
 - **Official or reputable images, pinned.** The project's own published image at a pinned version
   (`postgres:16-alpine`, `qdrant/qdrant:v1.18.3`) — never an unpinned tag or an unknown publisher.
+  Prefer the published image with environment settings, mounted configuration files and a startup
+  command. A small setup script alone does not require building a new image on the customer's server.
 - **Secure defaults.** Credentials auto-generated, never plaintext defaults. Publicly-exposed admin
   UIs require auth.
 - **Fully auditable.** The JSON is the whole truth — images, ports, env, volumes, all in one small

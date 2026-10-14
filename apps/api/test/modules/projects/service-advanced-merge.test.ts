@@ -68,6 +68,19 @@ describe("mergeAdvanced", () => {
     expect(mergeAdvanced({ files }, { files: null })).toEqual({});
   });
 
+  it("converts an inline build to runtime files without discarding resource or readiness settings", () => {
+    const files = [{ path: "/etc/openship/start.sh", content: "exec application" }];
+    const next = mergeAdvanced(
+      { ...stored, build: { dockerfile: "FROM application:v1" } },
+      {
+        build: null,
+        files,
+      },
+    );
+    expect(next).toEqual({ ...stored, files });
+    expect("build" in next).toBe(false);
+  });
+
   it("REPLACES a key rather than deep-merging it", () => {
     // A partially-specified healthcheck must not inherit the stored interval —
     // that would resurrect a field the user deleted.

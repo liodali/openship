@@ -992,7 +992,7 @@ const ProjectSettingsContent = () => {
   if (isNeverDeployed && activeTab !== "topology" && activeTab !== "actions") {
     return (
       <PageContainer className="@container/project-draft">
-        <DraftProjectView onDeleteProject={() => handleDeleteProject()} />
+        <DraftProjectView onDeleteProject={handleDeleteProject} />
       </PageContainer>
     );
   }

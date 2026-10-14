@@ -101,6 +101,7 @@
     }
   },
   "plansRoute": {
+    "requestedPlanUnavailable": "L’offre sélectionnée n’est plus disponible. Choisissez une autre offre ci-dessous.",
     "loadError": "Échec du chargement des forfaits",
     "genericError": "Une erreur s'est produite",
     "tryAgain": "Réessayer",
@@ -826,7 +827,8 @@
     "monthly": "par mois",
     "annual": "par an",
     "oneTime": "paiement unique",
-    "cancelUnavailable": "L’annulation de ce paiement est indisponible pour le moment. Actualisez ou contactez l’assistance.",
+    "cancelUnavailable": "Impossible de vérifier la possibilité d’annulation. Actualisez le statut du paiement.",
+    "cancelUnsupported": "Ce paiement ne peut pas être annulé ici. Terminez-le ou attendez son expiration avant de choisir une autre offre.",
     "support": "Contacter l’assistance",
     "cancelHint": "Le lien de paiement sera fermé. Vous pourrez ensuite choisir une autre offre.",
     "confirmCancel": "Confirmer l’annulation",

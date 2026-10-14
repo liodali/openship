@@ -126,7 +126,7 @@ export async function ingestSubgraph(input: IngestSubgraphInput): Promise<Ingest
   if (input.promotion) return ingestProjectPromotion(input, imported);
 
   // ── 4. Restore (merge + remap to target org) ─────────────────────────────
-  await restoreSubgraph(input.dump, { mode: "merge", remapOrgId: input.organizationId });
+  await restoreSubgraph(input.dump, { mode: "merge", remapOrgId: input.organizationId, stripInstanceRefs: true });
 
   return {
     organizationId: input.organizationId,
@@ -174,7 +174,7 @@ async function ingestProjectPromotion(
     const receipt: ProjectPromotion = { ...state, imported };
     delete receipt.cleanupInProgress;
     await db.transaction(async tx => {
-      await restoreSubgraphInTransaction(tx, input.dump, { mode: "merge", remapOrgId: input.organizationId });
+      await restoreSubgraphInTransaction(tx, input.dump, { mode: "merge", remapOrgId: input.organizationId, stripInstanceRefs: true });
       await tx.update(schema.project).set({ cloudPromotion: receipt, deletionInProgress: false }).where(
         and(eq(schema.project.id, projectId), eq(schema.project.organizationId, input.organizationId)),
       );

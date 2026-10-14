@@ -95,10 +95,10 @@ export function createCloudWorkspaceRepo(db: Database) {
         .where(eq(cloudWorkspace.organizationId, organizationId))
         .orderBy(asc(cloudWorkspace.createdAt), asc(cloudWorkspace.id));
     },
-    async create(input: Pick<CloudWorkspace, "organizationId" | "name">) {
+    async create(input: Pick<CloudWorkspace, "organizationId" | "name"> & { id?: string }) {
       return db.transaction(async (tx) => {
         const [row] = await tx.insert(cloudWorkspace)
-          .values({ ...input, id: generateId("cws") }).returning();
+          .values({ ...input, id: input.id ?? generateId("cws") }).returning();
         await tx.insert(servers).values({
           organizationId: input.organizationId, workspaceId: row!.id,
           name: input.name, sshHost: null, sshPort: null, sshUser: null,
@@ -407,6 +407,12 @@ export function createCloudWorkspaceRepo(db: Database) {
       return db.query.cloudServerDeletion.findFirst({ where: and(
         eq(cloudServerDeletion.serverId, serverId), eq(cloudServerDeletion.organizationId, organizationId),
         eq(cloudServerDeletion.operationId, operationId),
+      ) });
+    },
+    async findWorkspaceDeletion(workspaceId: string, organizationId: string) {
+      return db.query.cloudServerDeletion.findFirst({ where: and(
+        eq(cloudServerDeletion.workspaceId, workspaceId),
+        eq(cloudServerDeletion.organizationId, organizationId),
       ) });
     },
     /** Only called after provider deletion is confirmed. Membership is blocked

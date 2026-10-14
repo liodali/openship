@@ -40,13 +40,19 @@ pull its API/dashboard images. An older image is rejected before the source is p
 
 These are different actions:
 
-- **More instance options → Connect to an existing instance** uses a remote instance without copying its data. Enter its
+- **Connect to an existing instance** is visible beside **Move to a server** on Desktop and uses a remote instance without copying its data. Enter its
   public URL or a team invitation link, then sign in with your account. A separate **Use a connection code**
   option accepts a code from your own signed-in account. Your separate local instance pauses;
   **Return to local instance** resumes it.
-- **Move your instance → Existing instance** replaces the destination's data. Open
-  **More instance options → Move an instance here** there and paste its code into the source. A recovery snapshot is saved
-  before replacement.
+- **Move to a server → Existing instance** replaces the destination's data.
+  On the destination, open **More instance options → Move an instance here → Create receive code**.
+  Confirm replacement and create the code, then paste it into **Receive code from the destination** on the source.
+  Confirm the move there too. A recovery snapshot is saved before replacement.
+
+An active server shows **Connect a Desktop**, **Move to another server**, and **Move to Desktop**
+as direct buttons. Connecting and moving use different codes: a connection code signs in as
+the user who generated it; move and receive codes authorize an instance transfer. Creating
+a transfer code reserves the handoff but does not copy or replace data by itself.
 
 For either an API-only installation or one with a dashboard, enter `https://ops.example.com`.
 Desktop locates the API on that same host. Existing `/api/proxy` addresses still work.
@@ -63,7 +69,7 @@ Desktop receives that user's permissions, not an instance administrator role. AP
 and full-dashboard invitation pages offer **Open in Desktop**. Confirm the instance address
 in Desktop, then sign in and review the inviter, workspace and role before accepting.
 Opening a link alone changes no membership. If Desktop does not open, copy the invitation
-URL into **Connect to an existing instance**. A connection code is optional.
+URL into the visible **Connect to an existing instance** button. A connection code is optional.
 **Connect a Desktop** is available on hosted or connected instances. The code is for your
 own device; invite another person through **Team** so they use their own account and permissions.
 
@@ -82,8 +88,9 @@ The source server retires before Desktop starts managing jobs and deployments.
 If that instance manages apps on its own host, select its saved SSH connection in the
 return dialog. The source verifies that it reaches the same host before any data moves.
 
-You can also choose **More instance options → Move to Desktop** on the server, create a move code,
-and paste it into Desktop's **More instance options → Move an instance here** screen. Desktop initiates the connection, so it does not need an
+You can also choose the visible **Move to Desktop** button on the server, confirm and choose **Create move code**,
+then paste it into Desktop's **More instance options → Move an instance here → Paste move code** screen and confirm the move.
+Desktop initiates the connection, so it does not need an
 inbound public port.
 This also works for an instance that started on a server and has never been connected to
 Desktop, with or without a dashboard. The receiving Desktop's prior data is replaced only

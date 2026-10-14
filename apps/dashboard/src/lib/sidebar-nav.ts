@@ -90,10 +90,12 @@ export function getNavSections(
   // Keep audit history alongside account settings and billing.
   settingsItems.push({ key: "audit", href: "/audit", icon: "clipboard-list" });
 
-  const infraItems: NavItem[] = [{ key: "servers", href: "/servers", icon: "server" }];
-  if (selfHosted) {
-    infraItems.push({ key: "emails", href: "/emails", icon: "mail" });
-  }
+  // Cloud's Emails entry connects existing IMAP/SMTP backends through the
+  // generic webmail app; local control planes retain mail-server administration.
+  const infraItems: NavItem[] = [
+    { key: "servers", href: "/servers", icon: "server" },
+    { key: "emails", href: "/emails", icon: "mail" },
+  ];
   infraItems.push({ key: "jobs", href: "/jobs", icon: "clock" });
   // infraItems.push(
   //   { key: "monitoring", href: "/monitoring", icon: Activity },

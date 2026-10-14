@@ -1,4 +1,13 @@
 {
+  "cloudClient": {
+    "title": "电子邮件",
+    "subtitle": "通过 Openship Webmail 使用现有邮箱。",
+    "connectTitle": "连接邮件服务器",
+    "description": "连接任意 IMAP/SMTP 服务器。邮箱和邮件收发仍由你的服务商管理。",
+    "connectAction": "连接现有邮件服务器",
+    "signInHint": "使用邮箱地址和邮箱密码登录 Webmail。",
+    "manageAction": "管理 Webmail 应用"
+  },
   "cloudComingSoon": {
     "title": "托管邮件",
     "badge": "即将推出",

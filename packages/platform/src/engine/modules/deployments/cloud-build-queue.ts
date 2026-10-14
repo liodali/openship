@@ -10,6 +10,7 @@ import {
   currentPlanTier,
 } from "../../lib/plan-guard";
 import type { ResourceConfig } from "@repo/adapters";
+import { resolveBuildResources } from "../../lib/resources";
 import { decideCloudBuildResources } from "../../lib/cloud-build-resources";
 import { sampleCloudWorkspaceResources } from "../../lib/cloud-workspace-host";
 import { withCloudWorkspaceActivity } from "../../lib/cloud-workspace-lock";
@@ -137,10 +138,12 @@ export async function admitCloudBuild(
     if (needsBuild && first && first.id !== dep.id)
       return wait("concurrency", "Waiting for earlier submitted builds.");
 
+    const requested = resolveBuildResources(snapshot.buildResources);
+    const sampleUsage = needsBuild && (requested.cpuCores > 0 || requested.memoryMb > 0);
     let sample: Awaited<ReturnType<typeof sampleCloudWorkspaceResources>>;
     try {
       try {
-        sample = await sampleCloudWorkspaceResources(dep.organizationId, project.workspaceId!);
+        sample = await sampleCloudWorkspaceResources(dep.organizationId, project.workspaceId!, sampleUsage);
       } catch (error) {
         if (
           !(error instanceof AppError) ||
@@ -158,7 +161,7 @@ export async function admitCloudBuild(
           undefined,
           { scope: `project:${project.id}` },
         );
-        sample = await sampleCloudWorkspaceResources(dep.organizationId, project.workspaceId!);
+        sample = await sampleCloudWorkspaceResources(dep.organizationId, project.workspaceId!, sampleUsage);
       }
     } catch (error) {
       if (isPermanentQueueError(error)) throw error;
@@ -168,7 +171,7 @@ export async function admitCloudBuild(
     const decision = decideCloudBuildResources({
       capacity: sample.capacity,
       usage: sample.usage,
-      requested: snapshot.buildResources,
+      requested,
       reservations: reservations.flatMap((row) => (row.resources ? [row.resources] : [])),
       concurrencyLimit: limit,
     });

@@ -1,4 +1,13 @@
 {
+  "cloudClient": {
+    "title": "E-postalar",
+    "subtitle": "Mevcut posta kutularınızı Openship Webmail ile kullanın.",
+    "connectTitle": "Posta sunucunuzu bağlayın",
+    "description": "Herhangi bir IMAP/SMTP sunucusunu bağlayın. Posta kutularınız ve e-posta teslimatı sağlayıcınızda kalır.",
+    "connectAction": "Mevcut posta sunucusunu bağla",
+    "signInHint": "Webmail’e posta kutunuzun e-posta adresi ve parolasıyla giriş yapın.",
+    "manageAction": "Webmail uygulamalarını yönet"
+  },
   "cloudComingSoon": {
     "title": "Yönetilen e-posta",
     "badge": "Yakında",

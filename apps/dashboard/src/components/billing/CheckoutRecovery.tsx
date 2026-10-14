@@ -346,10 +346,17 @@ function CheckoutRow({
       )}
       {!expired && !processing && !canceling && item.state === "open" && !item.canCancel && (
         <p className="text-xs leading-5 text-muted-foreground">
-          {copy.cancelUnavailable}{" "}
-          <Link href="/support" className="underline underline-offset-2">
-            {copy.support}
-          </Link>
+          {item.cancelUnavailableReason === "unsupported"
+            ? copy.cancelUnsupported
+            : copy.cancelUnavailable}
+          {item.cancelUnavailableReason !== "provider_unavailable" && (
+            <>
+              {" "}
+              <Link href="/support" className="underline underline-offset-2">
+                {copy.support}
+              </Link>
+            </>
+          )}
         </p>
       )}
       {confirmCancel ? (

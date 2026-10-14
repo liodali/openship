@@ -29,9 +29,12 @@ process start time to avoid measuring a recycled PID.
 
 ## Capacity and ownership
 
-Docker CPU/memory limits are per-container ceilings. On managed servers, source
-builds use measured available capacity within the purchased host and are
-coordinated with other host activity. No application build creates or resizes a
+Docker CPU/memory limits are opt-in per-container ceilings, including for managed
+builds. Catalog recommendations never become service settings. Cloud admission
+reservations coordinate builds inside the purchased host; they never replace the
+user's saved build configuration. An uncapped dimension reserves that host dimension
+against sibling builds, while the worker receives no limit for it. Automatic builds
+read verified VM allocation without sampling usage. No application build creates or resizes a
 provider VM. Bare processes share host capacity; the UI does not present Docker
 container limits as enforceable bare-process limits.
 

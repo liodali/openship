@@ -1,6 +1,25 @@
 // Pure: detection (reading the Gemfile, walking the tree) is the caller's job.
 
-import type { StackRole } from "./stacks";
+import type { StackDefinition, StackRole } from "./stacks";
+
+/**
+ * Apply a stack's optional startup optimization to its resolved web command.
+ *
+ * Stack definitions supply the command; the resolver has no framework policy.
+ * Without opt-in or a configured optimization, return the web command unchanged.
+ * `&&` prevents server startup if optimization fails. Preserve any existing
+ * `exec` in the web command, which lets the server replace its shell and receive
+ * signals directly. Worker and scheduler commands do not pass through here.
+ */
+export function resolveWebCommand(
+  input: Pick<StackDefinition, "optimizeCommand"> & {
+    command: string;
+    optimize?: boolean;
+  },
+): string {
+  if (input.optimize !== true || !input.optimizeCommand) return input.command;
+  return `${input.optimizeCommand} && ${input.command}`;
+}
 
 export interface ResolveStackRolesInput {
   /** Non-web preset roles registered on the stack (STACKS[id].defaultRoles). */

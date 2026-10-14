@@ -61,6 +61,40 @@ describe("Oblien billing SDK and transport contract", () => {
     }));
     expect(JSON.parse(fetcher.mock.calls[0]![1]!.body as string)).toEqual({ namespace: "os-one", ...input });
   });
+  it("cancels the original checkout with bounded authenticated transport and validates scope and identity", async () => {
+    const checkout = {
+      id: "bco_original",
+      kind: "subscription",
+      status: "expired",
+      paymentStatus: "unpaid",
+      fulfilled: false,
+      fulfillmentStatus: "expired",
+      namespaceCreditsGranted: 0,
+    };
+    const { api, fetcher } = setup({ success: true, namespace: "os-one", checkout });
+    expect(
+      (await api.cancelCheckout("os-one", checkout.id, { idempotencyKey: "cancel-once" })).checkout,
+    ).toEqual(checkout);
+    expect(fetcher).toHaveBeenCalledWith(
+      "https://api.oblien.com/billing/checkout/bco_original/cancel",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ namespace: "os-one", idempotencyKey: "cancel-once" }),
+        redirect: "error",
+        signal: expect.any(AbortSignal),
+        headers: expect.objectContaining({
+          "X-Client-ID": "test-id",
+          "X-Client-Secret": "test-secret",
+        }),
+      }),
+    );
+    await expect(
+      api.cancelCheckout("os-other", checkout.id, { idempotencyKey: "same" }),
+    ).rejects.toMatchObject({ code: "OBLIEN_BILLING_NAMESPACE_MISMATCH" });
+    await expect(
+      api.cancelCheckout("os-one", "cs_other", { idempotencyKey: "same" }),
+    ).rejects.toMatchObject({ code: "OBLIEN_BILLING_INVALID_RESPONSE" });
+  });
   it.each([
     { quote: { id: "quote_pending", namespace: "os-other", paymentSource: "stripe" }, checkoutId: "cs_requested", url: null },
     { quote: { id: "quote_pending", namespace: "os-one", paymentSource: "stripe" }, checkoutId: "cs_requested", url: "https://evil.example/pay" },

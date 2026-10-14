@@ -126,13 +126,22 @@ or migrate to a smaller server.
 First subscriptions use hosted checkout. The return page checks the specific
 payment and provider fulfillment; a successful browser redirect does not grant
 coverage. Pending, refunded and failed payments remain distinct.
+Choosing a preset on the public Pricing page opens Cloud checkout for that plan
+after sign-in. You do not need to select it again. If an offer is no longer
+available, Cloud shows the current plans instead. Refreshing or retrying that
+purchase reuses its server and payment attempt.
 
 If a checkout was left open, **Pending payments** in the Billing header lets you
-resume its original payment or cancel it when the provider supports cancellation.
+resume its original payment or cancel an unpaid checkout. Cloud uses the provider’s
+checkout cancellation capability, with capacity-quote cancellation retained for
+older provider deployments.
 This remains available before a server has a paid plan. A pending cancellation
 keeps the purchase tracked until confirmed; a payment that completes meanwhile
 opens its verification status instead of another checkout. Confirmed cancellation
 or expiry lets you choose a new plan and remove an unused, unpaid server.
+If cancellation cannot be verified, refresh the payment status. If this payment
+has no supported cancellation, complete it or wait for expiry before selecting
+another plan; removing its local record would leave its payment link active.
 
 ## Cancellation and retained storage
 

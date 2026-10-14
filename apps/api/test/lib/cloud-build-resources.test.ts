@@ -45,17 +45,30 @@ describe("Cloud build resource admission", () => {
     });
   });
 
-  it("uses free RAM and sampled idle CPU while accounting for pending builders", () => {
+  it("does not freeze sampled idle CPU or available RAM into an automatic budget", () => {
+    expect(decide({ usage: { ...usage, memoryAvailableMb: 5000, cpuPercent: 75 } })).toEqual(
+      decide(),
+    );
+    expect(decide({ usage: null })).toEqual(decide());
+    expect(decide({ reservations: [{ cpuCores: 0.25, memoryMb: 128 }] })).toMatchObject({
+      kind: "wait",
+    });
+  });
+  it("reserves an uncapped dimension in full and keeps explicit caps unchanged", () => {
+    expect(decide({ requested: { memoryMb: 512 } })).toMatchObject({
+      kind: "admit",
+      resources: { cpuCores: 4, memoryMb: 512 },
+    });
+    expect(decide({ requested: { cpuCores: 1 } })).toMatchObject({
+      kind: "admit",
+      resources: { cpuCores: 1, memoryMb: 7782 },
+    });
     expect(
       decide({
-        usage: { ...usage, memoryAvailableMb: 5000, cpuPercent: 25 },
-        reservations: [{ cpuCores: 1.5, memoryMb: 1024 }],
+        requested: { cpuCores: 1, memoryMb: 512 },
+        reservations: [{ cpuCores: 1, memoryMb: 512 }],
       }),
-    ).toEqual({ kind: "admit", resources: { cpuCores: 1.5, memoryMb: 3566, diskMb: 0 } });
-    expect(decide({ usage: { ...usage, cpuPercent: 50 } })).toMatchObject({
-      kind: "admit",
-      resources: { cpuCores: 2 },
-    });
+    ).toMatchObject({ kind: "admit", resources: { cpuCores: 1, memoryMb: 512 } });
   });
 
   it("does not allocate beyond physical capacity when a sample overstates available RAM", () => {
@@ -65,23 +78,23 @@ describe("Cloud build resource admission", () => {
     });
   });
 
-  it("waits when background CPU and pending reservations leave no automatic build budget", () => {
+  it("waits for an existing build before admitting an uncapped sibling", () => {
     expect(
       decide({
         usage: { ...usage, cpuPercent: 75 },
         reservations: [{ cpuCores: 1, memoryMb: 128 }],
       }),
-    ).toEqual({ kind: "wait", reason: "cpu-pressure" });
+    ).toEqual({ kind: "wait", reason: "memory-pressure" });
   });
   it.each([0.25, 1])(
-    "keeps the minimum CPU ceiling usable on a %s-vCPU server with background load",
+    "reserves the physical CPU on a %s-vCPU server regardless of background load",
     (cpuCores) => {
       expect(
         decide({
           capacity: { cpuCores, memoryMb: 8192 },
           usage: { ...usage, cpuPercent: 80 },
         }),
-      ).toEqual({ kind: "admit", resources: { cpuCores: 0.25, memoryMb: 7782, diskMb: 0 } });
+      ).toEqual({ kind: "admit", resources: { cpuCores, memoryMb: 7782, diskMb: 0 } });
     },
   );
 
@@ -108,7 +121,7 @@ describe("Cloud build resource admission", () => {
 
   it("waits for an explicit allocation instead of shrinking it under memory pressure", () => {
     const patch = { usage: { ...usage, memoryAvailableMb: 1024 } };
-    expect(decide(patch)).toMatchObject({ kind: "admit", resources: { memoryMb: 614 } });
+    expect(decide(patch)).toMatchObject({ kind: "admit", resources: { memoryMb: 7782 } });
     expect(decide({ ...patch, requested: { memoryMb: 1024 } })).toEqual({
       kind: "wait",
       reason: "memory-pressure",
@@ -171,36 +184,45 @@ describe("Cloud build resource admission", () => {
     expect(decide(patch)).toEqual({ kind: "wait", reason: "cpu-pressure" });
   });
 
-  it("counts full memory reservations even when sampled memory may already include their workers", () => {
+  it("counts full reservations when admitting explicitly limited siblings", () => {
     expect(
       decide({
+        requested: { cpuCores: 1, memoryMb: 512 },
         usage: { ...usage, memoryAvailableMb: 4096 },
         reservations: [{ cpuCores: 1, memoryMb: 3000 }],
       }),
-    ).toMatchObject({ kind: "admit", resources: { memoryMb: 686 } });
+    ).toMatchObject({ kind: "admit", resources: { memoryMb: 512 } });
     expect(
       decide({
+        requested: { cpuCores: 1, memoryMb: 512 },
         usage: { ...usage, memoryAvailableMb: 4096 },
         reservations: [{ cpuCores: 1, memoryMb: 3600 }],
       }),
     ).toEqual({ kind: "wait", reason: "memory-pressure" });
   });
 
-  it.each([95, 99, 100])("waits under extreme CPU pressure (%s%%) in either mode", (cpuPercent) => {
-    for (const requested of [undefined, { cpuCores: 0.25, memoryMb: 512 }]) {
-      expect(decide({ usage: { ...usage, cpuPercent }, requested })).toEqual({
-        kind: "wait",
-        reason: "cpu-pressure",
-      });
-    }
-  });
+  it.each([95, 99, 100])(
+    "waits under extreme CPU pressure for explicitly limited builds (%s%%)",
+    (cpuPercent) => {
+      for (const requested of [{ cpuCores: 0.25, memoryMb: 512 }]) {
+        expect(decide({ usage: { ...usage, cpuPercent }, requested })).toEqual({
+          kind: "wait",
+          reason: "cpu-pressure",
+        });
+      }
+    },
+  );
 
   it("waits below the minimum free memory and resumes when it becomes available", () => {
-    expect(decide({ usage: { ...usage, memoryAvailableMb: 537 } })).toEqual({
+    expect(
+      decide({ requested: { memoryMb: 128 }, usage: { ...usage, memoryAvailableMb: 537 } }),
+    ).toEqual({
       kind: "wait",
       reason: "memory-pressure",
     });
-    expect(decide({ usage: { ...usage, memoryAvailableMb: 538 } })).toMatchObject({
+    expect(
+      decide({ requested: { memoryMb: 128 }, usage: { ...usage, memoryAvailableMb: 538 } }),
+    ).toMatchObject({
       kind: "admit",
       resources: { memoryMb: 128 },
     });
@@ -251,7 +273,10 @@ describe("Cloud build resource admission", () => {
     ]),
     { ...usage, cpuPercent: 101 },
   ])("waits on unknown or malformed observations: %j", (usage) => {
-    expect(decide({ usage })).toEqual({ kind: "wait", reason: "usage-unavailable" });
+    expect(decide({ requested: { cpuCores: 1, memoryMb: 512 }, usage })).toEqual({
+      kind: "wait",
+      reason: "usage-unavailable",
+    });
   });
   it.each([0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])(
     "waits on an invalid concurrency ceiling: %s",
@@ -291,7 +316,9 @@ describe("Cloud build resource admission", () => {
       kind: "wait",
       reason: "memory-pressure",
     });
-    expect(decide({ reservations: [{ cpuCores: 8, memoryMb: 128 }] })).toEqual({
+    expect(
+      decide({ requested: { memoryMb: 128 }, reservations: [{ cpuCores: 8, memoryMb: 128 }] }),
+    ).toEqual({
       kind: "wait",
       reason: "cpu-pressure",
     });

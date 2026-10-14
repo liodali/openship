@@ -172,4 +172,27 @@ describe("managed Cloud route port edits and repair", () => {
     expect(h.fixture.pages.create).not.toHaveBeenCalled();
     expect(h.fixture.routes.set).not.toHaveBeenCalled();
   });
+
+  it("publishes two service domains on the same managed container port without removing either", async () => {
+    h.deployment.containerId = "compose";
+    h.services = [{
+      id: "service-a", name: "web", enabled: true, kind: "compose", ports: ["8000"],
+      exposed: true, exposedPort: "8000", domainType: "custom", customDomain: "app.example.com",
+      publicEndpoints: [
+        { port: 8000, domainType: "custom", customDomain: "app.example.com" },
+        { port: 8000, domainType: "custom", customDomain: "alias.example.com" },
+      ],
+    }];
+    h.liveRows = [{ serviceId: "service-a", containerId: "container-a" }];
+    h.domains = ["app.example.com", "alias.example.com"].map((hostname, index) => ({
+      ...h.domains[0]!, id: `alias-domain-${index}`, hostname, domainType: "custom",
+      serviceId: "service-a", isPrimary: index === 0,
+    }));
+    expect(await retryProjectRouting(h.project.id, h.project.organizationId)).toEqual({ ok: true });
+    expect(h.fixture.routes.set.mock.calls.map(([host, table]) => [host, table.routes[0]?.action])).toEqual([
+      ["app.example.com", { kind: "proxy", workspace: h.fixture.workspaceId, port: 32000 }],
+      ["alias.example.com", { kind: "proxy", workspace: h.fixture.workspaceId, port: 32000 }],
+    ]);
+    expect(h.fixture.pages.delete).not.toHaveBeenCalled();
+  });
 });

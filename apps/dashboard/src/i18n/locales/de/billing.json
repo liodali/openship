@@ -101,6 +101,7 @@
     }
   },
   "plansRoute": {
+    "requestedPlanUnavailable": "Der gewählte Tarif ist nicht mehr verfügbar. Wähle unten einen anderen Tarif.",
     "loadError": "Tarife konnten nicht geladen werden",
     "genericError": "Etwas ist schiefgelaufen",
     "tryAgain": "Erneut versuchen",
@@ -826,7 +827,8 @@
     "monthly": "pro Monat",
     "annual": "pro Jahr",
     "oneTime": "einmalige Zahlung",
-    "cancelUnavailable": "Diese Zahlung kann derzeit nicht storniert werden. Aktualisiere den Status oder kontaktiere den Support.",
+    "cancelUnavailable": "Die Stornierung konnte nicht geprüft werden. Aktualisiere den Zahlungsstatus.",
+    "cancelUnsupported": "Diese Zahlung kann hier nicht storniert werden. Schließe sie ab oder warte, bis sie abläuft, bevor du einen anderen Tarif auswählst.",
     "support": "Support kontaktieren",
     "cancelHint": "Der Zahlungslink wird geschlossen. Danach kannst du einen anderen Tarif wählen.",
     "confirmCancel": "Stornierung bestätigen",

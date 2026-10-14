@@ -14,6 +14,8 @@ import {
 } from "@repo/core";
 import type { ClusterDatabase, ComputeCluster } from "@repo/contracts";
 import { Button } from "@/components/ui/button";
+import { useI18n } from "@/components/i18n-provider";
+import { UseInProjectModal } from "@/app/(dashboard)/projects/[id]/components/UseInProjectModal";
 import { Input } from "@/components/ui/input";
 import { CustomSelect } from "@/components/ui/CustomSelect";
 import { Checkbox } from "@/components/ui/Checkbox";
@@ -73,6 +75,8 @@ export function ClusterDatabasePanel({
   databases?: ClusterDatabase[];
   disabled?: boolean;
 }) {
+  const { t } = useI18n();
+  const [sharing, setSharing] = useState(false);
   const [config, setConfig] = useState<ClusterDatabaseConfig | null>(database?.config ?? null);
   const [name, setName] = useState(database?.name ?? "");
   const [editing, setEditing] = useState(!database);
@@ -882,6 +886,19 @@ export function ClusterDatabasePanel({
                 onCopy={(input) => void run(() => clusterDatabasesApi.create(projectId, input))}
               />
             )}
+            <Button
+              variant="secondary"
+              disabled={locked || database.status !== "ready"}
+              onClick={() => setSharing(true)}
+            >
+              <UiIcon name="plug" /> {t.projects.connections.useInProject}
+            </Button>
+            <UseInProjectModal
+              open={sharing}
+              onClose={() => setSharing(false)}
+              sourceProjectId={projectId}
+              sourceDatabaseId={database.id}
+            />
             <details className="rounded-xl bg-muted/30 p-3 text-sm">
               <summary className="cursor-pointer">Connection and storage details</summary>
               <dl className="mt-3 space-y-3 text-xs">

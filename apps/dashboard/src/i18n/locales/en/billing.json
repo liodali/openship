@@ -101,6 +101,7 @@
     }
   },
   "plansRoute": {
+    "requestedPlanUnavailable": "The selected plan is no longer available. Choose another plan below.",
     "loadError": "Failed to load plans",
     "genericError": "Something went wrong",
     "tryAgain": "Try again",
@@ -826,7 +827,8 @@
     "monthly": "per month",
     "annual": "per year",
     "oneTime": "one-time payment",
-    "cancelUnavailable": "Cancellation isn’t available for this payment right now. Refresh or contact support.",
+    "cancelUnavailable": "Cancellation could not be verified. Refresh the payment status.",
+    "cancelUnsupported": "This payment cannot be cancelled here. Complete it or wait for it to expire before choosing another plan.",
     "support": "Contact support",
     "cancelHint": "The payment link will close. You can then choose another plan.",
     "confirmCancel": "Confirm cancellation",

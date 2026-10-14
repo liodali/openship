@@ -35,7 +35,7 @@ import {
   type TemplateServiceBuild,
 } from "@repo/core";
 import { getRuntimeCatalog, getTemplateForOrg, listOrgCustomApps } from "./catalog-source";
-import { appCloudConfiguration, ensureDraftAppResourceDefaults } from "./app-resource-defaults";
+import { appCloudConfiguration } from "./app-cloud-configuration";
 import type { AppHostFit, InstallAppInput } from "@repo/contracts";
 export type { InstallAppInput } from "@repo/contracts";
 import { cloudDockerResources } from "../../lib/resources";
@@ -617,9 +617,6 @@ export async function installApp(
       commandArgv: svc.commandArgv ? [...svc.commandArgv] : undefined,
       restart: svc.restart,
       advanced: {
-        ...(env.CLOUD_MODE && existingDraft?.resources == null && svc.resources
-          ? { resources: { ...svc.resources } }
-          : {}),
         ...(svc.healthcheck ? { healthcheck: svc.healthcheck } : {}),
         ...(filesByService.get(svc.name)?.length
           ? { files: filesByService.get(svc.name) }
@@ -666,17 +663,6 @@ export async function installApp(
   // whole production scope, so anything backfilled first would be wiped. This is what
   // makes the installer's guarantee unconditional rather than "if the first attempt ran
   // to completion".
-  if (env.CLOUD_MODE)
-    await ensureDraftAppResourceDefaults(
-      {
-        ...project,
-        organizationId: ctx.organizationId,
-        appTemplateId: template.id,
-        activeDeploymentId: null,
-        resources: existingDraft?.resources,
-      },
-      template,
-    );
   await ensureGeneratedAppSecrets(project.id, template);
 
   return { kind: "template", projectId: project.id, slug: project.slug };

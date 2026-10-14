@@ -3,7 +3,7 @@
  *
  * Project-scoped (`:id` = the consumer/target). Reuses the standard project
  * permission check and shared Cloud resource gateway. The create handler independently
- * asserts read access on the SOURCE app + same-org before injecting its env.
+ * asserts write access on the SOURCE app + same-org before injecting its env.
  */
 
 import { Hono } from "hono";

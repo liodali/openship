@@ -4,6 +4,7 @@ export * from "./action-capabilities";
 export * from "./stacks";
 export * from "./package-manager-version";
 export * from "./stack-roles";
+export * from "./duration";
 export * from "./volumes";
 export * from "./compose-namespace";
 export * from "./compose-spec";

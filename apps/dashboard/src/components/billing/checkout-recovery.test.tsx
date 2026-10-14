@@ -255,6 +255,34 @@ describe("unfinished checkout recovery", () => {
     expect(h.post).not.toHaveBeenCalled();
   });
 
+  it("explains unsupported cancellation with one support link and preserves the payment", async () => {
+    h.get.mockResolvedValue({ data: { items: [{ ...item, canCancel: false, cancelUnavailableReason: "unsupported" }] } });
+    await render();
+    expect(dialog()?.textContent).toContain(copy.cancelUnsupported);
+    expect(dialog()?.textContent?.split(copy.support)).toHaveLength(2);
+    expect(button(copy.cancel)).toBeUndefined();
+    expect(button(copy.resume)).toBeDefined();
+    expect(h.post).not.toHaveBeenCalled();
+    expect(h.cleared).not.toHaveBeenCalled();
+  });
+
+  it("shows a temporary verification failure and restores the cancel flow after a read-only refresh", async () => {
+    h.get.mockResolvedValueOnce({ data: { items: [{ ...item, canCancel: false, cancelUnavailableReason: "provider_unavailable" }] } });
+    await render();
+    expect(dialog()?.textContent).toContain(copy.cancelUnavailable);
+    expect(dialog()?.textContent).not.toContain(copy.cancelUnsupported);
+    expect(dialog()?.querySelector('a[href="/support"]')).toBeNull();
+    expect(button(copy.cancel)).toBeUndefined();
+    await click(copy.refresh);
+    expect(button(copy.cancel)).toBeDefined();
+    expect(h.post).not.toHaveBeenCalled();
+    await click(copy.cancel);
+    h.post.mockResolvedValueOnce({ data: expired });
+    await click(copy.confirmCancel);
+    expect(h.cleared).toHaveBeenCalledOnce();
+    expect(dialog()?.textContent).toContain(copy.canceled);
+  });
+
   it("keeps a manual payment link when the browser blocks its popup", async () => {
     vi.mocked(window.open).mockReturnValueOnce(null);
     await render();

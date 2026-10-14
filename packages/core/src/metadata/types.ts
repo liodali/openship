@@ -117,6 +117,13 @@ export interface DeploymentMetadata {
    * (e.g. render.yaml's startCommand) that shouldn't beat a package.json script.
    */
   fillOnly?: boolean;
+  /**
+   * Opt-in Laravel web-role cache warming (issue #19). Only openship.json sets
+   * it, from the native config's top-level `optimize`. The consumer prefixes the
+   * FINAL web command with `php artisan optimize && ` when the resolved stack is
+   * `laravel` and this is true. Default/absent keeps a byte-identical command.
+   */
+  optimize?: boolean;
 }
 
 export interface MetadataParser {

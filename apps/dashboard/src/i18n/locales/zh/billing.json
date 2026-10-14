@@ -101,6 +101,7 @@
     }
   },
   "plansRoute": {
+    "requestedPlanUnavailable": "所选套餐已不再提供。请在下方选择其他套餐。",
     "loadError": "加载套餐失败",
     "genericError": "出现错误",
     "tryAgain": "重试",
@@ -826,7 +827,8 @@
     "monthly": "每月",
     "annual": "每年",
     "oneTime": "一次性付款",
-    "cancelUnavailable": "此付款目前无法取消。请刷新或联系支持。",
+    "cancelUnavailable": "无法确认是否可以取消。请刷新付款状态。",
+    "cancelUnsupported": "此付款无法在这里取消。请完成付款或等待其过期后再选择其他套餐。",
     "support": "联系支持",
     "cancelHint": "付款链接将关闭。之后您可以选择其他方案。",
     "confirmCancel": "确认取消",

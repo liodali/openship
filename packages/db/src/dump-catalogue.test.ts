@@ -4,7 +4,12 @@ import { getTableColumns } from "drizzle-orm";
 import { getTableConfig, PgTable } from "drizzle-orm/pg-core";
 
 import * as schema from "./schema";
-import { EXCLUDED_TABLES, topoOrderedTables } from "./dump";
+import {
+  assertDumpSelfContained,
+  EXCLUDED_TABLES,
+  topoOrderedTables,
+  type DatabaseDump,
+} from "./dump";
 import {
   PROJECT_TRANSFER_TABLES,
   PROJECT_TRANSFER_UNSUPPORTED_TABLES,
@@ -41,6 +46,48 @@ function fkParents(table: PgTable, self: string): string[] {
     .foreignKeys.map((fk) => getTableConfig(fk.reference().foreignTable).name)
     .filter((parent) => parent !== self);
 }
+
+describe("remapped imports: ownership FK coverage", () => {
+  it("rejects every schema-defined resource FK outside the imported graph", () => {
+    const unchecked: string[] = [];
+    for (const spec of topoOrderedTables()) {
+      const scope = spec.scopes.find(
+        (scope) => scope.in === "organization" || scope.in === "project",
+      );
+      if (!scope) continue;
+      const fields = new Map(
+        Object.entries(getTableColumns(spec.table)).map(([name, column]) => [column.name, name]),
+      );
+      for (const foreignKey of getTableConfig(spec.table).foreignKeys) {
+        const ref = foreignKey.reference();
+        const parent = getTableConfig(ref.foreignTable).name;
+        // Organization ownership is remapped. User references preserve history
+        // provenance only; importing membership/auth tables is not supported.
+        if (parent === "organization" || parent === "user") continue;
+        const row = Object.fromEntries(
+          ref.columns.map((column) => [fields.get(column.name)!, "foreign-parent"]),
+        );
+        const dump = {
+          formatVersion: 1,
+          scope:
+            scope.in === "organization"
+              ? { kind: "organization", organizationId: "o" }
+              : { kind: "project", projectId: "p" },
+          tables: { [spec.sqlName]: [row] },
+        } as DatabaseDump;
+        try {
+          assertDumpSelfContained(dump);
+          unchecked.push(`${spec.sqlName} -> ${parent} (${Object.keys(row).join(", ")})`);
+        } catch {
+          /* Expected rejection before any writes. */
+        }
+      }
+    }
+    expect(unchecked, "New ownership FKs must participate in remapped-import validation").toEqual(
+      [],
+    );
+  });
+});
 
 describe("dump catalogue: insert order", () => {
   it("places every table after every one of its catalogued FK parents", () => {

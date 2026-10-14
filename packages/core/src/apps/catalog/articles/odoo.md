@@ -1,6 +1,6 @@
 ## Odoo Community
 
-Run the official Odoo Community image with a dedicated PostgreSQL database. Openship initializes the `odoo` database and generated administrator account before starting the web server. Sign in from the Connection card and install the Community modules your business needs.
+Run the official Odoo Community image with a dedicated PostgreSQL database. Both images are pulled directly, with no custom image build. A mounted setup script initializes the `odoo` database and generated administrator account before starting the web server. Sign in from the Connection card and install the Community modules your business needs.
 
 ## Access and data
 

@@ -119,9 +119,10 @@ async function measuredHost(organizationId: string, id: string) {
   return { runtime, capacity: provider.allocation };
 }
 
-/** Build admission needs only a cheap host sample, never a filesystem scan. */
-export async function sampleCloudWorkspaceResources(organizationId: string, id: string) {
+/** Read verified host allocation; sample live usage only for configured caps. */
+export async function sampleCloudWorkspaceResources(organizationId: string, id: string, sampleUsage = true) {
   const { client, binding, provider } = await runningConnection(organizationId, id);
+  if (!sampleUsage) return { capacity: provider.allocation, usage: unavailableServerUsage("Not sampled for an uncapped build") };
   const executor = new CloudWorkspaceExecutor(() => client.workspace(binding.workspaceId!).runtime(), binding.workspaceId!);
   try {
     return { capacity: provider.allocation, usage: await sampleServerUsage(executor) };
@@ -194,8 +195,8 @@ export async function measureCloudWorkspace(
   }
 }
 
-/** Container caps are ceilings, not reserved VMs. A serial build uses currently
- * available memory/CPU inside the purchased host, without allocating another VM. */
+/** Admission ledger only. This result must not replace the user's build caps.
+ * An uncapped dimension reserves the whole host dimension for this build. */
 export function workspaceBuildResources(
   capacity: ResourceConfig,
   usage: CloudWorkspaceUsage,

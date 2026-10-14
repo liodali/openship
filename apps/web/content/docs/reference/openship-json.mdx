@@ -165,8 +165,93 @@ setting. Openship Edge, TLS, routing and resource monitoring continue through th
       description:
         "Paths kept across deploys. Omit to inherit the framework defaults; [] turns persistence off.",
     },
+    optimize: {
+      type: "boolean",
+      description:
+        "Laravel only. Opt-in cache warming for the web role. Default false. true prefixes the web command with `php artisan optimize && `. See Laravel cache warming below.",
+    },
   }}
 />
+
+## Laravel cache warming
+
+`php artisan optimize` warms Laravel's config, route, event, and view caches. A
+warmed web role answers each request faster. The default is off, so an existing
+project keeps its exact web command until it opts in.
+
+Warming helps the web role only. It does not fix cold start, because cold start
+is dominated by PHP opcode compilation, not cache state. Workers and schedulers
+gain little, so leave them unwarmed.
+
+<Callout title="Run optimize at startup, never at build" type="warn">
+`optimize` runs `config:cache`. `config:cache` freezes whatever environment is
+present when it runs. After that, every `env()` call outside `config/*.php`
+returns `null`.
+
+Warm the cache at startup, after Openship injects the runtime environment. Do
+not warm it in `buildCommand`, which freezes build-time values. Do not warm it
+in `releaseCommands`, which runs in a throwaway container whose
+`bootstrap/cache` is discarded. Read configuration through `config()` and keep
+`env()` inside `config/*.php`.
+</Callout>
+
+### Opt-in flag
+
+Set `optimize: true` to warm the web role. The flag prefixes the web command and
+keeps the rest of the command unchanged.
+
+```json
+{
+  "framework": "laravel",
+  "optimize": true
+}
+```
+
+Warming runs before the server through `&&`. A failing `php artisan optimize`
+short-circuits the chain, so the web role never boots. Opt in only when the
+command succeeds reliably in your runtime environment.
+
+`optimize: true` always prepends `php artisan optimize && `. Do not also put
+`php artisan optimize` in a custom `startCommand`, or it runs twice. The repeat
+is harmless but wasteful.
+
+### Override the web command directly
+
+You can warm the web role without the flag. Override `startCommand` and keep the
+`exec` form. `optimize` runs first. `exec` then hands PID 1 to FrankenPHP, so
+`SIGTERM` still drains in-flight requests.
+
+```json
+{
+  "framework": "laravel",
+  "startCommand": "php artisan optimize && SERVER_NAME=\":$PORT\" exec frankenphp run --config /etc/frankenphp/Caddyfile --adapter caddyfile"
+}
+```
+
+<Callout title="Monorepo caveat" type="warn">
+Neither the `optimize` prefix nor a manual `startCommand` override is applied to
+a Laravel sub-app selected inside a JavaScript-workspace monorepo — a repo root
+that declares a `pnpm`, `npm`, `yarn`, or Bun workspace. In that layout the
+sub-app's web command is re-derived from the bare preset. This is pre-existing
+behavior and not specific to `optimize`. Standalone Laravel repos, and Laravel
+repos without a JavaScript workspace at the root, are unaffected.
+</Callout>
+
+### Warm a worker or scheduler
+
+Warming a worker gives a small, one-time benefit, so prefer warming the web role
+only. To warm a worker anyway, re-declare the roles. A `roles` array replaces
+every preset, so list each role you want to keep. Prefix each command with
+`php artisan optimize && ` and keep the `exec` form.
+
+```json
+{
+  "roles": [
+    { "name": "queue", "kind": "worker", "command": "php artisan optimize && exec php artisan queue:work", "stopGracePeriod": "90s" },
+    { "name": "scheduler", "kind": "scheduler", "command": "php artisan optimize && exec php artisan schedule:work", "stopGracePeriod": "90s", "singleton": true }
+  ]
+}
+```
 
 ## Custom runtime images
 
@@ -250,8 +335,12 @@ release command and app use the same database on both Docker and Bare.
 
 <Callout title="Runtime support" type="warn">
 Release commands currently require a **single-app Docker or Bare deployment**, including
-portless workers. The app may use attached or connected database services without changing
-its single-app deployment mode.
+portless workers. A database deployed as its own app and connected to this project keeps it
+single-app: the connection is injected as an environment variable, and the release command
+reaches the database over the network. Adding any enabled service to the **same project**,
+a database included, makes it a multi-service deployment instead, so a deploy with release
+commands fails before it builds. To run migrations against a database, deploy the database
+as its own app and connect it.
 
 Full Compose/monorepo deployments, static sites, and runtimes without one-off command
 support **fail before activation** when commands are configured. Per-service release

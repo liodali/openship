@@ -16,6 +16,7 @@ import {
   computeCluster,
   serverCluster,
   project,
+  projectConnection,
 } from "../schema";
 
 export type ClusterRuntimeRecord = typeof table.$inferSelect;
@@ -97,6 +98,21 @@ export function createClusterRuntimeRepo(db: Database) {
         if (current.workspaceId)
           throw conflict("Cloud projects cannot be assigned to self-hosted clusters.");
         if (current.clusterId !== clusterId) {
+          const [sharedDatabase] = await tx
+            .select({ id: projectConnection.id })
+            .from(projectConnection)
+            .innerJoin(clusterDatabase, eq(projectConnection.sourceDatabaseId, clusterDatabase.id))
+            .where(
+              and(
+                eq(projectConnection.targetProjectId, projectId),
+                clusterId ? ne(clusterDatabase.clusterId, clusterId) : undefined,
+              ),
+            )
+            .limit(1);
+          if (sharedDatabase)
+            throw conflict(
+              "Disconnect shared native databases before moving this application to another destination.",
+            );
           const [database] = await tx
             .select({ id: clusterDatabase.id })
             .from(clusterDatabase)

@@ -12,6 +12,7 @@ import {
   composeMountIssues,
   composeMountToSpec,
   composePortToSpec,
+  parseComposeDurationNs,
   parseComposeNamespace,
   parseContainerHosts,
   parseEnvFile,
@@ -635,6 +636,26 @@ function parseAdvanced(
         ? String(rawGrace)
         : undefined;
   if (grace) advanced.stopGracePeriod = grace;
+
+  // The runtime applies a duration it can't read as unset, so Docker's default
+  // takes over: 10 seconds for a grace period meant to be longer. Say so at
+  // parse time instead of letting the first stop discover it.
+  const durations = [
+    ["stop_grace_period", advanced.stopGracePeriod],
+    ["healthcheck.interval", advanced.healthcheck?.interval],
+    ["healthcheck.timeout", advanced.healthcheck?.timeout],
+    ["healthcheck.start_period", advanced.healthcheck?.startPeriod],
+  ] as const;
+  for (const [field, value] of durations) {
+    if (value === undefined || parseComposeDurationNs(value) !== undefined) continue;
+    unsupported.push({
+      service: serviceName,
+      field,
+      reason:
+        `${field} is not a duration like "90s" or "1m30s", so it is ignored and ` +
+        `Docker's default applies.`,
+    });
+  }
 
   return Object.keys(advanced).length > 0 ? advanced : undefined;
 }

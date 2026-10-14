@@ -32,6 +32,8 @@ the public login page; it does not drive a browser SSO integration.
 DOCKER_CONTEXT=your-test-context bun scripts/smoke-catalog-apps.ts
 # Or select individual stacks:
 DOCKER_CONTEXT=your-test-context bun scripts/smoke-catalog-apps.ts wordpress odoo
+# Test the actual retired images followed by an application-only replacement:
+DOCKER_CONTEXT=your-test-context CATALOG_TEST_FROM_RETIRED_BUILD=1 bun scripts/smoke-catalog-apps.ts wordpress odoo
 ```
 
 The stacks use their catalog CPU/RAM limits and loopback-only test UI ports.
@@ -70,3 +72,28 @@ storage compatibility and backup checks. A pinned digest fixes reproducibility,
 not upstream availability: keep the scheduled check enabled and review replacement
 images when the registry stops serving a digest. An Openship-maintained mirror
 can be introduced separately after its publishing and maintenance are established.
+
+## Existing WordPress and Odoo build recipes
+
+New installs pull the official application image and mount the catalog's startup
+helper as a read-only file. WordPress initializes its owner through its bundled PHP
+installation API before starting Apache; Odoo uses its existing Python helper.
+Neither needs BuildKit. PocketBase still builds because its recipe installs the
+application binary.
+
+Existing installed recipes are not rewritten by catalog updates. The same repair
+command previews conversion of an exact retired recipe declared in `replacesBuilds`.
+Add `--apply` after reviewing the target image, startup command and file paths.
+The tool requires the same official base image, refuses customized recipes,
+commands, build arguments and existing mounted files, and refuses an in-progress
+deployment. It supports running, multi-service installs for these exact recipe
+conversions; distribution replacements retain the stricter failed-install rules
+above.
+
+Conversion removes the saved inline build, adds the declared startup files and
+command, and deploys only the application service through the normal engine.
+Database siblings, credentials, environment, volumes, routing and unrelated
+advanced settings are preserved. It does not upgrade the base application version
+or reset an existing owner password. Review backups and test on a clone before
+changing a stateful production installation. A failed deploy leaves the converted
+recipe saved for normal inspection and retry.

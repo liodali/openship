@@ -60,46 +60,117 @@ describe("operator database manifests", () => {
     expect(spec.bootstrap.recovery).toBeUndefined();
     expect(spec.externalClusters).toBeUndefined();
   });
-  it("keeps a database used by a running application release even after its desired connection was changed", async () => {
-    const instance = adapter();
-    const request = vi.mocked(instance.api.request);
-    request.mockImplementation(async (_method, path) => {
-      if (path.endsWith("/deployments"))
-        return {
-          items: [
-            {
-              spec: {
-                replicas: 1,
-                template: {
-                  spec: { containers: [{ envFrom: [{ secretRef: { name: "old-release-env" } }] }] },
+  it.each(["project", "another-project"])(
+    "keeps a database referenced by a running release after disconnect (%s)",
+    async (appProjectId) => {
+      const instance = adapter();
+      const request = vi.mocked(instance.api.request);
+      request.mockImplementation(async (_method, path) => {
+        if (path.startsWith("/api/v1/namespaces?"))
+          return { items: [projectNamespaceManifest(appProjectId, "runtime")] } as any;
+        if (
+          path ===
+            `/api/v1/namespaces/${projectNamespaceManifest("project", "runtime").metadata.name}` &&
+          appProjectId !== "project"
+        )
+          throw new KubernetesApiError(404, "Not found");
+        if (path.endsWith("/deployments"))
+          return {
+            items: [
+              {
+                spec: {
+                  replicas: 1,
+                  template: {
+                    spec: {
+                      containers: [{ envFrom: [{ secretRef: { name: "old-release-env" } }] }],
+                    },
+                  },
                 },
               },
-            },
-          ],
-        } as any;
-      if (path.endsWith("/secrets"))
-        return {
-          items: [
-            {
-              metadata: { name: "old-release-env" },
-              data: {
-                DATABASE_URL: Buffer.from(clusterDatabaseUrl("db", config, "password")).toString(
-                  "base64",
-                ),
+            ],
+          } as any;
+        if (path.endsWith("/secrets"))
+          return {
+            items: [
+              {
+                metadata: { name: "old-release-env" },
+                data: {
+                  DATABASE_URL: Buffer.from(clusterDatabaseUrl("db", config, "password")).toString(
+                    "base64",
+                  ),
+                },
               },
+            ],
+          } as any;
+        return {
+          metadata: {
+            name: "namespace",
+            labels: {
+              "openship.io/database": "db",
+              "openship.io/runtime": "runtime",
+              "openship.io/project": "project",
             },
-          ],
+          },
         } as any;
-      return {
-        metadata: {
-          name: "namespace",
-          labels: { "openship.io/database": "db", "openship.io/runtime": "runtime" },
+      });
+      await expect(instance.remove(true)).rejects.toThrow(/application release still uses/);
+      expect(request.mock.calls.every(([method]) => method === "GET")).toBe(true);
+    },
+  );
+  it("grants and revokes only explicit private consumers while preserving database ownership", async () => {
+    const labels = {
+      "openship.io/database": "db",
+      "openship.io/project": "project",
+      "openship.io/runtime": "runtime",
+    };
+    const namespace = adapter().namespace;
+    let policy: any;
+    const api = {
+      request: vi.fn(async (method: string, path: string, value?: any) => {
+        if (method === "GET" && path.endsWith(namespace))
+          return { kind: "Namespace", metadata: { name: namespace, uid: "db-namespace", labels } };
+        if (method === "GET") {
+          if (!policy) throw new KubernetesApiError(404, "Missing policy");
+          return structuredClone(policy);
+        }
+        if (method === "POST" || method === "PATCH") {
+          policy = {
+            ...value,
+            metadata: { ...value.metadata, uid: "policy-uid", resourceVersion: "2" },
+          };
+          return structuredClone(policy);
+        }
+        throw new Error("Unexpected request");
+      }),
+    } as unknown as KubernetesApi;
+    const instance = adapter({}, api);
+    await instance.reconcileConnections(["consumer", "consumer"]);
+    const grants = policy.spec.ingress[1].from;
+    expect(grants).toHaveLength(2);
+    expect(grants[0]).toEqual({
+      namespaceSelector: {
+        matchLabels: {
+          "kubernetes.io/metadata.name": projectNamespaceManifest("project", "runtime").metadata
+            .name,
         },
-      } as any;
+      },
     });
-    await expect(instance.remove(true)).rejects.toThrow(/application release still uses/);
-    expect(request.mock.calls.every(([method]) => method === "GET")).toBe(true);
+    expect(grants[1].namespaceSelector.matchLabels["kubernetes.io/metadata.name"]).toBe(
+      projectNamespaceManifest("consumer", "runtime").metadata.name,
+    );
+    expect(grants[1].podSelector.matchLabels).toEqual({
+      "openship.io/project": "consumer",
+      "openship.io/runtime": "runtime",
+    });
+    expect(policy.spec.ingress[1].ports).toEqual([{ protocol: "TCP", port: 5432 }]);
+    await instance.reconcileConnections([]);
+    expect(policy.spec.ingress[1].from).toHaveLength(1);
+    expect(policy.metadata.labels).toEqual(labels);
+    expect(
+      policy.spec.ingress[2].from[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"],
+    ).toBe("cnpg-system");
   });
+
   it("uses the same valid project identity as application namespaces", () => {
     const projectId = "proj_database_";
     const database = adapter({}, undefined, projectId).manifest();
@@ -195,7 +266,11 @@ describe("operator database manifests", () => {
             : {
                 metadata: {
                   name: "database",
-                  labels: { "openship.io/database": "db", "openship.io/runtime": "runtime" },
+                  labels: {
+                    "openship.io/database": "db",
+                    "openship.io/runtime": "runtime",
+                    "openship.io/project": "project",
+                  },
                 },
                 status: {},
               },
@@ -233,13 +308,18 @@ describe("operator database manifests", () => {
       throw new KubernetesApiError(404, "Not found");
     };
     const request = vi.fn(async (_method: string, path: string) => {
+      if (path.startsWith("/api/v1/namespaces?")) return { items: [] };
       if (!path.includes("os-db-")) return missing();
       if (++reads > 1) return missing();
       return {
         metadata: {
           name: "database",
           deletionTimestamp: new Date().toISOString(),
-          labels: { "openship.io/database": "db", "openship.io/runtime": "runtime" },
+          labels: {
+            "openship.io/database": "db",
+            "openship.io/runtime": "runtime",
+            "openship.io/project": "project",
+          },
         },
       };
     });

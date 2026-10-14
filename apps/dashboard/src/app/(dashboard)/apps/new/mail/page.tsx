@@ -24,6 +24,8 @@ import { useCloud } from "@/context/CloudContext";
 import { usePlatform } from "@/context/PlatformContext";
 import { useI18n, interpolate } from "@/components/i18n-provider";
 import { mailHostname } from "@repo/core";
+import { canManageMailServers } from "@/lib/mail-availability";
+import { CloudMailClient } from "@/app/(dashboard)/emails/_components/cloud-mail-client";
 
 /**
  * Mail provider wizard — the app-catalog entry point for Openship Mail, and the
@@ -43,6 +45,12 @@ import { mailHostname } from "@repo/core";
 type Phase = "choose" | "connect" | "installing" | "done" | "error";
 
 export default function MailWizardPage() {
+  const platform = usePlatform();
+  if (!canManageMailServers(platform)) return <CloudMailClient />;
+  return <MailWizardInner />;
+}
+
+function MailWizardInner() {
   const router = useRouter();
   const { t } = useI18n();
   const w = t.projectSettings.appInstall;

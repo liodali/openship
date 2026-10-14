@@ -847,8 +847,9 @@ export function mergeServiceRoutingPatch(opts: {
 }
 
 /**
- * Every public endpoint's assigned domain URL for a service, keyed by container
- * port. Free → https://<slug>.<routing base>, custom → https://<customDomain>.
+ * The first concrete public URL for each container port, in configured route
+ * order. Adding an alias must not replace the URL used by deployment templates.
+ * Free → https://<slug>.<routing base>, custom → https://<customDomain>.
  *
  * The one consumer is the compose deploy's `{{publicUrl:svc[:port]}}` substitution
  * (container env + generated config files — Convex's CONVEX_CLOUD_ORIGIN, a
@@ -866,13 +867,16 @@ export function resolveServiceEndpointUrls(
   service: Service,
 ): Array<{ port: number; url: string }> {
   const urls: Array<{ port: number; url: string }> = [];
+  const seenPorts = new Set<number>();
   for (const endpoint of resolveServicePublicEndpoints(service, {
     projectSlug: project.slug ?? project.name,
   })) {
-    if (endpoint.port === undefined) continue;
+    if (endpoint.port === undefined || seenPorts.has(endpoint.port)) continue;
     if (endpoint.domainType === "custom") {
-      if (endpoint.customDomain && !isWildcardHostname(endpoint.customDomain))
+      if (endpoint.customDomain && !isWildcardHostname(endpoint.customDomain)) {
         urls.push({ port: endpoint.port, url: `https://${endpoint.customDomain}` });
+        seenPorts.add(endpoint.port);
+      }
       continue;
     }
     const slug = resolveServiceHostnameLabel(
@@ -881,7 +885,10 @@ export function resolveServiceEndpointUrls(
       endpoint.domain ?? undefined,
       serviceKind(service),
     );
-    if (slug) urls.push({ port: endpoint.port, url: `https://${slug}.${getRoutingBaseDomain()}` });
+    if (slug) {
+      urls.push({ port: endpoint.port, url: `https://${slug}.${getRoutingBaseDomain()}` });
+      seenPorts.add(endpoint.port);
+    }
   }
   return urls;
 }

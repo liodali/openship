@@ -1,4 +1,13 @@
 {
+  "cloudClient": {
+    "title": "メール",
+    "subtitle": "既存のメールボックスを Openship Webmail で利用できます。",
+    "connectTitle": "メールサーバーに接続",
+    "description": "任意の IMAP/SMTP サーバーに接続できます。メールボックスとメール配信は現在のプロバイダーが管理します。",
+    "connectAction": "既存のメールサーバーに接続",
+    "signInHint": "メールアドレスとメールボックスのパスワードで Webmail にログインしてください。",
+    "manageAction": "Webmail アプリを管理"
+  },
   "cloudComingSoon": {
     "title": "マネージドメール",
     "badge": "近日公開",

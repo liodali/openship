@@ -239,6 +239,31 @@ describe("instance-scope FK references (servers / mail_servers)", () => {
     ).toThrow(/references a servers not present/);
   });
 
+  it("does not accept a shadow parent in a table excluded from the restore scope", () => {
+    expect(() =>
+      assertDumpSelfContained(
+        dump({
+          backup_destination: [{ id: "bkd_evil", serverId: "srv_VICTIM" }],
+          servers: [{ id: "srv_VICTIM", organizationId: "o" }],
+        }),
+      ),
+    ).toThrow(/references a servers not present/);
+  });
+
+  it.each([
+    ["clusterId", "compute_cluster"],
+    ["workspaceId", "cloud_workspace"],
+  ])("rejects imported project execution ownership through %s", (column, parent) => {
+    expect(() =>
+      assertDumpSelfContained(
+        dump({
+          project: [{ id: "prj_evil", [column]: "target_VICTIM", organizationId: "o" }],
+          [parent]: [{ id: "target_VICTIM", organizationId: "o" }],
+        }),
+      ),
+    ).toThrow(new RegExp(`${column}.*not present`));
+  });
+
   it("exports managed projects without live host pointers or retained-image claims", () => {
     const tables: Record<string, Array<Record<string, unknown>>> = {
       project: [{ id: "p", workspaceId: "cws", serverId: "server", activeDeploymentId: "d", hostPort: 32001 }],

@@ -411,6 +411,8 @@
     "fixStep3": "Verifiziere die Domain und stelle bereit."
   },
   "connections": {
+    "nativeClusterHint": "Wähle ein Projekt im Cluster dieser Datenbank. Nur verknüpfte Projekte erhalten privaten Zugriff.",
+    "nativeNoTargets": "Noch kein anderes Projekt verwendet diesen Cluster.",
     "useInProject": "In einem Projekt verwenden",
     "title": "In einem Projekt verwenden",
     "subtitle": "Teile diesen Dienst über eine Verbindung mit einem anderen Projekt.",

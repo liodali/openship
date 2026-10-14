@@ -2,7 +2,7 @@ import { reportCaughtError as observeCaughtError } from "@repo/core/diagnostics"
 import { Value } from "@sinclair/typebox/value";
 import { AppError, safeErrorMessage } from "@repo/core";
 import { repos, type CloudWorkspace, type LinkedCloudServer } from "@repo/db";
-import { CloudWorkspaceSchema, ServerDetailSchema, ManagedServerDeletionSchema, type ManagedServerDeletion, type CloudWorkspaceSummary, type ServerDetail } from "@repo/contracts";
+import { CloudWorkspaceSchema, ServerDetailSchema, ManagedServerDeletionSchema, type CreateManagedServerInput, type ManagedServerDeletion, type CloudWorkspaceSummary, type ServerDetail } from "@repo/contracts";
 import { env } from "../../config/env";
 import { requireCloudWorkspace, requireWorkspaceServer } from "../cloud-workspace-scope";
 import { cloudFetchAsOrgOwner, readCloudJson, readCloudSession, resolveOrgCloudUserId, sameCloudIdentity, type CloudIdentity } from "./transport";
@@ -148,7 +148,7 @@ export async function connectCloudServer(organizationId: string, serverId: strin
   return saveLink(organizationId, identity, result.managed);
 }
 
-export async function createLinkedCloudServer(organizationId: string, input: { name: string }) {
+export async function createLinkedCloudServer(organizationId: string, input: CreateManagedServerInput) {
   const identity = await linkedCloudIdentity(organizationId);
   const result = await remoteCloudRequest<CloudWorkspaceSummary>(organizationId, "/api/system/servers/managed", {
     method: "POST", body: JSON.stringify(input),

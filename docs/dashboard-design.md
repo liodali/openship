@@ -262,6 +262,15 @@ Instance relocation has one entry in **Settings → Instance → Instance locati
 the control plane, connecting a Desktop, and backup/archive recovery distinct. Reuse the
 shared server selector and option cards for API-only versus API + dashboard. Show progress
 and recovery in the same card; do not add another direct-transfer or Team migration wizard.
+Keep **Connect to an existing instance** and **Move to a server** visible on Desktop.
+A connected Desktop shows **Reconnect** and **Move back to Desktop**. An active server
+shows **Connect a Desktop**, **Move to another server**, and **Move to Desktop**.
+Reserve More options for receiving an instance, returning to the local instance, and
+previous-server recovery; do not repeat visible actions in that menu. Stack the shared
+buttons on narrow containers. Distinguish connection, move, and receive codes by name,
+and show where to generate and paste each one. Receiving offers explicit choices to
+paste a move code or create a receive code; never interpret a blank field as consent
+to generate a code. Changing the destination or receive method requires fresh consent.
 Choose the destination before asking a fresh Desktop user to create an account. Keep that
 account form inside the same dialog, retain the server and address, and return to explicit
 move confirmation after account setup. Team and push-to-deploy prerequisites link directly
@@ -330,13 +339,21 @@ check retryable before starting the move.
   same layout in Cloud and self-hosted mode; do not hide it in an Advanced accordion.
 - Machine power defaults to the full available server capacity. Project settings and
   deployment setup share the resource editor and tier labels. Optional limits apply to
-  containers; the managed server's purchased allocation stays separate.
+  containers; the managed server's purchased allocation stays separate. Catalog
+  sizing is advisory. Unset build and service dimensions receive no additional Docker
+  limits; Cloud admission reservations must not appear as user-configured caps.
   In destination settings, offer Full capacity and Customized as peer selection cards;
   Customized keeps the presets visible below. Keep a Back action in the page header.
 - Project Settings presents curated app fields and project-wide controls in one flow.
   Keep shared environment, machine power and rollback settings there, including for
   Compose and monorepo projects. Apps & Services owns the service list and per-service
   editors; do not embed that page or add App settings / Deployment modes inside Settings.
+- Ready native databases use the existing **Use in a project** connection modal.
+  Preselect the opened database, keep its credentials masked, and offer writable
+  consumers on the same native cluster. Explain incompatible placement inline;
+  never expose a public connection option for a native database or copy its ownership.
+  Other outputs from a source project keep their existing target choices when no
+  native database is selected. Connection errors must remain visible and allow retry.
 - Destination, runtime and resource choices share [OptionCard](../apps/dashboard/src/components/shared/OptionCard.tsx),
   including its selected border and radio marker. Do not introduce a separate switch style.
   New single-app setups default to Direct on servers with less than 2 GiB RAM, using
@@ -444,6 +461,10 @@ check retryable before starting the move.
   Do not call today's catalog terms the current plan if they differ from the saved purchase,
   or offer a preset that would shrink an existing disk. New-server purchases have their own
   explicit entry and never inherit the selected server's billing scope.
+  A preset chosen on the public Pricing page continues to Cloud checkout after
+  sign-in without a second plan-selection click. Validate it against the live
+  catalog and bind the retry identity to the authenticated organization. Reloads
+  reuse the same server and payment; generic Get server links remain browse-only.
   Unscoped billing opens an existing subscription directly; never
   auto-switch a checkout return or an explicitly selected server. New customers see only
   Monthly server and Pay as you go in the existing top tab bar, without empty billing-history
@@ -470,6 +491,9 @@ check retryable before starting the move.
   name, with Resume and provider-supported cancellation. Never present a pending or
   unknown cancellation as complete. After confirmed cancellation, offer another plan
   and reuse the existing delete confirmation for an unused, unpaid server.
+  Distinguish failed cancellation checks (Refresh) from payments without provider-supported
+  cancellation (complete the payment or wait for expiry). Show the support link once;
+  neither condition may clear a payable checkout or allow a competing subscription.
 - Monthly servers show purchased resources, paid-through coverage and measured CPU time;
   they have no compute-credit donut, exhaustion alert or credit top-up action. Keep optional
   managed proxy transfer and retained-storage charges distinct from compute coverage, with
@@ -660,6 +684,12 @@ spacing adjustment needs visual verification, not a test that asserts a CSS clas
 
 ## Mail webmail recovery
 
+Cloud's Emails entry connects an existing IMAP/SMTP backend through the standard
+webmail app installer. Keep its client card beside a compact Managed email / Coming
+soon notice. Cloud mail entry points must not mount local server setup, registry or
+administration requests. Desktop and self-hosted instances retain the normal mail
+console and setup flow. Navigation remains Emails across these modes.
+
 When a mail registration has lost its webmail link, the Deploy webmail screen
 shows existing catalog apps that already use that mail hostname on the mail
 server. Suggestions are read-only and require an explicit selection before
@@ -668,3 +698,15 @@ volume identities. Keep its server and hostname fixed during recovery, and show
 that constraint inline. Never create a second app or grant hostname ownership
 just because an app looks like webmail. A failed status read shows the shared
 error and Retry state; a changed link requires refreshing before another attempt.
+
+## Cloud authorization
+
+Desktop, self-hosted and CLI Cloud consent share a compact identity panel. Show
+the signed-in account (name, email and avatar) and the actual active organization.
+Use explicit Switch controls; expand organization choices inline without leaving
+the request. Never substitute the first organization when the session has none.
+Loading or failed organization reads show a skeleton or retry beside the identity
+and block authorization. Account switching signs out before continuing to login;
+organization switching reloads the same request after the server confirms the
+session change. Preserve callback, device mode, state and PKCE parameters, and
+require another explicit Authorize click after either switch.

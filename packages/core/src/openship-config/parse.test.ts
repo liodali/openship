@@ -647,6 +647,12 @@ describe("parseOpenshipConfig", () => {
         "100us",
         "100µs",
         "5ns",
+        "+90s",
+        ".5s",
+        "1.s",
+        "1d",
+        "1w",
+        "100μs",
       ]) {
         const { errors, config } = parseOpenshipConfig({
           roles: [{ name: "jobs", kind: "worker", command: "bin/jobs", stopGracePeriod }],
@@ -687,6 +693,31 @@ describe("parseOpenshipConfig", () => {
     it("rejects `roles` that isn't an array", () => {
       const { errors } = parseOpenshipConfig({ roles: { name: "jobs" } });
       expect(errors.some((e) => e.startsWith("roles:"))).toBe(true);
+    });
+  });
+
+  describe("optimize", () => {
+    it("omits optimize when absent (defaults OFF)", () => {
+      const { config, errors } = parseOpenshipConfig({ framework: "laravel" });
+      expect(errors).toEqual([]);
+      expect(config).not.toHaveProperty("optimize");
+    });
+
+    it("accepts optimize: true", () => {
+      const { config, errors } = parseOpenshipConfig({ framework: "laravel", optimize: true });
+      expect(errors).toEqual([]);
+      expect(config?.optimize).toBe(true);
+    });
+
+    it("accepts optimize: false", () => {
+      const { config, errors } = parseOpenshipConfig({ framework: "laravel", optimize: false });
+      expect(errors).toEqual([]);
+      expect(config?.optimize).toBe(false);
+    });
+
+    it("rejects a non-boolean optimize", () => {
+      const { errors } = parseOpenshipConfig({ optimize: "yes" });
+      expect(errors.some((e) => e.startsWith("optimize:"))).toBe(true);
     });
   });
 });

@@ -148,6 +148,9 @@ export const BillingPendingCheckoutSchema = Type.Object({
   interval: Type.Union([Type.Literal("monthly"), Type.Literal("annual"), Type.Null()]),
   state: Type.Union((["open", "unconfirmed", "processing", "canceling", "unavailable"] as const).map(value => Type.Literal(value))),
   canResume: Type.Boolean(), canCancel: Type.Boolean(),
+  cancelUnavailableReason: Type.Optional(Type.Union([
+    Type.Literal("provider_unavailable"), Type.Literal("unsupported"),
+  ], { description: "Why an open payment cannot currently be canceled. A failed provider read is distinct from a checkout without supported cancellation." })),
 });
 export const BillingPendingCheckoutsSchema = Type.Object({ items: Type.Array(BillingPendingCheckoutSchema) });
 export const BillingCheckoutActionInputSchema = Type.Object({

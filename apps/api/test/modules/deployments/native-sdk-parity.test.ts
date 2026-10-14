@@ -96,6 +96,7 @@ vi.mock("@repo/db", () => ({
   getDriver: () => "postgres",
   repos: {
     serverCluster: { membership: async () => null },
+    clusterDatabase: { list: async () => [] },
     user: { findFoundingAdmin: async () => ({ id: "founder" }) },
     instanceSettings: { get: async () => h.settings, upsert: h.settingsUpsert, delete: h.settingsDelete },
     serverTunnel: {

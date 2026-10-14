@@ -411,6 +411,8 @@
     "fixStep3": "验证域名并部署。"
   },
   "connections": {
+    "nativeClusterHint": "选择与此数据库位于同一集群的项目。只有关联的项目才能获得私有访问权限。",
+    "nativeNoTargets": "目前没有其他项目使用此集群。",
     "useInProject": "在项目中使用",
     "title": "在项目中使用",
     "subtitle": "通过连接与其他项目共享此服务。",

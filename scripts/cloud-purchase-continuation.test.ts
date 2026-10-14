@@ -8,7 +8,9 @@ it("sends a marketing plan choice directly to Cloud's new-server purchase", () =
   expect(link.pathname).toBe("/billing/plans");
   expect(link.searchParams.get("newServer")).toBe("1");
   expect(link.searchParams.get("plan")).toBe("starter");
+  expect(link.searchParams.get("startCheckout")).toBe("1");
   expect(new URL(cloudPlanHref()).searchParams.has("plan")).toBe(false);
+  expect(new URL(cloudPlanHref()).searchParams.has("startCheckout")).toBe(false);
 });
 
 it("encodes the plan as a value so it cannot inject a host or another server", () => {

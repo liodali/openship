@@ -1412,6 +1412,11 @@ export interface RestoreOptions {
    * ingest (remap to SaaS org) and project transfer (remap to target org).
    */
   remapOrgId?: string;
+  /** Receiver-enforced configuration transfer: discard runtime handles and
+   * source-instance paths even if the sender omitted its export scrub. Cloud
+   * ingest always sets this; authorized server snapshot recovery verifies and
+   * reattaches the existing runtime instead. */
+  stripInstanceRefs?: boolean;
   /**
    * merge-mode only: tables listed here INSERT with onConflictDoNothing, so a
    * collision is silently skipped instead of aborting the whole transaction.
@@ -1465,7 +1470,9 @@ export function assertDumpSelfContained(dump: DatabaseDump): void {
     // A crafted dump pointing destinationId at a VICTIM's backup_destination
     // (→ credential adoption on restore) or runId at a foreign run is rejected.
     destinationId: "backup_destination",
+    policyId: "backup_policy",
     runId: "backup_run",
+    forkServiceId: "service",
     // Notifications: channelId references notification_channel, which is
     // INSTANCE-scope-only and never travels on a remap (org/project) dump, so
     // any channelId here could only be a pre-existing cross-tenant channel.
@@ -1489,17 +1496,19 @@ export function assertDumpSelfContained(dump: DatabaseDump): void {
     tokenId: "personal_access_token",
   };
 
-  // Instance-scope parents (servers / mail_servers) NEVER travel in a remappable
+  // Instance-scope execution/storage parents never travel in a remappable
   // scope, and `stripInstanceRefs` nulls their children's references on every
   // cross-instance dump — so on this path a non-null value cannot have come from a
   // legitimate transfer. Rejecting it closes the same attach-to-a-pre-existing-parent
-  // shape the destinationId entry above describes, for the two columns it omitted:
+  // shape the destinationId entry above describes:
   // a crafted dump could otherwise point backup_destination.serverId at a server row
   // that already exists on the receiver and have the restore adopt its SSH
   // credentials. Derived from INSTANCE_SCOPED_REFS so the scrub and this assert
   // cannot disagree about which columns are involved.
   const INSTANCE_REF_PARENT: Record<string, string> = {
     serverId: "servers",
+    clusterId: "compute_cluster",
+    workspaceId: "cloud_workspace",
     mailServerId: "mail_servers",
     forkMailServerId: "mail_servers",
   };
@@ -1512,6 +1521,11 @@ export function assertDumpSelfContained(dump: DatabaseDump): void {
   const dumpedIds: Record<string, Set<string>> = {};
   for (const [sqlName, rows] of Object.entries(dump.tables)) {
     if (!rows) continue;
+    // Supplied rows are not proof of an imported parent: restore skips tables
+    // outside this scope. A shadow server/workspace row must never authorize
+    // attaching a child to an existing destination execution identity.
+    const spec = TABLES.find((table) => table.sqlName === sqlName);
+    if (!spec || !pickResolver(spec, dump.scope)) continue;
     dumpedIds[sqlName] = new Set(
       rows
         .map((r) => (r as { id?: unknown }).id)
@@ -1620,6 +1634,19 @@ export async function restoreSubgraphInTransaction(
   // Remap path (cloud ingest / project transfer) is the only place an untrusted
   // caller supplies a dump for a DIFFERENT org — reject cross-tenant FKs there.
   if (opts.remapOrgId) assertDumpSelfContained(dump);
+  if (opts.stripInstanceRefs) {
+    // An untrusted sender can omit the export scrub. The receiver must not
+    // accept recorded host/container identities or API-host filesystem paths
+    // as proof of execution ownership. Clone before scrubbing: callers may
+    // still need the original transfer receipt/digest for reconciliation.
+    dump = {
+      ...dump,
+      tables: Object.fromEntries(Object.entries(dump.tables).map(([name, rows]) => [
+        name, rows.map((row) => ({ ...row })),
+      ])),
+    };
+    stripInstanceRefsInPlace(dump.tables);
+  }
 
   // Kept for the day the schema declares its FKs DEFERRABLE — but DO NOT rely on
   // it. Postgres applies this only to constraints declared DEFERRABLE, and none of

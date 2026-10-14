@@ -25,6 +25,7 @@ import {
   startExecStream,
 } from "../../runtime/docker-exec-stream";
 import { ensureScopedVolumeName, isHostPathSource } from "../../runtime/volume-namespace";
+import { resolveCloudProjectVolumeName } from "../../runtime/cloud/docker-volume";
 import { safeDumpCommand, safeRestoreCommand, type DumpCodec } from "../common/dump-pipeline";
 import { matchBackupSource } from "../common/source-match";
 import { registerExecutor } from "../registry";
@@ -367,33 +368,42 @@ export class DockerBackupExecutor implements BackupExecutor {
       }
     }
 
-    const sources = service.volumes
-      .map((spec, i): BackupSource | null => {
-        const parsed = parseVolumeSpec(spec);
-        if (!parsed || !parsed.source) return null;
-        // Named volumes are project-scoped at deploy time; resolve the SAME
-        // name here so the fallback mounts the real volume (not an empty one
-        // docker would auto-create). Bind mounts and grandfathered services
-        // (namespaceVolumes=false) keep the raw source.
-        //
-        // Idempotent on purpose: the column stores whatever was written at deploy
-        // time, and for services deployed from an already-scoped spec that is the
-        // SCOPED name. Prefixing twice named a volume that never existed, which docker
-        // creates empty on mount — a capture that archives nothing (now a failure
-        // rather than a green run, via the empty-source gate) and a restore into a
-        // volume nothing reads.
-        const source =
-          parsed.type === "volume" && service.namespaceVolumes
-            ? ensureScopedVolumeName(service.projectSlug, parsed.source)
-            : parsed.source;
-        return {
-          id: `${source}-${i}`,
-          source,
-          target: parsed.target,
-          type: parsed.type,
-        };
-      })
-      .filter((x): x is BackupSource => x !== null);
+    const sources = (
+      await Promise.all(
+        service.volumes.map(async (spec, i): Promise<BackupSource | null> => {
+          const parsed = parseVolumeSpec(spec);
+          if (!parsed || !parsed.source) return null;
+          // Named volumes are project-scoped at deploy time; resolve the SAME
+          // name here so the fallback mounts the real volume (not an empty one
+          // docker would auto-create). Bind mounts and grandfathered services
+          // (namespaceVolumes=false) keep the raw source.
+          //
+          // Idempotent on purpose: the column stores whatever was written at deploy
+          // time, and for services deployed from an already-scoped spec that is the
+          // SCOPED name. Prefixing twice named a volume that never existed, which docker
+          // creates empty on mount — a capture that archives nothing (now a failure
+          // rather than a green run, via the empty-source gate) and a restore into a
+          // volume nothing reads.
+          const source =
+            parsed.type !== "volume" || !service.namespaceVolumes
+              ? parsed.source
+              : this.runtime.transport?.kind === "cloud"
+                ? await resolveCloudProjectVolumeName(
+                    this.dockerode,
+                    service.projectId,
+                    service.projectSlug,
+                    parsed.source,
+                  )
+                : ensureScopedVolumeName(service.projectSlug, parsed.source);
+          return {
+            id: `${source}-${i}`,
+            source,
+            target: parsed.target,
+            type: parsed.type,
+          };
+        }),
+      )
+    ).filter((x): x is BackupSource => x !== null);
 
     await this.runtime.assertBackupAccess(service.projectId, { sources: sources.map(source => source.source) });
     if (!sources.some((source) => source.type === "bind")) return sources;

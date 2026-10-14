@@ -8,6 +8,33 @@ supplies trusted retail offers and the existing server resize/restart workflow.
 Provider contract: [Reseller subscription plan changes](https://oblien.com/docs/api/billing#reseller-subscription-plan-changes).
 Checked against the published API docs and npm SDK on October 3, 2026.
 
+## Unfinished initial checkouts
+
+Checked against `oblien@2.10.0` and the provider billing documentation on
+October 14, 2026. This is separate from changing an existing subscription.
+
+When the provider catalog advertises `reseller.checkoutCancellation`, Openship
+cancels the original checkout through
+`POST /billing/checkout/:checkoutId/cancel`. It saves the checkout ID and stable
+retry key before dispatch, then re-reads that original checkout. Confirmed expiry
+allows another plan; paid or uncertain outcomes retain the purchase until its
+status is verified. No customer-supplied namespace, owner, quote, or payment URL
+controls the cancellation.
+
+Older providers still use their existing exact capacity-quote cancellation.
+Saved quote cancellations continue through that path after an upgrade. A saved
+checkout cancellation retries its original ID and key even if capability
+discovery is unavailable; it never switches payment identity after dispatch.
+The provider SDK adds `billing.cancelCheckout(namespace, checkoutId, input)`;
+until that SDK release is adopted, Openship uses its existing authenticated,
+bounded billing transport and shared checkout-response validator.
+
+A provider without either capability returns
+`cancelUnavailableReason: "unsupported"`. Failed capability or capacity reads
+return `"provider_unavailable"`, for which the dashboard offers Refresh. Neither
+case clears the purchase locally. Subscription cancellation is separate: it
+stops renewal of an existing paid subscription.
+
 ## Customer flow
 
 1. Select a server in Billing's right sidebar and choose **Review change** on

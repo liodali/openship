@@ -42,6 +42,41 @@ const row = (
 });
 
 describe("public endpoint helpers", () => {
+  it("keeps the first concrete URL per port when another hostname is added", () => {
+    const service = {
+      name: "web",
+      exposed: true,
+      exposedPort: "4000",
+      domainType: "custom",
+      customDomain: "app.example.com",
+      publicEndpoints: [
+        { port: 4000, domainType: "custom", customDomain: "app.example.com" },
+        { port: 4000, domainType: "custom", customDomain: "alias.example.com" },
+        { port: 5000, domainType: "custom", customDomain: "metrics.example.com" },
+      ],
+    } as any;
+    expect(resolveServicePublicEndpoints(service)).toHaveLength(3);
+    expect(resolveServiceEndpointUrls({ slug: "project" } as any, service)).toEqual([
+      { port: 4000, url: "https://app.example.com" },
+      { port: 5000, url: "https://metrics.example.com" },
+    ]);
+  });
+
+  it("skips wildcard aliases before choosing a concrete URL for the same port", () => {
+    const service = {
+      name: "web",
+      exposed: true,
+      publicEndpoints: [
+        { port: 4000, domainType: "custom", customDomain: "*.example.com" },
+        { port: 4000, domainType: "custom", customDomain: "app.example.com" },
+        { port: 4000, domainType: "custom", customDomain: "alias.example.com" },
+      ],
+    } as any;
+    expect(resolveServiceEndpointUrls({ slug: "project" } as any, service)).toEqual([
+      { port: 4000, url: "https://app.example.com" },
+    ]);
+  });
+
   it("uses the primary project custom domain when an explicit route target is provided", () => {
     const endpoints = resolveStoredPublicEndpoints({
       targetPath: "/",

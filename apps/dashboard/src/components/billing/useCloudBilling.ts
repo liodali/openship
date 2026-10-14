@@ -43,13 +43,15 @@ export function useCloudPlans() {
 }
 
 /** Shared hosted checkout, including duplicate-click and uncertain-payment retries. */
-export function useCloudCheckout({ enabled, preserveProject = false, onCheckoutStarted, workspaceId: selectedWorkspaceId, prepareWorkspace, onWorkspaceRemoved }: {
+export function useCloudCheckout({ enabled, preserveProject = false, onCheckoutStarted, workspaceId: selectedWorkspaceId, prepareWorkspace, onWorkspaceRemoved, idempotencyKey, onCheckoutSettled }: {
   enabled: boolean;
   workspaceId?: string;
   preserveProject?: boolean;
   onCheckoutStarted?: (checkoutUrl: string) => void;
   prepareWorkspace?: () => Promise<string>;
   onWorkspaceRemoved?: (workspaceId: string) => void;
+  idempotencyKey?: string;
+  onCheckoutSettled?: () => void;
 }) {
   const { t } = useI18n();
   const { workspaceId: billingWorkspaceId, organizationId } = useBillingScope();
@@ -73,6 +75,7 @@ export function useCloudCheckout({ enabled, preserveProject = false, onCheckoutS
     setSubscribing(null); setCheckoutUrl(null); setError(null); setUnavailable(null); setPending(null);
     return () => { generation.current++; };
   }, [workspaceId, ownerKey]);
+  useEffect(() => { attempts.current.clear(); }, [idempotencyKey]);
 
   async function startCheckout(planTierId: PlanTierId, interval: "monthly" | "annual", custom?: CustomSubscriptionSelection) {
     if (!enabled || busy.current || planTierId === "free" || planTierId === "enterprise") return;
@@ -93,7 +96,8 @@ export function useCloudCheckout({ enabled, preserveProject = false, onCheckoutS
       if (version !== generation.current) { navigation.close(); return; }
       if (prepareWorkspace && !targetWorkspaceId) throw new Error(t.billing.plansRoute.checkoutError);
       const attempt = `${targetWorkspaceId ?? "initial"}:${custom?.quoteReference ?? planTierId}:${interval}`;
-      if (!attempts.current.has(attempt)) attempts.current.set(attempt, randomUUID());
+      if (!attempts.current.has(attempt)) attempts.current.set(attempt,
+        idempotencyKey && !custom ? `${idempotencyKey}-${planTierId}-${interval}` : randomUUID());
       requestId = attempts.current.get(attempt)!;
       const res = await api.post<{ data: { checkoutUrl: string } }>(endpoints.billing.subscription, {
         planTierId, interval, workspaceId: targetWorkspaceId, custom, idempotencyKey: requestId,
@@ -125,7 +129,7 @@ export function useCloudCheckout({ enabled, preserveProject = false, onCheckoutS
     recovery: {
       isOpen: pending !== null, workspaceId: pending?.workspaceId, preserveProject,
       onClose: () => setPending(null),
-      onCleared: () => { attempts.current.clear(); setError(null); },
+      onCleared: () => { attempts.current.clear(); setError(null); onCheckoutSettled?.(); },
       onCheckoutStarted: (url: string) => { setCheckoutUrl(url); onCheckoutStarted?.(url); },
       onServerRemoved: (id: string) => {
         attempts.current.clear(); setCheckoutUrl(null); onWorkspaceRemoved?.(id);

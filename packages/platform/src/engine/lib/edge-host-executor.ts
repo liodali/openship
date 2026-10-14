@@ -17,18 +17,24 @@ import { createExecutor, type CommandExecutor } from "@repo/adapters";
 import { isLocalHostRow } from "./box-org";
 import type { DeploymentMeta } from "./deployment-runtime";
 import { sshManager } from "./ssh-manager";
+import { env } from "../config/env";
 
 /** The server the project's active deployment runs on (for edge/cert reads). */
 export async function resolveServerIdForProject(project: Project): Promise<string | null> {
   if (!project.activeDeploymentId) return null;
   const dep = await findActiveDeployment(project).catch((diagnosticFailure) => { observeCaughtError(diagnosticFailure, "platform/engine/lib/edge-host-executor"); return null; });
   const meta = dep?.meta as DeploymentMeta | undefined;
+  let serverId = meta?.serverId ?? null;
   if (meta?.clusterId) {
     const { requireClusterDeploymentTarget } = await import("./cluster-deployment-target");
     const { runtime } = await requireClusterDeploymentTarget(project.organizationId, meta.clusterId, meta.clusterRuntimeId);
-    return runtime.plan.hosts.find(host => host.role === "server")!.serverId;
+    serverId = runtime.plan.hosts.find(host => host.role === "server")!.serverId;
   }
-  return meta?.serverId ?? null;
+  if (!serverId) return null;
+  // A deployment snapshot is historical configuration, not authority to use
+  // a different tenant's cached SSH connection or certificate material.
+  const server = await repos.server.getInOrganization(serverId, project.organizationId);
+  return server ? serverId : null;
 }
 
 /**
@@ -48,6 +54,9 @@ export async function withServerHostExecutor<T>(
   project: Project,
   fn: (exec: CommandExecutor) => Promise<T>,
 ): Promise<T | null> {
+  // Cloud SSL/edge operations use the owned provider runtime. These legacy
+  // self-hosted readers must never fall back to the control plane's host.
+  if (env.CLOUD_MODE) return null;
   const serverId = await resolveServerIdForProject(project);
   if (!serverId) return null;
   // No local/remote branch: `acquire` already returns the pooled HOST channel for a
@@ -73,12 +82,14 @@ export async function withCertStoreExecutor<T>(
   project: Project,
   fn: (exec: CommandExecutor) => Promise<T>,
 ): Promise<T | null> {
+  if (env.CLOUD_MODE) return null;
   const serverId = await resolveServerIdForProject(project);
   if (!serverId) return null;
-  const row = await repos.server.get(serverId).catch((diagnosticFailure) => { observeCaughtError(diagnosticFailure, "platform/engine/lib/edge-host-executor"); return null; });
+  const row = await repos.server.getInOrganization(serverId, project.organizationId).catch((diagnosticFailure) => { observeCaughtError(diagnosticFailure, "platform/engine/lib/edge-host-executor"); return null; });
+  if (!row) return null;
   // isLocalHostRow, not `row.isLocal`: a plain loopback/SERVER_IP row for this box is
   // this box too, and it carries its own org gate so a teammate's org can't claim it.
-  if (row && (await isLocalHostRow(row))) {
+  if (await isLocalHostRow(row)) {
     return fn(createExecutor()).catch((diagnosticFailure) => { observeCaughtError(diagnosticFailure, "platform/engine/lib/edge-host-executor"); return null; });
   }
   return sshManager.withExecutor(serverId, fn).catch((diagnosticFailure) => { observeCaughtError(diagnosticFailure, "platform/engine/lib/edge-host-executor"); return null; });

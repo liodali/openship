@@ -1,5 +1,15 @@
 import { assertCloudProxyScope } from "../../lib/cloud/scope";
-import { AppError, NotFoundError, OperationError, type AppProjectSchemas } from "@repo/contracts";
+import {
+  AppError,
+  NotFoundError,
+  OperationError,
+  AppHostFitSchema,
+  InstallAppResultSchema,
+  type AppHostFit,
+  type InstallAppResult,
+  type AppProjectSchemas,
+} from "@repo/contracts";
+import { Value } from "@sinclair/typebox/value";
 import { UNKNOWN_CAPACITY } from "@repo/core";
 import { repos } from "@repo/db";
 import type { AppDependencies } from "../../../apps";
@@ -13,6 +23,7 @@ import * as install from "./app-install.service";
 import * as custom from "./custom-app.service";
 import * as settings from "./app-settings.service";
 import { getTemplateForOrg } from "./catalog-source";
+import { maybeCloudProjectRequest } from "../../lib/cloud/project-creation";
 
 function record(ctx: ExecutionContext, operation: string, resourceId: string, after: unknown) {
   audit.recordAsync(operationAuditContext(ctx), { eventType: "project:write", resourceType: "project", resourceId, after: { operation, ...after as object } });
@@ -32,6 +43,20 @@ export const appDependencies: AppDependencies = {
     },
     async install(ctx, input) {
       try {
+        // Uploaded definitions belong to this instance, just like local-folder
+        // sources. Cloud resolves its own catalog rather than receiving a copy.
+        const localDefinition = (await getTemplateForOrg(ctx.organizationId, input.templateId))
+          ?.custom;
+        const cloud = localDefinition
+          ? null
+          : await maybeCloudProjectRequest(
+              ctx,
+              "/api/apps",
+              input,
+              (value): value is InstallAppResult => Value.Check(InstallAppResultSchema, value),
+              { envelope: "data" },
+            );
+        if (cloud) return cloud;
         const result = await install.installApp(ctx, input, {
           async assertDraft(projectId) {
             await authorization.authorize({ ...ctx, scopeMode: "fixed" }, { resourceType: "project", resourceId: projectId, action: "write" });
@@ -54,6 +79,17 @@ export const appDependencies: AppDependencies = {
       return { template, draft };
     },
     async hostFit(ctx, id, input = {}) {
+      const localDefinition = (await getTemplateForOrg(ctx.organizationId, id))?.custom;
+      const cloud = localDefinition
+        ? null
+        : await maybeCloudProjectRequest(
+            ctx,
+            `/api/apps/catalog/${encodeURIComponent(id)}/host-fit`,
+            input,
+            (value): value is AppHostFit => Value.Check(AppHostFitSchema, value),
+            { method: "GET", envelope: "data" },
+          );
+      if (cloud) return cloud;
       if (input.projectId) {
         await authorization.authorize(
           { ...ctx, scopeMode: "fixed" },

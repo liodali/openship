@@ -2060,7 +2060,7 @@ describe("redeployBuildSession environment snapshot", () => {
     );
   });
 
-  it("refreshes missing Cloud app defaults before freezing a failed installation's retry", async () => {
+  it("keeps missing service limits unset when freezing a Cloud app retry", async () => {
     const project = baseProject({
       appTemplateId: "supabase",
       isApp: true,
@@ -2106,7 +2106,10 @@ describe("redeployBuildSession environment snapshot", () => {
       services: queued.meta.composeServices.map((service: { advanced: { resources: ResourceValues } }) => ({
         resources: service.advanced.resources,
       })),
-    })).toEqual({ cpuCores: 4, memoryMb: 8192, diskMb: 40960 });
+    })).toEqual({ cpuCores: 0.25, memoryMb: 1024, diskMb: 8192 });
+    expect(repos.service.seedDraftAppResourceDefaults).not.toHaveBeenCalled();
+    expect(queued.meta.composeServices.every((service: { advanced: { resources?: ResourceValues } }) =>
+      service.advanced.resources === undefined)).toBe(true);
     expect(queued.envVars).toEqual({ MANUAL_ENV: "keep-me" });
     expect(queued.meta.composeServices.every((service: { advanced: { stopGracePeriod: string } }) =>
       service.advanced.stopGracePeriod === "30s")).toBe(true);

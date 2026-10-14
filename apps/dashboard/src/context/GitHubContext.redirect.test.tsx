@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { act } from "react";
+import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GitHubProvider, useGitHub, type GitHubConnectionState } from "./GitHubContext";
@@ -182,6 +182,20 @@ async function advance(ms = 5000) {
 }
 
 describe("GitHub redirect completion", () => {
+  it("loads GitHub after mounting without server data and keeps the page usable while waiting", async () => {
+    let complete!: (value: unknown) => void;
+    h.getUserHome.mockImplementation(() => new Promise((resolve) => { complete = resolve; }));
+    await act(async () => root!.render(
+      <StrictMode><GitHubProvider><Probe /></GitHubProvider></StrictMode>,
+    ));
+    expect(connectButton().disabled).toBe(false);
+    expect(container.textContent).toContain("unavailable");
+    expect(h.getUserHome).toHaveBeenCalledTimes(1);
+    await act(async () => complete({ state: installed, accounts: installedAccounts, repos: [] }));
+    expect(container.querySelector('[data-testid="app-state"]')?.textContent).toBe("installed");
+    expect(h.getUserHome).toHaveBeenCalledTimes(1);
+  });
+
   it("uses the App button on Cloud and keeps the personal-token alternative visible", async () => {
     await render();
     const button = [...container.querySelectorAll("button")].find((item) => item.textContent?.trim() === "GitHub App");

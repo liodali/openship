@@ -59,6 +59,10 @@ seed amavis-confd /etc/amavis/conf.d
 # An older bind-mounted master.cf hides corrected image defaults (#392).
 bash /opt/openship-mail/postfix-filter-tls.sh
 mkdir -p /var/vmail /var/spool/postfix /var/lib/dkim /var/lib/clamav
+if getent passwd vmail >/dev/null 2>&1; then
+  chown -R vmail:vmail /var/vmail 2>/dev/null || true
+  chmod 750 /var/vmail 2>/dev/null || true
+fi
 
 # 2. Recreate the resolver view inside Postfix's persistent chroot on EVERY boot.
 # The iRedMail installer does this at image-build time, but /var/spool/postfix is

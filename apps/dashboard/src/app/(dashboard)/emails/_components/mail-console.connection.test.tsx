@@ -193,12 +193,13 @@ it("discards an old server response when the newly selected server cannot be loa
 });
 
 
-it("shows Cloud email as coming soon without loading or provisioning mail servers", async () => {
+it("offers the generic Cloud mail client without loading or provisioning mail servers", async () => {
   h.selfHosted = false;
   h.deployMode = "cloud";
   await render();
   expect(node.textContent).toContain("Coming soon");
   expect(node.textContent).toContain("do not provision a mail server");
+  expect(node.querySelector('a[href="/apps/new/webmail"]')?.textContent).toContain("Connect existing mail server");
   expect(h.registry).not.toHaveBeenCalled();
   expect(h.status).not.toHaveBeenCalled();
   expect(setup()).toBeNull();
