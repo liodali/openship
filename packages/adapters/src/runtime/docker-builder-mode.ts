@@ -12,6 +12,12 @@
  *             (Podman's compat socket is the common case).
  *   buildkit — always send `version=2`, even for a plain Dockerfile.
  *
+ * The two explicit pins are honoured verbatim — no fallback: a silent switch
+ * under `buildkit` would change the build's resource semantics (the classic
+ * builder enforces Engine API memory caps BuildKit ignores), so a pinned
+ * build fails with the daemon's own error instead. Resilience belongs to
+ * `auto`.
+ *
  * Why a fallback belongs here rather than in the caller's error handling:
  * BuildKit-over-API needs TWO things dockerd happens to provide and other
  * daemons don't — the `/session` reverse-h2c endpoint (credentials) and the
@@ -42,14 +48,20 @@ export function resolveDockerodeBuilderMode(
  * Podman (any 5.x) implements the Docker compat API but not `/session` — that
  * endpoint lives in dockerd's embedded buildkit. The failure surfaces before
  * the build starts, either from OpenShip's own raw-upgrade path
- * ("docker /session failed: 404 …", via docker-exec-stream) or, on a
- * stock-node dockerode, as the modem's `(HTTP code 404)` dial error. Both
- * shapes are matched narrowly: a 404 on a DIFFERENT endpoint must never
+ * ("docker /session failed: HTTP/1.1 404 Not Found — Not Found", via
+ * docker-exec-stream's upgradeRequest — it interpolates the FULL status line,
+ * HTTP version included, so the matcher must tolerate the `HTTP/1.1 ` between
+ * `failed: ` and the code; verified live against Podman 5.8.2's compat socket)
+ * or, on a stock-node dockerode, as the modem's `(HTTP code 404)` dial error.
+ * Both shapes are matched narrowly: a 404 on a DIFFERENT endpoint must never
  * demote a build to the classic builder.
  */
 export function isBuildKitSessionUnavailable(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   const message = error.message;
-  if (/docker \/session failed: 40[45]/.test(message)) return true;
+  // The optional `HTTP/<ver> ` covers the real status line; the bare `40x` arm
+  // tolerates a body-less/normalized shape. 405 included: some proxies answer
+  // an unsupported upgrade with it.
+  if (/docker \/session failed: (?:HTTP\/[\d.]+ )?40[45]\b/.test(message)) return true;
   return /\(HTTP code 404\)/i.test(message) && /\bsession\b/i.test(message);
 }

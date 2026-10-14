@@ -33,7 +33,7 @@ Files that make this up:
 
 | Name | Kind | Value |
 |---|---|---|
-| `FORK_REGISTRY` | secret | your registry host, e.g. `gitea.dev.adetify.com` |
+| `FORK_REGISTRY` | secret | your registry host, e.g. `gitea.example.com` |
 | `FORK_REGISTRY_USER` | secret | registry username with push rights |
 | `FORK_REGISTRY_TOKEN` | secret | registry token (Gitea: a personal access token with `write:package`… on Gitea it's a regular PAT + collaborator/push rights on the package namespace) |
 | `FORK_NAMESPACE` | variable (optional) | namespace under the registry; default `medali` |
@@ -46,10 +46,10 @@ days of repo inactivity — the sync's own pushes reset that clock.
 
 ```sh
 # compose pulls must authenticate to the private registry
-podman login gitea.dev.adetify.com
+podman login gitea.example.com
 
 # point the stack at our images — ~/.openship/compose/.env:
-OPENSHIP_IMAGE_REGISTRY=gitea.dev.adetify.com/medali
+OPENSHIP_IMAGE_REGISTRY=gitea.example.com/medali
 OPENSHIP_VERSION=<tag>          # e.g. 0.9.2 or 0.9.2-<shortsha>
 ```
 
@@ -68,7 +68,7 @@ up before the first update anyway.
    (`resolveImageVersion`: explicit flag → env → CLI version). That is why the
    worker tags images with the plain upstream version from `package.json` —
    after updating to CLI 0.9.3, the pull resolves to
-   `gitea.dev.adetify.com/medali/openship-api:0.9.3`, i.e. **ours**.
+   `gitea.example.com/medali/openship-api:0.9.3`, i.e. **ours**.
 4. If our registry doesn't have that tag yet (upstream released faster than
    the worker), `pinnedImagesReady` aborts **before touching the box**:
    "The pinned image tag isn't in the registry yet". Re-run once the worker
@@ -126,7 +126,7 @@ Upstream refactored around our patches:
 ## Rollback on the VPS
 
 ```sh
-podman login gitea.dev.adetify.com    # if the token rotated
+podman login gitea.example.com    # if the token rotated
 OPENSHIP_VERSION=0.9.2-<shortsha> openship up --compose
 ```
 

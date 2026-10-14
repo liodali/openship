@@ -219,6 +219,7 @@ import {
 import {
   isBuildKitSessionUnavailable,
   resolveDockerodeBuilderMode,
+  type DockerodeBuilderMode,
 } from "./docker-builder-mode";
 
 // ─── Connection config ───────────────────────────────────────────────────────
@@ -2133,9 +2134,11 @@ export class DockerRuntime implements RuntimeAdapter {
     config: BuildConfig,
     requiresBuildKit: boolean,
     log: BuildLogger,
-    opts: { forceClassic?: boolean } = {},
+    opts: { mode?: DockerodeBuilderMode; forceClassic?: boolean } = {},
   ): { options: { version?: "2" }; trace?: BuildKitTraceDecoder } {
-    const mode = resolveDockerodeBuilderMode();
+    // The mode is resolved once per BUILD by the caller (it also gates the
+    // /session fallback there), so every attempt of one build agrees.
+    const mode = opts.mode ?? resolveDockerodeBuilderMode();
 
     // The internal fallback after a BuildKit-session 404, or an operator's
     // explicit OPENSHIP_BUILDER_MODE=classic: same result, different reason.
@@ -2257,7 +2260,11 @@ export class DockerRuntime implements RuntimeAdapter {
     // Docker compat API but not dockerd's embedded buildkit), the first
     // attempt fails before a single layer compiles — the same context is then
     // re-sent through the classic builder. Each attempt packs its own tar
-    // stream: a request body can be consumed only once.
+    // stream: a request body can be consumed only once. An explicit
+    // OPENSHIP_BUILDER_MODE=buildkit pin is honoured verbatim: no fallback,
+    // the build fails with the daemon's own error (a silent switch to the
+    // classic builder would change the build's resource semantics).
+    const mode = resolveDockerodeBuilderMode();
     try {
       for (let attempt = 0; ; attempt++) {
         const forceClassic = attempt > 0;
@@ -2268,6 +2275,7 @@ export class DockerRuntime implements RuntimeAdapter {
           buildContext.ignoreContextPath,
         );
         const builder = this.selectDockerodeBuilder(config, buildContext.requiresBuildKit, log, {
+          mode,
           forceClassic,
         });
         const buildLimits = dockerBuildResourceLimits(config.resources);
@@ -2319,10 +2327,11 @@ export class DockerRuntime implements RuntimeAdapter {
               })
             : err;
           // The BuildKit→classic fallback: only for a session-endpoint 404 on a
-          // BuildKit attempt, never for a context failure (ours, not the
-          // daemon's) or a genuine build error.
+          // BuildKit attempt — never under an explicit buildkit pin, for a
+          // context failure (ours, not the daemon's), or a genuine build error.
           if (
             !forceClassic &&
+            mode !== "buildkit" &&
             !contextErr &&
             builder.options.version === "2" &&
             isBuildKitSessionUnavailable(err)
@@ -3493,7 +3502,9 @@ export class DockerRuntime implements RuntimeAdapter {
             // At most two attempts per service, for the same reason as
             // buildViaDockerode: a BuildKit-selected build against a daemon
             // with no `/session` endpoint (Podman) is retried once through the
-            // classic builder, re-packing the tar — a body is single-use.
+            // classic builder, re-packing the tar — a body is single-use. An
+            // explicit buildkit pin is honoured: no fallback, the build fails.
+            const mode = resolveDockerodeBuilderMode();
             for (let attempt = 0; ; attempt++) {
               const forceClassic = attempt > 0;
               const { body, abortSignal, abort, detachCancellation, takeError } = packBuildContext(
@@ -3506,7 +3517,7 @@ export class DockerRuntime implements RuntimeAdapter {
                 spec.config,
                 requiresBuildKit,
                 spec.logger,
-                { forceClassic },
+                { mode, forceClassic },
               );
               const buildLimits = dockerBuildResourceLimits(spec.config.resources);
               const ownershipHost = builder.options.version !== "2" ? newBuildOwnershipHost() : null;
@@ -3546,6 +3557,7 @@ export class DockerRuntime implements RuntimeAdapter {
                 const contextErr = takeError();
                 if (
                   !forceClassic &&
+                  mode !== "buildkit" &&
                   !contextErr &&
                   builder.options.version === "2" &&
                   isBuildKitSessionUnavailable(err)

@@ -20,8 +20,16 @@
  * toward a pure mirror — this file is the ledger of what is still ours.
  */
 import { readFileSync, existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 
-const read = (p) => (existsSync(p) ? readFileSync(p, "utf8") : null);
+// Anchor every path to the repo root (this script lives in scripts/fork/), so
+// the guard behaves identically from CI, a monorepo package dir, or anywhere.
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const read = (p) => {
+  const abs = join(ROOT, p);
+  return existsSync(abs) ? readFileSync(abs, "utf8") : null;
+};
 const failures = [];
 const check = (name, ok, hint) => {
   if (!ok) failures.push(hint ? `${name}: ${hint}` : name);
@@ -96,4 +104,6 @@ if (failures.length > 0) {
   );
   process.exit(1);
 }
-console.log("✔ fork patch guard: all three patches intact (extrahoots JSON, builder fallback, nginx Connection map).");
+console.log(
+  "✔ fork patch guard: all three patches intact (extrahoots JSON, builder fallback, nginx Connection map).",
+);

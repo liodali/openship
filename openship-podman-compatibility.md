@@ -9,7 +9,7 @@
 
 ## Context (verified on the server)
 
-- VPS `185.182.184.116` (Rocky 9), **rootless Podman 5.8.2** + Docker-compat
+- VPS `<vps-ip>` (Rocky 9), **rootless Podman 5.8.2** + Docker-compat
   socket (`/run/user/1000/podman/podman.sock`), compat API reports `27.3.1`.
 - Rocky repos ceiling: `podman 5.8.2-7.el9_8` — **no 6.x available**.
 - Openship CLI/API/edge 0.8.2. Deploys, pulls, volumes, SSL: all work.
@@ -75,12 +75,12 @@ only UX gap today is push-to-main auto-build — a 3-line workflow trigger.
 
 ## References
 
-- Project `fsvger-staging`: `proj__e2m_M591Pp4UMmL` (compose-stack deploy,
+- Project `<staging-project>`: `<project-id>` (compose-stack deploy,
   NEVER `--folder`)
-- Server: `4e78e93f-baf6-4de2-9bb7-c3e32b7d9bd0`
-- Deploy dir: `~/Desktop/DevOps/fluticon-staging-openship/` (README = runbook)
-- Auto-deploy: `web-v*-openship` tags (PAT `gha-fluticon-autodeploy2`, secret
-  `OPENSHIP_TOKEN` in liodali/fluticon)
+- Server: `<server-uuid>`
+- Deploy dir: `<deploy-dir>` (README = runbook)
+- Auto-deploy: `<deploy-tag-pattern>` tags (PAT `<pat-name>`, secret
+  `OPENSHIP_TOKEN` in <org>/<repo>)
 
 ## Option A+ (chosen direction, 2026-10-11) — fork + our fixes + sync upstream
 
@@ -107,13 +107,13 @@ The server compose template (`~/.openship/compose/docker-compose.yml`) uses:
 
 → set in `~/.openship/compose/.env` on the VPS:
 
-    OPENSHIP_IMAGE_REGISTRY=gitea.dev.adetify.com/medali
+    OPENSHIP_IMAGE_REGISTRY=gitea.example.com/medali
     OPENSHIP_VERSION=0.8.2-podman1        # our fork tag
 
 - Fork CI pushes `medali/openship-api`, `medali/openship-edge`,
   `medali/openship-dashboard` (same names, our registry) and updates flow
   from Gitea, not ghcr.io.
-- Needs `podman login gitea.dev.adetify.com` as rocky (compose pull auth).
+- Needs `podman login gitea.example.com` as rocky (compose pull auth).
 - Verify on first update whether `openship update` regenerates the compose
   dir and preserves `.env` (backup it first).
 - Dashboard UI for these two vars = optional upstream feature PR; env file is
@@ -135,6 +135,11 @@ All three Option-A patches are implemented in this fork's tree:
    (Podman compat API); `OPENSHIP_BUILDER_MODE=classic|buildkit` pins it
    (documented in `.env.example`). The SSH/CLI path was already Podman-safe
    (probes for buildx) and is unchanged.
+   *Fix 2026-10-14 (review/openship-buildkit-issue.md): the original matcher
+   missed the `HTTP/1.1 ` in the real status line
+   (`docker /session failed: HTTP/1.1 404 Not Found — Not Found`), so the
+   fallback was dead until the regex tolerated it. An explicit `buildkit` pin
+   now fails hard instead of falling back (honoured verbatim).*
 3. **nginx `Connection` fix** — `EDGE_CONNECTION_UPGRADE_MAP` in
    `packages/adapters/src/infra/openresty-lua.ts`; `PROXY_HEADERS` now sends
    `Connection $connection_upgrade`; each managed vhost carries the map in its

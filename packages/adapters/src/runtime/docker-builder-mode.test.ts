@@ -40,10 +40,24 @@ describe("resolveDockerodeBuilderMode", () => {
 });
 
 describe("isBuildKitSessionUnavailable", () => {
-  it("matches the raw-upgrade 404 the Bun path emits", () => {
-    expect(isBuildKitSessionUnavailable(new Error("docker /session failed: 404 Not Found"))).toBe(
-      true,
-    );
+  it("matches the real raw-upgrade 404 the Bun path emits", () => {
+    // Exact shape produced by upgradeRequest() in docker-exec-stream.ts: it
+    // interpolates the FULL status line, so "HTTP/1.1 " sits between
+    // "failed: " and the code. Verified live against Podman 5.8.2 (rootless
+    // compat socket): POST /session -> "HTTP/1.1 404 Not Found".
+    expect(
+      isBuildKitSessionUnavailable(
+        new Error("docker /session failed: HTTP/1.1 404 Not Found — Not Found"),
+      ),
+    ).toBe(true);
+    // Tolerate a body-less status line too.
+    expect(isBuildKitSessionUnavailable(new Error("docker /session failed: 404"))).toBe(true);
+    // 405 — some proxies answer an unsupported upgrade that way.
+    expect(
+      isBuildKitSessionUnavailable(
+        new Error("docker /session failed: HTTP/1.1 405 Method Not Allowed"),
+      ),
+    ).toBe(true);
   });
 
   it("matches docker-modem's dial error shape", () => {
@@ -54,11 +68,15 @@ describe("isBuildKitSessionUnavailable", () => {
 
   it.each([
     "docker /session failed: 500 Internal Server Error",
+    "docker /session failed: HTTP/1.1 500 Internal Server Error",
     "docker /session upgrade timed out after 30000ms",
     "(HTTP code 404) no such image",
     "(HTTP code 500) server error",
     "the --mount option requires BuildKit",
     "exit code 1",
+    // Only a 404 on /session demotes a build — never one on another endpoint.
+    "docker /container/abc/attach failed: HTTP/1.1 404 Not Found",
+    "docker /exec/abc/start failed: HTTP/1.1 404 Not Found",
   ])("does not match %p", (message) => {
     expect(isBuildKitSessionUnavailable(new Error(message))).toBe(false);
   });
@@ -156,7 +174,7 @@ describe("DockerRuntime buildViaDockerode BuildKit fallback", () => {
     const buildImage = vi
       .fn()
       .mockImplementationOnce(async () => {
-        throw new Error("docker /session failed: 404 Not Found");
+        throw new Error("docker /session failed: HTTP/1.1 404 Not Found — Not Found");
       })
       .mockImplementationOnce(async () => ({ resume: () => {} }));
 
@@ -232,5 +250,49 @@ describe("DockerRuntime buildViaDockerode BuildKit fallback", () => {
       if (original === undefined) delete process.env[DOCKER_BUILDER_MODE_ENV];
       else process.env[DOCKER_BUILDER_MODE_ENV] = original;
     }
+  });
+
+  it("honours an explicit buildkit pin: a /session 404 fails the build, no fallback", async () => {
+    // A pinned build must not silently switch builders — the classic one caps
+    // memory via the Engine API where BuildKit runs uncapped, so a fallback
+    // under `buildkit` would change the build's resource semantics.
+    const original = process.env[DOCKER_BUILDER_MODE_ENV];
+    process.env[DOCKER_BUILDER_MODE_ENV] = "buildkit";
+    try {
+      const { context } = await freshContext(false); // plain Dockerfile — the pin forces v2
+      const buildImage = vi.fn(async () => {
+        throw new Error("docker /session failed: HTTP/1.1 404 Not Found — Not Found");
+      });
+      const { buildViaDockerode, log } = runtimeWith(buildImage);
+
+      await expect(
+        buildViaDockerode(buildConfig("session-buildkit-pin"), context, "fallback-test:tag5", log),
+      ).rejects.toThrow("/session failed: HTTP/1.1 404");
+      expect(buildImage).toHaveBeenCalledTimes(1);
+      const first = (buildImage.mock.calls[0] as unknown[])[1] as Record<string, unknown>;
+      expect(first.version).toBe("2");
+    } finally {
+      if (original === undefined) delete process.env[DOCKER_BUILDER_MODE_ENV];
+      else process.env[DOCKER_BUILDER_MODE_ENV] = original;
+    }
+  });
+
+  it("falls back on the REAL status-line shape Podman produces", async () => {
+    // End-to-end guard for the regression this fixes: the matcher must accept
+    // the full "HTTP/1.1 404 Not Found" status line upgradeRequest() emits —
+    // the earlier fixture ("failed: 404 …") was a shape production never makes.
+    const { context } = await freshContext(true);
+    const buildImage = vi
+      .fn()
+      .mockImplementationOnce(async () => {
+        throw new Error("docker /session failed: HTTP/1.1 404 Not Found — Not Found");
+      })
+      .mockImplementationOnce(async () => ({ resume: () => {} }));
+    const { buildViaDockerode, log } = runtimeWith(buildImage);
+
+    await buildViaDockerode(buildConfig("session-real-shape"), context, "fallback-test:tag6", log);
+
+    expect(buildImage).toHaveBeenCalledTimes(2);
+    expect((buildImage.mock.calls[1] as unknown[])[1]).not.toHaveProperty("version");
   });
 });
