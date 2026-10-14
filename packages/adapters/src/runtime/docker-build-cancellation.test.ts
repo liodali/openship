@@ -479,9 +479,16 @@ describe("DockerRuntime build cancellation — dockerode path", () => {
     });
     expect(verifyImageBuilt).not.toHaveBeenCalled();
     const ownershipEntry = buildImage.mock.calls[0]?.[1].extrahosts;
-    expect(ownershipEntry).toMatch(/^openship-build-[0-9a-f-]+\.invalid:127\.0\.0\.1$/);
+    // Engine API spec: `extrahosts` is a JSON array string. dockerd parsed the
+    // old bare `host:ip` leniently; Podman's compat API rejects it with
+    // `400 []string: decode slice: expect [ or n, but found h`.
+    expect(ownershipEntry).toMatch(
+      /^\["openship-build-[0-9a-f-]+\.invalid:127\.0\.0\.1"\]$/,
+    );
     expect(streamDockerodeBuild.mock.calls[0]?.[2]).toMatchObject({
-      legacyBuilder: { ownershipHost: ownershipEntry?.split(":")[0] },
+      legacyBuilder: {
+        ownershipHost: JSON.parse(ownershipEntry as string)[0].split(":")[0],
+      },
     });
   });
 });

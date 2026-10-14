@@ -272,6 +272,23 @@ function newBuildOwnershipHost(): string {
   return `openship-build-${randomUUID()}.invalid`;
 }
 
+/**
+ * Serialize a build's extra-host entries for the Engine API `POST /build`
+ * query string: a JSON array of `"host:ip"` strings, exactly as the spec
+ * defines the `extrahosts` parameter.
+ *
+ * A bare `host:ip` string only ever worked because dockerd parses the field
+ * leniently; strict daemons (Podman's Docker-compat API) reject it with
+ * `400 []string: decode slice: expect [ or n, but found h` before the build
+ * starts. JSON-encoding is spec-correct for dockerd too, so nothing changes
+ * there. (dockerode itself only pre-encodes `cachefrom` this way — see
+ * Docker.prototype.buildImage — and `labels`/`buildargs` are JSON-stringified
+ * by docker-modem's buildQuerystring because they are plain objects.)
+ */
+function engineApiExtraHosts(host: string): string {
+  return JSON.stringify([`${host}:127.0.0.1`]);
+}
+
 async function boundedBuildContainerCleanup(
   cleanup: Promise<LegacyBuildContainerTermination>,
 ): Promise<LegacyBuildContainerTermination | null> {
@@ -2261,7 +2278,7 @@ export class DockerRuntime implements RuntimeAdapter {
         // build should be free to use the machine (a production build often
         // needs several GB). Opt-in only; see dockerBuildResourceLimits.
         ...buildLimits,
-        ...(ownershipHost && { extrahosts: `${ownershipHost}:127.0.0.1` }),
+        ...(ownershipHost && { extrahosts: engineApiExtraHosts(ownershipHost) }),
         forcerm: true,
         ...builder.options,
         abortSignal,
@@ -3459,7 +3476,7 @@ export class DockerRuntime implements RuntimeAdapter {
                 }),
                 buildargs: resolveDockerBuildArgs(spec.config),
                 ...buildLimits,
-                ...(ownershipHost && { extrahosts: `${ownershipHost}:127.0.0.1` }),
+                ...(ownershipHost && { extrahosts: engineApiExtraHosts(ownershipHost) }),
                 forcerm: true,
                 ...builder.options,
                 abortSignal,
