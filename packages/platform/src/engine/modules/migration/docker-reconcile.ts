@@ -20,7 +20,7 @@ import type {
   ProxyKind,
 } from "@repo/adapters";
 import { classifyProxy, isBuildHelperMarkers, OPENSHIP_LABEL } from "@repo/adapters";
-import type { ComposeHealthcheck, ProxySettings } from "@repo/core";
+import type { ComposeHealthcheck, ProxySettings, ComposeGpuConfig } from "@repo/core";
 import { isLoopbackHost } from "@repo/core";
 import type { ComposeService } from "../../lib/compose-parser";
 import type { ManifestProjectEntry } from "../../lib/openship-manifest";
@@ -45,6 +45,10 @@ export function declaredKey(composeProject: string, serviceName: string): string
 }
 
 export interface DiscoveredService {
+  /** Live GPU settings; an empty object explicitly clears stale declarations. */
+  gpu?: ComposeGpuConfig;
+  gpuImportError?: string;
+  shmSize?: number;
   /** compose service name, or the container name for a standalone container. */
   name: string;
   /** Where it was discovered — informs how much Openship can reconstruct. */
@@ -493,6 +497,7 @@ export function toDiscoveredService(
 ): DiscoveredService {
   const mounts = toDiscoveredMounts(detail.mounts);
   const warnings: string[] = [];
+  if (detail.gpuImportError) warnings.push(detail.gpuImportError);
   for (const m of mounts) {
     if (m.type === "bind") {
       warnings.push(
@@ -598,6 +603,16 @@ export function toDiscoveredService(
     restart: detail.restart?.name || declared?.restart,
     healthcheck,
     resources,
+    gpu:
+      detail.gpu ??
+      (declared
+        ? {
+            ...(declared.advanced?.gpus && { gpus: declared.advanced.gpus }),
+            ...(declared.advanced?.runtime && { runtime: declared.advanced.runtime }),
+          }
+        : undefined),
+    gpuImportError: detail.gpuImportError,
+    shmSize: detail.shmSize ?? declared?.advanced?.shmSize,
     proxyKind,
     edgePorts: edgePorts.length > 0 ? edgePorts : undefined,
     existingRoute,

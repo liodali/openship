@@ -192,6 +192,14 @@ export interface TableSpec {
 }
 
 const TABLES: ReadonlyArray<TableSpec> = [
+  {
+    sqlName: "ingress_connection", table: schema.ingressConnection,
+    scopes: [{ in: "instance", via: "all-rows" }], hasOrganizationId: true,
+  },
+  {
+    sqlName: "ingress_hostname", table: schema.ingressHostname,
+    scopes: [{ in: "instance", via: "all-rows" }], hasOrganizationId: false,
+  },
   ...[
     ["action_runner", schema.actionRunner],
     ["action_workflow", schema.actionWorkflow],

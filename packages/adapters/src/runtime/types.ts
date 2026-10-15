@@ -26,7 +26,7 @@ import type {
   ShellOptions,
   ShellSession,
 } from "../types";
-import type { ComposeAdvanced } from "@repo/core";
+import type { ComposeAdvanced, StackRole } from "@repo/core";
 import type { BuildLogger } from "./build-pipeline";
 import type { PortProbeExecutor } from "../system/port-listen";
 import type { ContainerStabilitySample } from "./stability";
@@ -140,6 +140,13 @@ export type RuntimeCapability =
    * requires release commands.
    */
   | "releaseCommand"
+  /**
+   * Runtime can run a deployment's ROLE processes (a worker, a scheduler) as
+   * separate containers off the same image as the web app: `deployRole`. Docker
+   * implements it; Cloud and Bare do not yet, so a deployment that declares
+   * roles must be refused there.
+   */
+  | "roles"
   /**
    * Runtime can report a container's RESTART HISTORY and health, not just a
    * point-in-time status — the readings the post-deploy stabilization watch
@@ -256,6 +263,24 @@ export interface RuntimeAdapter {
     onLog: LogCallback,
     opts?: ReleaseCommandOptions,
   ): Promise<void>;
+
+  /**
+   * Start ONE replica of a runtime role (a worker or scheduler process) from
+   * the deployment's built image (`config.imageRef`), next to its web process.
+   * `replica` is 1-based and part of the container identity. The role gets the
+   * app's env, mounts and project network, but no port and no network alias.
+   * `opts.beforeStart` runs with the created container's id before its process
+   * starts (e.g. to join connected databases' networks); if it rejects, the
+   * container is removed and the error propagates.
+   * Callers must gate on `supports("roles")`.
+   */
+  deployRole?(
+    config: DeployConfig,
+    role: Pick<StackRole, "name" | "command" | "stopSignal" | "stopGracePeriod">,
+    replica: number,
+    onLog?: LogCallback,
+    opts?: { beforeStart?: (containerId: string) => Promise<void> },
+  ): Promise<{ containerId: string }>;
 
   /** Stop a running container/process (preserves state) */
   stop(containerId: string): Promise<void>;
@@ -811,6 +836,12 @@ export interface DockerContainerDetail {
    *  limits it was actually running with — including one set by hand with
    *  `docker update --memory`. Omitted fields mean the container had no cap. */
   resources?: { cpuCores?: number; memoryMb?: number };
+  /** Live GPU configuration, including an empty object when no GPU was requested. */
+  gpu?: import("@repo/core").ComposeGpuConfig;
+  /** Inspection still succeeds; adoption refuses a GPU configuration it cannot replay. */
+  gpuImportError?: string;
+  /** Live private /dev/shm size, retained when adopting an existing container. */
+  shmSize?: number;
   composeProject?: string;
   composeService?: string;
   /** com.docker.compose.project.config_files — absolute compose paths on the host. */

@@ -21,7 +21,9 @@ func main() {
 	}
 	if handled, err := controlCommand(os.Args); handled {
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "Actions worker control failed")
+			// Control commands never receive request credentials, so the cause
+			// (for example a permission error) is safe to report.
+			fmt.Fprintf(os.Stderr, "Actions worker control failed: %v\n", err)
 			os.Exit(1)
 		}
 		return

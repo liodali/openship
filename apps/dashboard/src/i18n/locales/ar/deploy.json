@@ -221,7 +221,8 @@
     "off": "معطّل",
     "previewTitle": "معاينة النشر",
     "previewHint": "تابع لإعداد تطبيقك. يبدأ النشر من الصفحة التالية.",
-    "back": "رجوع"
+    "back": "رجوع",
+    "gpuBadge": "GPU"
   },
   "summary": {
     "buildAndDeploy": "البناء والنشر:",

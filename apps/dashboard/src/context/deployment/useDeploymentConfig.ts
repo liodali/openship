@@ -880,6 +880,10 @@ export function useDeploymentConfig() {
           releaseCommands: projectId
             ? (project?.releaseCommands ?? undefined)
             : (response.releaseCommands ?? undefined),
+          // Same rule as releaseCommands: a saved [] is an explicit opt-out.
+          roles: projectId
+            ? (project?.roles ?? undefined)
+            : (response.roles ?? undefined),
           // Deliberately NOT projectId-gated like readiness/framework: this is what
           // the scan just observed in the repo, not a value the operator owns, so a
           // config edit on an existing project must show the file's CURRENT state.
@@ -1047,6 +1051,7 @@ export function useDeploymentConfig() {
                     readiness: project?.readiness,
                     githubChecks: project?.githubChecks,
                     releaseCommands: project?.releaseCommands,
+                    roles: project?.roles,
                     routingConfig: project?.routingConfig,
                   }
                 : project,
@@ -1153,6 +1158,9 @@ export function useDeploymentConfig() {
             releaseCommands: prev.releaseCommands !== undefined || prev.projectId
               ? prev.releaseCommands
               : prepared.releaseCommands,
+            roles: prev.roles !== undefined || prev.projectId
+              ? prev.roles
+              : prepared.roles,
             routingConfig: prev.routingConfig,
             cloudResourceTier: prev.cloudResourceTier,
             cloudResourceCustom: prev.cloudResourceCustom,
@@ -1358,6 +1366,7 @@ export function useDeploymentConfig() {
             buildCommand: stackDef.defaultBuildCommand ?? "",
             startCommand: stackDef.defaultStartCommand ?? "",
             releaseCommands: scan.releaseCommands,
+            roles: scan.roles,
             configDiagnostics: scan.configDiagnostics,
             buildImage: getBuildImage(context.stack as StackId, pm),
             outputDirectory: stackDef.outputDirectory ?? "",
@@ -1386,6 +1395,7 @@ export function useDeploymentConfig() {
             buildCommand: scan.buildCommand,
             startCommand: scan.startCommand,
             releaseCommands: scan.releaseCommands,
+            roles: scan.roles,
             buildImage: scan.buildImage,
             runtimeVersion: scan.runtimeVersion ?? null,
             runtimeImage: scan.runtimeImage ?? null,
@@ -1514,6 +1524,7 @@ export function useDeploymentConfig() {
               ...prev,
               projectId,
               releaseCommands: project.releaseCommands ?? undefined,
+              roles: project.roles ?? undefined,
               githubChecks: project.githubChecks ?? undefined,
               // The successful env read is authoritative even when empty. Keeping
               // stale rows here would turn a later save into unintended upserts.

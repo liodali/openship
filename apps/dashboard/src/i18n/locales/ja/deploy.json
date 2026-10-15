@@ -221,7 +221,8 @@
     "off": "無効",
     "previewTitle": "デプロイのプレビュー",
     "previewHint": "続行してアプリを設定します。デプロイは次のページから開始します。",
-    "back": "戻る"
+    "back": "戻る",
+    "gpuBadge": "GPU"
   },
   "summary": {
     "buildAndDeploy": "ビルドとデプロイ:",

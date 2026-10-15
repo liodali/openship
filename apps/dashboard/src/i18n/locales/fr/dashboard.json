@@ -55,6 +55,7 @@
     "appsEmptyDesc": "En un clic, entièrement auto-hébergé — bases de données, automatisation, analytique, coffres de mots de passe et plus encore, sur vos propres serveurs."
   },
   "nav": {
+    "resources": "Espaces Cloud",
     "support": "Assistance",
     "scale": "Mise à l’échelle",
     "home": "Accueil",
@@ -185,7 +186,8 @@
         "analytics": "Analytique",
         "automation": "Automatisation",
         "mail": "Messagerie",
-        "other": "Outils"
+        "other": "Outils",
+        "ai": "IA et modèles"
       },
       "installing": "Installation…",
       "install": "Installer",
@@ -200,7 +202,18 @@
       "needsUpdateBadge": "Mise à jour requise",
       "needsVersionBadge": "Nécessite la v{version}",
       "removedToast": "« {name} » a été supprimé.",
-      "removeFailedToast": "Impossible de supprimer l'application."
+      "removeFailedToast": "Impossible de supprimer l'application.",
+      "gpu": {
+        "recommended": "GPU recommandé",
+        "required": "GPU NVIDIA requis",
+        "mode": "Calcul",
+        "cpu": "CPU uniquement",
+        "nvidia": "GPU NVIDIA",
+        "hint": "Le mode NVIDIA nécessite un pilote compatible et NVIDIA Container Toolkit sur votre serveur.",
+        "cloudUnsupported": "Cette application nécessite un serveur autohébergé. Choisissez un serveur connecté.",
+        "selfHostedOnly": "Autohébergement uniquement",
+        "noGpu": "Aucun GPU détecté. Vérifiez le pilote NVIDIA et Container Toolkit ou choisissez CPU."
+      }
     }
   },
   "quickLinks": {

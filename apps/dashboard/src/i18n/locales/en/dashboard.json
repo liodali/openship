@@ -55,6 +55,7 @@
     }
   },
   "nav": {
+    "resources": "Cloud spaces",
     "support": "Support",
     "scale": "Scale",
     "home": "Home",
@@ -125,7 +126,8 @@
         "analytics": "Analytics",
         "automation": "Automation",
         "mail": "Mail",
-        "other": "Tools"
+        "other": "Tools",
+        "ai": "AI & models"
       },
       "installing": "Installing…",
       "install": "Install",
@@ -140,7 +142,18 @@
       "needsUpdateBadge": "Needs update",
       "needsVersionBadge": "Needs v{version}",
       "removedToast": "Removed \"{name}\".",
-      "removeFailedToast": "Couldn't remove the app."
+      "removeFailedToast": "Couldn't remove the app.",
+      "gpu": {
+        "recommended": "GPU recommended",
+        "required": "NVIDIA GPU required",
+        "mode": "Compute",
+        "cpu": "CPU",
+        "nvidia": "NVIDIA GPU",
+        "hint": "NVIDIA mode needs a compatible driver and NVIDIA Container Toolkit on your server.",
+        "cloudUnsupported": "This app is self-hosted only. Choose a connected self-hosted server.",
+        "selfHostedOnly": "Self-hosted only",
+        "noGpu": "No GPU detected. Check the NVIDIA driver and Container Toolkit, or choose CPU mode."
+      }
     },
     "projects": {
       "title": "Projects",

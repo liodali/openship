@@ -221,7 +221,8 @@
     "off": "aus",
     "previewTitle": "Bereitstellungsvorschau",
     "previewHint": "Weiter zur App-Konfiguration. Die Bereitstellung startet auf der nächsten Seite.",
-    "back": "Zurück"
+    "back": "Zurück",
+    "gpuBadge": "GPU"
   },
   "summary": {
     "buildAndDeploy": "Bauen & deployen:",

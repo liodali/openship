@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useMonitorStream } from "@/hooks/useMonitorStream";
+import { UsageTrend } from "@/components/resources/UsageTrend";
 import Link from "next/link";
 import { Icon as UiIcon } from "@repo/ui/icons";
 import type { CloudWorkspaceUsage } from "@repo/contracts";
@@ -18,11 +20,21 @@ export function ServerUsage({
   resources,
   showProjects = false,
   metrics = true,
+  projectTitle,
+  refreshKey,
+  resourcePool = false,
+  liveEnabled = true,
+  unavailableHint,
 }: {
   serverId: string;
   resources?: CloudAllocation | null;
   showProjects?: boolean;
   metrics?: boolean;
+  projectTitle?: string;
+  refreshKey?: string | number;
+  resourcePool?: boolean;
+  liveEnabled?: boolean;
+  unavailableHint?: string;
 }) {
   const { t, locale } = useI18n();
   const copy = t.billing.workspaces;
@@ -30,6 +42,13 @@ export function ServerUsage({
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [attempt, setAttempt] = useState(0);
+  const live = useMonitorStream(
+    resourcePool && metrics && liveEnabled ? serverId : null,
+    resourcePool && metrics && liveEnabled,
+    "usage",
+  );
+  const measured = live.usage ?? usage;
+  const resourceCopy = t.servers.resources;
   useEffect(() => {
     let active = true;
     setLoading(true);
@@ -49,28 +68,36 @@ export function ServerUsage({
     return () => {
       active = false;
     };
-  }, [serverId, attempt]);
+  }, [serverId, attempt, refreshKey]);
   const number = (value: number) => formatBillingNumber(value, locale);
   const showDisk =
     usage?.projects.some((project) => project.diskMb !== null) || usage?.sharedDiskMb != null;
   const gb = (value: number | null | undefined) => (value == null ? null : value / 1024);
   const measuredMemoryMb =
-    usage?.memoryUsedMb != null && usage?.memoryAvailableMb != null
-      ? usage.memoryUsedMb + usage.memoryAvailableMb
+    measured?.memoryUsedMb != null && measured?.memoryAvailableMb != null
+      ? measured.memoryUsedMb + measured.memoryAvailableMb
       : null;
   const rows = [
-    { label: copy.cpuUsage, value: usage?.cpuPercent ?? null, max: 100, unit: "%" },
+    {
+      label: copy.cpuUsage,
+      value: measured?.cpuPercent ?? null,
+      max: 100,
+      unit: "%",
+      history: live.history.map((sample) => sample.cpuPercent),
+    },
     {
       label: t.billing.header.ram,
-      value: gb(usage?.memoryUsedMb),
+      value: gb(measured?.memoryUsedMb),
       max: gb(resources?.memoryMb ?? measuredMemoryMb),
       unit: "GB",
+      history: live.history.map((sample) => gb(sample.memoryUsedMb)),
     },
     {
       label: copy.diskUsage,
-      value: gb(usage?.diskUsedMb),
-      max: gb(usage?.diskTotalMb),
+      value: gb(measured?.diskUsedMb),
+      max: gb(resources?.diskMb ?? measured?.diskTotalMb),
       unit: "GB",
+      history: live.history.map((sample) => gb(sample.diskUsedMb)),
     },
   ];
   const refreshButton = (
@@ -79,7 +106,10 @@ export function ServerUsage({
       size="icon"
       disabled={loading}
       aria-label={t.billing.resourceOverview.refresh}
-      onClick={() => setAttempt((value) => value + 1)}
+      onClick={() => {
+        setAttempt((value) => value + 1);
+        if (resourcePool && liveEnabled) live.reconnect();
+      }}
     >
       <UiIcon
         name="refresh"
@@ -94,50 +124,90 @@ export function ServerUsage({
         <section className="@container/workspace-usage rounded-2xl bg-card p-5" aria-busy={loading}>
           <div className="flex items-start justify-between gap-4">
             <div>
-              <h2 className="text-base font-medium">{copy.liveUsage}</h2>
-              <p className="mt-1 text-sm text-muted-foreground">{copy.usageHint}</p>
+              <h2 className="text-base font-medium">
+                {resourcePool ? resourceCopy.usageTitle : copy.liveUsage}
+              </h2>
+              <p className="mt-1 text-sm text-muted-foreground">
+                {resourcePool ? t.servers.resources.usageHint : copy.usageHint}
+              </p>
             </div>
-            {refreshButton}
+            {resourcePool && liveEnabled ? (
+              <span
+                className={`flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs ${live.isConnected && !live.error ? "bg-primary/10 text-primary" : "bg-muted/50 text-muted-foreground"}`}
+              >
+                <span
+                  className={`size-1.5 rounded-full ${live.isConnected && !live.error ? "bg-primary" : "bg-muted-foreground"}`}
+                  aria-hidden
+                />
+                {live.paused
+                  ? resourceCopy.paused
+                  : live.isConnected && !live.error
+                    ? resourceCopy.live
+                    : live.error
+                      ? resourceCopy.lastReading
+                      : resourceCopy.connecting}
+              </span>
+            ) : !resourcePool ? (
+              refreshButton
+            ) : null}
           </div>
+          {resourcePool && liveEnabled && live.error && (
+            <div
+              role="status"
+              className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl bg-muted/30 p-3"
+            >
+              <p className="text-xs text-muted-foreground">{resourceCopy.streamUnavailable}</p>
+              <Button variant="secondary" size="sm" onClick={live.reconnect}>
+                {t.billing.plansRoute.tryAgain}
+              </Button>
+            </div>
+          )}
           {error && (
             <p role="alert" className="mt-3 text-sm text-danger">
               {error}
             </p>
           )}
-          {!loading && usage && !usage.available && (
+          {!loading && usage && !usage.available && !live.usage && (
             <p role="status" className="mt-3 text-sm text-muted-foreground">
-              {usage.reason}
+              {unavailableHint ?? usage.reason}
             </p>
           )}
           <div className="mt-4 grid gap-3 @min-[36rem]/workspace-usage:grid-cols-3">
             {rows.map((row) => (
               <div
                 key={row.label}
-                className="flex min-w-0 items-center justify-between gap-3 rounded-xl bg-muted/35 p-3.5"
+                className="flex min-w-0 items-center gap-4 rounded-xl bg-muted/35 p-4 @min-[36rem]/workspace-usage:block"
               >
-                <div className="min-w-0">
-                  <p className="text-xs text-muted-foreground">{row.label}</p>
-                  {loading ? (
-                    <div className="mt-2 h-6 w-24 max-w-full animate-pulse rounded bg-muted" />
-                  ) : (
-                    <p className="mt-1 text-xl font-medium tabular-nums">
-                      {row.value == null ? "—" : number(row.value)}{" "}
-                      <span className="text-sm font-normal text-muted-foreground">
-                        {row.unit}
-                        {row.max != null && row.unit !== "%"
-                          ? ` / ${number(row.max)} ${row.unit}`
-                          : ""}
-                      </span>
-                    </p>
-                  )}
+                <div className="flex min-w-0 flex-1 items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="text-xs text-muted-foreground">{row.label}</p>
+                    {loading && !live.usage ? (
+                      <div className="mt-2 h-6 w-24 max-w-full animate-pulse rounded bg-muted" />
+                    ) : (
+                      <p className="mt-1 text-xl font-medium tabular-nums">
+                        {row.value == null ? "—" : number(row.value)}{" "}
+                        <span className="text-sm font-normal text-muted-foreground">
+                          {row.unit}
+                          {row.max != null && row.unit !== "%"
+                            ? ` / ${number(row.max)} ${row.unit}`
+                            : ""}
+                        </span>
+                      </p>
+                    )}
+                  </div>
+                  <ResourceRing label={row.label} used={row.value} max={row.max} />
                 </div>
-                <ResourceRing label={row.label} used={row.value} max={row.max} />
+                {resourcePool && (
+                  <div className="w-20 shrink-0 @min-[36rem]/workspace-usage:mt-4 @min-[36rem]/workspace-usage:w-full">
+                    <UsageTrend values={row.history} max={row.max ?? null} />
+                  </div>
+                )}
               </div>
             ))}
           </div>
-          {usage?.available && (
+          {measured && (
             <p className="mt-3 text-xs text-muted-foreground">
-              {copy.measuredAt} {new Date(usage.measuredAt).toLocaleString(locale)}
+              {copy.measuredAt} {new Date(measured.measuredAt).toLocaleString(locale)}
             </p>
           )}
         </section>
@@ -146,12 +216,21 @@ export function ServerUsage({
         <section className="rounded-2xl bg-card p-5" aria-busy={loading}>
           <div className="flex items-start justify-between gap-4">
             <div>
-              <h2 className="text-base font-medium">{t.billing.resourcesGuide.projects}</h2>
+              <h2 className="text-base font-medium">
+                {projectTitle ?? t.billing.resourcesGuide.projects}
+              </h2>
               {showDisk && (
                 <p className="mt-1 text-xs text-muted-foreground">{copy.projectDiskHint}</p>
               )}
             </div>
-            {!metrics && refreshButton}
+            <div className="flex items-center gap-2">
+              {resourcePool && (
+                <span className="rounded-full bg-muted/50 px-2.5 py-1 text-xs tabular-nums text-muted-foreground">
+                  {usage ? usage.projects.length : "—"}
+                </span>
+              )}
+              {(!metrics || resourcePool) && refreshButton}
+            </div>
           </div>
           {!metrics && error && (
             <p role="alert" className="mt-3 text-sm text-danger">
@@ -179,15 +258,22 @@ export function ServerUsage({
                     </span>
                   </Link>
                 ))}
-                {usage.projects.length === 0 && (
+                {usage.projects.length === 0 && usage.available && (
                   <div className="rounded-xl bg-muted/30 p-4">
-                    <p className="text-sm text-muted-foreground">{copy.noProjects}</p>
+                    <p className="text-sm text-muted-foreground">
+                      {resourcePool ? t.servers.resources.noProjects : copy.noProjects}
+                    </p>
                     <Button asChild variant="secondary" size="sm" className="mt-3">
                       <Link href="/library">
                         {t.dashboard.pages.projects.emptyState.createProject}
                       </Link>
                     </Button>
                   </div>
+                )}
+                {usage.projects.length === 0 && !usage.available && (
+                  <p role="status" className="py-2 text-sm text-muted-foreground">
+                    {t.billing.resourceOverview.unavailable}
+                  </p>
                 )}
                 {usage.sharedDiskMb != null && (
                   <div className="flex justify-between gap-4 px-4 py-2 text-xs text-muted-foreground">

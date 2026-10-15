@@ -18,6 +18,8 @@ import type { OutputProbeResult, StaticProbeOptions } from "../system/output-exi
 
 // ─── Routing ─────────────────────────────────────────────────────────────────
 
+export type ProjectRouteCleanupResult = "removed" | "absent" | "foreign";
+
 export interface RoutingProvider {
   /** Register a reverse-proxy route (domain → container/process) */
   registerRoute(route: RouteConfig): Promise<void>;
@@ -25,6 +27,11 @@ export interface RoutingProvider {
   /** Remove a reverse-proxy route. Providers that can roll back a failed
    * removal must not recreate it after the caller has abandoned the attempt. */
   removeRoute(domain: string, opts?: { signal?: AbortSignal }): Promise<void>;
+
+  /** Project-scoped teardown may preserve a route freshly proven to belong to
+   * another project. Unknown ownership must reject. A foreign result also forbids
+   * a later generic release of the managed hostname. */
+  removeProjectRoute?(domain: string): Promise<ProjectRouteCleanupResult>;
 
   /** Pause a file-served site while retaining its hostname and certificate. */
   suspendRoute?(domain: string): Promise<void>;

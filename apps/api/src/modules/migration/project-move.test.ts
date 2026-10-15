@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { assertProjectMovable, planProjectMove, ProjectMoveRefused } from "@repo/platform/engine/modules/migration/project-move";
+import type { StackRole } from "@repo/core";
 import type { DiscoveredService } from "@repo/platform/engine/modules/migration/docker-reconcile";
 
 /**
@@ -26,6 +27,8 @@ const svc = (over: Partial<DiscoveredService> = {}): DiscoveredService =>
   }) as DiscoveredService;
 
 const project = { id: "p1", name: "clincai", slug: "clincai", serverId: "srv_a" };
+
+const worker: StackRole = { name: "queue", kind: "worker", command: "php artisan queue:work" };
 
 const plan = (over: Partial<Parameters<typeof planProjectMove>[0]> = {}) =>
   planProjectMove({
@@ -89,6 +92,7 @@ describe("planProjectMove refusals", () => {
     const codes = [
       [() => plan({ isControlPlane: true }), "control_plane"],
       [() => plan({ project: { ...project, serverId: null } }), "not_server_hosted"],
+      [() => plan({ project: { ...project, roles: [worker] } }), "has_roles"],
       [() => plan({ targetServerId: "srv_a" }), "same_server"],
       [() => plan({ ourContainerIds: [] }), "nothing_running"],
       [() => plan({ discovered: [svc({ build: ".", image: undefined })] }), "builds_from_source"],
@@ -101,6 +105,49 @@ describe("planProjectMove refusals", () => {
         expect((err as ProjectMoveRefused).code).toBe(code);
       }
     }
+  });
+});
+
+describe("runtime roles", () => {
+  const withRoles = (roles: readonly StackRole[] | null) => ({ ...project, roles });
+  const refusal = (fn: () => unknown) => {
+    try {
+      fn();
+      return null;
+    } catch (err) {
+      return err as ProjectMoveRefused;
+    }
+  };
+
+  it("refuses a project that declares roles, for both a move and a copy", () => {
+    for (const intent of ["move", "copy"] as const) {
+      const err = refusal(() =>
+        assertProjectMovable({ project: withRoles([worker]), targetServerId: "srv_b", intent }),
+      );
+      expect(err).toBeInstanceOf(ProjectMoveRefused);
+      expect(err?.code).toBe("has_roles");
+      expect(err?.message).toContain('"clincai" runs worker or scheduler roles');
+      expect(err?.message).toContain("Remove its roles and redeploy");
+    }
+  });
+
+  it("refuses through the full plan too", () => {
+    expect(refusal(() => plan({ project: withRoles([worker]) }))?.code).toBe("has_roles");
+  });
+
+  it("does not refuse an empty or null roles list", () => {
+    expect(() => assertProjectMovable({ project: withRoles([]), targetServerId: "srv_b" })).not.toThrow();
+    expect(() => assertProjectMovable({ project: withRoles(null), targetServerId: "srv_b" })).not.toThrow();
+  });
+
+  it("keeps the existing refusal order: the control plane and an unbound project win", () => {
+    const roled = withRoles([worker]);
+    expect(
+      refusal(() => assertProjectMovable({ project: roled, targetServerId: "srv_b", isControlPlane: true }))?.code,
+    ).toBe("control_plane");
+    expect(
+      refusal(() => assertProjectMovable({ project: { ...roled, serverId: null }, targetServerId: "srv_b" }))?.code,
+    ).toBe("not_server_hosted");
   });
 });
 

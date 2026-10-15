@@ -36,8 +36,7 @@ async function resolveRequestLocale(): Promise<Locale> {
   // empty in the SSR render. Fall back to cookies() (works in dev), then
   // Accept-Language, then the default.
   const cookieStore = await cookies();
-  const fromCookie =
-    hdrs.get("x-openship-locale") ?? cookieStore.get(LOCALE_COOKIE)?.value;
+  const fromCookie = hdrs.get("x-openship-locale") ?? cookieStore.get(LOCALE_COOKIE)?.value;
   if (fromCookie && (locales as readonly string[]).includes(fromCookie)) {
     return fromCookie as Locale;
   }
@@ -63,19 +62,17 @@ const BASE_METADATA: Metadata = {
   description: "Manage your deployments, domains, and infrastructure.",
   icons: {
     icon: [
-      { url: '/favicon.ico' },
-      { url: '/favicon-16x16.png', sizes: '16x16', type: 'image/png' },
-      { url: '/favicon-32x32.png', sizes: '32x32', type: 'image/png' },
+      { url: "/favicon.ico" },
+      { url: "/favicon-16x16.png", sizes: "16x16", type: "image/png" },
+      { url: "/favicon-32x32.png", sizes: "32x32", type: "image/png" },
     ],
-    apple: [
-      { url: '/apple-touch-icon.png', sizes: '180x180', type: 'image/png' },
-    ],
+    apple: [{ url: "/apple-touch-icon.png", sizes: "180x180", type: "image/png" }],
     other: [
-      { url: '/android-chrome-192x192.png', sizes: '192x192', type: 'image/png' },
-      { url: '/android-chrome-512x512.png', sizes: '512x512', type: 'image/png' },
+      { url: "/android-chrome-192x192.png", sizes: "192x192", type: "image/png" },
+      { url: "/android-chrome-512x512.png", sizes: "512x512", type: "image/png" },
     ],
   },
-  manifest: '/site.webmanifest',
+  manifest: "/site.webmanifest",
 };
 
 /**
@@ -116,8 +113,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   const productView = await resolveRequestProductView(deploymentInfo);
   // English is the bundled base (no prop needed); for other locales load the
   // dictionary server-side so the very first render is already translated.
-  const initialDictionary =
-    locale === defaultLocale ? undefined : await loadDictionary(locale);
+  const initialDictionary = locale === defaultLocale ? undefined : await loadDictionary(locale);
 
   return (
     <html lang={locale} dir={dir} suppressHydrationWarning>
@@ -151,9 +147,12 @@ export default async function RootLayout({ children }: { children: React.ReactNo
           baseUrl={cloudIcons ? CLOUD_ICON_BASE_URL : process.env.OPENSHIP_ICON_BASE_URL}
           fallbackBaseUrl={LOCAL_ICON_BASE_URL}
         >
-          <ThemeProvider>
-            <AuthProvider>
-              {!localApiOrigin && deploymentInfo?.selfHosted === false && deploymentInfo.deployMode !== "desktop" && deploymentInfo.cloudAnalytics ? (
+          <AuthProvider>
+            <ThemeProvider>
+              {!localApiOrigin &&
+              deploymentInfo?.selfHosted === false &&
+              deploymentInfo.deployMode !== "desktop" &&
+              deploymentInfo.cloudAnalytics ? (
                 <CloudAnalytics config={deploymentInfo.cloudAnalytics} />
               ) : null}
               <I18nProvider
@@ -170,8 +169,8 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                   </ModalProvider>
                 </ToastProvider>
               </I18nProvider>
-            </AuthProvider>
-          </ThemeProvider>
+            </ThemeProvider>
+          </AuthProvider>
         </IconProvider>
       </body>
     </html>

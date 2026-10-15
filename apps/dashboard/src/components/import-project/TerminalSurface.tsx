@@ -3,7 +3,11 @@
 import { diagnostics as errorDiagnostics } from "@repo/core/diagnostics";
 import { useEffect, useRef, useState } from "react";
 import type { MutableRefObject } from "react";
-import type { ITheme, Terminal } from "@xterm/xterm";
+import type { Terminal } from "@xterm/xterm";
+import {
+  readTerminalTheme as themeFor,
+  observeTerminalAppearance,
+} from "@/lib/terminal-appearance";
 import { useTheme } from "@/components/theme-provider";
 import { useLogTerminal } from "@/components/terminal/LogTerminalContext";
 import "@xterm/xterm/css/xterm.css";
@@ -17,55 +21,6 @@ interface TerminalSurfaceProps {
   theme?: TerminalTheme;
   /** Only the visible terminal supplies its containing log panel's actions. */
   active?: boolean;
-}
-
-/** xterm paints its own surface, so resolve the app's CSS tokens for it too.
- *  Computed colors normalize HSL/alpha tokens to the RGB form xterm accepts. */
-function themeFor(element: HTMLElement): ITheme {
-  const probe = document.createElement("span");
-  probe.hidden = true;
-  element.append(probe);
-  const color = (token: string) => {
-    probe.style.color = `var(${token})`;
-    return getComputedStyle(probe).color;
-  };
-  const background = color("--th-card-on-page");
-  const foreground = color("--foreground");
-  const red = color("--danger");
-  const green = color("--success");
-  const yellow = color("--warning");
-  const blue = color("--info");
-  const magenta = color("--th-terminal-magenta");
-  const cyan = color("--th-terminal-cyan");
-  const theme: ITheme = {
-    background,
-    foreground,
-    cursor: foreground,
-    cursorAccent: background,
-    selectionBackground: color("--info-bg"),
-    selectionForeground: foreground,
-    scrollbarSliderBackground: color("--th-on-16"),
-    scrollbarSliderHoverBackground: color("--th-on-25"),
-    scrollbarSliderActiveBackground: color("--th-on-30"),
-    black: color("--th-terminal-black"),
-    red,
-    green,
-    yellow,
-    blue,
-    magenta,
-    cyan,
-    white: color("--th-terminal-white"),
-    brightBlack: color("--muted-foreground"),
-    brightRed: red,
-    brightGreen: green,
-    brightYellow: yellow,
-    brightBlue: blue,
-    brightMagenta: magenta,
-    brightCyan: cyan,
-    brightWhite: foreground,
-  };
-  probe.remove();
-  return theme;
 }
 
 const TerminalSurface: React.FC<TerminalSurfaceProps> = ({
@@ -130,7 +85,11 @@ const TerminalSurface: React.FC<TerminalSurfaceProps> = ({
           fitAddon.fit();
           terminal.scrollToBottom();
         } catch (error) {
-          errorDiagnostics.error("dashboard/components/import-project/TerminalSurface", "Error fitting terminal:", error);
+          errorDiagnostics.error(
+            "dashboard/components/import-project/TerminalSurface",
+            "Error fitting terminal:",
+            error,
+          );
         }
       };
 
@@ -138,6 +97,7 @@ const TerminalSurface: React.FC<TerminalSurfaceProps> = ({
       const resizeObserver = new ResizeObserver(fit);
       resizeObserver.observe(containerElement);
       window.addEventListener("resize", fit);
+      const stopAppearance = observeTerminalAppearance(terminal, containerRef.current, fit);
 
       onReady?.(terminal);
 
@@ -145,6 +105,7 @@ const TerminalSurface: React.FC<TerminalSurfaceProps> = ({
         window.clearTimeout(fitTimer);
         resizeObserver.disconnect();
         window.removeEventListener("resize", fit);
+        stopAppearance();
         terminal.dispose();
         if (targetRef.current === terminal) {
           targetRef.current = null;

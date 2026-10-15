@@ -11,3 +11,17 @@ export async function updateDeployDefaults(c: Context) { return c.json(await ope
 export async function updateCloneCredentials(c: Context) { return c.json(await operationData(c, getPlatformKernel().settings.setCloneCredentials(operationContext(c), await c.req.json()))); }
 export async function updateCloneStrategyPreference(c: Context) { return c.json(await operationData(c, getPlatformKernel().settings.setCloneStrategy(operationContext(c), await c.req.json()))); }
 export async function updateTransferPrefs(c: Context) { return c.json(await operationData(c, getPlatformKernel().settings.setTransferPreferences(operationContext(c), await c.req.json()))); }
+
+export async function getAppearance(c: Context) {
+  return c.json(
+    await operationData(c, getPlatformKernel().settings.getAppearance(operationContext(c))),
+  );
+}
+export async function setAppearance(c: Context) {
+  return c.json(
+    await operationData(
+      c,
+      getPlatformKernel().settings.setAppearance(operationContext(c), await c.req.json()),
+    ),
+  );
+}

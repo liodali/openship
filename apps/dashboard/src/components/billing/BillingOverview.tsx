@@ -6,6 +6,7 @@ import { CloudUsageGuide } from "./CloudUsageGuide";
 import { BillingResourceUsage } from "./BillingResourceUsage";
 import { SubscribedServerResources } from "./SubscribedServerResources";
 import { CloudCreditAlert } from "./CloudCreditAlert";
+import { BillingComputeCoverage } from "./BillingComputeCoverage";
 
 export type { BillingState };
 export type BillingData = BillingState;
@@ -18,6 +19,7 @@ export function BillingOverview({ state }: { state: BillingState }) {
       <BillingCapacity state={state} />
       <BillingResourceUsage state={state} />
       <CloudUsageGuide collapsible billingMode={state.compute?.billingMode ?? state.plan?.billingMode} />
+      {state.tier !== "free" && <BillingComputeCoverage state={state} />}
     </div>
   );
 }

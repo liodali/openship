@@ -354,7 +354,15 @@
       "addDomain": "Alan adı ekle",
       "primaryDomain": "Birincil alan adı",
       "domainN": "Alan adı {n}",
-      "remove": "Kaldır"
+      "remove": "Kaldır",
+      "domainBehavior": "Alan adı davranışı",
+      "primaryHost": "Birincil: {hostname}",
+      "redirectHostDescription": "{from}, {to} adresine yönlendirir.",
+      "serveBoth": "İkisinde de sun",
+      "serveBothDescription": "Her iki ana makine adı da uygulamayı sunar.",
+      "customRouting": "Özel yönlendirme",
+      "redirectDomain": "Yönlendiren alan adı",
+      "redirectSummary": "{hostname} adresine yönlendirir."
     },
     "configEditor": {
       "remove": "Kaldır",

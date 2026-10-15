@@ -25,6 +25,7 @@ export function ManagedServerActivity({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-base font-medium">{copy.operation}</h2>
+          <p className="mt-1 text-sm text-muted-foreground">{copy.activity.description}</p>
           {operation && (
             <time dateTime={operation.requestedAt} className="mt-1 block text-xs text-muted-foreground">
               {new Date(operation.requestedAt).toLocaleString(locale)}

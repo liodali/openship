@@ -125,6 +125,9 @@ export interface BuildConfig {
   runtimeImageOverride?: boolean;
   /** Package manager (npm | yarn | pnpm | bun) */
   packageManager: string;
+  /** Internal: cache mounts are enabled only after the runtime confirms a
+   * compatible BuildKit path. False preserves legacy/capped Engine builds. */
+  buildCache?: boolean;
   /** Shell command to install dependencies */
   installCommand: string;
   /**

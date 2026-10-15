@@ -1,7 +1,7 @@
 import type Dockerode from "dockerode";
 import { describe, expect, it, vi } from "vitest";
 
-import { gracefulStopBeforeRemoval, toStopConfig } from "../src/runtime/docker";
+import { DockerRuntime, gracefulStopBeforeRemoval, toStopConfig } from "../src/runtime/docker";
 
 /** Minimal container double that records stop calls and detects any extra inspect request. */
 function fakeContainer(opts: {
@@ -135,6 +135,32 @@ describe("gracefulStopBeforeRemoval (#986)", () => {
       const error = Object.assign(new Error("stop failed"), { statusCode });
       const c = fakeContainer({ stopTimeout: 30, stopError: error });
       await expect(gracefulStopBeforeRemoval(c.container)).rejects.toBe(error);
+    },
+  );
+});
+
+describe("DockerRuntime.stop: confirmed shutdown", () => {
+  it.each([undefined, 304, 404, 403, 409, 500, "ECONNRESET"])(
+    "accepts only successful, already-stopped or absent daemon responses (%s)",
+    async (code) => {
+      const error = code === undefined
+        ? undefined
+        : Object.assign(new Error("stop response"),
+            typeof code === "number" ? { statusCode: code } : { code });
+      const c = fakeContainer({ stopError: error });
+      const runtime = await DockerRuntime.create({
+        dockerSocketPath: "/tmp/openship-test-absent.sock",
+      });
+      (runtime as unknown as { _docker: unknown })._docker = {
+        getContainer: vi.fn(() => c.container),
+      };
+      if (code === undefined || code === 304 || code === 404) {
+        await expect(runtime.stop("old-scheduler")).resolves.toBeUndefined();
+      } else {
+        await expect(runtime.stop("old-scheduler")).rejects.toBe(error);
+      }
+      expect(c.stop).toHaveBeenCalledExactlyOnceWith();
+      expect(c.inspect).not.toHaveBeenCalled();
     },
   );
 });

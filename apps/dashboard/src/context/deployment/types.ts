@@ -475,6 +475,8 @@ export interface DeploymentConfig {
   githubChecks?: import("@repo/core").GitHubDeploymentChecks | null;
   /** Ordered commands required before activating a single-app release. */
   releaseCommands?: string[] | null;
+  /** Runtime roles (workers, a scheduler) seeded from openship.json. Data only, no editor yet. */
+  roles?: import("@repo/core").StackRole[] | null;
   /**
    * What the scan's openship.json parse refused (#641). NOT a user setting — it's
    * a fresh observation of the repo, so it is never hydrated from the saved

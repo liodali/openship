@@ -221,7 +221,8 @@
     "off": "desactivado",
     "previewTitle": "Vista previa del despliegue",
     "previewHint": "Continúa para configurar tu app. El despliegue se inicia desde la siguiente página.",
-    "back": "Volver"
+    "back": "Volver",
+    "gpuBadge": "GPU"
   },
   "summary": {
     "buildAndDeploy": "Compilar y desplegar:",

@@ -102,3 +102,5 @@ export * from "./terminal";
 export * from "./instance";
 
 export * from "./action-routes";
+
+export * from "./ingress";

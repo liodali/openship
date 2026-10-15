@@ -23,6 +23,8 @@ export const AppCatalogSummarySchema = Type.Object({
   logo: Type.String(), category: Type.String(), tags: Type.Array(Type.String()), flowHref: Type.Optional(Type.String()), management,
   verified: Type.Boolean(), hosting: Type.Union([Type.Literal("self-hosted"), Type.Literal("experimental")]),
   minResources: Type.Optional(minResources), custom: Type.Boolean(), comingSoon: Type.Boolean(),
+  gpu: Type.Optional(Type.Union([Type.Literal("recommended"), Type.Literal("required")])),
+  supportsCloud: Type.Optional(Type.Boolean()),
   requiresUpdate: Type.Optional(requiresUpdate), updateAvailable: Type.Optional(Type.Boolean()), endpoints,
   configFields: Type.Array(Type.Object({ key: Type.String(), service: Type.String(), label: Type.String(), help: Type.Optional(Type.String()),
     type: Type.Union([Type.Literal("text"), Type.Literal("password")]), default: Type.Optional(Type.String()), required: Type.Boolean() })),

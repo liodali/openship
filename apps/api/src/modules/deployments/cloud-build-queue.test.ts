@@ -221,7 +221,7 @@ describe("Cloud build admission", () => {
     await admitCloudBuild(project, rows[1]!, starts[1]!);
     expect(starts[1]).toHaveBeenCalledOnce();
   });
-  it("reserves the host for uncapped builds without changing saved settings or sampling live usage", async () => {
+  it("admits uncapped siblings up to the plan ceiling without changing settings or sampling usage", async () => {
     h.limit = 4;
     const first = dep("automatic-a", {});
     const second = dep("automatic-b", {});
@@ -232,15 +232,20 @@ describe("Cloud build admission", () => {
       admitCloudBuild(project, first, firstStart),
       admitCloudBuild(project, second, secondStart),
     ]);
-    expect(firstStart).toHaveBeenCalledWith({ cpuCores: 8, memoryMb: 15872, diskMb: 0 }, []);
-    expect(secondStart).not.toHaveBeenCalled();
-    expect(h.wait).toHaveBeenCalledWith(second.id, "org", expect.objectContaining({ reason: "resources" }));
-    h.reservations = [];
-    await admitCloudBuild(project, second, secondStart);
-    expect(secondStart).toHaveBeenCalledWith({ cpuCores: 8, memoryMb: 15872, diskMb: 0 }, []);
+    expect(firstStart).toHaveBeenCalledWith({ cpuCores: 0, memoryMb: 0, diskMb: 0 }, []);
+    expect(secondStart).toHaveBeenCalledWith({ cpuCores: 0, memoryMb: 0, diskMb: 0 }, []);
+    expect(h.wait).not.toHaveBeenCalled();
     expect(h.sample.mock.calls.every(call => call[2] === false)).toBe(true);
     expect(first.meta).toEqual({});
     expect(second.meta).toEqual({});
+  });
+  it.each([1, 4])("keeps the plan ceiling of %s for fully uncapped builds", async limit => {
+    h.limit = limit;
+    const rows = Array.from({ length: limit + 1 }, (_, index) => dep(`uncapped-${index}`, {}));
+    const starts = rows.map(row => start(row.id));
+    for (let index = 0; index < rows.length; index++) await admitCloudBuild(project, rows[index]!, starts[index]!);
+    expect(starts.filter(callback => callback.mock.calls.length > 0)).toHaveLength(limit);
+    expect(h.wait).toHaveBeenCalledWith(rows.at(-1)!.id, "org", expect.objectContaining({ reason: "concurrency", limit }));
   });
   it.each([4, null])(
     "respects purchased/unlimited cap %s and ignores null-resource activity",

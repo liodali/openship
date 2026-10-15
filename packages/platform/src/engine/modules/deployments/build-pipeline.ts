@@ -23,6 +23,7 @@ import type {
   CommandExecutor,
   DeployConfig,
   DeployEnvironment,
+  DeployPipelineResult,
   DeploymentResult,
   LogCallback,
   LogEntry,
@@ -169,7 +170,10 @@ import {
   deploymentCancellationKeepsProvisioned,
   completeDeploymentExecution,
   throwIfDeploymentCancelled,
+  DeploymentCancelledError,
 } from "./deployment-cancellation";
+import { rolloutRoles, type RoleRollout } from "./role-rollout";
+import { retirePreviousRoleContainers, rolesUnsupportedReason, runtimeRoleRolloutDeps } from "./role-runtime";
 
 // Build env = CI/telemetry defaults (BUILD_ENV_VARS) + the customer's own env
 // vars. NODE_ENV is deliberately NOT set or overridden here: it's the customer's
@@ -729,6 +733,17 @@ export async function finalizeComposeDeploy(opts: {
   // Failed, cancelled, and reconciling deployments leave the live release intact.
   const settled = await repos.deployment.findById(dep.id).catch((diagnosticFailure) => { observeCaughtError(diagnosticFailure, "platform/engine/modules/deployments/build-pipeline"); return null; });
   if (settled?.status === "ready" || settled?.status === "partial_failure") {
+    // A single-app predecessor's role containers are not part of this stack.
+    try {
+      const prevDep = project.activeDeploymentId ? await findActiveDeployment(project) : null;
+      await retirePreviousRoleContainers({
+        previous: prevDep,
+        currentDeploymentId: dep.id,
+        log: (m, level) => logger.log(`${m}\n`, level),
+      });
+    } catch (err) {
+      observeCaughtError(err, "platform/engine/modules/deployments/build-pipeline");
+    }
     await archivePreviousDeployment(dep, project, logger);
   }
 }
@@ -921,6 +936,17 @@ async function executeBuildAndDeploy(
                 : "direct (host process)"
         }\n`,
     );
+
+    // Runtime roles (#935) run beside the single-app web container on a Docker
+    // server. Refuse before the build, so a refused deploy runs no build, no
+    // release command and no container.
+    const rolesRefusal = rolesUnsupportedReason({
+      roles: snapshot.roles,
+      runtime,
+      deployMode: deployRouting.deployMode,
+      multiService: serviceMode.useServicePipeline,
+    });
+    if (rolesRefusal) throw new Error(rolesRefusal);
 
     // Say ONCE, next to the target it describes, that this box can't drive its host
     // (#509). Deliberately outside any `routeStrategy` branch: the port-scan hint it
@@ -2450,10 +2476,55 @@ async function executeServerDeploy(phase: DeployPhaseInputs, deployConfig: Deplo
   // the row can also carry a value seeded from a repo config, not just the API.
   const proxySettings = sanitizeProxySettings(project.routingConfig?.proxy);
 
+  // Runtime roles (#935): start this deployment's worker and scheduler containers
+  // before the web container, beside the previous ones (see role-rollout.ts).
+  // Runs when this deploy declares roles OR the previous one ran some, so roles
+  // removed from openship.json are retired too.
+  let roleRollout: RoleRollout | undefined;
+  let roleFailure: DeployPipelineResult | undefined;
+  if (snapshot.roles?.length || prevDep?.roleContainers?.length) {
+    try {
+      roleRollout = await rolloutRoles(
+        runtimeRoleRolloutDeps({
+          roles: snapshot.roles,
+          previousRoles: (prevDep?.meta as DeploymentConfigSnapshot | null)?.roles,
+          previous: prevDep?.roleContainers,
+          runtime,
+          previousRuntime,
+          config: deployConfig,
+          logger,
+          beforeStart: (containerId) => attachLinkedNetworks(
+            project.id, runtime, (message, level) => logger.log(`${message}\n`, level),
+            dep.id, [containerId],
+          ),
+          stabilizationWindowMs: readinessGate.stabilization.windowMs,
+          signal: phase.cancellationSignal,
+          keepProvisionedOnCancel: () => deploymentCancellationKeepsProvisioned(phase.cancellationSignal),
+        }),
+      );
+      // Durable before anything web-facing changes.
+      if (roleRollout.started.length > 0) {
+        await repos.deployment.setRoleContainers(dep.id, [...roleRollout.started]);
+      }
+    } catch (err) {
+      observeCaughtError(err, "platform/engine/modules/deployments/build-pipeline");
+      // Only matters when the record write failed: rolloutRoles unwinds its own failures.
+      await roleRollout?.abort();
+      const cancelled = phase.cancellationSignal?.aborted === true || err instanceof DeploymentCancelledError;
+      if (cancelled) {
+        logger.log("Role rollout cancelled.\n", "warn");
+        roleFailure = { status: "cancelled", error: "Deployment cancelled" };
+      } else {
+        logger.log(`Role rollout failed: ${safeErrorMessage(err)}\n`, "error");
+        roleFailure = { status: "failed", error: safeErrorMessage(err) };
+      }
+    }
+  }
+
   // The shared pipeline retires the previous workload after a successful swap.
   // Snapshot retention keeps Docker images and stopped Bare releases, not live
   // copies of old containers.
-  const deployResult = await runDeployPipeline(
+  const deployResult: DeployPipelineResult = roleFailure ?? await runDeployPipeline(
     deployEnv,
     {
       config: deployConfig,
@@ -2489,7 +2560,10 @@ async function executeServerDeploy(phase: DeployPhaseInputs, deployConfig: Deplo
       keepProvisionedOnCancel: deploymentCancellationKeepsProvisioned(phase.cancellationSignal),
     },
     logger,
-  );
+  ).catch(async (err) => {
+    await roleRollout?.abort();
+    throw err;
+  });
 
   if (deployResult.status === "cancelled") {
     // A cancellation can land after preflight reserved a host port or created a
@@ -2512,6 +2586,7 @@ async function executeServerDeploy(phase: DeployPhaseInputs, deployConfig: Deplo
         observeCaughtError(diagnosticFailure, "platform/engine/modules/deployments/build-pipeline");
       });
     }
+    if (!deploymentCancellationKeepsProvisioned(phase.cancellationSignal)) await roleRollout?.abort();
     if (
       !deploymentCancellationKeepsProvisioned(phase.cancellationSignal) &&
       deployResult.containerId &&
@@ -2533,6 +2608,7 @@ async function executeServerDeploy(phase: DeployPhaseInputs, deployConfig: Deplo
   }
 
   if (deployResult.status === "failed") {
+    await roleRollout?.abort();
     // Reap the container this deploy STARTED if it failed during/after routing.
     // activeDeploymentId only advances on SUCCESS, so a started-but-failed
     // container is never any future deploy's prevDep and the 1-deep
@@ -2625,6 +2701,11 @@ async function executeServerDeploy(phase: DeployPhaseInputs, deployConfig: Deplo
     });
     return;
   }
+
+  // The web container is live and routed: the previous deployment's role
+  // containers retire now, the same moment its web container did. A removal
+  // that fails comes back as a warning for this deploy (folded in below).
+  const roleRetirementWarning = await roleRollout?.commit();
 
   // Allocation authority is the target-scoped claim written before activation.
   // Keep the historical scalar only as a routing/UI compatibility cache, and do
@@ -2823,10 +2904,13 @@ async function executeServerDeploy(phase: DeployPhaseInputs, deployConfig: Deplo
   // absent from the persisted log — invisible on replay, in history, and to the
   // CLI. Emitting it here (matching the compose path's wording) makes the server
   // the single writer for every warning, so the client never has to add one.
+  // The role retirement warning stays out of `deployWarning` for the same reason
+  // as readiness: that key means routing trouble and offers "Retry routing".
   const deployWarnings = [
     metaPatch.deployWarning,
     metaPatch.readinessWarning,
     hostPortClaimWarning,
+    roleRetirementWarning,
   ].filter((warning): warning is string => typeof warning === "string" && warning.length > 0);
   const warningMessage = deployWarnings.join(" · ");
   if (warningMessage) {

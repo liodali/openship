@@ -354,7 +354,15 @@
       "addDomain": "ドメインを追加",
       "primaryDomain": "プライマリドメイン",
       "domainN": "ドメイン {n}",
-      "remove": "削除"
+      "remove": "削除",
+      "domainBehavior": "ドメインの動作",
+      "primaryHost": "{hostname} をプライマリにする",
+      "redirectHostDescription": "{from} から {to} にリダイレクトします。",
+      "serveBoth": "両方で配信",
+      "serveBothDescription": "両方のホスト名でアプリを配信します。",
+      "customRouting": "カスタムルーティング",
+      "redirectDomain": "リダイレクトドメイン",
+      "redirectSummary": "{hostname} にリダイレクトします。"
     },
     "configEditor": {
       "remove": "削除",

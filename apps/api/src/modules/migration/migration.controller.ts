@@ -10,7 +10,7 @@ import { reportCaughtError as observeCaughtError } from "@repo/core/diagnostics"
 import type { Context } from "hono";
 import { repos } from "@repo/db";
 import type { MigrationSourceInput } from "@repo/contracts";
-import { AppError, NotFoundError, safeErrorMessage } from "@repo/core";
+import { AppError, NotFoundError, safeErrorMessage, type StackRole } from "@repo/core";
 import { getRequestContext } from "../../lib/request-context";
 import { permission } from "../../lib/permission";
 import { parseRevealKeys, pickRevealed } from "@repo/platform/engine/lib/env-reveal";
@@ -567,6 +567,7 @@ async function assertProjectMoveAllowed(
         serverId: string;
         workspaceId: string | null;
         runtimeMode: string | null;
+        roles: StackRole[] | null;
         isControlPlane: boolean;
       };
     }
@@ -595,6 +596,7 @@ async function assertProjectMoveAllowed(
       serverId: project.serverId,
       workspaceId: project.workspaceId ?? null,
       runtimeMode: project.runtimeMode ?? null,
+      roles: project.roles ?? null,
       isControlPlane: isControlPlaneProject(project),
     },
   };
@@ -663,6 +665,7 @@ export async function startProjectMove(c: Context) {
         serverId: guard.project.serverId,
         workspaceId: guard.project.workspaceId,
         runtimeMode: guard.project.runtimeMode,
+        roles: guard.project.roles,
       },
       targetServerId: body.targetServerId,
       isControlPlane: guard.project.isControlPlane,

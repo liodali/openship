@@ -1,10 +1,13 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { repos, type Project } from "@repo/db";
+import { AppError } from "@repo/core";
 import { createProvisionLock } from "./provision-lock";
 import { withCloudWorkspaceActivity } from "./cloud-workspace-lock";
 
 /** Locks already owned by the current async call tree (nested helpers are safe). */
-const heldProjectRuntimeLocks = new AsyncLocalStorage<ReadonlyMap<string, { active: boolean }>>();
+const heldProjectRuntimeLocks = new AsyncLocalStorage<
+  ReadonlyMap<string, { active: boolean; runtime: boolean }>
+>();
 
 /** Detached deployment workers must acquire their own project ownership. */
 export function runOutsideProjectRuntimeLock<T>(work: () => T): T {
@@ -26,13 +29,42 @@ export function projectRuntimeLockKey(projectId: string): string {
   return `project-runtime:${projectId}`;
 }
 
-export async function withProjectRuntimeLock<T>(projectId: string, fn: () => Promise<T>): Promise<T> {
+export async function withProjectRuntimeLock<T>(
+  projectId: string,
+  fn: () => Promise<T>,
+): Promise<T> {
   const held = heldProjectRuntimeLocks.getStore();
-  if (held?.get(projectId)?.active) return fn();
+  const owner = held?.get(projectId);
+  if (owner?.active) {
+    if (!owner.runtime)
+      throw new AppError(
+        "Project state admission cannot acquire runtime privileges",
+        409,
+        "PROJECT_RUNTIME_LOCK_UPGRADE_FORBIDDEN",
+      );
+    return fn();
+  }
 
   const project = await repos.project.findById(projectId);
-  return withCloudWorkspaceActivity(project?.workspaceId, () => createProvisionLock(projectRuntimeLockKey(projectId)).run(async () => {
-    const scope = { active: true };
+  return withCloudWorkspaceActivity(
+    project?.workspaceId,
+    () => runProjectLock(projectId, fn, true),
+    undefined,
+    { scope: `project:${projectId}` },
+  );
+}
+
+/** DB-only submission shares deletion's project lock without claiming the host.
+ * Runtime work must acquire workspace admission first, never upgrade this scope. */
+export function withProjectStateLock<T>(projectId: string, fn: () => Promise<T>): Promise<T> {
+  if (heldProjectRuntimeLocks.getStore()?.get(projectId)?.active) return fn();
+  return runProjectLock(projectId, fn, false);
+}
+
+function runProjectLock<T>(projectId: string, fn: () => Promise<T>, runtime: boolean): Promise<T> {
+  return createProvisionLock(projectRuntimeLockKey(projectId)).run(async () => {
+    const held = heldProjectRuntimeLocks.getStore();
+    const scope = { active: true, runtime };
     const next = new Map(held);
     next.set(projectId, scope);
     try {
@@ -42,7 +74,7 @@ export async function withProjectRuntimeLock<T>(projectId: string, fn: () => Pro
       // lock that its request has already released. It must reacquire normally.
       scope.active = false;
     }
-  }), undefined, { scope: `project:${projectId}` });
+  });
 }
 
 /**

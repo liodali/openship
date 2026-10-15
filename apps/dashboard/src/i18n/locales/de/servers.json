@@ -1,4 +1,31 @@
 {
+  "resources": {
+    "notFound": "Ressourcen nicht gefunden",
+    "notFoundDescription": "Diese Ressourcen sind im aktuellen Arbeitsbereich nicht verfügbar. Sie wurden möglicherweise entfernt oder gehören zu einem anderen Konto.",
+    "description": "Apps, Builds und Daten teilen sich die Kapazität ihres Cloud-Bereichs.",
+    "selectPool": "Cloud-Bereich wählen",
+    "capacity": "Aktueller Host",
+    "capacityHint": "Apps, Builds und gespeicherte Daten teilen sich diese Ressourcen.",
+    "addCapacity": "Cloud-Bereich hinzufügen",
+    "managePlan": "Tarif verwalten",
+    "projects": "Projekte",
+    "emptyTitle": "Hier starten deine Apps",
+    "emptyDescription": "Wähle die Kapazität und stelle Apps und Projekte in Openship Cloud bereit.",
+    "usageHint": "Aktuelle CPU-, Arbeitsspeicher- und Speichernutzung.",
+    "noProjects": "Hier gibt es noch keine Projekte.",
+    "spaces": "Cloud-Bereiche",
+    "spacesHint": "Unabhängige Kapazität für deine Apps und Projekte.",
+    "space": "Cloud-Bereich",
+    "customPlan": "Individueller Tarif",
+    "projectCount": "Projekte: {count}",
+    "live": "Live",
+    "paused": "Pausiert",
+    "lastReading": "Letzte Messung",
+    "connecting": "Verbinden…",
+    "streamUnavailable": "Live-Updates sind nicht verfügbar. Die letzte Messung wird angezeigt.",
+    "usageTitle": "Ressourcennutzung",
+    "setupPending": "Die Nutzung wird angezeigt, sobald dein Cloud-Bereich eingerichtet ist."
+  },
   "github": {
     "title": "GitHub-Zugriff",
     "desc": "Wie sich dieser Server bei GitHub authentifiziert, um private Repos zu klonen.",
@@ -1204,5 +1231,25 @@
       "title": "Steuerung nicht verfügbar",
       "description": "Diese Steuerung ist in der verbundenen Cloud-API-Version noch nicht verfügbar. Openship Cloud muss vor der Nutzung aktualisiert werden."
     }
+  },
+  "gpu": {
+    "title": "GPU",
+    "subtitle": "GPU-Verfügbarkeit für Container auf diesem Server.",
+    "notDetected": "Keine GPU erkannt",
+    "notProbed": "Dieser Server konnte gerade nicht geprüft werden",
+    "countOne": "1 Grafikkarte",
+    "countMany": "{count} Grafikkarten",
+    "runtimeOnly": "NVIDIA-Runtime gefunden, Anzahl der Karten unbekannt",
+    "modeLabel": "GPU-Verfügbarkeit",
+    "modeAuto": "Automatisch",
+    "modeYes": "GPU verfügbar",
+    "modeNo": "Keine GPU",
+    "modeHint": "Nur überschreiben, wenn die automatische Erkennung falsch ist.",
+    "mismatchYes": "Als „GPU verfügbar“ markiert, aber keine erkannt. GPU-Dienste werden trotzdem hierher geschickt.",
+    "mismatchNo": "Als „Keine GPU“ markiert, aber eine GPU erkannt. Bei GPU-Diensten wird für diesen Server gewarnt.",
+    "saving": "Wird gespeichert…",
+    "saved": "GPU-Einstellung gespeichert",
+    "saveFailed": "GPU-Einstellung konnte nicht gespeichert werden",
+    "badge": "GPU"
   }
 }

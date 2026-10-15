@@ -1,4 +1,31 @@
 {
+  "resources": {
+    "notFound": "Ressources introuvables",
+    "notFoundDescription": "Ces ressources sont indisponibles dans cet espace de travail. Elles ont peut-être été supprimées ou appartiennent à un autre compte.",
+    "description": "Les apps, builds et données partagent la capacité de leur espace Cloud.",
+    "selectPool": "Choisir un espace Cloud",
+    "capacity": "Hôte actuel",
+    "capacityHint": "Vos apps, builds et données conservées partagent ces ressources.",
+    "addCapacity": "Ajouter un espace Cloud",
+    "managePlan": "Gérer le forfait",
+    "projects": "Projets",
+    "emptyTitle": "Vos applications commencent ici",
+    "emptyDescription": "Choisissez une capacité, puis déployez vos applications et projets sur Openship Cloud.",
+    "usageHint": "Utilisation actuelle du processeur, de la mémoire et du stockage.",
+    "noProjects": "Aucun projet ici pour le moment.",
+    "spaces": "Espaces Cloud",
+    "spacesHint": "Une capacité indépendante pour vos apps et projets.",
+    "space": "Espace Cloud",
+    "customPlan": "Offre personnalisée",
+    "projectCount": "Projets : {count}",
+    "live": "En direct",
+    "paused": "En pause",
+    "lastReading": "Dernière mesure",
+    "connecting": "Connexion…",
+    "streamUnavailable": "Les mises à jour en direct sont indisponibles. La dernière mesure est affichée.",
+    "usageTitle": "Utilisation des ressources",
+    "setupPending": "L’utilisation apparaîtra une fois votre espace Cloud configuré."
+  },
   "github": {
     "title": "Accès GitHub",
     "desc": "Comment ce serveur s'authentifie auprès de GitHub pour cloner des dépôts privés.",
@@ -1204,5 +1231,25 @@
       "title": "Commande indisponible",
       "description": "Cette commande n’est pas encore disponible dans la version de l’API Cloud connectée. Openship Cloud doit être mis à jour avant son utilisation."
     }
+  },
+  "gpu": {
+    "title": "GPU",
+    "subtitle": "Disponibilité du GPU pour les conteneurs de ce serveur.",
+    "notDetected": "Aucun GPU détecté",
+    "notProbed": "Impossible de vérifier ce serveur pour le moment",
+    "countOne": "1 carte GPU",
+    "countMany": "{count} GPU",
+    "runtimeOnly": "Runtime NVIDIA trouvé, nombre de cartes inconnu",
+    "modeLabel": "Disponibilité du GPU",
+    "modeAuto": "Automatique",
+    "modeYes": "GPU disponible",
+    "modeNo": "Pas de GPU",
+    "modeHint": "Modifiez ce réglage uniquement si la détection automatique est incorrecte.",
+    "mismatchYes": "Marqué « GPU disponible », mais aucun n’a été détecté. Les services GPU seront tout de même envoyés ici.",
+    "mismatchNo": "Marqué « Pas de GPU », mais un GPU a été détecté. Un avertissement sera affiché pour les services GPU sur ce serveur.",
+    "saving": "Enregistrement…",
+    "saved": "Paramètre GPU enregistré",
+    "saveFailed": "Impossible d’enregistrer le paramètre GPU",
+    "badge": "GPU"
   }
 }

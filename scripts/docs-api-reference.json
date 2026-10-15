@@ -3607,6 +3607,66 @@
       "description": "Permanently clear resolved incident history in the current organization; preserves active incidents and later recoveries. Owner/admin only.",
       "route": "DELETE /api/issues/history",
       "section": "Operations"
+    },
+    "settings.getAppearance": {
+      "page": "settings",
+      "section": "Operations",
+      "description": "Read the authenticated user’s saved appearance and portable theme library.",
+      "route": "GET /api/settings/appearance"
+    },
+    "settings.setAppearance": {
+      "page": "settings",
+      "section": "Operations",
+      "description": "Save or reset personal appearance, validated tokens and embedded WOFF2 fonts.",
+      "route": "PUT /api/settings/appearance"
+    },
+    "dns.listIngressConnections": {
+      "page": "dns",
+      "section": "Cloudflare Tunnel ingress",
+      "description": "Read persisted tunnel connections, optionally filtered by deployment server.",
+      "route": "GET /api/dns/ingress"
+    },
+    "dns.discoverIngress": {
+      "page": "dns",
+      "section": "Cloudflare Tunnel ingress",
+      "description": "Discover accounts, named tunnels and optional reusable Access policies using a saved Cloudflare credential. Requires an organization administrator.",
+      "route": "POST /api/dns/ingress/discover"
+    },
+    "dns.connectIngress": {
+      "page": "dns",
+      "section": "Cloudflare Tunnel ingress",
+      "description": "Connect or create a named Cloudflare Tunnel on a self-hosted deployment server. Setup continues asynchronously.",
+      "route": "POST /api/dns/ingress"
+    },
+    "dns.updateIngress": {
+      "page": "dns",
+      "section": "Cloudflare Tunnel ingress",
+      "description": "Set automatic enrollment and Access policy defaults for future custom domains. Existing hostnames keep their settings.",
+      "route": "PUT /api/dns/ingress/:id"
+    },
+    "dns.retryIngress": {
+      "page": "dns",
+      "section": "Cloudflare Tunnel ingress",
+      "description": "Retry persisted tunnel setup or cleanup without creating another connection.",
+      "route": "POST /api/dns/ingress/:id/retry"
+    },
+    "dns.removeIngress": {
+      "page": "dns",
+      "section": "Cloudflare Tunnel ingress",
+      "description": "Disconnect a server tunnel and queue ownership-checked cleanup. Existing tunnels and reusable policies are retained.",
+      "route": "DELETE /api/dns/ingress/:id"
+    },
+    "dns.getDomainIngress": {
+      "page": "dns",
+      "section": "Cloudflare Tunnel ingress",
+      "description": "Read persisted tunnel, DNS and Access status for a project domain.",
+      "route": "GET /api/dns/ingress/domains/:id"
+    },
+    "dns.setDomainIngress": {
+      "page": "dns",
+      "section": "Cloudflare Tunnel ingress",
+      "description": "Connect a custom domain to its deployment server tunnel, change its Access policy or request disconnection.",
+      "route": "PUT /api/dns/ingress/domains/:id"
     }
   },
   "http": {

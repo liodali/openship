@@ -240,18 +240,22 @@ repos without a JavaScript workspace at the root, are unaffected.
 ### Warm a worker or scheduler
 
 Warming a worker gives a small, one-time benefit, so prefer warming the web role
-only. To warm a worker anyway, re-declare the roles. A `roles` array replaces
-every preset, so list each role you want to keep. Prefix each command with
-`php artisan optimize && ` and keep the `exec` form.
+only. To warm a worker anyway, declare it in `roles`, and keep any other roles you
+declared there. Prefix its command with `php artisan optimize && ` and keep the
+`exec` form. The fields and rules are in
+[Runtime roles](#runtime-roles).
 
 ```json
 {
   "roles": [
     { "name": "queue", "kind": "worker", "command": "php artisan optimize && exec php artisan queue:work", "stopGracePeriod": "90s" },
-    { "name": "scheduler", "kind": "scheduler", "command": "php artisan optimize && exec php artisan schedule:work", "stopGracePeriod": "90s", "singleton": true }
+    { "name": "scheduler", "kind": "scheduler", "command": "php artisan optimize && exec php artisan schedule:work", "stopSignal": "SIGTERM", "stopGracePeriod": "10s", "singleton": true }
   ]
 }
 ```
+
+These are example shutdown budgets. Longer scheduled runs may need a larger grace period on
+a Laravel version verified to drain.
 
 ## Custom runtime images
 
@@ -355,6 +359,132 @@ run the commands saved on that deployment, even when they reuse an existing imag
 Use idempotent commands and schema changes compatible with the previous application.
 **Rolling code back does not undo database changes**, and a command may have made partial
 changes before failing. Openship does not promise a transaction across multiple commands.
+</Callout>
+
+## Runtime roles
+
+`roles` declares extra long-running processes that run **beside your web app, from the
+same built image**: queue workers and schedulers. Each replica is its own container, so a
+worker can scale without scaling the web app, and a scheduler runs exactly once.
+
+```json
+{
+  "roles": [
+    {
+      "name": "queue",
+      "kind": "worker",
+      "command": "exec php artisan queue:work --tries=3",
+      "replicas": 2,
+      "stopGracePeriod": "90s"
+    },
+    {
+      "name": "scheduler",
+      "kind": "scheduler",
+      "command": "exec php artisan schedule:work"
+    }
+  ]
+}
+```
+
+Roles are read from `openship.json` when a project is created from a repository scan.
+Like release commands, an existing project
+keeps the roles it has saved, so change those through the project API/SDK (`roles`; send
+`[]` to remove them). The list is frozen on each deployment, and a project holds at most
+20 roles.
+
+### Fields
+
+| Field             | Rules                                                                                                                                                                  |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`            | Required. A DNS label: lowercase letters, digits and dashes, starting and ending with a letter or digit, at most 63 characters. Unique within the project.             |
+| `kind`            | Required. `worker` or `scheduler`. `web` is rejected: the web process always comes from `startCommand`.                                                                |
+| `command`         | Required, non-empty. Runs under `sh -c` in the same image as the web app.                                                                                              |
+| `replicas`        | Optional, workers only. An integer from 1 to 100. Defaults to 1. Cannot be above 1 on a singleton.                                                                     |
+| `singleton`       | Optional. Run exactly one instance. A `scheduler` is always a singleton, so `replicas` above 1 on a scheduler is an error.                                              |
+| `health`          | Optional. `{ "kind": "process" }` or `{ "kind": "exec", "command": "..." }`. `exec` requires a non-empty `command`. `http` is rejected, because roles have no port.   |
+| `stopSignal`      | Optional. A signal name such as `SIGQUIT`, or a positive integer. When omitted, the image's `STOPSIGNAL` applies, or `SIGTERM` if the image sets none.                 |
+| `stopGracePeriod` | Optional. How long to wait after the stop signal before the process is killed: `90s`, `1m30s`, `10m`, or a bare number of seconds. When omitted, the Docker daemon's default stop timeout applies. |
+
+### Where roles run
+
+Roles run on **single-app projects deployed to a Docker server**. A deploy that declares
+roles is refused **before the build starts**, with no build, release command or container
+run, on:
+
+- Openship Cloud
+- direct (bare) hosts
+- Kubernetes
+- multi-service projects (Compose or monorepo)
+- static sites
+
+Moving a project that has roles to another server is refused as well.
+
+### What a role container gets
+
+A role container starts from the same image as the web container and gets:
+
+- the web container's environment variables, **without `PORT`**
+- the project's persistent storage
+- the same resource limits and restart policy
+
+It publishes **no port, gets no route and no network alias**: only the web container
+answers to the app's network name. It joins the project network and the networks of any
+connected services **before its process starts**, so a worker can reach the database from
+its first instruction.
+
+### Deploy order
+
+1. The build runs.
+2. Release commands run.
+3. Roles start.
+4. The web container goes live.
+
+**Workers** start beside the previous version's workers. The old ones keep running, and
+are removed only once the new web container is live.
+
+**Singletons** (schedulers, or `singleton: true`) hand over stop-first when the role keeps
+its name: the old container is stopped and retained before its replacement starts. When
+unwinding a failed deploy, Openship attempts to remove the new containers and restore
+retained singletons. Restoration is attempted only after all started replacements for that
+role are confirmed removed.
+
+This covers a normal handover where the singleton keeps its name. Runtime failures or an
+interrupted deploy can leave containers unresolved. Reconcile them, and restart the
+scheduler if needed, before redeploying. A handover does not guarantee exactly-once
+scheduled execution, so keep application-level guards such as Laravel's `onOneServer()`.
+
+### Startup check
+
+Every role container must stay up through the stabilization window, **15 seconds** by
+default. This check always runs for roles, whatever the project's readiness settings,
+because a role has no port to probe. If the role declares an `exec` health command, it
+runs once, after the window. A failed startup check fails the deploy and triggers the
+rollback attempt described above. The startup check runs only during a deploy. It does not
+continuously monitor role containers afterward.
+
+<Callout title="Use exec so the stop signal reaches your process" type="warn">
+The command runs under `sh -c`. Without `exec`, the shell stays as the main process and
+the stop signal never reaches your worker, so it is killed after the grace period instead
+of finishing its job. Write `exec php artisan queue:work`, not `php artisan queue:work`,
+and set `stopSignal` and `stopGracePeriod` to match how long a job can run.
+
+`exec` lets the stop signal reach your process. Whether the process exits depends on the
+command. For example, Laravel 12.70.0's `schedule:work`, running as PID 1, kept ticking after
+SIGTERM until it was killed at the end of the grace period. A longer grace period only delayed
+scheduler replacement there.
+</Callout>
+
+### Lifecycle
+
+- Pausing, resuming and restarting the project act on its roles too.
+- Deleting a deployment removes its role containers.
+- Clearing a project's roles retires the running ones on the next deploy.
+
+<Callout title="Not in the dashboard yet" type="warn">
+Role containers are not shown in the dashboard, and no dashboard field edits roles: they
+are set in `openship.json` or through the API. On the server, a role container is named
+`openship-<project slug>-<deployment id>-<role>-<replica>`, so
+`docker logs <name>` reads that role's output.
 </Callout>
 
 ## Persistent storage
@@ -621,6 +751,7 @@ the required roots and start commands.
 | `framework`, `packageManager`, `*Command`, `outputDirectory`, `buildImage`, `runtimeVersion`, `runtimeImage`, `productionPaths`, `rootDirectory` | Build settings                                    |
 | `port`, `productionMode`, `runtime`                                                                            | Runtime settings (`hasServer`, runtime isolation) |
 | `releaseCommands`                                                                                              | Build settings → Before activation                  |
+| `roles`                                                                                                        | No dashboard field: set in `openship.json` or the project API |
 | `volumes`                                                                                                      | Configuration → Persistent storage                |
 | `env`                                                                                                          | Environment variables (seeded as editable rows)   |
 | `domains`                                                                                                      | Public endpoints / custom domains                 |

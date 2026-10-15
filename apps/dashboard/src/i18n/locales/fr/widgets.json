@@ -354,7 +354,15 @@
       "addDomain": "Ajouter un domaine",
       "primaryDomain": "Domaine principal",
       "domainN": "Domaine {n}",
-      "remove": "Supprimer"
+      "remove": "Supprimer",
+      "domainBehavior": "Comportement du domaine",
+      "primaryHost": "{hostname} comme domaine principal",
+      "redirectHostDescription": "{from} redirige vers {to}.",
+      "serveBoth": "Servir les deux",
+      "serveBothDescription": "Les deux noms d’hôte servent l’application.",
+      "customRouting": "Routage personnalisé",
+      "redirectDomain": "Domaine de redirection",
+      "redirectSummary": "Redirige vers {hostname}."
     },
     "configEditor": {
       "remove": "Supprimer",

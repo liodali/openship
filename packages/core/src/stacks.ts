@@ -271,6 +271,9 @@ export interface StackDefinition {
    * Only framework-specific caches - generic ones (.git) are always excluded.
    */
   cacheDirs?: readonly string[];
+  /** Pure build caches, safe to mount outside the application image. Unlike
+   * transfer exclusions, these must never contain required build outputs. */
+  buildCacheDirs?: readonly string[];
   /**
    * Paths (relative to the app root) this framework WRITES at runtime and would
    * lose on redeploy. Declared here so a stock app keeps its data with no
@@ -312,7 +315,8 @@ export const STACKS = {
     defaultBuildCommand: "next build",
     defaultStartCommand: "next start",
     requiredToolVersions: { node: "20.9.0" },
-    cacheDirs: [".next/cache"],    detection: {
+    cacheDirs: [".next/cache"],
+    buildCacheDirs: [".next/cache"],    detection: {
       rootMarkers: ["next.config.js", "next.config.mjs", "next.config.ts"],
       deps: ["next"],
     },
@@ -456,7 +460,8 @@ export const STACKS = {
     defaultPort: 8000,
     defaultBuildCommand: "gatsby build",
     defaultStartCommand: "gatsby serve",
-    cacheDirs: [".cache"],    detection: {
+    cacheDirs: [".cache"],
+    buildCacheDirs: [".cache"],    detection: {
       rootMarkers: ["gatsby-config.js", "gatsby-config.ts"],
       deps: ["gatsby"],
     },
@@ -865,13 +870,19 @@ export const STACKS = {
     // laravel/horizon still selects `horizon`. Callers that need
     // production-only matching must read `require` from composer.json.
     //
-    // Explicit shutdown budgets for the later runtime slice. 90s exceeds the
-    // default 60s queue and Horizon supervisor timeouts, so size these to the
-    // application's own configured timeouts. Horizon's internal settings still
-    // govern worker draining, and scheduler grace is provisional because
-    // shutdown behaviour depends on the Laravel version. An explicit
-    // openship.json `roles` array replaces all presets, so declare grace
-    // periods there to keep these values.
+    // Explicit shutdown budgets. The workers' 90s exceeds the default 60s queue
+    // and Horizon supervisor timeouts, so size it to the application's own
+    // configured timeouts. Horizon's internal settings still govern worker
+    // draining. The scheduler's 10s favors short shutdown and handover latency
+    // over task completion. The inspected Laravel 12.x versions lack coordinated
+    // `schedule:work` shutdown, so work can continue until Docker kills the
+    // container. Laravel 13.18.0 with signal handling available stops new runs
+    // on INT, TERM or QUIT and waits for existing ones, but detached background
+    // tasks may not complete. A foreground scheduled command with more than 10
+    // seconds left can be killed on either version. Applications that need
+    // completion should use a verified draining version and size the grace for
+    // the whole remaining run. An explicit openship.json `roles` array replaces
+    // all presets, so declare grace periods there to keep these values.
     defaultRoles: [
       {
         name: "queue",
@@ -891,7 +902,8 @@ export const STACKS = {
         name: "scheduler",
         kind: "scheduler",
         command: "exec php artisan schedule:work",
-        stopGracePeriod: "90s",
+        stopSignal: "SIGTERM",
+        stopGracePeriod: "10s",
         singleton: true,
       },
     ],

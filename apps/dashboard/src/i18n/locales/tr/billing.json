@@ -17,7 +17,7 @@
     "viewPlan": "Planımı görüntüle",
     "serverTitle": "{name} hazır",
     "serverDescription": "{plan} planınız etkin. Uygulamalar ve derlemeler bu sunucunun kaynaklarını paylaşır.",
-    "openServer": "Sunucuyu aç"
+    "openServer": "Bulut alanını görüntüle"
   },
   "capacity": {
     "title": "Kapasite ve Kullanım",
@@ -534,12 +534,12 @@
     "customBuildLimit": "Sınır belirle"
   },
   "workspaces": {
-    "title": "Yönetilen Cloud sunucuları",
-    "singular": "Cloud sunucu",
+    "title": "Bulut alanları",
+    "singular": "Bulut alanı",
     "description": "Bir plan seçin ve dağıtın. Sunucuyu Openship yönetir; projeleriniz CPU, bellek ve depolamayı paylaşır.",
-    "loading": "Sunucu yükleniyor…",
+    "loading": "Bulut alanları yükleniyor…",
     "choose": "Sunucu seçin",
-    "chooseBilling": "Faturalandırmasını görmek için bir sunucu seçin.",
+    "chooseBilling": "Faturalandırmasını görmek için bir bulut alanı seçin.",
     "dedicatedProjects": "Ayrılmış proje faturalandırması",
     "dedicatedProjectsHint": "Kendi Cloud makinelerine sahip mevcut projeler.",
     "shared": "Birden çok proje",
@@ -552,10 +552,10 @@
     "defaultName": "Production",
     "defaultHint": "Bir plan seçin ve dağıtın. Sunucunuzu otomatik olarak oluşturup yönetiriz.",
     "noneAvailable": "Bu projeyi yerleştirmeden önce uyumlu bir sunucu oluşturun veya ayrılmış bir alanı boşaltın.",
-    "manage": "Sunucularnı yönetin",
+    "manage": "Bulut alanını yönet",
     "subscriptionHint": "Yeni sunucular ayrı faturalandırılır.",
     "placementHint": "Projeler bu sunucunun kapasitesini paylaşır. Birini silmek diğerlerini etkilemez.",
-    "create": "Sunucu oluştur",
+    "create": "Bulut alanı ekle",
     "mode": "Proje yalıtımı",
     "createHint": "Sunucu oluşturmak ücretsizdir. Sonraki adımda planını seçin; faturalandırma ödeme tamamlandıktan sonra başlar.",
     "cloudOnly": "Yönetilen sunucular Openship Cloud'da kullanılabilir. Kendi altyapınızı yönetmek için Sunucular'ı kullanın.",
@@ -573,7 +573,7 @@
     "provision": "Sunucunı başlat",
     "resume": "Sunucunı sürdür",
     "resize": "Plan kapasitesini uygula",
-    "operation": "Sunucu etkinliği",
+    "operation": "Etkinlik",
     "nextAttempt": "Sonraki deneme:",
     "resizeConfirm": "Geçerli planın kapasitesi uygulansın mı?",
     "before": "Mevcut sunucu",
@@ -583,12 +583,12 @@
     "confirmResize": "Uygula ve yeniden başlat",
     "rename": "Yeniden adlandır",
     "save": "Kaydet",
-    "delete": "Sunucunı sil",
-    "confirmDelete": "Bu boş sunucuyu sil",
+    "delete": "Bulut alanını kaldır",
+    "confirmDelete": "Bu kullanılmayan bulut alanını kaldır",
     "deleteHint": "Projeleri silmek aboneliği iptal etmez. Abonelikli bir sunucuyu silmeden önce Faturalandırma bölümünden yenilemeyi durdurun ve ödenen dönemin bitmesini bekleyin. Silme işlemi boş sunucuyu ve kalan disk verilerini kalıcı olarak kaldırır.",
     "buildCapacityTitle": "Sunucu kapasitesini kontrol edin",
     "buildCapacityHint": "Derlemeler bu alandaki boş kapasiteyi kullanır. Boştaki bir servisi durdurun veya kapasiteyi artırın, ardından yeniden deneyin.",
-    "openWorkspace": "Sunucunı aç",
+    "openWorkspace": "Bulut alanını görüntüle",
     "retryDeployment": "Dağıtımı yeniden dene",
     "states": {
       "ready": "Hazır",
@@ -629,7 +629,7 @@
     },
     "existingServerHint": "Bu sunucunun planını kullanır.",
     "destination": "Hedef",
-    "newProjectServer": "Yeni özel sunucu",
+    "newProjectServer": "Yeni bulut alanı",
     "oneProject": "1 proje",
     "savedDestinationHint": "Bu proje, kayıtlı sunucusunu ve verilerini korur.",
     "uploadDestinationHint": "Kaynak dosyalar bu sunucuda. Başka bir hedef kullanmak için yeni bir yükleme başlat.",
@@ -641,7 +641,7 @@
     "resourceSummary": "{cpu} vCPU · {memory} GB RAM · {disk} GB depolama",
     "switchingBilling": "{name} için faturalandırma yükleniyor…",
     "activity": {
-      "empty": "Henüz sunucu işlemi yok.",
+      "empty": "Henüz kurulum veya kapasite değişikliği yok.",
       "waitingForLogs": "İşlem günlükleri bekleniyor…",
       "noLogs": "Bu işlem için günlük kaydedilmedi.",
       "status": {
@@ -649,10 +649,11 @@
         "running": "Devam ediyor",
         "succeeded": "Tamamlandı",
         "failed": "Başarısız"
-      }
+      },
+      "description": "Bu Cloud alanının kurulumu, kapasite değişiklikleri ve kurtarma işlemleri."
     },
-    "billingServers": "Sunucularınız",
-    "billingServersUnavailable": "Sunucularınız yüklenemedi."
+    "billingServers": "Bulut alanları",
+    "billingServersUnavailable": "Bulut alanlarınız yüklenemedi."
   },
   "custom": {
     "name": "Özel",
@@ -682,7 +683,7 @@
     "resizeDescription": "Planın değişti. Bu sunucuyu yeniden başlatmadan önce yeni kapasiteyi ve etkilenen projeleri incele.",
     "applying": "Sunucu kaynakları güncelleniyor. İlerlemeyi sunucu sayfasından takip edebilirsin.",
     "reviewResize": "Kaynak değişikliğini incele",
-    "openServer": "Sunucuyu aç"
+    "openServer": "Bulut alanını görüntüle"
   },
   "planChange": {
     "title": "Plan değişikliğini incele",
@@ -719,7 +720,7 @@
   },
   "purchase": {
     "mode": "Faturalandırma modeli",
-    "monthly": "Aylık sunucular",
+    "monthly": "Aylık planlar",
     "payg": "Ön ödemeli kullanım",
     "title": "Ön ödemeli barındırma",
     "description": "Bir kaynak seviyesi seçin, kredi ekleyin ve sunucu kullanımına göre ödeyin.",
@@ -772,6 +773,7 @@
     }
   },
   "compute": {
+    "title": "Aylık kapsam",
     "covered": "İşlem kaynakları karşılanıyor",
     "needsAttention": "Kapsamı kontrol edin",
     "included": "CPU, RAM ve dahil depolama, ödediğiniz ay boyunca 7/24 karşılanır. İşlem kredisi veya yükleme gerekmez.",
@@ -842,7 +844,7 @@
     "choosePlan": "Plan seç",
     "deleteServer": "Kullanılmayan sunucuyu sil",
     "openPayment": "Ödemeyi aç",
-    "removing": "Sunucu silme talebi alındı. İlerlemeyi Sunucular sayfasından takip edebilirsiniz.",
+    "removing": "Bulut alanını kaldırma talebi alındı. İlerlemeyi Bulut alanları sayfasından takip edebilirsiniz.",
     "states": {
       "open": "Ödeme bekleniyor",
       "unconfirmed": "İlk ödeme bağlantısını kurtarın",

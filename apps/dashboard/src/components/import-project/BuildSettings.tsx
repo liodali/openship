@@ -84,13 +84,12 @@ const BuildSettings: React.FC<BuildSettingsProps> = ({
   // Only a host the config actually names. The old fallback labelled the port
   // field "Port for <projectName>.<baseDomain>" for a config with no chosen
   // route at all — a hostname nobody created.
-  const primaryEndpointHost = getPublicEndpointHosts(config?.publicEndpoints, baseDomain)[0] ?? "";
-  const additionalServerEndpoints: PublicEndpoint[] = hasServer
-    ? (config?.publicEndpoints ?? []).slice(1)
-    : [];
-  const staticEndpoints: PublicEndpoint[] = hasServer
-    ? []
-    : (config?.publicEndpoints ?? []);
+  const servingEndpoints: PublicEndpoint[] = (config?.publicEndpoints ?? []).filter(
+    (endpoint: PublicEndpoint) => !endpoint.redirectTo,
+  );
+  const primaryEndpointHost = getPublicEndpointHosts(servingEndpoints, baseDomain)[0] ?? "";
+  const additionalServerEndpoints = hasServer ? servingEndpoints.slice(1) : [];
+  const staticEndpoints = hasServer ? [] : servingEndpoints;
   const recommendedBuildImage = getRecommendedSingleAppBuildImage({
     framework: config?.framework || "unknown",
     packageManager: config?.packageManager || "npm",
@@ -226,7 +225,7 @@ const BuildSettings: React.FC<BuildSettingsProps> = ({
   const handleChange = (field: InputField, value: string) => {
     if (mode === 'simple' && updateOptions) {
       if (field.key === 'productionPort' && config?.options?.hasServer && updateConfig) {
-        const [primaryEndpoint, ...remainingEndpoints] = config.publicEndpoints || [];
+        const primaryEndpoint = servingEndpoints[0];
         updateConfig({
           productionPortTouched: true,
           lastAutoDetectedEnvPort: null,
@@ -235,10 +234,8 @@ const BuildSettings: React.FC<BuildSettingsProps> = ({
             productionPort: value,
           },
           publicEndpoints: primaryEndpoint
-            ? [{
-                ...primaryEndpoint,
-                port: value,
-              }, ...remainingEndpoints]
+            ? config.publicEndpoints.map((endpoint: PublicEndpoint) => endpoint.id === primaryEndpoint.id
+              ? { ...endpoint, port: value } : endpoint)
             : config.publicEndpoints,
         } as any);
         return;

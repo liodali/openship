@@ -295,7 +295,7 @@ export function CustomSelect<T extends string>({
           <div
             ref={menuRef}
             onKeyDown={handleMenuKeyDown}
-            className="fixed flex flex-col overflow-hidden rounded-2xl border border-border/50 bg-popover shadow-xl shadow-black/[0.08]"
+            className="fixed flex flex-col overflow-hidden rounded-2xl border border-border/50 bg-popover shadow-[var(--th-dropdown-shadow)]"
             style={{
               left: menuPosition.left,
               width: menuPosition.width,
@@ -309,7 +309,10 @@ export function CustomSelect<T extends string>({
             {showSearch && (
               <div className="flex-none border-b border-border/50 px-3 py-2">
                 <div className="flex items-center gap-2">
-                  <UiIcon name="search" className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
+                  <UiIcon
+                    name="search"
+                    className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0"
+                  />
                   <input
                     ref={inputRef}
                     type="text"
@@ -369,7 +372,9 @@ export function CustomSelect<T extends string>({
                       type="button"
                     >
                       <span className="flex min-w-0 items-center gap-2">
-                        {renderOption ? renderOption(option, isSelected) : (
+                        {renderOption ? (
+                          renderOption(option, isSelected)
+                        ) : (
                           <>
                             {option.icon}
                             <span className="flex min-w-0 flex-col">
@@ -384,7 +389,10 @@ export function CustomSelect<T extends string>({
                         )}
                       </span>
                       {isSelected && (
-                        <UiIcon name="check" className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
+                        <UiIcon
+                          name="check"
+                          className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0"
+                        />
                       )}
                     </button>
                   );
@@ -468,12 +476,12 @@ export function CustomSelect<T extends string>({
       >
         <span
           className={cn(
-            "flex min-w-0 items-center gap-2",
+            "flex min-w-0 flex-1 items-center gap-2",
             variant !== "default" ? "text-foreground" : "text-foreground/70",
           )}
         >
           {selectedOption && renderOption ? (
-            <span id={`${listId}-value`} className="flex min-w-0 items-center gap-3">
+            <span id={`${listId}-value`} className="flex min-w-0 flex-1 items-center gap-3">
               {renderOption(selectedOption, true)}
             </span>
           ) : selectedOption ? (
@@ -494,7 +502,8 @@ export function CustomSelect<T extends string>({
             <span className="text-muted-foreground">{placeholder}</span>
           )}
         </span>
-        <UiIcon name="chevron-down"
+        <UiIcon
+          name="chevron-down"
           className={`w-4 h-4 text-muted-foreground transition-transform duration-200 flex-shrink-0 ${
             isOpen ? "rotate-180" : ""
           }`}

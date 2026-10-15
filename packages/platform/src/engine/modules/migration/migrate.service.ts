@@ -17,7 +17,7 @@
 import { reportCaughtError as observeCaughtError, diagnostics as errorDiagnostics } from "@repo/core/diagnostics";
 import { findActiveDeployment } from "@repo/platform/engine/lib/active-deployment";
 import { repos, restoreSubgraph, PkCollisionError, type Service } from "@repo/db";
-import { slugify, safeErrorMessage, mergeAdvanced, looksLikeSecretKey } from "@repo/core";
+import { slugify, safeErrorMessage, mergeAdvanced, looksLikeSecretKey, ValidationError } from "@repo/core";
 import { buildNetworkAliases, type ContainerInfo, type ContainerStatus } from "@repo/adapters";
 import { serviceAliasExtras } from "../../lib/deployable-service";
 import { COMPOSE_SENTINEL } from "../../lib/container-ref";
@@ -261,6 +261,12 @@ function normalizeHostPorts(ports: string[]): {
   return { ports: out, stripped };
 }
 
+function assertImportableGpus(services: readonly DiscoveredService[]): void {
+  for (const service of services) {
+    if (service.gpuImportError) throw new ValidationError(service.gpuImportError);
+  }
+}
+
 /**
  * Map selected discovered services → compose service rows for `syncFromCompose`.
  * Shared by adopt AND re-import so the two paths can't drift: unique names,
@@ -311,6 +317,7 @@ export function buildAdoptedServiceRows(
   handover: Record<string, string>;
 } {
   const adoptedNames = selected ?? new Set(chosen.map((s) => s.name));
+  assertImportableGpus(chosen);
   const nameCounts = new Map<string, number>();
   const firstUnique = new Map<string, string>(); // discovered name → FINAL row name
   const renames: Record<string, string> = {};
@@ -443,13 +450,15 @@ export function buildAdoptedServiceRows(
        * differently — the `newRows` branch below already passes `rs.advanced` wholesale.
        *
        * Order is deliberate: healthcheck and resources come from the LIVE container (the
-       * whole adopt model), and they must win over whatever the file claims. Everything
-       * else can only come from the repo spec, because live inspect doesn't report it.
+       * whole adopt model), and they must win over whatever the file claims. GPU settings
+       * also come from live inspect; an empty snapshot clears stale declarations.
        */
       advanced: (() => {
         const merged = mergeAdvanced(repo?.advanced, {
           ...(s.healthcheck ? { healthcheck: s.healthcheck } : {}),
           ...(s.resources ? { resources: s.resources } : {}),
+          ...(s.gpu ? { gpus: s.gpu.gpus ?? null, runtime: s.gpu.runtime ?? null } : {}),
+          ...(s.shmSize !== undefined ? { shmSize: s.shmSize } : {}),
         });
         return Object.keys(merged).length > 0 ? merged : undefined;
       })(),
@@ -578,6 +587,7 @@ export async function adoptServerStack(opts: {
   // A container that was originally built from source still RUNS an image on the
   // host, so we adopt that image rather than rebuild — see the mapping below.
   const anyBuild = chosen.some((s) => !s.image && Boolean(s.build));
+  assertImportableGpus(chosen);
   const ensureBody: EnsureBody = {
     name: projectName,
     projectType: "services",
@@ -1201,6 +1211,7 @@ export async function reimportOpenshipProject(opts: {
     throw new Error("None of the selected services were found on the server.");
   }
 
+  assertImportableGpus(chosen);
   const name = projectName?.trim() || group.suggestedName;
   const anyBuild = chosen.some((s) => !s.image && Boolean(s.build));
   const created = await createServicesProjectWithId({

@@ -6990,6 +6990,1766 @@
           "content": "#!/bin/sh\nset -eu\n# Keep Apache stopped until the initial site owner exists.\ndocker-ensure-installed.sh\nattempt=0\nuntil php -r 'mysqli_report(MYSQLI_REPORT_OFF); $db = @new mysqli(getenv(\"WORDPRESS_DB_HOST\"), getenv(\"WORDPRESS_DB_USER\"), getenv(\"WORDPRESS_DB_PASSWORD\"), getenv(\"WORDPRESS_DB_NAME\")); exit($db->connect_errno ? 1 : 0);'; do\n  attempt=$((attempt + 1))\n  if [ \"$attempt\" -ge 60 ]; then\n    echo 'WordPress could not connect to its database during setup.' >&2\n    exit 1\n  fi\n  sleep 2\ndone\nsu -s /bin/sh www-data -c 'php' <<'PHP'\n<?php\n// Use the installation API shipped in this official image; no extra CLI download.\ndefine('WP_INSTALLING', true);\n$url = getenv('OPENSHIP_PUBLIC_URL');\n$parts = parse_url($url);\nif (!$parts || empty($parts['host']) || !in_array($parts['scheme'] ?? '', ['http', 'https'], true)) {\n    fwrite(STDERR, \"WordPress needs a valid website URL before setup.\\n\");\n    exit(1);\n}\n$_SERVER['HTTP_HOST'] = $parts['host'] . (isset($parts['port']) ? ':' . $parts['port'] : '');\n$_SERVER['REQUEST_URI'] = '/';\n$_SERVER['REQUEST_METHOD'] = 'GET';\nrequire '/var/www/html/wp-load.php';\nrequire '/var/www/html/wp-admin/includes/upgrade.php';\nif (!is_blog_installed()) {\n    $username = getenv('OPENSHIP_ADMIN_USER');\n    $password = getenv('OPENSHIP_ADMIN_PASSWORD');\n    $email = getenv('OPENSHIP_ADMIN_EMAIL');\n    $title = getenv('OPENSHIP_SITE_TITLE');\n    if (!validate_username($username) || $password === false || $password === '' || !is_email($email) || $title === false || $title === '') {\n        fwrite(STDERR, \"WordPress needs valid initial owner settings before setup.\\n\");\n        exit(1);\n    }\n    // Match the previous bootstrap's --skip-email behavior, only in this process.\n    add_filter('pre_wp_mail', '__return_false');\n    $installed = wp_install($title, $username, $email, true, '', $password);\n    if (empty($installed['user_id']) || !user_can($installed['user_id'], 'manage_options') || !is_blog_installed()) {\n        fwrite(STDERR, \"WordPress initialization did not complete; the website was not started.\\n\");\n        exit(1);\n    }\n    echo \"WordPress site and owner initialized.\\n\";\n}\nPHP\nexec docker-entrypoint.sh \"$@\"\n"
         }
       ]
+    },
+    {
+      "$schema": "https://openship.io/app.schema.json",
+      "available": true,
+      "verified": false,
+      "minEngine": "0.9.0",
+      "id": "homepage",
+      "name": "Homepage",
+      "description": "A configurable service dashboard behind a generated-password login, without Docker socket or host filesystem access.",
+      "kind": "template",
+      "logo": "homepage",
+      "category": "other",
+      "framework": "docker-compose",
+      "repository": "https://github.com/gethomepage/homepage",
+      "services": [
+        {
+          "name": "homepage",
+          "image": "ghcr.io/gethomepage/homepage:v2.5.0",
+          "restart": "unless-stopped",
+          "environment": {
+            "HOMEPAGE_ALLOWED_HOSTS": "homepage:3000",
+            "HOSTNAME": "0.0.0.0"
+          },
+          "volumes": [
+            "homepage_config:/app/config"
+          ],
+          "commandArgv": [
+            "node",
+            "/etc/openship/homepage-start.cjs"
+          ],
+          "healthcheck": {
+            "test": [
+              "CMD-SHELL",
+              "wget -q -O /dev/null http://127.0.0.1:3000/api/healthcheck"
+            ],
+            "interval": "10s",
+            "timeout": "5s",
+            "retries": 12,
+            "startPeriod": "30s"
+          },
+          "resources": {
+            "cpuCores": 0.5,
+            "memoryMb": 384,
+            "diskMb": 512
+          }
+        },
+        {
+          "name": "homepage-access",
+          "image": "caddy:2.11.7-alpine",
+          "restart": "unless-stopped",
+          "dependsOn": [
+            "homepage"
+          ],
+          "secretEnv": [
+            "OPENSHIP_ADMIN_PASSWORD"
+          ],
+          "commandArgv": [
+            "sh",
+            "/etc/openship/homepage-access.sh"
+          ],
+          "healthcheck": {
+            "test": [
+              "CMD-SHELL",
+              "wget -S -O /dev/null http://127.0.0.1:8080/ 2>&1 | grep -q '401 Unauthorized'"
+            ],
+            "interval": "10s",
+            "timeout": "5s",
+            "retries": 12
+          },
+          "exposed": true,
+          "exposedPort": 8080,
+          "routes": [
+            {
+              "port": 8080
+            }
+          ],
+          "resources": {
+            "cpuCores": 0.25,
+            "memoryMb": 128,
+            "diskMb": 256
+          }
+        }
+      ],
+      "endpoints": [
+        {
+          "service": "homepage-access",
+          "port": 8080,
+          "label": "Dashboard",
+          "kind": "http",
+          "defaultMode": "domain",
+          "allowedModes": [
+            "domain",
+            "publish",
+            "internal"
+          ]
+        }
+      ],
+      "minResources": {
+        "cpuCores": 0.5,
+        "memoryMb": 512
+      },
+      "tags": [
+        "dashboard",
+        "bookmarks",
+        "services"
+      ],
+      "management": {
+        "kind": "schema"
+      },
+      "marketplace": {
+        "features": [
+          {
+            "title": "Persistent storage",
+            "description": "Application data stays on project-scoped volumes across deployments."
+          },
+          {
+            "title": "Published images",
+            "description": "Install pinned upstream containers without building images on your server."
+          }
+        ],
+        "article": "## A dashboard for your services\n\nHomepage organizes links, bookmarks, and optional integration widgets. This template pulls the published Homepage image and adds a small Caddy authentication proxy, because Homepage has no built-in user authentication.\n\n## Protected access\n\nChoose a dashboard username. Openship generates and encrypts a password, shown in **Connection**. The browser asks for these credentials before any page or API response is served. Only the proxy receives a public route; Homepage stays on the private project network with a specific host allowlist. No Docker socket, host filesystem, or Kubernetes credentials are mounted.\n\nManage the access username and password through Openship configuration. These are proxy credentials, not a Homepage administrator account.\n\n## Configure the dashboard\n\nThe persistent config volume contains `settings.yaml`, `services.yaml`, `bookmarks.yaml`, and `widgets.yaml`. Initial empty files are created only when missing, so your changes survive redeployments. Edit them through the service's files or terminal tools. Add integration credentials only for services you trust; keep the dashboard password-protected.\n\nAllow about 512 MiB RAM and at least 0.5 CPU cores. These are sizing recommendations, not container limits. Back up the config volume.\n\n[Homepage configuration](https://gethomepage.dev/configs/) · [Container installation](https://gethomepage.dev/installation/docker/)"
+      },
+      "configFields": [
+        {
+          "service": "homepage-access",
+          "key": "OPENSHIP_ADMIN_PASSWORD",
+          "label": "Dashboard password",
+          "generate": "secret",
+          "secret": true
+        },
+        {
+          "service": "homepage-access",
+          "key": "OPENSHIP_ADMIN_USER",
+          "label": "Dashboard username",
+          "default": "admin",
+          "required": true
+        }
+      ],
+      "settings": [
+        {
+          "id": "setup",
+          "label": "Dashboard access",
+          "columns": 2,
+          "fields": [
+            {
+              "service": "homepage-access",
+              "key": "OPENSHIP_ADMIN_USER",
+              "label": "Dashboard username",
+              "type": "text",
+              "default": "admin",
+              "required": true,
+              "installStep": true,
+              "pattern": "^[a-zA-Z0-9_.-]+$",
+              "help": "Username for the authentication proxy. Change access credentials in Openship configuration."
+            }
+          ]
+        }
+      ],
+      "installLayout": {
+        "settings": "single",
+        "columns": 2
+      },
+      "connection": {
+        "title": "Open Homepage",
+        "outputs": [
+          {
+            "id": "url",
+            "label": "Homepage",
+            "source": "publicUrl:homepage-access",
+            "kind": "url",
+            "recommended": true
+          },
+          {
+            "id": "username",
+            "label": "Username",
+            "source": "env:homepage-access:OPENSHIP_ADMIN_USER",
+            "width": "half"
+          },
+          {
+            "id": "password",
+            "label": "Initial password",
+            "source": "env:homepage-access:OPENSHIP_ADMIN_PASSWORD",
+            "secret": true,
+            "width": "half"
+          }
+        ],
+        "guide": {
+          "defaultMode": "public"
+        },
+        "firstLogin": {
+          "note": "Homepage has no built-in login. Openship adds password protection to every public request. Change these credentials in Openship configuration."
+        }
+      },
+      "files": [
+        {
+          "service": "homepage",
+          "path": "/etc/openship/homepage-start.cjs",
+          "content": "const { existsSync, writeFileSync } = require('node:fs');\nfor (const [file, content] of Object.entries({ 'settings.yaml': 'title: My services\\n', 'services.yaml': '[]\\n', 'bookmarks.yaml': '[]\\n', 'widgets.yaml': '[]\\n', 'docker.yaml': '{}\\n', 'kubernetes.yaml': '{}\\n' })) {\n  const path = '/app/config/' + file;\n  if (!existsSync(path)) writeFileSync(path, content, { mode: 0o600 });\n}\nrequire('/app/server.js');\n"
+        },
+        {
+          "service": "homepage-access",
+          "path": "/etc/openship/homepage-access.sh",
+          "content": "#!/bin/sh\nset -eu\nexport OPENSHIP_PASSWORD_HASH=\"$(caddy hash-password --plaintext \"$OPENSHIP_ADMIN_PASSWORD\")\"\nunset OPENSHIP_ADMIN_PASSWORD\nexec caddy run --config /etc/openship/homepage.Caddyfile --adapter caddyfile\n"
+        },
+        {
+          "service": "homepage-access",
+          "path": "/etc/openship/homepage.Caddyfile",
+          "content": "{\n  auto_https off\n  admin off\n}\n:8080 {\n  basic_auth {\n    {$OPENSHIP_ADMIN_USER} {$OPENSHIP_PASSWORD_HASH}\n  }\n  reverse_proxy homepage:3000 {\n    header_up Host homepage:3000\n  }\n}\n"
+        }
+      ]
+    },
+    {
+      "$schema": "https://openship.io/app.schema.json",
+      "available": true,
+      "verified": true,
+      "minEngine": "0.9.0",
+      "id": "immich",
+      "name": "Immich",
+      "description": "Back up photos and videos with Immich, a private vector-enabled database, and a machine-learning worker.",
+      "kind": "template",
+      "logo": "immich",
+      "category": "other",
+      "framework": "docker-compose",
+      "repository": "https://github.com/immich-app/immich",
+      "services": [
+        {
+          "name": "immich-db",
+          "image": "ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0@sha256:bcf63357191b76a916ae5eb93464d65c07511da41e3bf7a8416db519b40b1c23",
+          "restart": "unless-stopped",
+          "environment": {
+            "POSTGRES_USER": "app",
+            "POSTGRES_DB": "app",
+            "POSTGRES_INITDB_ARGS": "--data-checksums"
+          },
+          "secretEnv": [
+            "POSTGRES_PASSWORD"
+          ],
+          "volumes": [
+            "immich_db_data:/var/lib/postgresql/data"
+          ],
+          "healthcheck": {
+            "test": [
+              "CMD-SHELL",
+              "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""
+            ],
+            "interval": "5s",
+            "timeout": "5s",
+            "retries": 30,
+            "startPeriod": "20s"
+          },
+          "resources": {
+            "cpuCores": 0.5,
+            "memoryMb": 2048,
+            "diskMb": 4096
+          }
+        },
+        {
+          "name": "immich-broker",
+          "image": "valkey/valkey:9@sha256:c123e3715db63d06d4ad6964884037aa0d5d4d703939b9929954112889708e1d",
+          "restart": "unless-stopped",
+          "volumes": [
+            "immich_broker_data:/data"
+          ],
+          "healthcheck": {
+            "test": [
+              "CMD",
+              "valkey-cli",
+              "ping"
+            ],
+            "interval": "5s",
+            "timeout": "3s",
+            "retries": 30
+          },
+          "resources": {
+            "cpuCores": 0.25,
+            "memoryMb": 128,
+            "diskMb": 512
+          }
+        },
+        {
+          "name": "immich-machine-learning",
+          "image": "ghcr.io/immich-app/immich-machine-learning:v3.3.1",
+          "restart": "unless-stopped",
+          "volumes": [
+            "immich_model_cache:/cache"
+          ],
+          "healthcheck": {
+            "test": [
+              "CMD",
+              "python3",
+              "healthcheck.py"
+            ],
+            "interval": "20s",
+            "timeout": "10s",
+            "retries": 30,
+            "startPeriod": "120s"
+          },
+          "resources": {
+            "cpuCores": 0.5,
+            "memoryMb": 2048,
+            "diskMb": 4096
+          }
+        },
+        {
+          "name": "immich",
+          "image": "ghcr.io/immich-app/immich-server:v3.3.1",
+          "restart": "unless-stopped",
+          "dependsOn": [
+            "immich-db",
+            "immich-broker",
+            "immich-machine-learning"
+          ],
+          "environment": {
+            "DB_HOSTNAME": "immich-db",
+            "DB_USERNAME": "app",
+            "DB_DATABASE_NAME": "app",
+            "REDIS_HOSTNAME": "immich-broker",
+            "IMMICH_MACHINE_LEARNING_URL": "http://immich-machine-learning:3003",
+            "IMMICH_ALLOW_SETUP": "false"
+          },
+          "secretEnv": [
+            "DB_PASSWORD",
+            "OPENSHIP_ADMIN_PASSWORD"
+          ],
+          "volumes": [
+            "immich_uploads:/data"
+          ],
+          "commandArgv": [
+            "node /etc/openship/immich-start.cjs"
+          ],
+          "stopGracePeriod": "60s",
+          "healthcheck": {
+            "test": [
+              "CMD-SHELL",
+              "test -f /tmp/openship-ready && immich-healthcheck"
+            ],
+            "interval": "15s",
+            "timeout": "10s",
+            "retries": 30,
+            "startPeriod": "240s"
+          },
+          "exposed": true,
+          "exposedPort": 2283,
+          "routes": [
+            {
+              "port": 2283
+            }
+          ],
+          "resources": {
+            "cpuCores": 1,
+            "memoryMb": 1536,
+            "diskMb": 16384
+          }
+        }
+      ],
+      "endpoints": [
+        {
+          "service": "immich",
+          "port": 2283,
+          "label": "Photos",
+          "kind": "http",
+          "defaultMode": "domain",
+          "allowedModes": [
+            "domain",
+            "publish",
+            "internal"
+          ]
+        },
+        {
+          "service": "immich-db",
+          "port": 5432,
+          "label": "Database",
+          "kind": "tcp",
+          "defaultMode": "internal",
+          "allowedModes": [
+            "internal"
+          ],
+          "scope": "internal"
+        },
+        {
+          "service": "immich-broker",
+          "port": 6379,
+          "label": "Queue",
+          "kind": "tcp",
+          "defaultMode": "internal",
+          "allowedModes": [
+            "internal"
+          ],
+          "scope": "internal"
+        }
+      ],
+      "minResources": {
+        "cpuCores": 2,
+        "memoryMb": 6144
+      },
+      "tags": [
+        "photos",
+        "video",
+        "backup"
+      ],
+      "management": {
+        "kind": "schema"
+      },
+      "marketplace": {
+        "features": [
+          {
+            "title": "Persistent storage",
+            "description": "Application data stays on project-scoped volumes across deployments."
+          },
+          {
+            "title": "Published images",
+            "description": "Install pinned upstream containers without building images on your server."
+          }
+        ],
+        "article": "## Photos and videos on your server\n\nImmich backs up and organizes photos and videos. This template follows the pinned release's upstream stack: matching server and machine-learning images, Valkey, and the supported vector-enabled PostgreSQL image. No customer-side image build is required.\n\n## First login\n\nChoose the initial administrator's email and display name. Openship generates and encrypts the password. Registration runs against a loopback-only startup listener; public access starts only after the owner exists, with unauthenticated setup disabled. Changed account details and passwords survive redeployment. Retrieve the initial credentials in **Connection** and use the same server address in Immich's mobile app.\n\n## Requirements and storage\n\nProvide at least 2 CPU cores and 6 GiB RAM; Immich recommends 8 GiB or more. Current AMD64 machine-learning images require an x86-64-v2 CPU. ARM64 is supported. The template uses software processing, without GPU devices or privileged container access. Recommendations do not impose container limits.\n\nPhotos, database contents, and downloaded machine-learning models have separate persistent volumes. Keep the database on local Linux-compatible storage, preferably SSD. Model downloads require internet access and may take time when processing the first photos. Back up the database and uploaded media together; this installation is not a substitute for a separate backup.\n\n[Official requirements](https://docs.immich.app/install/requirements/) · [Release stack](https://github.com/immich-app/immich/blob/v3.3.1/docker/docker-compose.yml) · [Mobile setup](https://docs.immich.app/overview/quick-start/)"
+      },
+      "configFields": [
+        {
+          "service": "immich-db",
+          "key": "POSTGRES_PASSWORD",
+          "label": "Database password",
+          "generate": "secret",
+          "secret": true,
+          "generateGroup": "immich-db"
+        },
+        {
+          "service": "immich",
+          "key": "DB_PASSWORD",
+          "label": "Database password",
+          "generate": "secret",
+          "secret": true,
+          "generateGroup": "immich-db"
+        },
+        {
+          "service": "immich",
+          "key": "OPENSHIP_ADMIN_PASSWORD",
+          "label": "Initial administrator password",
+          "generate": "secret",
+          "secret": true
+        },
+        {
+          "service": "immich",
+          "key": "OPENSHIP_ADMIN_EMAIL",
+          "label": "Admin email",
+          "default": "admin@example.com",
+          "required": true
+        },
+        {
+          "service": "immich",
+          "key": "OPENSHIP_ADMIN_NAME",
+          "label": "Display name",
+          "default": "Admin",
+          "required": true
+        }
+      ],
+      "settings": [
+        {
+          "id": "setup",
+          "label": "Initial account",
+          "columns": 2,
+          "fields": [
+            {
+              "service": "immich",
+              "key": "OPENSHIP_ADMIN_EMAIL",
+              "label": "Admin email",
+              "type": "text",
+              "default": "admin@example.com",
+              "required": true,
+              "installStep": true,
+              "pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$",
+              "help": "Used only for the initial account. Manage existing accounts in the app."
+            },
+            {
+              "service": "immich",
+              "key": "OPENSHIP_ADMIN_NAME",
+              "label": "Display name",
+              "type": "text",
+              "default": "Admin",
+              "required": true,
+              "installStep": true,
+              "pattern": "^[a-zA-Z0-9_. -]+$",
+              "help": "Used only for the initial account. Manage existing accounts in the app."
+            }
+          ]
+        }
+      ],
+      "installLayout": {
+        "settings": "single",
+        "columns": 2
+      },
+      "connection": {
+        "title": "Open Immich",
+        "outputs": [
+          {
+            "id": "url",
+            "label": "Immich",
+            "source": "publicUrl:immich",
+            "kind": "url",
+            "recommended": true
+          },
+          {
+            "id": "username",
+            "label": "Email",
+            "source": "env:immich:OPENSHIP_ADMIN_EMAIL",
+            "width": "half"
+          },
+          {
+            "id": "password",
+            "label": "Initial password",
+            "source": "env:immich:OPENSHIP_ADMIN_PASSWORD",
+            "secret": true,
+            "width": "half"
+          }
+        ],
+        "guide": {
+          "defaultMode": "public"
+        },
+        "firstLogin": {
+          "note": "Account changes made in the app are preserved on redeployment. These are the initial credentials."
+        }
+      },
+      "files": [
+        {
+          "service": "immich",
+          "path": "/etc/openship/immich-start.cjs",
+          "content": "const { writeFileSync } = require('node:fs');\nconst { spawn } = require('node:child_process');\nconst { networkInterfaces } = require('node:os');\nconst pause = ms => new Promise(resolve => setTimeout(resolve, ms));\nlet child;\nlet stopping = false;\nfor (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => { if (stopping) return; stopping = true; void stop().then(() => process.exit(143), () => process.exit(1)); });\nfunction start(host, setup) {\n  if (stopping) throw new Error('Immich setup was interrupted.');\n  child = spawn('start.sh', [], { env: { ...process.env, IMMICH_HOST: host, IMMICH_ALLOW_SETUP: setup }, stdio: 'inherit', detached: true });\n}\nasync function stop() {\n  if (!child) return;\n  const processGroup = child.pid;\n  const alive = () => { try { process.kill(-processGroup, 0); return true; } catch (error) { if (error.code === 'ESRCH') return false; throw error; } };\n  if (!alive()) return;\n  process.kill(-processGroup, 'SIGTERM');\n  for (let attempt = 0; attempt < 300 && alive(); attempt++) await pause(100);\n  if (alive()) process.kill(-processGroup, 'SIGKILL');\n}\nasync function config(host = '127.0.0.1') {\n  const response = await fetch('http://' + host + ':2283/api/server/config', { signal: AbortSignal.timeout(5000) });\n  if (!response.ok) throw new Error('Immich did not return its setup status.');\n  const value = await response.json();\n  if (typeof value.isInitialized !== 'boolean') throw new Error('Immich returned an invalid setup status.');\n  return value;\n}\n(async () => {\n  start('127.0.0.1', 'true');\n  let initial;\n  for (let attempt = 0; attempt < 240; attempt++) {\n    if (child.exitCode !== null) throw new Error('Immich exited during private setup.');\n    try { initial = await config(); break; } catch (error) { if (!(error instanceof TypeError) && error.name !== 'TimeoutError') throw error; }\n    await pause(2000);\n  }\n  if (!initial) throw new Error('Immich private setup timed out.');\n  if (!initial.isInitialized) {\n    const response = await fetch('http://127.0.0.1:2283/api/auth/admin-sign-up', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: process.env.OPENSHIP_ADMIN_EMAIL, name: process.env.OPENSHIP_ADMIN_NAME, password: process.env.OPENSHIP_ADMIN_PASSWORD }), signal: AbortSignal.timeout(30000) });\n    if (!response.ok || (await response.json()).isAdmin !== true) throw new Error('Immich initial owner setup was rejected.');\n    if (!(await config()).isInitialized) throw new Error('Immich owner setup did not persist.');\n  }\n  await stop();\n  start('0.0.0.0', 'false');\n  // Probe the container's non-loopback address: an old private worker cannot\n  // satisfy public readiness while the new API is still starting.\n  const address = Object.values(networkInterfaces()).flat().find(value => value && value.family === 'IPv4' && !value.internal)?.address;\n  if (!address) throw new Error('Immich has no private network address for its public listener.');\n  let publicReady = false;\n  for (let attempt = 0; attempt < 180; attempt++) {\n    if (child.exitCode !== null) throw new Error('Immich public server exited during startup.');\n    try { if ((await config(address)).isInitialized) { publicReady = true; break; } } catch (error) { if (!(error instanceof TypeError) && error.name !== 'TimeoutError') throw error; }\n    await pause(2000);\n  }\n  if (!publicReady) throw new Error('Immich public listener did not become ready.');\n  writeFileSync('/tmp/openship-ready', 'ready', { mode: 0o600 });\n  child.once('exit', code => { if (!stopping) process.exit(code ?? 1); });\n})().catch(async error => { if (stopping) return; if (typeof error.message === \"string\" && error.message.startsWith(\"Immich \")) console.error(error.message); console.error('Immich could not complete private owner setup; the public service was not started.'); if (child?.exitCode === null) await stop(); process.exit(1); });\n"
+        }
+      ]
+    },
+    {
+      "$schema": "https://openship.io/app.schema.json",
+      "available": true,
+      "verified": true,
+      "minEngine": "0.9.2",
+      "id": "jellyfin",
+      "name": "Jellyfin",
+      "description": "Stream your own media with persistent libraries and a preconfigured administrator. Software playback works without privileged hardware access.",
+      "kind": "template",
+      "logo": "jellyfin",
+      "category": "other",
+      "framework": "docker-compose",
+      "repository": "https://github.com/jellyfin/jellyfin",
+      "services": [
+        {
+          "name": "jellyfin",
+          "image": "jellyfin/jellyfin:12.2",
+          "restart": "unless-stopped",
+          "volumes": [
+            "jellyfin_config:/config",
+            "jellyfin_cache:/cache",
+            "jellyfin_media:/media"
+          ],
+          "secretEnv": [
+            "OPENSHIP_ADMIN_PASSWORD"
+          ],
+          "entrypointArgv": [
+            "sh",
+            "/etc/openship/jellyfin-start.sh"
+          ],
+          "commandArgv": [],
+          "stopGracePeriod": "60s",
+          "healthcheck": {
+            "test": [
+              "CMD-SHELL",
+              "test -f /tmp/openship-ready && curl -fsS http://127.0.0.1:8096/health | grep -qx Healthy"
+            ],
+            "interval": "15s",
+            "timeout": "5s",
+            "retries": 30,
+            "startPeriod": "180s"
+          },
+          "exposed": true,
+          "exposedPort": 8096,
+          "routes": [
+            {
+              "port": 8096
+            }
+          ],
+          "resources": {
+            "cpuCores": 2,
+            "memoryMb": 2048,
+            "diskMb": 16384
+          }
+        }
+      ],
+      "endpoints": [
+        {
+          "service": "jellyfin",
+          "port": 8096,
+          "label": "Media server",
+          "kind": "http",
+          "defaultMode": "domain",
+          "allowedModes": [
+            "domain",
+            "publish",
+            "internal"
+          ]
+        }
+      ],
+      "minResources": {
+        "cpuCores": 2,
+        "memoryMb": 2048
+      },
+      "tags": [
+        "media",
+        "video",
+        "music"
+      ],
+      "management": {
+        "kind": "schema"
+      },
+      "marketplace": {
+        "features": [
+          {
+            "title": "Persistent storage",
+            "description": "Application data stays on project-scoped volumes across deployments."
+          },
+          {
+            "title": "Published images",
+            "description": "Install pinned upstream containers without building images on your server."
+          }
+        ],
+        "article": "## Your own media library\n\nJellyfin serves your videos, music, and other media through its web UI and supported clients. The template pulls its official pinned container and uses persistent config, cache, and media volumes. It does not mount host directories or grant GPU, Docker socket, or privileged access.\n\n## First login\n\nChoose an initial administrator username. Openship generates and encrypts the password. The startup helper finishes Jellyfin's setup against a loopback-only listener before starting public access. Existing configuration and changed passwords remain intact on redeployment. Find the initial credentials in **Connection**.\n\nThis template requires Openship 0.9.2 or newer for the declarative container entrypoint override. Older instances must upgrade before installing it; they must not run an uninitialized public setup wizard.\n\n## Add media\n\nCopy your own media into the persistent `/media` volume, then add libraries pointing to those folders in Jellyfin's dashboard. Media is not supplied by the template. The `/config` volume contains users, libraries, and metadata; back it up with the media. Cache is disposable.\n\nAllow at least 2 CPU cores and 2 GiB RAM. Software transcoding can require considerably more CPU; direct playback uses less. These are recommendations, not runtime limits. Hardware acceleration and LAN discovery require explicit operator configuration and are not enabled by this template.\n\n[Official container guide](https://jellyfin.org/docs/general/installation/container/) · [Jellyfin source](https://github.com/jellyfin/jellyfin)"
+      },
+      "configFields": [
+        {
+          "service": "jellyfin",
+          "key": "OPENSHIP_ADMIN_PASSWORD",
+          "label": "Initial administrator password",
+          "generate": "secret",
+          "secret": true
+        },
+        {
+          "service": "jellyfin",
+          "key": "OPENSHIP_ADMIN_USER",
+          "label": "Admin username",
+          "default": "admin",
+          "required": true
+        }
+      ],
+      "settings": [
+        {
+          "id": "setup",
+          "label": "Initial account",
+          "columns": 2,
+          "fields": [
+            {
+              "service": "jellyfin",
+              "key": "OPENSHIP_ADMIN_USER",
+              "label": "Admin username",
+              "type": "text",
+              "default": "admin",
+              "required": true,
+              "installStep": true,
+              "pattern": "^[a-zA-Z0-9_. -]+$",
+              "help": "Used only for the initial account. Manage existing accounts in the app."
+            }
+          ]
+        }
+      ],
+      "installLayout": {
+        "settings": "single",
+        "columns": 2
+      },
+      "connection": {
+        "title": "Open Jellyfin",
+        "outputs": [
+          {
+            "id": "url",
+            "label": "Jellyfin",
+            "source": "publicUrl:jellyfin",
+            "kind": "url",
+            "recommended": true
+          },
+          {
+            "id": "username",
+            "label": "Username",
+            "source": "env:jellyfin:OPENSHIP_ADMIN_USER",
+            "width": "half"
+          },
+          {
+            "id": "password",
+            "label": "Initial password",
+            "source": "env:jellyfin:OPENSHIP_ADMIN_PASSWORD",
+            "secret": true,
+            "width": "half"
+          }
+        ],
+        "guide": {
+          "defaultMode": "public"
+        },
+        "firstLogin": {
+          "note": "Account changes made in the app are preserved on redeployment. These are the initial credentials."
+        }
+      },
+      "files": [
+        {
+          "service": "jellyfin",
+          "path": "/etc/openship/jellyfin-start.sh",
+          "content": "#!/bin/sh\nset -eu\nif grep -q '<IsStartupWizardCompleted>true</IsStartupWizardCompleted>' /config/config/system.xml 2>/dev/null; then\n  touch /tmp/openship-ready\n  exec /jellyfin/jellyfin \"$@\"\nfi\n# Keep setup bound to loopback. The real data directory stays on its persistent volume.\nmkdir -p /config/config /tmp/openship-jellyfin\nif [ -f /config/config/system.xml ]; then cp /config/config/system.xml /tmp/openship-jellyfin/system.xml; fi\ncat > /tmp/openship-jellyfin/network.xml <<'XML'\n<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<NetworkConfiguration>\n  <LocalNetworkAddresses><string>127.0.0.1</string></LocalNetworkAddresses>\n  <EnableIPv6>false</EnableIPv6>\n</NetworkConfiguration>\nXML\n/jellyfin/jellyfin --configdir /tmp/openship-jellyfin &\nchild=$!\ntrap 'kill -TERM \"$child\" 2>/dev/null || true; wait \"$child\" || true' EXIT\ntrap 'exit 143' TERM INT\nattempt=0\nuntil curl -fsS http://127.0.0.1:8096/health 2>/dev/null | grep -qx Healthy; do\n  kill -0 \"$child\"\n  attempt=$((attempt + 1))\n  [ \"$attempt\" -lt 180 ] || { echo 'Jellyfin private setup timed out.' >&2; exit 1; }\n  sleep 2\ndone\njson_string() {\n  printf '%s' \"$1\" | od -An -v -tu1 | awk 'BEGIN { printf \"\\\"\" } { for (i = 1; i <= NF; i++) { if ($i == 34 || $i == 92) printf \"\\\\%c\", $i; else if ($i < 32) printf \"\\\\u%04x\", $i; else printf \"%c\", $i } } END { printf \"\\\"\" }'\n}\n[ -n \"$OPENSHIP_ADMIN_USER\" ] && [ -n \"$OPENSHIP_ADMIN_PASSWORD\" ]\ncurl -fsS http://127.0.0.1:8096/Startup/User >/dev/null\npayload=$(printf '{\"Name\":%s,\"Password\":%s}' \"$(json_string \"$OPENSHIP_ADMIN_USER\")\" \"$(json_string \"$OPENSHIP_ADMIN_PASSWORD\")\")\n# On an interrupted previous bootstrap, the password may already exist. Verify it before continuing.\nif ! printf '%s' \"$payload\" | curl -fsS -X POST -H 'Content-Type: application/json' --data-binary @- http://127.0.0.1:8096/Startup/User >/dev/null; then\n  payload=$(printf '{\"Username\":%s,\"Pw\":%s}' \"$(json_string \"$OPENSHIP_ADMIN_USER\")\" \"$(json_string \"$OPENSHIP_ADMIN_PASSWORD\")\")\n  printf '%s' \"$payload\" | curl -fsS -X POST -H 'Content-Type: application/json' -H 'Authorization: MediaBrowser Client=\"Openship\", Device=\"Setup\", DeviceId=\"openship-setup\", Version=\"1\"' --data-binary @- http://127.0.0.1:8096/Users/AuthenticateByName >/dev/null\nfi\ncurl -fsS -X POST http://127.0.0.1:8096/Startup/Complete >/dev/null\ngrep -q '<IsStartupWizardCompleted>true</IsStartupWizardCompleted>' /tmp/openship-jellyfin/system.xml\nkill -TERM \"$child\"\nwait \"$child\" || true\ntrap - EXIT TERM INT\ncp /tmp/openship-jellyfin/system.xml /config/config/system.xml.new\nmv /config/config/system.xml.new /config/config/system.xml\ntouch /tmp/openship-ready\nexec /jellyfin/jellyfin \"$@\"\n"
+        }
+      ]
+    },
+    {
+      "$schema": "https://openship.io/app.schema.json",
+      "available": true,
+      "verified": true,
+      "minEngine": "0.9.0",
+      "id": "paperless-ngx",
+      "name": "Paperless-ngx",
+      "description": "Archive and search scanned documents with OCR, a private PostgreSQL database, and persistent original files.",
+      "kind": "template",
+      "logo": "paperless-ngx",
+      "category": "other",
+      "framework": "docker-compose",
+      "repository": "https://github.com/paperless-ngx/paperless-ngx",
+      "services": [
+        {
+          "name": "paperless-db",
+          "image": "postgres:18.3-alpine",
+          "restart": "unless-stopped",
+          "environment": {
+            "POSTGRES_USER": "app",
+            "POSTGRES_DB": "app"
+          },
+          "secretEnv": [
+            "POSTGRES_PASSWORD"
+          ],
+          "volumes": [
+            "paperless_db_data:/var/lib/postgresql"
+          ],
+          "healthcheck": {
+            "test": [
+              "CMD-SHELL",
+              "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""
+            ],
+            "interval": "5s",
+            "timeout": "5s",
+            "retries": 30,
+            "startPeriod": "20s"
+          },
+          "resources": {
+            "cpuCores": 0.5,
+            "memoryMb": 512,
+            "diskMb": 4096
+          }
+        },
+        {
+          "name": "paperless-broker",
+          "image": "valkey/valkey:9.0.4-alpine",
+          "restart": "unless-stopped",
+          "volumes": [
+            "paperless_broker_data:/data"
+          ],
+          "healthcheck": {
+            "test": [
+              "CMD",
+              "valkey-cli",
+              "ping"
+            ],
+            "interval": "5s",
+            "timeout": "3s",
+            "retries": 30
+          },
+          "resources": {
+            "cpuCores": 0.25,
+            "memoryMb": 128,
+            "diskMb": 512
+          }
+        },
+        {
+          "name": "paperless",
+          "image": "ghcr.io/paperless-ngx/paperless-ngx:3.3.1",
+          "restart": "unless-stopped",
+          "dependsOn": [
+            "paperless-db",
+            "paperless-broker"
+          ],
+          "environment": {
+            "PAPERLESS_REDIS": "redis://paperless-broker:6379",
+            "PAPERLESS_DBENGINE": "postgresql",
+            "PAPERLESS_DBHOST": "paperless-db",
+            "PAPERLESS_DBNAME": "app",
+            "PAPERLESS_DBUSER": "app",
+            "PAPERLESS_URL": "{{publicUrl:paperless}}",
+            "PAPERLESS_TIME_ZONE": "UTC",
+            "PAPERLESS_OCR_LANGUAGE": "eng",
+            "PAPERLESS_TASK_WORKERS": "1",
+            "PAPERLESS_THREADS_PER_WORKER": "2",
+            "PAPERLESS_BIND_ADDR": "0.0.0.0"
+          },
+          "secretEnv": [
+            "PAPERLESS_DBPASS",
+            "PAPERLESS_SECRET_KEY",
+            "PAPERLESS_ADMIN_PASSWORD"
+          ],
+          "volumes": [
+            "paperless_data:/usr/src/paperless/data",
+            "paperless_media:/usr/src/paperless/media",
+            "paperless_consume:/usr/src/paperless/consume",
+            "paperless_export:/usr/src/paperless/export"
+          ],
+          "healthcheck": {
+            "test": [
+              "CMD-SHELL",
+              "curl -fsS http://127.0.0.1:8000/ >/dev/null"
+            ],
+            "interval": "10s",
+            "timeout": "5s",
+            "retries": 30,
+            "startPeriod": "180s"
+          },
+          "stopGracePeriod": "60s",
+          "exposed": true,
+          "exposedPort": 8000,
+          "routes": [
+            {
+              "port": 8000
+            }
+          ],
+          "resources": {
+            "cpuCores": 1,
+            "memoryMb": 1536,
+            "diskMb": 8192
+          }
+        }
+      ],
+      "endpoints": [
+        {
+          "service": "paperless",
+          "port": 8000,
+          "label": "Documents",
+          "kind": "http",
+          "defaultMode": "domain",
+          "allowedModes": [
+            "domain",
+            "publish",
+            "internal"
+          ]
+        },
+        {
+          "service": "paperless-db",
+          "port": 5432,
+          "label": "Database",
+          "kind": "tcp",
+          "defaultMode": "internal",
+          "allowedModes": [
+            "internal"
+          ],
+          "scope": "internal"
+        },
+        {
+          "service": "paperless-broker",
+          "port": 6379,
+          "label": "Queue",
+          "kind": "tcp",
+          "defaultMode": "internal",
+          "allowedModes": [
+            "internal"
+          ],
+          "scope": "internal"
+        }
+      ],
+      "minResources": {
+        "cpuCores": 2,
+        "memoryMb": 2304
+      },
+      "tags": [
+        "documents",
+        "ocr",
+        "archive"
+      ],
+      "management": {
+        "kind": "schema"
+      },
+      "marketplace": {
+        "features": [
+          {
+            "title": "Persistent storage",
+            "description": "Application data stays on project-scoped volumes across deployments."
+          },
+          {
+            "title": "Published images",
+            "description": "Install pinned upstream containers without building images on your server."
+          }
+        ],
+        "article": "## Documents with OCR\n\nPaperless-ngx archives original documents, extracts searchable text, and organizes files with tags and correspondents. This template uses pinned upstream images for Paperless, PostgreSQL, and Valkey. There is no installation-time image build.\n\n## First login\n\nChoose the initial administrator's username and email. Openship generates and encrypts the password and signing secret. Paperless creates the administrator through its native startup support before serving its website. Open **Connection** after deployment to retrieve the initial credentials. Changing a password in Paperless is preserved across redeployments.\n\n## Storage and sizing\n\nAllow at least 2 CPU cores and about 2.25 GiB RAM; OCR of large files needs more. Resource profiles are recommendations, not container limits. The database, media, data, consume, and export folders have separate project-scoped volumes. Back up the database and original documents together.\n\nUpload documents in the web UI, or copy files to the consume volume. English OCR and UTC are the initial defaults; configure supported OCR languages and timezone in the app's environment. Optional Tika and Gotenberg services for Office documents are not included. Neither PostgreSQL nor the queue is publicly exposed.\n\n[Upstream configuration](https://docs.paperless-ngx.com/configuration/) · [Source and releases](https://github.com/paperless-ngx/paperless-ngx)"
+      },
+      "configFields": [
+        {
+          "service": "paperless-db",
+          "key": "POSTGRES_PASSWORD",
+          "label": "Database password",
+          "generate": "secret",
+          "secret": true,
+          "generateGroup": "paperless-db"
+        },
+        {
+          "service": "paperless",
+          "key": "PAPERLESS_DBPASS",
+          "label": "Database password",
+          "generate": "secret",
+          "secret": true,
+          "generateGroup": "paperless-db"
+        },
+        {
+          "service": "paperless",
+          "key": "PAPERLESS_SECRET_KEY",
+          "label": "Signing secret",
+          "generate": "secret",
+          "secret": true
+        },
+        {
+          "service": "paperless",
+          "key": "PAPERLESS_ADMIN_PASSWORD",
+          "label": "Initial administrator password",
+          "generate": "secret",
+          "secret": true
+        },
+        {
+          "service": "paperless",
+          "key": "PAPERLESS_ADMIN_USER",
+          "label": "Admin username",
+          "default": "admin",
+          "required": true
+        },
+        {
+          "service": "paperless",
+          "key": "PAPERLESS_ADMIN_MAIL",
+          "label": "Admin email",
+          "default": "admin@example.com",
+          "required": true
+        }
+      ],
+      "settings": [
+        {
+          "id": "setup",
+          "label": "Initial account",
+          "columns": 2,
+          "fields": [
+            {
+              "service": "paperless",
+              "key": "PAPERLESS_ADMIN_USER",
+              "label": "Admin username",
+              "type": "text",
+              "default": "admin",
+              "required": true,
+              "installStep": true,
+              "pattern": "^[a-zA-Z0-9_. -]+$",
+              "help": "Used only for the initial account. Manage existing accounts in the app."
+            },
+            {
+              "service": "paperless",
+              "key": "PAPERLESS_ADMIN_MAIL",
+              "label": "Admin email",
+              "type": "text",
+              "default": "admin@example.com",
+              "required": true,
+              "installStep": true,
+              "pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$",
+              "help": "Used only for the initial account. Manage existing accounts in the app."
+            }
+          ]
+        }
+      ],
+      "installLayout": {
+        "settings": "single",
+        "columns": 2
+      },
+      "connection": {
+        "title": "Open Paperless-ngx",
+        "outputs": [
+          {
+            "id": "url",
+            "label": "Paperless-ngx",
+            "source": "publicUrl:paperless",
+            "kind": "url",
+            "recommended": true
+          },
+          {
+            "id": "username",
+            "label": "Username",
+            "source": "env:paperless:PAPERLESS_ADMIN_USER",
+            "width": "half"
+          },
+          {
+            "id": "password",
+            "label": "Initial password",
+            "source": "env:paperless:PAPERLESS_ADMIN_PASSWORD",
+            "secret": true,
+            "width": "half"
+          }
+        ],
+        "guide": {
+          "defaultMode": "public"
+        },
+        "firstLogin": {
+          "note": "Account changes made in the app are preserved on redeployment. These are the initial credentials."
+        }
+      }
+    },
+    {
+      "$schema": "https://openship.io/app.schema.json",
+      "available": true,
+      "verified": true,
+      "minEngine": "0.9.0",
+      "id": "wiki-js",
+      "name": "Wiki.js",
+      "description": "Create a knowledge base with the stable Wiki.js release, a private PostgreSQL database, and a preconfigured administrator.",
+      "kind": "template",
+      "logo": "wiki-js",
+      "category": "cms",
+      "framework": "docker-compose",
+      "repository": "https://github.com/requarks/wiki",
+      "services": [
+        {
+          "name": "wiki-db",
+          "image": "postgres:17.9-alpine",
+          "restart": "unless-stopped",
+          "environment": {
+            "POSTGRES_USER": "app",
+            "POSTGRES_DB": "app"
+          },
+          "secretEnv": [
+            "POSTGRES_PASSWORD"
+          ],
+          "volumes": [
+            "wiki_db_data:/var/lib/postgresql/data"
+          ],
+          "healthcheck": {
+            "test": [
+              "CMD-SHELL",
+              "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""
+            ],
+            "interval": "5s",
+            "timeout": "5s",
+            "retries": 30,
+            "startPeriod": "20s"
+          },
+          "resources": {
+            "cpuCores": 0.5,
+            "memoryMb": 512,
+            "diskMb": 2048
+          }
+        },
+        {
+          "name": "wiki",
+          "image": "ghcr.io/requarks/wiki:2.5.315",
+          "restart": "unless-stopped",
+          "dependsOn": [
+            "wiki-db"
+          ],
+          "environment": {
+            "DB_HOST": "wiki-db",
+            "DB_USER": "app",
+            "DB_NAME": "app",
+            "OPENSHIP_PUBLIC_URL": "{{publicUrl:wiki}}"
+          },
+          "secretEnv": [
+            "DB_PASS",
+            "OPENSHIP_ADMIN_PASSWORD"
+          ],
+          "volumes": [
+            "wiki_data:/wiki/data"
+          ],
+          "commandArgv": [
+            "node",
+            "/etc/openship/wiki-start.cjs"
+          ],
+          "healthcheck": {
+            "test": [
+              "CMD-SHELL",
+              "test -f /tmp/openship-ready && curl -fsS http://127.0.0.1:3000/healthz >/dev/null"
+            ],
+            "interval": "10s",
+            "timeout": "5s",
+            "retries": 30,
+            "startPeriod": "120s"
+          },
+          "stopGracePeriod": "60s",
+          "exposed": true,
+          "exposedPort": 3000,
+          "routes": [
+            {
+              "port": 3000
+            }
+          ],
+          "resources": {
+            "cpuCores": 0.5,
+            "memoryMb": 768,
+            "diskMb": 4096
+          }
+        }
+      ],
+      "endpoints": [
+        {
+          "service": "wiki",
+          "port": 3000,
+          "label": "Knowledge base",
+          "kind": "http",
+          "defaultMode": "domain",
+          "allowedModes": [
+            "domain",
+            "publish",
+            "internal"
+          ]
+        },
+        {
+          "service": "wiki-db",
+          "port": 5432,
+          "label": "Database",
+          "kind": "tcp",
+          "defaultMode": "internal",
+          "allowedModes": [
+            "internal"
+          ],
+          "scope": "internal"
+        }
+      ],
+      "minResources": {
+        "cpuCores": 1,
+        "memoryMb": 1280
+      },
+      "tags": [
+        "wiki",
+        "documentation",
+        "knowledge-base"
+      ],
+      "management": {
+        "kind": "schema"
+      },
+      "marketplace": {
+        "features": [
+          {
+            "title": "Persistent storage",
+            "description": "Application data stays on project-scoped volumes across deployments."
+          },
+          {
+            "title": "Published images",
+            "description": "Install pinned upstream containers without building images on your server."
+          }
+        ],
+        "article": "## A shared knowledge base\n\nThis template installs the stable Wiki.js 2 release with a private PostgreSQL database. It pulls pinned published images and stores attachments and application files on a persistent volume.\n\n## First login\n\nChoose the initial administrator's email. Openship generates and encrypts its password. The startup helper binds Wiki.js to container loopback while completing the upstream setup flow. It starts the public listener only after confirming that the administrator exists. An incomplete existing setup stops deployment rather than resetting accounts.\n\nFind the initial credentials in **Connection**, then create pages and manage access in Wiki.js. Existing accounts and changed passwords are preserved on redeployment. Public reading follows Wiki.js's own permissions; review guest access before storing private documents.\n\n## Storage and sizing\n\nAllow at least 1 CPU core and 1.25 GiB RAM. These recommendations do not set runtime limits. Back up both the database and the Wiki.js data volume. Database credentials are generated once and shared securely between the two services; the database has no public endpoint.\n\n[Wiki.js documentation](https://docs.requarks.io/) · [Stable source](https://github.com/requarks/wiki/tree/v2.5.315)"
+      },
+      "configFields": [
+        {
+          "service": "wiki-db",
+          "key": "POSTGRES_PASSWORD",
+          "label": "Database password",
+          "generate": "secret",
+          "secret": true,
+          "generateGroup": "wiki-db"
+        },
+        {
+          "service": "wiki",
+          "key": "DB_PASS",
+          "label": "Database password",
+          "generate": "secret",
+          "secret": true,
+          "generateGroup": "wiki-db"
+        },
+        {
+          "service": "wiki",
+          "key": "OPENSHIP_ADMIN_PASSWORD",
+          "label": "Initial administrator password",
+          "generate": "secret",
+          "secret": true
+        },
+        {
+          "service": "wiki",
+          "key": "OPENSHIP_ADMIN_EMAIL",
+          "label": "Admin email",
+          "default": "admin@example.com",
+          "required": true
+        }
+      ],
+      "settings": [
+        {
+          "id": "setup",
+          "label": "Initial account",
+          "columns": 2,
+          "fields": [
+            {
+              "service": "wiki",
+              "key": "OPENSHIP_ADMIN_EMAIL",
+              "label": "Admin email",
+              "type": "text",
+              "default": "admin@example.com",
+              "required": true,
+              "installStep": true,
+              "pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$",
+              "help": "Used only for the initial account. Manage existing accounts in the app."
+            }
+          ]
+        }
+      ],
+      "installLayout": {
+        "settings": "single",
+        "columns": 2
+      },
+      "connection": {
+        "title": "Open Wiki.js",
+        "outputs": [
+          {
+            "id": "url",
+            "label": "Wiki.js",
+            "source": "publicUrl:wiki",
+            "kind": "url",
+            "recommended": true
+          },
+          {
+            "id": "username",
+            "label": "Email",
+            "source": "env:wiki:OPENSHIP_ADMIN_EMAIL",
+            "width": "half"
+          },
+          {
+            "id": "password",
+            "label": "Initial password",
+            "source": "env:wiki:OPENSHIP_ADMIN_PASSWORD",
+            "secret": true,
+            "width": "half"
+          }
+        ],
+        "guide": {
+          "defaultMode": "public"
+        },
+        "firstLogin": {
+          "note": "Account changes made in the app are preserved on redeployment. These are the initial credentials."
+        }
+      },
+      "files": [
+        {
+          "service": "wiki",
+          "path": "/etc/openship/wiki-start.cjs",
+          "content": "const { spawn } = require('node:child_process');\nconst { writeFileSync } = require('node:fs');\nconst { Client } = require('/wiki/node_modules/pg');\nconst pause = ms => new Promise(resolve => setTimeout(resolve, ms));\nlet child;\nlet stopping = false;\nfor (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => { if (stopping) return; stopping = true; void stop().then(() => process.exit(143), () => process.exit(1)); });\nfunction start(bindIP) {\n  if (stopping) throw new Error('Wiki.js setup was interrupted.');\n  const config = { port: 3000, bindIP, db: { type: 'postgres', host: process.env.DB_HOST, port: 5432, user: process.env.DB_USER, pass: process.env.DB_PASS, db: process.env.DB_NAME, ssl: false }, dataPath: '/wiki/data', ssl: { enabled: false }, logLevel: 'info' };\n  writeFileSync('/tmp/openship-wiki-config.json', JSON.stringify(config), { mode: 0o600 });\n  child = spawn(process.execPath, ['--no-deprecation', 'server'], { cwd: '/wiki', env: { ...process.env, CONFIG_FILE: '/tmp/openship-wiki-config.json' }, stdio: 'inherit' });\n}\nasync function stop() {\n  if (!child || child.exitCode !== null) return;\n  const closed = new Promise(resolve => child.once('exit', resolve));\n  child.kill('SIGTERM');\n  const timeout = setTimeout(() => child.kill('SIGKILL'), 30000);\n  await closed;\n  clearTimeout(timeout);\n}\n(async () => {\n  start('127.0.0.1');\n  const db = new Client({ host: process.env.DB_HOST, user: process.env.DB_USER, password: process.env.DB_PASS, database: process.env.DB_NAME });\n  await db.connect();\n  let ready = false;\n  for (let attempt = 0; attempt < 180; attempt++) {\n    if (child.exitCode !== null) throw new Error('Wiki.js exited during private setup.');\n    const tables = await db.query(\"SELECT to_regclass('public.settings') IS NOT NULL AND to_regclass('public.users') IS NOT NULL AS ready\");\n    if (tables.rows[0].ready) {\n      const settings = await db.query('SELECT COUNT(*)::int AS count FROM settings');\n      const owner = await db.query('SELECT id FROM users WHERE id = 1');\n      if (settings.rows[0].count > 0 && owner.rows.length) { ready = true; break; }\n      if (settings.rows[0].count > 0 || owner.rows.length) throw new Error('Wiki.js has incomplete existing setup. Restore or repair it before publishing.');\n      try {\n        const response = await fetch('http://127.0.0.1:3000/finalize', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ adminEmail: process.env.OPENSHIP_ADMIN_EMAIL, adminPassword: process.env.OPENSHIP_ADMIN_PASSWORD, siteUrl: process.env.OPENSHIP_PUBLIC_URL, telemetry: false }), signal: AbortSignal.timeout(120000) });\n        const result = await response.json();\n        if (!response.ok || result.ok !== true) throw new Error('Wiki.js initial owner setup was rejected.');\n        ready = true; break;\n      } catch (error) {\n        if (!(error instanceof TypeError)) throw error;\n      }\n    }\n    await pause(2000);\n  }\n  if (!ready) throw new Error('Wiki.js private setup timed out.');\n  const owner = await db.query('SELECT id FROM users WHERE id = 1');\n  if (!owner.rows.length) throw new Error('Wiki.js owner was not created; refusing to publish.');\n  await db.end();\n  await stop();\n  start('0.0.0.0');\n  writeFileSync('/tmp/openship-ready', 'ready', { mode: 0o600 });\n  child.once('exit', code => { if (!stopping) process.exit(code ?? 1); });\n})().catch(async error => { if (stopping) return; if (typeof error.message === \"string\" && error.message.startsWith(\"Wiki.js \")) console.error(error.message); console.error('Wiki.js could not complete private owner setup; the public service was not started.'); if (child?.exitCode === null) await stop(); process.exit(1); });\n"
+        }
+      ]
+    },
+    {
+      "$schema": "https://openship.io/app.schema.json",
+      "schemaVersion": 2,
+      "supportsCloud": false,
+      "available": true,
+      "verified": true,
+      "kind": "template",
+      "category": "ai",
+      "framework": "docker-compose",
+      "id": "ollama",
+      "name": "Ollama",
+      "logo": "ollama",
+      "gpu": "recommended",
+      "repository": "https://github.com/ollama/ollama",
+      "description": "Run language models on your own server, with a persistent model library and a private inference API.",
+      "tags": [
+        "ai",
+        "llm",
+        "inference",
+        "ollama",
+        "gpu"
+      ],
+      "minResources": {
+        "cpuCores": 2,
+        "memoryMb": 4096
+      },
+      "services": [
+        {
+          "name": "ollama",
+          "image": "ollama/ollama:0.40.4",
+          "exposedPort": 11434,
+          "gpus": {
+            "driver": "nvidia",
+            "count": 1,
+            "capabilities": [
+              "gpu"
+            ]
+          },
+          "environment": {
+            "OLLAMA_HOST": "0.0.0.0:11434",
+            "OLLAMA_CONTEXT_LENGTH": "4096",
+            "OLLAMA_NUM_PARALLEL": "1",
+            "OLLAMA_KEEP_ALIVE": "5m"
+          },
+          "volumes": [
+            "ollama_data:/root/.ollama"
+          ],
+          "restart": "unless-stopped",
+          "healthcheck": {
+            "test": [
+              "CMD",
+              "ollama",
+              "list"
+            ],
+            "interval": "15s",
+            "timeout": "10s",
+            "retries": 5,
+            "startPeriod": "60s"
+          }
+        }
+      ],
+      "endpoints": [
+        {
+          "service": "ollama",
+          "port": 11434,
+          "kind": "tcp",
+          "label": "Model API",
+          "help": "Ollama has no API authentication. Keep it private and use Open in localhost or connect it to another project.",
+          "scope": "internal",
+          "defaultMode": "internal",
+          "allowedModes": [
+            "internal"
+          ]
+        }
+      ],
+      "settings": [
+        {
+          "id": "inference",
+          "label": "Inference",
+          "description": "Model size determines the memory and disk needed. Download models from Terminal with ollama pull <model>.",
+          "columns": 2,
+          "fields": [
+            {
+              "key": "OLLAMA_CONTEXT_LENGTH",
+              "service": "ollama",
+              "label": "Context length",
+              "type": "number",
+              "default": "4096",
+              "min": 512,
+              "max": 131072,
+              "installStep": true
+            },
+            {
+              "key": "OLLAMA_NUM_PARALLEL",
+              "service": "ollama",
+              "label": "Parallel requests",
+              "type": "number",
+              "default": "1",
+              "min": 1,
+              "max": 8,
+              "installStep": true
+            }
+          ]
+        }
+      ],
+      "management": {
+        "kind": "schema"
+      },
+      "connection": {
+        "title": "Connect to Ollama",
+        "description": "Download a model in Terminal, for example: ollama pull qwen3:0.6b. The API has no authentication and stays private. Use Open in localhost for a client on your machine.",
+        "outputs": [
+          {
+            "id": "apiUrl",
+            "label": "Private model API",
+            "source": "template:http://ollama:11434",
+            "service": "ollama",
+            "envKey": "OLLAMA_BASE_URL",
+            "recommended": true
+          }
+        ]
+      },
+      "provides": [
+        {
+          "id": "ollama-api",
+          "category": "ai",
+          "outputRefs": [
+            "apiUrl"
+          ]
+        }
+      ],
+      "marketplace": {
+        "features": [
+          {
+            "title": "CPU or NVIDIA",
+            "description": "Choose CPU mode or request one NVIDIA GPU."
+          },
+          {
+            "title": "Persistent models",
+            "description": "Keep downloaded models across redeployment."
+          },
+          {
+            "title": "Private API",
+            "description": "Connect applications without publishing an unauthenticated API."
+          }
+        ],
+        "article": "## Run models on your server\n\nOllama provides a model API and stores downloads in a persistent volume. Choose CPU mode or one NVIDIA GPU during installation. GPU mode requires a compatible host driver and NVIDIA Container Toolkit; Openship does not install either or reserve GPU memory.\n\nThe model API stays private because Ollama does not authenticate requests. Use **Open in localhost** for a local client or **Use in a project** to connect another application. The template does not expose the API on a public domain.\n\n## Download a model\n\nOpen the service Terminal and run `ollama pull qwen3:0.6b`. Then use `ollama run qwen3:0.6b` or call the API. The template does not download a large model automatically or block deployment on that download. Check Logs while a model is loading; API readiness and model availability are different states.\n\nSizing depends on the model, context length and concurrent requests. The catalog's CPU/RAM guidance is a starting point, not a guarantee that every model fits. Models persist across container replacement; back up the volume if you need to preserve custom models.\n\nThis template is self-hosted only. CPU mode works without GPU access; the GPU request path is tested, but this template's GPU inference has not been independently tested on physical hardware.\n\n[Official Docker setup](https://docs.ollama.com/docker) · [Model library](https://ollama.com/library)"
+      }
+    },
+    {
+      "$schema": "https://openship.io/app.schema.json",
+      "schemaVersion": 2,
+      "supportsCloud": false,
+      "available": true,
+      "verified": true,
+      "kind": "template",
+      "category": "ai",
+      "framework": "docker-compose",
+      "id": "open-webui",
+      "name": "Open WebUI",
+      "logo": "open-webui",
+      "repository": "https://github.com/open-webui/open-webui",
+      "description": "A self-hosted chat interface for Ollama and OpenAI-compatible backends, with a generated administrator login.",
+      "tags": [
+        "ai",
+        "chat",
+        "ollama",
+        "openai",
+        "frontend"
+      ],
+      "minResources": {
+        "cpuCores": 2,
+        "memoryMb": 2048
+      },
+      "services": [
+        {
+          "name": "open-webui",
+          "image": "ghcr.io/open-webui/open-webui:v0.12.0-slim",
+          "exposedPort": 8080,
+          "ports": [
+            "8080:8080"
+          ],
+          "exposed": true,
+          "environment": {
+            "WEBUI_AUTH": "true",
+            "ENABLE_SIGNUP": "false",
+            "DEFAULT_USER_ROLE": "pending",
+            "RAG_EMBEDDING_ENGINE": "ollama",
+            "ENABLE_VERSION_UPDATE_CHECK": "false",
+            "DO_NOT_TRACK": "true",
+            "SCARF_NO_ANALYTICS": "true",
+            "ANONYMIZED_TELEMETRY": "false"
+          },
+          "secretEnv": [
+            "WEBUI_SECRET_KEY",
+            "WEBUI_ADMIN_PASSWORD"
+          ],
+          "volumes": [
+            "open_webui_data:/app/backend/data"
+          ],
+          "restart": "unless-stopped",
+          "healthcheck": {
+            "test": [
+              "CMD",
+              "python3",
+              "-c",
+              "import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8080/health\",timeout=5)"
+            ],
+            "interval": "20s",
+            "timeout": "10s",
+            "retries": 5,
+            "startPeriod": "5m"
+          }
+        }
+      ],
+      "configFields": [
+        {
+          "key": "WEBUI_SECRET_KEY",
+          "service": "open-webui",
+          "label": "Session secret",
+          "generate": "secret",
+          "secret": true
+        },
+        {
+          "key": "WEBUI_ADMIN_PASSWORD",
+          "service": "open-webui",
+          "label": "Admin password",
+          "generate": "secret",
+          "secret": true
+        },
+        {
+          "key": "WEBUI_ADMIN_EMAIL",
+          "service": "open-webui",
+          "label": "Admin email",
+          "default": "admin@example.com"
+        }
+      ],
+      "settings": [
+        {
+          "id": "access",
+          "label": "Administrator",
+          "description": "Created on first startup only. Manage accounts and model connections in Open WebUI after installation.",
+          "fields": [
+            {
+              "key": "WEBUI_ADMIN_EMAIL",
+              "service": "open-webui",
+              "label": "Admin email",
+              "type": "text",
+              "default": "admin@example.com",
+              "installStep": true,
+              "required": true,
+              "pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$",
+              "patternError": "Enter an email address."
+            }
+          ]
+        }
+      ],
+      "management": {
+        "kind": "schema"
+      },
+      "requires": [
+        {
+          "id": "ollama",
+          "label": "Ollama backend",
+          "category": "ai",
+          "envKey": "OLLAMA_BASE_URL",
+          "mode": "internal",
+          "optional": true,
+          "bundleId": "ollama-api"
+        }
+      ],
+      "connection": {
+        "title": "Open WebUI",
+        "description": "Sign in with the generated administrator credentials. Connect Ollama or an OpenAI-compatible API in Admin Settings → Connections. This template does not deploy a model backend.",
+        "outputs": [
+          {
+            "id": "ui",
+            "label": "Chat interface",
+            "source": "publicUrl:open-webui",
+            "kind": "url"
+          },
+          {
+            "id": "email",
+            "label": "Admin email",
+            "source": "env:open-webui:WEBUI_ADMIN_EMAIL"
+          },
+          {
+            "id": "password",
+            "label": "Admin password",
+            "source": "env:open-webui:WEBUI_ADMIN_PASSWORD",
+            "secret": true
+          }
+        ],
+        "firstLogin": {
+          "note": "The initial administrator is created automatically. Public sign-up is disabled."
+        }
+      },
+      "marketplace": {
+        "features": [
+          {
+            "title": "Chat interface",
+            "description": "Use Ollama or an OpenAI-compatible backend."
+          },
+          {
+            "title": "Protected login",
+            "description": "Generated administrator credentials; sign-up disabled."
+          },
+          {
+            "title": "Persistent workspace",
+            "description": "Keep accounts, chats and settings across redeployment."
+          }
+        ],
+        "article": "## Chat with your model backend\n\nOpen WebUI is a chat frontend for Ollama and OpenAI-compatible APIs. This template runs the official slim image, keeps accounts/chats/settings in a persistent volume, and creates an administrator with a generated password. Public sign-up is disabled.\n\nChoose the administrator email before the first deployment, then sign in using the Connection card. Later account changes belong in Open WebUI: changing the initial bootstrap email or password does not reset an existing account.\n\n## Connect a provider\n\nChoose an existing Ollama installation during setup, or configure Ollama/an OpenAI-compatible API in **Admin Settings → Connections** after sign-in. The template does not deploy Ollama or vLLM, download a model, or provide an inference subscription. A working chat needs a reachable backend and a suitable model.\n\nThe frontend itself requests no GPU. Embedding and document features use the configured backend rather than an automatically downloaded local embedding model. Keep authentication enabled and the generated session secret stable across restarts. The upstream Open WebUI branding is preserved.\n\nThis template is self-hosted only. Back up the persistent data volume before upgrades.\n\n[Official setup](https://docs.openwebui.com/getting-started/quick-start/) · [Administrator bootstrap](https://docs.openwebui.com/features/authentication-access/rbac/roles/)"
+      }
+    },
+    {
+      "$schema": "https://openship.io/app.schema.json",
+      "schemaVersion": 2,
+      "supportsCloud": false,
+      "available": false,
+      "verified": true,
+      "kind": "template",
+      "category": "ai",
+      "framework": "docker-compose",
+      "id": "vllm",
+      "name": "vLLM",
+      "logo": "vllm",
+      "gpu": "required",
+      "hosting": "experimental",
+      "minEngine": "0.9.2",
+      "repository": "https://github.com/vllm-project/vllm",
+      "description": "OpenAI-compatible model serving on a self-hosted NVIDIA GPU. Preview pending real GPU installation tests.",
+      "tags": [
+        "ai",
+        "llm",
+        "inference",
+        "gpu",
+        "openai"
+      ],
+      "minResources": {
+        "cpuCores": 4,
+        "memoryMb": 8192
+      },
+      "services": [
+        {
+          "name": "vllm",
+          "image": "vllm/vllm-openai:v0.31.0",
+          "exposedPort": 8000,
+          "ports": [
+            "8000:8000"
+          ],
+          "exposed": true,
+          "gpus": {
+            "driver": "nvidia",
+            "count": 1,
+            "capabilities": [
+              "gpu"
+            ]
+          },
+          "shmSize": 2147483648,
+          "environment": {
+            "MODEL_ID": "Qwen/Qwen3-0.6B",
+            "MAX_MODEL_LEN": "4096",
+            "GPU_MEMORY_UTILIZATION": "0.8",
+            "VLLM_NO_USAGE_STATS": "1",
+            "DO_NOT_TRACK": "1"
+          },
+          "secretEnv": [
+            "VLLM_API_KEY",
+            "HF_TOKEN"
+          ],
+          "entrypointArgv": [
+            "/bin/sh",
+            "-c"
+          ],
+          "commandArgv": [
+            "exec vllm serve \"$MODEL_ID\" --host 0.0.0.0 --port 8000 --max-model-len \"$MAX_MODEL_LEN\" --gpu-memory-utilization \"$GPU_MEMORY_UTILIZATION\""
+          ],
+          "volumes": [
+            "vllm_cache:/root/.cache/huggingface",
+            "vllm_compile_cache:/root/.cache/vllm"
+          ],
+          "restart": "unless-stopped",
+          "healthcheck": {
+            "test": [
+              "CMD",
+              "python3",
+              "-c",
+              "import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8000/health\",timeout=5)"
+            ],
+            "interval": "30s",
+            "timeout": "10s",
+            "retries": 5,
+            "startPeriod": "30m"
+          },
+          "stopGracePeriod": "60s"
+        }
+      ],
+      "configFields": [
+        {
+          "key": "VLLM_API_KEY",
+          "service": "vllm",
+          "label": "API key",
+          "generate": "secret",
+          "secret": true
+        },
+        {
+          "key": "HF_TOKEN",
+          "service": "vllm",
+          "label": "Hugging Face token",
+          "secret": true
+        }
+      ],
+      "settings": [
+        {
+          "id": "model",
+          "label": "Model",
+          "columns": 2,
+          "description": "The selected model must fit your GPU memory. First startup downloads the model; see Logs for progress.",
+          "fields": [
+            {
+              "key": "MODEL_ID",
+              "service": "vllm",
+              "label": "Hugging Face model",
+              "type": "text",
+              "default": "Qwen/Qwen3-0.6B",
+              "required": true,
+              "installStep": true,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$",
+              "patternError": "Enter an owner/model identifier."
+            },
+            {
+              "key": "HF_TOKEN",
+              "service": "vllm",
+              "label": "Hugging Face token",
+              "type": "password",
+              "secret": true,
+              "installStep": true,
+              "help": "Only needed for gated or private models. Accept the model license on Hugging Face first."
+            },
+            {
+              "key": "MAX_MODEL_LEN",
+              "service": "vllm",
+              "label": "Context length",
+              "type": "number",
+              "default": "4096",
+              "min": 512,
+              "max": 131072,
+              "installStep": true
+            },
+            {
+              "key": "GPU_MEMORY_UTILIZATION",
+              "service": "vllm",
+              "label": "GPU memory fraction",
+              "type": "number",
+              "default": "0.8",
+              "min": 0.1,
+              "max": 0.95,
+              "step": 0.05,
+              "installStep": true
+            }
+          ]
+        }
+      ],
+      "management": {
+        "kind": "schema"
+      },
+      "endpoints": [
+        {
+          "service": "vllm",
+          "port": 8000,
+          "kind": "http",
+          "label": "Inference API",
+          "help": "Every /v1 API request requires the generated bearer token.",
+          "defaultMode": "domain",
+          "allowedModes": [
+            "domain",
+            "port"
+          ]
+        }
+      ],
+      "connection": {
+        "title": "Connect to vLLM",
+        "description": "Use the API key as a bearer token with an OpenAI-compatible client. Startup may take several minutes while the model downloads and loads. Check Logs for progress.",
+        "outputs": [
+          {
+            "id": "baseUrl",
+            "label": "OpenAI base URL",
+            "source": "template:{{publicUrl:vllm}}/v1",
+            "service": "vllm",
+            "envKey": "OPENAI_BASE_URL",
+            "recommended": true
+          },
+          {
+            "id": "apiKey",
+            "label": "API key",
+            "source": "env:vllm:VLLM_API_KEY",
+            "service": "vllm",
+            "envKey": "OPENAI_API_KEY",
+            "secret": true,
+            "recommended": true
+          }
+        ]
+      },
+      "marketplace": {
+        "features": [
+          {
+            "title": "OpenAI-compatible API",
+            "description": "Connect existing inference clients."
+          },
+          {
+            "title": "NVIDIA inference",
+            "description": "Request one GPU with private container shared memory."
+          },
+          {
+            "title": "Persistent model cache",
+            "description": "Reuse downloads and compilation caches."
+          }
+        ],
+        "article": "## NVIDIA inference preview\n\nThis template uses vLLM's official CUDA image, one NVIDIA GPU and a generated API key for its OpenAI-compatible API. It is listed as a preview and cannot be installed yet: real NVIDIA hardware validation is still required. It is self-hosted only and does not support managed Cloud or CPU-only servers.\n\nThe server needs a compatible NVIDIA driver and NVIDIA Container Toolkit. The selected model must fit the GPU's VRAM; ordinary RAM guidance does not measure VRAM or reserve GPU capacity. Openship does not provision GPUs or install drivers.\n\n## Model and startup\n\nThe initial model is `Qwen/Qwen3-0.6B`. Choose a different Hugging Face model and, when required, provide a token and accept its license on Hugging Face. The first start downloads and loads the model. Check Logs for progress; a starting health check is not proof of a failed deployment.\n\nThe template persists model downloads and compilation caches. It gives the container a private 2 GiB `/dev/shm`, without sharing the host IPC namespace or enabling privileged mode. Context length, model choice and concurrency determine memory demand.\n\nUse the generated API key as a bearer token for `/v1` requests. Keep that key private. The pinned image's CUDA version must be compatible with the host driver; this preview is not a guarantee for every NVIDIA card or model.\n\n[Official Docker deployment](https://docs.vllm.ai/en/stable/deployment/docker/) · [GPU requirements](https://docs.vllm.ai/en/stable/getting_started/installation/gpu/)"
+      }
     }
   ]
 }

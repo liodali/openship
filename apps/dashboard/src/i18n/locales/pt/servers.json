@@ -1,4 +1,31 @@
 {
+  "resources": {
+    "notFound": "Recursos não encontrados",
+    "notFoundDescription": "Estes recursos não estão disponíveis no espaço de trabalho atual. Podem ter sido removidos ou pertencer a outra conta.",
+    "description": "Apps, builds e dados compartilham a capacidade do seu espaço Cloud.",
+    "selectPool": "Escolha um espaço Cloud",
+    "capacity": "Host atual",
+    "capacityHint": "Seus apps, builds e dados salvos compartilham estes recursos.",
+    "addCapacity": "Adicionar espaço Cloud",
+    "managePlan": "Gerenciar plano",
+    "projects": "Projetos",
+    "emptyTitle": "Seus aplicativos começam aqui",
+    "emptyDescription": "Escolha a capacidade e implante aplicativos e projetos no Openship Cloud.",
+    "usageHint": "Uso atual de CPU, memória e armazenamento.",
+    "noProjects": "Ainda não há projetos aqui.",
+    "spaces": "Espaços Cloud",
+    "spacesHint": "Capacidade independente para seus apps e projetos.",
+    "space": "Espaço Cloud",
+    "customPlan": "Plano personalizado",
+    "projectCount": "Projetos: {count}",
+    "live": "Ao vivo",
+    "paused": "Pausado",
+    "lastReading": "Última leitura",
+    "connecting": "Conectando…",
+    "streamUnavailable": "As atualizações ao vivo estão indisponíveis. Exibindo a última medição.",
+    "usageTitle": "Uso de recursos",
+    "setupPending": "O uso aparecerá quando seu espaço Cloud estiver configurado."
+  },
   "github": {
     "title": "Acesso ao GitHub",
     "desc": "Como este servidor se autentica no GitHub para clonar repositórios privados.",
@@ -1204,5 +1231,25 @@
       "title": "Controle indisponível",
       "description": "Este controle ainda não está disponível na versão da API Cloud conectada. O Openship Cloud precisa ser atualizado antes do uso."
     }
+  },
+  "gpu": {
+    "title": "GPU",
+    "subtitle": "Disponibilidade de GPU para os contêineres deste servidor.",
+    "notDetected": "Nenhuma GPU detectada",
+    "notProbed": "Não foi possível verificar este servidor agora",
+    "countOne": "1 placa GPU",
+    "countMany": "{count} placas GPU",
+    "runtimeOnly": "Runtime NVIDIA encontrado, número de placas desconhecido",
+    "modeLabel": "Disponibilidade de GPU",
+    "modeAuto": "Automática",
+    "modeYes": "GPU disponível",
+    "modeNo": "Sem GPU",
+    "modeHint": "Altere apenas se a detecção automática estiver incorreta.",
+    "mismatchYes": "Marcado como \"GPU disponível\", mas nenhuma foi detectada. Os serviços GPU serão enviados para cá mesmo assim.",
+    "mismatchNo": "Marcado como \"Sem GPU\", mas uma GPU foi detectada. Haverá um aviso para serviços GPU neste servidor.",
+    "saving": "Salvando…",
+    "saved": "Configuração de GPU salva",
+    "saveFailed": "Não foi possível salvar a configuração de GPU",
+    "badge": "GPU"
   }
 }

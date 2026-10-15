@@ -97,6 +97,54 @@ describe("updateProject route persistence", () => {
     routeState.syncProjectRouteState.mockResolvedValue(undefined);
   });
 
+  it("serializes overlapping primary-direction changes before domain persistence", async () => {
+    let release!: () => void;
+    routeState.persistProjectRouteState.mockImplementationOnce(
+      () => new Promise<void>((resolve) => { release = resolve; }),
+    );
+    const first = updateProject(project.id, {
+      publicEndpoints: [
+        { domainType: "custom", customDomain: "www.example.com", port: 4321 },
+        {
+          domainType: "custom", customDomain: "example.com", port: 4321,
+          redirectTo: "www.example.com", redirectStatus: 301,
+        },
+      ],
+    }, project.organizationId);
+    await vi.waitFor(() => expect(routeState.persistProjectRouteState).toHaveBeenCalledTimes(1));
+    const second = updateProject(project.id, {
+      publicEndpoints: [
+        { domainType: "custom", customDomain: "example.com", port: 4321 },
+        {
+          domainType: "custom", customDomain: "www.example.com", port: 4321,
+          redirectTo: "example.com", redirectStatus: 301,
+        },
+      ],
+    }, project.organizationId);
+    try {
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(routeState.persistProjectRouteState).toHaveBeenCalledTimes(1);
+      expect(routeState.reapplyProjectLiveRoutes).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await Promise.all([first, second]);
+    }
+    expect(routeState.persistProjectRouteState).toHaveBeenCalledTimes(2);
+    expect(routeState.reapplyProjectLiveRoutes).toHaveBeenCalledTimes(2);
+    expect(routeState.reapplyProjectLiveRoutes.mock.invocationCallOrder[0]).toBeLessThan(
+      routeState.persistProjectRouteState.mock.invocationCallOrder[1],
+    );
+  });
+
+  it("releases routing admission after a failed save", async () => {
+    routeState.persistProjectRouteState.mockRejectedValueOnce(new Error("database write failed"));
+    const edit = { publicEndpoints: [{ customDomain: "example.com", domainType: "custom" as const, port: 4321 }] };
+    await expect(updateProject(project.id, edit, project.organizationId)).rejects.toThrow("database write failed");
+    await updateProject(project.id, edit, project.organizationId);
+    expect(routeState.persistProjectRouteState).toHaveBeenCalledTimes(2);
+    expect(routeState.reapplyProjectLiveRoutes).toHaveBeenCalledTimes(1);
+  });
+
   it("does not finish the PATCH before its live route writer is quiescent", async () => {
     let releaseRoute!: () => void;
     routeState.reapplyProjectLiveRoutes.mockReturnValue(

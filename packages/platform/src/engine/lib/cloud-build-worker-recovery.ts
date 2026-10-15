@@ -1,6 +1,6 @@
 import { AppError } from "@repo/core";
 import { repos } from "@repo/db";
-import { removeProjectBuildKitWorker } from "@repo/adapters";
+import { currentManagedCommandTracking, removeProjectBuildKitWorker } from "@repo/adapters";
 import { cloudBuildActivityContext } from "./cloud-build-activity-context";
 
 /** A quiescence hook for Cloud build activity/slot completion and recovery.
@@ -14,6 +14,9 @@ export async function verifyCloudBuildWorkerStopped(): Promise<void> {
       409,
       "CLOUD_BUILD_ACTIVITY_CHANGED",
     );
+  // Archive/HTTP consumers can finish before the bridge's durable completion
+  // callback. Drain those acknowledgements before interpreting the command ledger.
+  await currentManagedCommandTracking()?.flush();
   const { identity } = state;
   const [row, binding] = await Promise.all([
     repos.cloudBuildActivity.find(identity),

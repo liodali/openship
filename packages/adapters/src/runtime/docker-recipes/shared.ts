@@ -2,6 +2,7 @@ import type { BuildConfig } from "../../types";
 import { packageManagerEnsureCommand, nodeBinDirs } from "@repo/core";
 
 import { sq } from "../build-pipeline";
+import { cachedRunPrefix } from "./cache";
 import { normalizeDockerRootDirectory } from "../docker-paths";
 
 const DOCKER_BUILD_EVENT_PREFIX = "[openship-build]";
@@ -115,7 +116,7 @@ export function workspacePrepareRunLine(
 ): string {
   const pmEnsure = packageManagerEnsureCommand(config.packageManager);
   const body = pmEnsure ? `${pmEnsure} && ${workspacePrepare}` : workspacePrepare;
-  return `RUN ${envPrefix}${body}`;
+  return `${cachedRunPrefix(config)}${envPrefix}${body}`;
 }
 
 /**
@@ -148,7 +149,7 @@ export function stepsRunLine(
     steps.push(buildRunCommand(build, envPrefix));
     steps.push(`printf '${formatDockerBuildEvent("build", "completed")}\\n'`);
   }
-  return steps.length > 0 ? `RUN ${steps.join(" && ")}` : null;
+  return steps.length > 0 ? `${cachedRunPrefix(config, opts.packageManager)}${steps.join(" && ")}` : null;
 }
 
 /** The install+build RUN line (with progress markers), or null if neither step. */

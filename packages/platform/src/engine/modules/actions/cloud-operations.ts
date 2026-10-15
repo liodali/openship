@@ -1,4 +1,5 @@
-import { AppError, CLOUD_UNREACHABLE_CODE } from "@repo/core";
+import { AppError, CLOUD_UNREACHABLE_CODE, safeErrorMessage } from "@repo/core";
+import { diagnostics as errorDiagnostics } from "@repo/core/diagnostics";
 import {
   ActionCollectionRoutes,
   ActionCollectionSchemas,
@@ -168,10 +169,21 @@ export function withCloudActions(local: ActionDependencies): ActionDependencies 
             !(await resolveOrgCloudUserId(ctx.organizationId))
           )
             return data;
-          const cloud = (await remote(ctx, ActionCollectionRoutes[name], spec, input)) as {
-            id: string;
-            createdAt?: string;
-          }[];
+          // Cloud being offline must not hide this instance's own Actions.
+          const cloud = await (
+            remote(ctx, ActionCollectionRoutes[name], spec, input) as Promise<
+              { id: string; createdAt?: string }[]
+            >
+          ).catch((error) => {
+            errorDiagnostics.warn(
+              "platform/engine/modules/actions/cloud-operations",
+              `[cloud-actions] Could not list Cloud ${name}:`,
+              safeErrorMessage(error),
+              error,
+            );
+            return null;
+          });
+          if (!cloud) return data;
           const merged = [
             ...new Map([...cloud, ...(data as typeof cloud)].map((row) => [row.id, row])).values(),
           ];

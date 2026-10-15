@@ -48,10 +48,10 @@ export default async function AppPage({ params }: { params: Promise<{ id: string
   const related = apps
     .filter((other) => other.id !== app.id && other.category === app.category && other.available)
     .slice(0, 3);
-  const cloud = app.kind === "template";
+  const cloud = app.kind === "template" && app.supportsCloud;
   const installUrl = cloud
     ? `${CLOUD_DASHBOARD_URL}/apps/new/${encodeURIComponent(app.id)}`
-    : "/mail";
+    : app.kind === "flow" ? "/mail" : "/docs/getting-started/installation";
   const article = app.article ? renderAppArticle(app.article) : null;
   const schema = {
     "@context": "https://schema.org",
@@ -81,6 +81,9 @@ export default async function AppPage({ params }: { params: Promise<{ id: string
           <h1 className="mt-2 text-4xl font-medium tracking-tight th-text-heading sm:text-5xl">
             {app.name}
           </h1>
+          {(app.gpu || !app.supportsCloud) && <p className="mt-3 text-sm th-text-muted">
+            {[app.gpu === "required" ? "NVIDIA GPU required" : app.gpu === "recommended" ? "GPU recommended" : null, !app.supportsCloud ? "Self-hosted only" : null].filter(Boolean).join(" · ")}
+          </p>}
           <p className="mt-4 max-w-2xl text-lg leading-relaxed th-text-secondary">
             {app.description}
           </p>

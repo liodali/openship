@@ -34,6 +34,10 @@ const publicDomain = domainFlag >= 0 ? process.argv[domainFlag + 1]! : "opsh.io"
 if (!publicDomain || !/^[a-z0-9.-]+$/.test(publicDomain))
   throw new Error("Invalid public test domain");
 const baseUrl = configuration.OBLIEN_API_URL || "https://api.oblien.com";
+const presetFlag = process.argv.indexOf("--preset");
+const softwarePreset = presetFlag >= 0 ? process.argv[presetFlag + 1] : undefined;
+if (presetFlag >= 0 && (!softwarePreset || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(softwarePreset)))
+  throw new Error("Supply a valid published software preset");
 if (
   !configuration.OBLIEN_CLIENT_ID ||
   !configuration.OBLIEN_CLIENT_SECRET ||
@@ -108,6 +112,7 @@ try {
     name: tag,
     slug: tag,
     image: "oblien/docker:29",
+    ...(softwarePreset ? { preset: softwarePreset } : {}),
     mode: "temporary" as const,
     wait_ready: false,
     idempotency_key: tag,
@@ -214,7 +219,10 @@ try {
   await (await import("node:fs/promises")).mkdir(source);
   await writeFile(
     join(source, "Dockerfile"),
-    'FROM busybox:1.37\nARG REVISION=v1\nRUN printf \'%s\' "$REVISION" > /revision\nCOPY start.sh /start.sh\nCMD ["sh", "/start.sh"]\n',
+    (softwarePreset ? 'FROM oven/bun:1.3.14 AS public-tools\nRUN bun --version > /bun-version\n' : '') +
+    'FROM busybox:1.37\n' +
+    (softwarePreset ? 'COPY --from=public-tools /bun-version /bun-version\n' : '') +
+    'ARG REVISION=v1\nRUN printf \'%s\' "$REVISION" > /revision\nCOPY start.sh /start.sh\nCMD ["sh", "/start.sh"]\n',
   );
   await writeFile(
     join(source, "start.sh"),
@@ -252,6 +260,8 @@ try {
   );
   await writeFile(join(directory, "build.log"), buildLog.join(""), { mode: 0o600 });
   check("source builds inside workspace", built.status === "deploying" && built.imageRef);
+  if (softwarePreset)
+    check("public software disk supplies the build image", buildLog.some(line => line.includes("OCI load from client")));
   const group = await runtime.ensureServiceGroup({
     projectId: tag,
     deploymentId: `${tag}-d1`,

@@ -358,6 +358,9 @@
   },
   "runnerSetup": {
     "subtitle": "Escolha um servidor e um ambiente pronto para usar.",
+    "cloudSubtitle": "Escolha um espaço Cloud e um ambiente pronto para executar tarefas.",
+    "selectCloudSpace": "Escolha um espaço Cloud para ver os ambientes compatíveis.",
+    "trustedCloudSpace": "As tarefas compartilham a capacidade deste espaço Cloud. Execute apenas fluxos confiáveis.",
     "environment": "Ambiente padrão",
     "browse": "Ver catálogo",
     "catalog": "Catálogo de runners",

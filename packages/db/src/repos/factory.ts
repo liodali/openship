@@ -1,3 +1,5 @@
+import { createIngressRepo } from "./ingress.repo";
+export { createIngressRepo, type IngressConnection, type IngressHostname } from "./ingress.repo";
 import { createCloudBuildActivityRepo } from "./cloud-build-activity.repo";
 export { createCloudBuildActivityRepo, reserveCloudBuildActivity, type CloudBuildActivityIdentity, type CloudBuildResources } from "./cloud-build-activity.repo";
 import { createClusterStorageRepo } from "./cluster-storage.repo";
@@ -420,6 +422,7 @@ export function createRepositories(db: Database, encryption: ConfigurationEncryp
     domainDnsChallenge: createDomainDnsChallengeRepo(db),
     dnsCredential: createDnsCredentialRepo(db),
     credential: createCredentialRepo(db),
+    ingress: createIngressRepo(db),
     routeRule: createRouteRuleRepo(db),
     webhookSource: createWebhookSourceRepo(db),
     incomingWebhook: createIncomingWebhookRepo(db),

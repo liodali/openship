@@ -148,7 +148,7 @@ describe("plans for an existing server", () => {
   it("opens Custom from Scale with the saved resources and disables an unchanged purchase", async () => {
     vi.useFakeTimers();
     await render(picker("team", { allocatedDiskGb: 600 }));
-    expect(host.querySelector('form[aria-label="Size your server"]')).not.toBeNull();
+    expect(host.querySelector(`form[aria-label="${copy.custom.title}"]`)).not.toBeNull();
     expect(sidebarState()).toBe("expanded");
     expect(input(copy.custom.cpu)?.value).toBe("8");
     expect(input(copy.custom.memory)?.value).toBe("32");

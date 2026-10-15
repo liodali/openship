@@ -756,6 +756,19 @@ describe("container-served static project routes (#879)", () => {
  * where a bogus custom hostname is refused once for all of them (#342) — nginx's own
  * DOMAIN_RE would happily render `server_name localhost;`.
  */
+describe("canonical primary in route state", () => {
+  it("uses a serving endpoint for primary metadata regardless of submission order", () => {
+    const state = deriveNextProjectRouteState({ slug: "portfolio" }, {
+      nextPublicEndpoints: [
+        { domainType: "custom", customDomain: "example.com", port: 3000, redirectTo: "www.example.com", redirectStatus: 301 },
+        { domainType: "custom", customDomain: "www.example.com", port: 3000 },
+      ],
+    });
+    expect(state.primaryCustomDomain).toBe("www.example.com");
+    expect(state.publicEndpoints.map(endpoint => endpoint.isPrimary)).toEqual([false, true]);
+  });
+});
+
 describe("deriveNextProjectRouteState custom-hostname gate", () => {
   const project = { slug: "portfolio" };
 

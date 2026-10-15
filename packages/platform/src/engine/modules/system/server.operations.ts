@@ -28,9 +28,9 @@ import { managedServerCollection, serverLifecycleResources } from "./server-life
 import { serverNetworkSettings } from "./server-network-settings.operations";
 import { serverManagedControls } from "./server-managed.operations";
 import { hostControlDisabled } from "@repo/adapters";
-import { AppError, assertSshSettings, normalizeSshTransport, safeErrorMessage } from "@repo/core";
+import { AppError, assertSshSettings, normalizeSshTransport, safeErrorMessage, type HostCapacity } from "@repo/core";
 import { invalidateOpenRestyPaths } from "../../lib/openresty-paths";
-import { invalidateHostCapacity } from "../../lib/host-capacity";
+import { getHostCapacity, invalidateHostCapacity } from "../../lib/host-capacity";
 import { sshManager, type ReachabilityDiagnosis } from "../../lib/ssh-manager";
 import { resolvesToLocalHost } from "../../lib/self-host";
 import { boxOwningOrgId } from "../../lib/box-org";
@@ -72,6 +72,35 @@ function validateConnectionOptions(settings: Parameters<typeof assertSshSettings
 }
 
 /** GET /servers - list servers in the caller's active organization. */
+/** A dead box must not stall the whole server list: the GPU annotation is the least important thing on it. */
+const CAPACITY_PROBE_TIMEOUT_MS = 4000;
+
+/**
+ * Daemon-reported capacity for one server, or `null` when it could not be read in time. Never throws:
+ * the probe is an annotation, so a failure degrades to "unknown", not to a 500. Cached 5 minutes by
+ * getHostCapacity; `localFallback: false` so an unreachable remote is never described by THIS
+ * machine's hardware (the reason `getTrustedHostCapacity` exists).
+ */
+async function probeServerCapacity(serverId: string, organizationId: string): Promise<HostCapacity | null> {
+  if (env.CLOUD_MODE) return null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), CAPACITY_PROBE_TIMEOUT_MS);
+  });
+  const probe = getHostCapacity(serverId, organizationId, { localFallback: false }).catch(
+    (diagnosticFailure) => {
+      observeCaughtError(diagnosticFailure, "platform/engine/modules/system/server.operations");
+      return null;
+    },
+  );
+  try {
+    const got = await Promise.race([probe, timeout]);
+    return got && got.source === "docker" ? got : null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function listServers(ctx: ExecutionContext, live = true) {
 
   // Org-scoped: only the caller's org's servers.
@@ -107,7 +136,8 @@ async function listServers(ctx: ExecutionContext, live = true) {
   );
   const local = await Promise.all(all.map(async (s, i) => {
     const cloud = s.workspaceId ? await managed.summary(await requireCloudWorkspace(ctx.organizationId, s.workspaceId), live) : null;
-    return { ...serializeServer(s, cloud)!, projectCount: cloud?.projectCount ?? projectCounts[s.id] ?? 0, hostChannel: channels[i] ?? null };
+    const capacity = s.workspaceId ? null : await probeServerCapacity(s.id, ctx.organizationId);
+    return { ...serializeServer(s, cloud, capacity)!, projectCount: cloud?.projectCount ?? projectCounts[s.id] ?? 0, hostChannel: channels[i] ?? null };
   }));
   return mergeCloudServerInventory(ctx, local);
 }
@@ -134,7 +164,7 @@ async function getServer(ctx: ExecutionContext, id: string) {
     .countActiveByServer(ctx.organizationId)
     .catch((diagnosticFailure) => { observeCaughtError(diagnosticFailure, "platform/engine/modules/system/server.operations"); return ({}) as Record<string, number>; });
   return {
-    ...serializeServer(server, cloud),
+    ...serializeServer(server, cloud, server.workspaceId ? null : await probeServerCapacity(server.id, ctx.organizationId)),
     projectCount: cloud?.projectCount ?? projectCounts[id] ?? 0,
     hostChannel: server.isLocal ? await localServerHostChannel(server.id).catch((diagnosticFailure) => { observeCaughtError(diagnosticFailure, "platform/engine/modules/system/server.operations"); return null; }) : null,
   };
@@ -371,14 +401,19 @@ async function updateServer(ctx: ExecutionContext, id: string, body: UpdateServe
   if (body.sshTransport !== undefined)
     patch.sshTransport = normalizeSshTransport(body.sshTransport);
   if (body.sshArgs !== undefined) patch.sshArgs = body.sshArgs?.trim() || null;
+  // Manual GPU mark. Deliberately not a "connection" field (it is allowed on the local row too).
+  if (body.gpuOverride !== undefined) patch.gpuOverride = body.gpuOverride;
 
   if (Object.keys(patch).length === 0) {
     return failServer({ error: "No fields to update" }, 400);
   }
 
   const updated = await repos.server.update(id, patch);
-  sshManager.invalidate(id);
-  await invalidateOpenRestyPaths(id);
+  // Metadata-only edits must not terminate retained terminals, builds or deployments.
+  if (LOCAL_ROW_READONLY_FIELDS.some((field) => body[field] !== undefined)) {
+    sshManager.invalidate(id);
+    await invalidateOpenRestyPaths(id);
+  }
   // Edited connection details can repoint this row at another machine (and a
   // resize changes the specs of the same one) — re-probe capacity either way.
   await invalidateHostCapacity(ctx.organizationId, id).catch((err: unknown) =>
@@ -387,6 +422,7 @@ async function updateServer(ctx: ExecutionContext, id: string, body: UpdateServe
 
   // Audit only the fields the caller intended to touch. Skip secrets entirely.
   const auditAfter: Record<string, unknown> = {};
+  if (body.gpuOverride !== undefined) auditAfter.gpuOverride = updated?.gpuOverride ?? null;
   if (body.name !== undefined) auditAfter.name = updated?.name ?? null;
   if (body.sshHost !== undefined) auditAfter.sshHost = updated?.sshHost ?? null;
   if (body.sshPort !== undefined) auditAfter.sshPort = updated?.sshPort ?? null;
@@ -408,7 +444,10 @@ async function updateServer(ctx: ExecutionContext, id: string, body: UpdateServe
     after: auditAfter,
   });
 
-  return serializeServer(updated);
+  // Re-read the probe (cache was just invalidated) so the response carries the GPU annotation the
+  // client renders; without it a manual mark would flash "could not check this server".
+  const capacity = updated?.workspaceId ? null : await probeServerCapacity(id, ctx.organizationId);
+  return serializeServer(updated, null, capacity);
 }
 
 /**
@@ -539,6 +578,10 @@ async function deleteServerUnderLock(
     return failServer({ error: "This is the current host and can't be removed." }, 400);
   }
 
+  if (await repos.ingress.byServer(id)) return failServer({
+    error: "Disconnect this server’s Cloudflare Tunnel and finish its hostname cleanup before deleting the server.",
+    code: "SERVER_INGRESS_CONNECTED",
+  }, 409);
   const destroyOnSource = input.destroyOnSource === true;
 
   if (await repos.serverCluster.membership(id)) {

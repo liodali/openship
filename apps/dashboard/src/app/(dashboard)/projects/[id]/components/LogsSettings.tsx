@@ -93,10 +93,6 @@ export const LogsSettings = () => {
   const canShowTerminal = canShowRuntimeLogs;
   const hasResolvedLogTargets =
     hasResolvedServerMode && (effectiveHasServer || servicesLoaded || canShowRequestLogs);
-  // True when the only signal available is edge access logs — used to
-  // relabel the Server tab as "Requests" so the operator knows what
-  // they're looking at.
-  const isRequestLogsOnly = canShowRequestLogs && !canShowRuntimeLogs;
   // True when there's more than one runtime to stream from - used to gate
   // the switcher UI. A "target" is the project's own runtime OR a service.
   // Previously this was `hasMultipleServices` (services count > 1) which
@@ -113,8 +109,7 @@ export const LogsSettings = () => {
     }
 
     if (!hasSelectedTabRef.current) {
-      // Static-only projects have no Terminal tab — land directly on
-      // Server (which renders as "Requests"). Otherwise default to
+      // Static projects only have request logs. Otherwise default to
       // Terminal as before.
       setActiveTab(canShowTerminal ? "terminal" : "server");
     }
@@ -278,33 +273,37 @@ export const LogsSettings = () => {
     <div className="flex min-w-0 flex-col h-full gap-4">
       {/* Tabs + Actions */}
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-        <Tabs<LogsTab>
-          idPrefix={tabsId}
-          ariaLabel={t.projectDetail.services.detail.tabs.logs}
-          className="border-b-0"
-          tabs={[
-            { key: "terminal", label: t.projectSettings.logs.terminal, icon: "terminal", hidden: !canShowTerminal },
-            { key: "server", label: isRequestLogsOnly ? t.projectSettings.logs.requests : t.projectSettings.logs.server, icon: "server" },
-          ]}
-          value={activeTab}
-          onChange={switchTab}
-        />
+        {canShowTerminal && (
+          <Tabs<LogsTab>
+            idPrefix={tabsId}
+            ariaLabel={t.projectDetail.services.detail.tabs.logs}
+            variant="pills"
+            tabs={[
+              { key: "terminal", label: t.projectSettings.logs.terminal, icon: "terminal" },
+              { key: "server", label: t.projectSettings.logs.server, icon: "server" },
+            ]}
+            value={activeTab}
+            onChange={switchTab}
+          />
+        )}
 
-        <LogsActions
-          onCopy={copyLogs}
-          onDownload={downloadLogs}
-          onClear={clearLogs}
-          copied={copied}
-          logsCount={currentLogs.length}
-        />
+        <div className="ms-auto">
+          <LogsActions
+            onCopy={copyLogs}
+            onDownload={downloadLogs}
+            onClear={clearLogs}
+            copied={copied}
+            logsCount={currentLogs.length}
+          />
+        </div>
       </div>
 
       {/* Content */}
       <div className="min-w-0 flex-1 min-h-[460px]">
         <div
           id={`${tabsId}-panel-terminal`}
-          role="tabpanel"
-          aria-labelledby={`${tabsId}-tab-terminal`}
+          role={canShowTerminal ? "tabpanel" : undefined}
+          aria-labelledby={canShowTerminal ? `${tabsId}-tab-terminal` : undefined}
           hidden={activeTab !== "terminal" || !canShowTerminal}
         >
           {activeTab === "terminal" && canShowTerminal && (
@@ -345,8 +344,9 @@ export const LogsSettings = () => {
         </div>
         <div
           id={`${tabsId}-panel-server`}
-          role="tabpanel"
-          aria-labelledby={`${tabsId}-tab-server`}
+          role={canShowTerminal ? "tabpanel" : "region"}
+          aria-labelledby={canShowTerminal ? `${tabsId}-tab-server` : undefined}
+          aria-label={!canShowTerminal ? t.projectSettings.logs.requests : undefined}
           hidden={activeTab !== "server"}
         >
           {activeTab === "server" && canShowLogs && hasProjectId && (

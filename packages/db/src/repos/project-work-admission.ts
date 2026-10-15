@@ -16,6 +16,7 @@ export async function assertProjectConfigurationWritable(
   const owners = await tx
     .select({
       deletionInProgress: project.deletionInProgress,
+      lifecycleOperation: project.lifecycleOperation,
       cloudPromotion: project.cloudPromotion,
     })
     .from(project)
@@ -27,6 +28,12 @@ export async function assertProjectConfigurationWritable(
       "This project is being transferred to Cloud. Configuration changes are temporarily blocked until cleanup finishes.",
       409,
       "PROJECT_TRANSFER_IN_PROGRESS",
+    );
+  if (owners.some((owner) => owner.deletionInProgress && owner.lifecycleOperation?.kind === "delete"))
+    throw new AppError(
+      "Project cleanup is pending. Finish deletion before changing its configuration.",
+      409,
+      "PROJECT_DELETION_PENDING",
     );
 }
 

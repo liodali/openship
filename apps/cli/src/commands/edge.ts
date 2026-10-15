@@ -40,6 +40,7 @@ import { intro, outro, select, isCancel, note, text, password, confirm, log } fr
 import { getRemoteClient, ApiError } from "../lib/ship-client";
 import { iteratePages } from "@repo/sdk/client";
 import { CreateDomainInputSchema, parseInput, isRecord, type Domain, type DomainRecords, type RouteRule } from "@repo/contracts";
+import { attachCustomDomainEndpoint } from "../lib/custom-domain-endpoint";
 import { positiveInteger } from "../lib/command-input";
 import { printEvents } from "../lib/event-output";
 import { spin, fail } from "../lib/cmd-helpers";
@@ -731,6 +732,7 @@ async function panelRegisterDomain(): Promise<void> {
   try {
     const res = await registerDomainCore(hostname, opts);
     sp?.succeed(res.verified ? `DNS verified for ${hostname}` : `Registered ${hostname}`);
+    if (!isJsonMode() && res.routed) info(`  ${res.domain.hostname} is configured to be routed on the next deploy.`);
     if (res.verified) {
       if (res.sslStatus) info(`  SSL: ${res.sslStatus}`);
     } else if (res.records) {
@@ -1077,6 +1079,7 @@ interface DomainAddOpts {
  * (per-domain analytics need domain→project→server).
  */
 interface RegisterResult {
+  routed: boolean;
   domain: Domain;
   records?: DomainRecords;
   verified: boolean;
@@ -1114,6 +1117,7 @@ async function registerDomainCore(hostname: string, opts: DomainAddOpts): Promis
 
   const added = await ship.domains.create(projectId!, input);
   const domain = added.domain;
+  const routed = await attachCustomDomainEndpoint(ship, projectId!, domain.hostname);
 
   let verified = false;
   let sslStatus: string | undefined;
@@ -1123,7 +1127,7 @@ async function registerDomainCore(hostname: string, opts: DomainAddOpts): Promis
     sslStatus = vbody.sslStatus;
   }
 
-  return { domain, records: added.records, verified, sslStatus, projectId };
+  return { domain, records: added.records, verified, sslStatus, projectId, routed };
 }
 
 async function runDomainAdd(hostname: string, opts: DomainAddOpts): Promise<void> {
@@ -1132,6 +1136,7 @@ async function runDomainAdd(hostname: string, opts: DomainAddOpts): Promise<void
   try {
     const res = await registerDomainCore(hostname, opts);
     sp?.succeed(res.verified ? `DNS verified for ${host}` : `Registered ${host}`);
+    if (!isJsonMode() && res.routed) info(`  ${res.domain.hostname} is configured to be routed on the next deploy.`);
     if (isJsonMode()) {
       printJson({ domain: res.domain, records: res.records, verified: res.verified, sslStatus: res.sslStatus, projectId: res.projectId });
       return;
@@ -1172,12 +1177,12 @@ async function runDomainRm(hostname: string, opts: { project: string }): Promise
 }
 
 const domainsAdd = new Command("add")
-  .description("Register a hostname on the edge, bound to a port (auto-verifies SSL)")
+  .description("Register a hostname for routing on the next deploy (auto-verifies SSL)")
   .argument("<hostname>", "Domain hostname (e.g. app.example.com)")
   .option("-p, --project <id>", "Attach to an existing project (uses its target port)")
   .option("--port <n>", "Bind a new tracked project to 127.0.0.1:<n>", positiveInteger)
   .option("--primary", "Mark this domain as the project's primary", false)
-  .option("--no-verify", "Skip DNS verification + SSL issuance (just claim the hostname)")
+  .option("--no-verify", "Skip DNS verification + SSL issuance (still configure routing)")
   .action((hostname: string, opts) => runDomainAdd(hostname, opts));
 
 const domainsRm = new Command("rm")

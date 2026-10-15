@@ -17,7 +17,7 @@ import {
 } from "drizzle-orm";
 import { ConflictError, generateId, DOMAIN_RETRY_DELAYS_MS } from "@repo/core";
 import type { Database } from "../client";
-import { domain, orphanedResource, project, service } from "../schema";
+import { domain, orphanedResource, project, service, ingressConnection, ingressHostname } from "../schema";
 import { assertProjectConfigurationWritable, withProjectConfigurationWrite } from "./project-work-admission";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -159,7 +159,31 @@ export function createDomainRepo(db: Database) {
   async function insertAndRead(row: NewDomain & { id: string }): Promise<Domain> {
     await db.transaction(async (tx) => {
       if (row.projectId) await assertProjectConfigurationWritable(tx, eq(project.id, row.projectId));
+      let connection: typeof ingressConnection.$inferSelect | undefined;
+      if (row.projectId && row.domainType === "custom") {
+        const [binding] = await tx.select({ connection: ingressConnection })
+          .from(ingressConnection)
+          .innerJoin(project, and(
+            eq(project.serverId, ingressConnection.serverId),
+            eq(project.organizationId, ingressConnection.organizationId),
+          ))
+          .where(and(
+            eq(project.id, row.projectId),
+            eq(ingressConnection.defaultForDomains, true),
+            ne(ingressConnection.status, "removing"),
+          )).limit(1);
+        connection = binding?.connection;
+        if (connection) {
+          if (row.hostname.startsWith("*."))
+            throw new ConflictError("Use an exact hostname with the managed Cloudflare Tunnel, or disable the server's automatic domain connection first.");
+          row.externalIngress = true;
+        }
+      }
       await tx.insert(domain).values(row);
+      if (connection) await tx.insert(ingressHostname).values({
+        id: generateId("igh"), connectionId: connection.id, domainId: row.id,
+        hostname: row.hostname, accessPolicyId: connection.defaultAccessPolicyId,
+      });
       // A force-deleted project's route orphan owns the hostname until its
       // physical vhost and managed registration are actually reclaimed. Check
       // AFTER the unique domain insert: if this insert waited for the old
@@ -404,6 +428,12 @@ export function createDomainRepo(db: Database) {
     },
 
     async update(id: string, data: Partial<NewDomain>) {
+      if (data.externalIngress === false || data.hostname !== undefined) {
+        const [binding] = await db.select().from(ingressHostname)
+          .where(eq(ingressHostname.domainId, id)).limit(1);
+        if (binding && (data.externalIngress === false || data.hostname?.toLowerCase() !== binding.hostname))
+          throw new ConflictError("Disconnect this hostname from Cloudflare Tunnel and wait for cleanup before changing its ingress mode or hostname.");
+      }
       if (data.isPrimary === true) {
         const row = await db.query.domain.findFirst({ where: eq(domain.id, id) });
         const targetProjectId = data.projectId === undefined ? row?.projectId : data.projectId;

@@ -26,6 +26,7 @@ vi.mock("@repo/db", () => ({
 }));
 vi.mock("@repo/platform/engine/lib/active-deployment", () => ({ findActiveDeployment: h.active }));
 vi.mock("@repo/platform/engine/lib/project-runtime-lock", () => ({
+  withProjectStateLock: async (_id: string, work: () => Promise<unknown>) => work(),
   withLiveProjectRuntimeMutation: h.lock,
 }));
 vi.mock("@repo/platform/engine/lib/cluster-deployment-target", () => ({

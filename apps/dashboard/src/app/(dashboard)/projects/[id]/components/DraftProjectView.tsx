@@ -40,7 +40,8 @@ export function DraftProjectView({ onDeleteProject }: DraftProjectViewProps) {
   const [deleting, setDeleting] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const status = getProjectStatus(projectData);
-  const busy = deleting || status === "deleting";
+  const deletingNow = deleting || status === "deleting";
+  const busy = deletingNow || !!projectData.deletionInProgress;
 
   const hasRepoSource = Boolean(projectData?.gitOwner && projectData?.gitRepo);
   const hasLocalSource = Boolean(projectData?.localPath);
@@ -143,7 +144,7 @@ export function DraftProjectView({ onDeleteProject }: DraftProjectViewProps) {
           className="shrink-0 text-danger hover:bg-danger-bg hover:text-danger"
           onClick={() => setShowDeleteDialog(true)}
         >
-          <UiIcon name={busy ? "spinner" : "trash"} className={`size-4 ${busy ? "animate-spin" : ""}`} />
+          <UiIcon name={deletingNow ? "spinner" : "trash"} className={`size-4 ${deletingNow ? "animate-spin" : ""}`} />
           {t.projects.draft.delete}
         </Button>
       </header>

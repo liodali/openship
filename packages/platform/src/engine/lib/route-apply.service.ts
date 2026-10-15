@@ -23,7 +23,7 @@
  */
 
 import { reportCaughtError as observeCaughtError, diagnostics as errorDiagnostics } from "@repo/core/diagnostics";
-import type { Deployment } from "@repo/db";
+import { repos, type Deployment } from "@repo/db";
 import type {
   EdgeProxyApi,
   Platform,
@@ -328,6 +328,11 @@ export async function reconcileProjectRoutes(
       const proxy = sanitizeProxySettings(project.routingConfig?.proxy);
       const successfulPublishes: ObservedLoopbackPublish[] = [];
 
+      const externalHosts = new Set(
+        (registers.length ? await repos.domain.listByProject(project.id) : [])
+          .filter(d => d.externalIngress).map(d => d.hostname),
+      );
+
       for (const r of removes) {
         await routing
           .removeRoute(r.hostname)
@@ -351,14 +356,14 @@ export async function reconcileProjectRoutes(
         try {
           await routing.registerRoute({
             domain: r.hostname,
-            tls: true,
+            tls: !externalHosts.has(r.hostname),
             // A custom domain's TLS is ours to terminate, so the edge must keep a :443
             // listener up for it even before its cert exists — otherwise HTTPS for it
             // falls through to the edge's 443 catch-all, which answers with a
             // domain-less placeholder cert and the branded not-found page, i.e. the
             // domain reads as unconfigured rather than pending (#308).
             // A free *.opsh.io host is fronted by Cloud's edge; not ours.
-            terminatesTlsLocally: r.isCustomDomain,
+            terminatesTlsLocally: r.isCustomDomain && !externalHosts.has(r.hostname),
             // Preserve the planned root behavior: paths only, static files,
             // or the resolved upstream.
             ...(r.notFound

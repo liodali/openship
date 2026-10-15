@@ -232,6 +232,30 @@ const RoutingRuleSchema = Type.Object({
   destination: Type.String({ maxLength: 2000 }),
 });
 
+/** Shape only; the rules (DNS-label names, singleton vs replicas, ...) come from core's `parseOpenshipConfig`. */
+const RoleHealthSchema = Type.Object(
+  {
+    kind: Type.Union([Type.Literal("http"), Type.Literal("exec"), Type.Literal("process")]),
+    path: Type.Optional(Type.String({ maxLength: 500 })),
+    command: Type.Optional(Type.String({ maxLength: 1000 })),
+  },
+  { additionalProperties: false },
+);
+
+const RoleSchema = Type.Object(
+  {
+    name: Type.String({ minLength: 1, maxLength: 63 }),
+    kind: Type.Union([Type.Literal("worker"), Type.Literal("scheduler")]),
+    command: Type.String({ minLength: 1, maxLength: 1000 }),
+    replicas: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })),
+    singleton: Type.Optional(Type.Boolean()),
+    health: Type.Optional(RoleHealthSchema),
+    stopSignal: Type.Optional(Type.String({ maxLength: 32 })),
+    stopGracePeriod: Type.Optional(Type.String({ maxLength: 32 })),
+  },
+  { additionalProperties: false },
+);
+
 /**
  * Openship's deploy-time readiness gate — mirrors `OpenshipReadiness` in
  * @repo/core, which is what `openship.json` declares and what the pipeline
@@ -411,6 +435,12 @@ export const CreateProjectBody = Type.Object({
   releaseCommands: Type.Optional(
     Type.Union([Type.Null(), Type.Array(Type.String({ maxLength: 1000 }), { maxItems: 20 })]),
   ),
+  /**
+   * Extra processes (queue workers, a scheduler) run from the same built image
+   * as the web app. Omit to keep the current value; `null` or `[]` = no roles.
+   * Mirrors `openship.json`'s `roles`.
+   */
+  roles: Type.Optional(Type.Union([Type.Null(), Type.Array(RoleSchema, { maxItems: 20 })])),
   buildImage: Type.Optional(Type.String({ maxLength: 200 })),
   runtimeVersion: OptionalRuntimeVersionSchema,
   runtimeImage: Type.Optional(Type.Union([Type.String({ minLength: 1, maxLength: 200, description: "Custom production base image for generated Docker builds; null restores the stack default." }), Type.Null()])),
@@ -695,6 +725,8 @@ export const SetOptionsBody = Type.Object(
     startCommand: Type.Optional(Type.String()),
     /** Deploy-time release commands; `null`/`[]` turns the release phase off. */
     releaseCommands: EnsureProjectBody.properties.releaseCommands,
+    /** Runtime roles; `null`/`[]` clears them. */
+    roles: EnsureProjectBody.properties.roles,
     productionPort: Type.Optional(Type.Union([Type.Number(), Type.String()])),
     packageManager: Type.Optional(Type.String()),
     buildImage: Type.Optional(Type.String()),

@@ -1,4 +1,5 @@
 import { AppError, normalizeRegistryHost, registryForImage } from "@repo/core";
+import type { BuildLogger } from "./build-pipeline";
 
 export interface PreparedDockerImage {
   imageId: string;
@@ -13,6 +14,7 @@ export interface DockerImagePreparationOptions {
   /** Built, pinned and refresh artifacts must already exist; never pull substitutes. */
   requirePresent?: boolean;
   signal?: AbortSignal;
+  logger?: BuildLogger;
 }
 
 interface ImageInspection {

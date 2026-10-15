@@ -65,12 +65,21 @@ export const servers = pgTable("servers", {
   /** Public SSH host key pinned when a migration source is first connected. */
   sshHostKey: text("ssh_host_key"),
 
+  /**
+   * Manual GPU mark. NULL = follow the daemon probe (Docker `/info`: an `nvidia` runtime and CDI
+   * devices); "yes" = treat as GPU even when the probe sees none (toolkit not registered yet, an older
+   * daemon); "no" = never offer this box to GPU services (the card is reserved for the host). The mark
+   * wins over the probe in both directions; see `effectiveGpu` in @repo/core.
+   */
+  gpuOverride: text("gpu_override", { enum: ["yes", "no"] }),
+
   // ── Timestamps ─────────────────────────────────────────────────────────────
 
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 }, (table) => [
   check("servers_purpose_check", sql`${table.purpose} IN ('deployment', 'migration_source')`),
+  check("servers_gpu_override_check", sql`${table.gpuOverride} IS NULL OR ${table.gpuOverride} IN ('yes', 'no')`),
   check("servers_migration_source_check", sql`
     ${table.purpose} <> 'migration_source' OR (
       ${table.organizationId} IS NOT NULL AND ${table.workspaceId} IS NULL AND NOT ${table.isLocal}

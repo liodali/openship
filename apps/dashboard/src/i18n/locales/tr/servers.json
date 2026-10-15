@@ -1,4 +1,31 @@
 {
+  "resources": {
+    "notFound": "Kaynaklar bulunamadı",
+    "notFoundDescription": "Bu kaynaklar mevcut çalışma alanınızda kullanılamıyor. Kaldırılmış olabilir veya başka bir hesaba ait olabilir.",
+    "description": "Uygulamalar, derlemeler ve veriler bulut alanlarının kapasitesini paylaşır.",
+    "selectPool": "Bir bulut alanı seçin",
+    "capacity": "Mevcut sunucu",
+    "capacityHint": "Uygulamalarınız, derlemeleriniz ve saklanan verileriniz bu kaynakları paylaşır.",
+    "addCapacity": "Bulut alanı ekle",
+    "managePlan": "Planı yönet",
+    "projects": "Projeler",
+    "emptyTitle": "Uygulamalarınız burada başlar",
+    "emptyDescription": "Kapasiteyi seçin, ardından uygulama ve projelerinizi Openship Cloud üzerinde dağıtın.",
+    "usageHint": "Güncel CPU, bellek ve depolama kullanımı.",
+    "noProjects": "Henüz burada proje yok.",
+    "spaces": "Bulut alanları",
+    "spacesHint": "Uygulama ve projeleriniz için bağımsız kapasite.",
+    "space": "Bulut alanı",
+    "customPlan": "Özel plan",
+    "projectCount": "Projeler: {count}",
+    "live": "Canlı",
+    "paused": "Duraklatıldı",
+    "lastReading": "Son ölçüm",
+    "connecting": "Bağlanıyor…",
+    "streamUnavailable": "Canlı güncellemeler kullanılamıyor. Son ölçülen kullanım gösteriliyor.",
+    "usageTitle": "Kaynak kullanımı",
+    "setupPending": "Bulut alanınız kurulduğunda kullanım görüntülenecek."
+  },
   "github": {
     "title": "GitHub erişimi",
     "desc": "Bu sunucunun özel depolardan klonlama yapmak için GitHub'da nasıl kimlik doğruladığı.",
@@ -1204,5 +1231,25 @@
       "title": "Kontrol kullanılamıyor",
       "description": "Bu kontrol, bağlı Cloud API sürümünde henüz kullanılamıyor. Kullanılabilmesi için Openship Cloud güncellenmelidir."
     }
+  },
+  "gpu": {
+    "title": "GPU",
+    "subtitle": "Bu sunucudaki konteynerler için GPU kullanılabilirliği.",
+    "notDetected": "GPU algılanmadı",
+    "notProbed": "Bu sunucu şu anda kontrol edilemedi",
+    "countOne": "1 GPU kartı",
+    "countMany": "{count} GPU",
+    "runtimeOnly": "NVIDIA runtime bulundu, kart sayısı bilinmiyor",
+    "modeLabel": "GPU kullanılabilirliği",
+    "modeAuto": "Otomatik",
+    "modeYes": "GPU var",
+    "modeNo": "GPU yok",
+    "modeHint": "Yalnızca otomatik algılama yanlışsa değiştirin.",
+    "mismatchYes": "\"GPU var\" olarak işaretlendi, ancak hiçbiri algılanmadı. GPU hizmetleri yine de buraya gönderilecek.",
+    "mismatchNo": "\"GPU yok\" olarak işaretlendi, ancak bir GPU algılandı. Bu sunucuda GPU hizmetleri için uyarı verilecek.",
+    "saving": "Kaydediliyor…",
+    "saved": "GPU ayarı kaydedildi",
+    "saveFailed": "GPU ayarı kaydedilemedi",
+    "badge": "GPU"
   }
 }

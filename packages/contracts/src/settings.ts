@@ -1,4 +1,5 @@
-import { Type, type Static } from "@sinclair/typebox";
+import { APPEARANCE_JSON_SCHEMA, AppearancePreferencesSchema, type AppearancePreferences } from "@repo/core";
+import { Type, Kind, TypeRegistry, type Static } from "@sinclair/typebox";
 import { UpdateBuildModeBody, UpdateRouteStrategyBody, UpdateDeployDefaultsBody, UpdateCloneStrategyPreferenceBody, UpdateTransferPrefsBody, UpdateForwardGitBody } from "./settings-inputs";
 import type { ResourceOperationSchema, ScopedOperations } from "./resource-operations";
 
@@ -10,7 +11,23 @@ const deployDefaults = { defaultDeployTarget: Type.Union([Type.Literal("server")
 const clone = { cloneToken: Type.Object({ hasToken: Type.Boolean(), setAt: nullableString, asDefault: Type.Boolean() }), cloneStrategyPreference };
 const transfer = Type.Required(UpdateTransferPrefsBody);
 export const UserSettingsSchema = Type.Object({ buildMode, ...deployDefaults, ...clone, ...transfer.properties, routeStrategy, forwardGitToServer: Type.Boolean() });
+TypeRegistry.Set(
+  "OpenshipAppearance",
+  (_schema, value) => AppearancePreferencesSchema.safeParse(value).success,
+);
+export const AppearanceSettingsSchema = Type.Object({
+  appearance: Type.Union([
+    Type.Unsafe<AppearancePreferences>({ ...APPEARANCE_JSON_SCHEMA, [Kind]: "OpenshipAppearance" }),
+    Type.Null(),
+  ]),
+});
 export const UserSettingsSchemas = {
+  getAppearance: { action: "read", output: AppearanceSettingsSchema },
+  setAppearance: {
+    action: "write",
+    input: AppearanceSettingsSchema,
+    output: AppearanceSettingsSchema,
+  },
   get: { action: "read", output: UserSettingsSchema },
   update: { action: "write", input: Type.Partial(UpdateBuildModeBody), output: Type.Object({ buildMode, ...deployDefaults }) },
   setBuildMode: { action: "write", input: UpdateBuildModeBody, output: UpdateBuildModeBody },

@@ -43,6 +43,9 @@ vi.mock("next/navigation", () => ({
 vi.mock("@/hooks/useMonitorStream", () => ({
   useMonitorStream: () => ({
     stats: null,
+    usage: null,
+    history: [],
+    paused: false,
     isConnected: false,
     error: null,
     reconnect: () => {},
@@ -174,7 +177,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-async function mountOfflineServer(checkFailure: { status: number; body: unknown }, server?: Record<string, unknown>) {
+async function mountOfflineServer(checkFailure: { status: number; body: unknown }, server?: Record<string, unknown>, deployMode = "docker") {
   vi.stubGlobal("fetch", stubFetch(checkFailure, server));
 
   await act(async () => {
@@ -184,7 +187,7 @@ async function mountOfflineServer(checkFailure: { status: number; body: unknown 
     });
     root.render(
       <I18nProvider>
-        <DashboardProviders selfHosted deployMode="docker" authMode="local" cloudAuthUrl="" cloudApiUrl="">
+        <DashboardProviders selfHosted deployMode={deployMode} authMode="local" cloudAuthUrl="" cloudApiUrl="">
           <ToastProvider>
             <ModalProvider>
               <ServerDetailPage params={Promise.resolve({ serverId: "srv_1" })} />
@@ -202,6 +205,25 @@ async function mountOfflineServer(checkFailure: { status: number; body: unknown 
   }
   return container.textContent ?? "";
 }
+
+describe("managed resources on retained server links", () => {
+  it.each(["desktop", "docker"])("shows Cloud spaces instead of a requested host terminal in %s", async deployMode => {
+    searchParams = new URLSearchParams({ tab: "terminal" });
+    const text = await mountOfflineServer(CHECK_FAILURES[0]!, {
+      ...OFFLINE_SERVER, connection: "cloud",
+      capabilities: { terminal: true, exec: true, monitor: true, networkSettings: true, hostConfiguration: false },
+      managed: { id: "workspace-a", serverId: "srv_1", name: "Production", state: "running",
+        subscriptionStatus: "active", planTierId: "starter", resources: { cpuCores: 2, memoryMb: 8192, diskMb: 32768 },
+        projectCount: 0, operation: null, createdAt: "2026-10-01T00:00:00Z" },
+    }, deployMode);
+    expect(errors).toEqual([]);
+    expect(text).toContain(baseDictionary.dashboard.nav.resources);
+    expect(text).toContain(baseDictionary.servers.resources.capacity);
+    expect(text).not.toContain(baseDictionary.servers.detail.tabs.terminal);
+    const calls = vi.mocked(fetch).mock.calls.map(([url]) => String(url));
+    expect(calls.some(url => /terminal|managed\/(ssh|runtime-api|outbound|workloads)|system\/check|tunnels/.test(url))).toBe(false);
+  });
+});
 
 describe("linked Cloud server connection recovery", () => {
   it.each(["ssh", "networking", "settings", "overview"])("shows sign-in and skips server control reads on %s", async tab => {

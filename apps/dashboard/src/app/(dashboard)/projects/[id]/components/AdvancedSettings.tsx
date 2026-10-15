@@ -10,7 +10,7 @@ import { useI18n, interpolate } from "@/components/i18n-provider";
 import { projectsApi } from "@/lib/api";
 import { getApiErrorMessage } from "@/lib/api/client";
 import { invalidateProjectCaches } from "@/hooks/useProjectEndpoints";
-import { migrationNeedsOperator } from "@/utils/project-status";
+import { getProjectStatus, migrationNeedsOperator } from "@/utils/project-status";
 import { formatBytes } from "@/lib/formatBytes";
 import type { RouteStrategy } from "@/lib/api/settings";
 import type { OpenshipReadiness } from "@repo/core";
@@ -121,6 +121,7 @@ export const AdvancedSettings = ({ onDeleteProject }: Props) => {
   const { selfHosted } = usePlatform();
   const { t } = useI18n();
   const { projectData, servicesData } = useProjectSettings();
+  const isDeleting = getProjectStatus(projectData) === "deleting";
   // `enabled` is the server's answer (derived from disabled_at in enrichProject).
   // This local copy exists only so the button flips the instant the call returns;
   // the effect below re-seeds it from the payload, so a refresh — or a toggle that
@@ -292,9 +293,10 @@ export const AdvancedSettings = ({ onDeleteProject }: Props) => {
     },
     {
       id: "delete",
-      label: menu.delete,
-      icon: <UiIcon name="trash" className="size-4" />,
+      label: isDeleting ? t.projects.status.deleting : menu.delete,
+      icon: <UiIcon name={isDeleting ? "spinner" : "trash"} className={`size-4 ${isDeleting ? "animate-spin" : ""}`} />,
       onClick: () => setShowDeleteModal(true),
+      disabled: isDeleting,
       variant: "danger",
     },
   ];
@@ -696,11 +698,14 @@ export const AdvancedSettings = ({ onDeleteProject }: Props) => {
               {t.projectSettings.advanced.danger.body}
             </p>
             <button
+              type="button"
               onClick={() => setShowDeleteModal(true)}
-              className="mt-4 inline-flex h-9 items-center gap-2 rounded-xl bg-danger-solid px-4 text-[13px] font-medium text-white transition-colors hover:bg-danger-solid/90"
+              disabled={isDeleting}
+              aria-busy={isDeleting}
+              className="mt-4 inline-flex h-9 items-center gap-2 rounded-xl bg-danger-solid px-4 text-[13px] font-medium text-white transition-colors hover:bg-danger-solid/90 disabled:cursor-wait disabled:opacity-70"
             >
-              <UiIcon name="trash" className="size-3.5" />
-              {t.projectSettings.advanced.danger.delete}
+              <UiIcon name={isDeleting ? "spinner" : "trash"} className={`size-3.5 ${isDeleting ? "animate-spin" : ""}`} />
+              {isDeleting ? t.projects.status.deleting : t.projectSettings.advanced.danger.delete}
             </button>
           </div>
         </div>
@@ -711,7 +716,7 @@ export const AdvancedSettings = ({ onDeleteProject }: Props) => {
       />
 
       <DeletionModal
-        isOpen={showDeleteModal}
+        isOpen={showDeleteModal && !isDeleting}
         onClose={() => setShowDeleteModal(false)}
         onConfirm={onDeleteProject}
         projectName={projectData?.name || projectData?.domain}

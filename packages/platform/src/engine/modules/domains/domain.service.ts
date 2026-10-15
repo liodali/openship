@@ -67,7 +67,6 @@ import {
   withServerHostExecutor,
 } from "../../lib/edge-host-executor";
 import {
-  assertRedirectSupported,
   assertRedirectTargets,
   normalizeRedirect,
 } from "../../lib/domain-redirect";
@@ -206,7 +205,6 @@ export async function addDomain(
   // already owns — never off-site, never at itself, never round a loop.
   const redirect = normalizeRedirect(data);
   if (redirect.redirectTo) {
-    assertRedirectSupported({ isCloudProject: !!(project?.workspaceId), hostname });
     const peers = await repos.domain.listByProject(data.projectId).catch((diagnosticFailure) => { observeCaughtError(diagnosticFailure, "platform/engine/modules/domains/domain.service"); return []; });
     assertRedirectTargets([
       ...peers
@@ -860,6 +858,19 @@ export async function verifyDomain(
 ) {
   const { domain, project } = await getDomainWithAuth(domainId, ctx.organizationId);
   try {
+    const ingress = domain.externalIngress ? await repos.ingress.forDomain(domainId) : undefined;
+    if (ingress) {
+      opts.onLog?.("Checking managed tunnel, DNS and Access setup…");
+      await (await import("../ingress/service")).reconcileHostname(ingress);
+      const current = await repos.ingress.forDomain(domainId);
+      const verified = current?.status === "ready";
+      return {
+        verified, cnameVerified: verified, txtVerified: verified,
+        message: verified ? "Cloudflare Tunnel, DNS and Access setup is complete."
+          : current?.error ?? "Managed ingress setup is still in progress.",
+        sslStatus: verified ? "external" : domain.sslStatus,
+      };
+    }
     return await checkDomain(ctx, domainId, domain, project, opts);
   } catch (error) {
     // The ordinary negative results below already persist their reason. This

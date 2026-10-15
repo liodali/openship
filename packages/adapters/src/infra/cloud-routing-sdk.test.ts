@@ -46,6 +46,19 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllGlobals());
 
+it.each([301, 302, 307, 308])("sends canonical redirect intent through the real SDK and removes it for Serve both (%s)", async statusCode => {
+  await provider.registerRoute({ domain: hostname, targetUrl: "http://127.0.0.1:3000", tls: true,
+    redirectHost: { target: "primary.example.com", statusCode } });
+  expect(writes).toContainEqual({ method: "PUT", path: `/domain/routes/${hostname}`, body: {
+    routes: [{ match: { path: "/(.*)", type: "wildcard" }, action: { kind: "redirect", status: statusCode, to: "https://primary.example.com/$1" } }],
+  } });
+  await provider.registerRoute({ domain: hostname, targetUrl: "http://127.0.0.1:3000", tls: true });
+  const tables = writes.filter(request => request.path === `/domain/routes/${hostname}`);
+  expect(tables.at(-1)?.body).toEqual({ routes: [{ match: { path: "/", type: "prefix" }, action: { kind: "proxy", workspace: h.workspaceId, port: 3000 } }] });
+  expect(writes.filter(request => request.path === "/pages")).toHaveLength(1);
+  expect(requests.some(url => url.pathname === "/workspace")).toBe(false);
+});
+
 it("reuses the owned Page through the SDK after routes become a compiled table", async () => {
   for (let i = 0; i < 2; i++)
     await provider.registerRoute({ domain: hostname, targetUrl: "http://127.0.0.1:3000", tls: true });

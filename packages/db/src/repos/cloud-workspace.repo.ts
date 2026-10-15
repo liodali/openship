@@ -77,6 +77,16 @@ async function updatedLinkedProjects(
 
 export function createCloudWorkspaceRepo(db: Database) {
   return {
+    /** Internal cache sweep includes hosts whose last project moved/deleted.
+     * Return the owner, never accept a provider namespace as scan authority. */
+    async listBuildCacheHosts() {
+      return db.select({ id: cloudWorkspace.id, organizationId: cloudWorkspace.organizationId })
+        .from(cloudWorkspace)
+        .innerJoin(cloudDockerWorkspace, eq(cloudDockerWorkspace.ownerWorkspaceId, cloudWorkspace.id))
+        .where(and(isNull(cloudWorkspace.remote), isNull(cloudWorkspace.deletionInProgress),
+          eq(cloudDockerWorkspace.state, "ready"), isNotNull(cloudDockerWorkspace.workspaceId)))
+        .orderBy(asc(cloudWorkspace.id));
+    },
     async findById(id: string) {
       return db.query.cloudWorkspace.findFirst({ where: eq(cloudWorkspace.id, id) });
     },

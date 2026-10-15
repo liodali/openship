@@ -358,6 +358,9 @@
   },
   "runnerSetup": {
     "subtitle": "选择服务器和可直接使用的运行环境。",
+    "cloudSubtitle": "选择一个 Cloud 空间和可直接使用的任务环境。",
+    "selectCloudSpace": "选择 Cloud 空间以查看兼容的环境。",
+    "trustedCloudSpace": "任务共享此 Cloud 空间的资源。请仅运行可信的工作流。",
     "environment": "默认环境",
     "browse": "浏览目录",
     "catalog": "运行器目录",

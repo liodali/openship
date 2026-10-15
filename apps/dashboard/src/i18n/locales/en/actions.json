@@ -358,6 +358,9 @@
   },
   "runnerSetup": {
     "subtitle": "Choose a server and a ready-to-use environment.",
+    "cloudSubtitle": "Choose a Cloud space and a ready-to-use job environment.",
+    "selectCloudSpace": "Choose a Cloud space to see compatible environments.",
+    "trustedCloudSpace": "Jobs share this Cloud space’s capacity. Only run trusted workflows.",
     "environment": "Default environment",
     "browse": "Browse catalog",
     "catalog": "Runner catalog",

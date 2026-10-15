@@ -514,7 +514,9 @@ independent mode rejects those features before dispatch. Openship-managed destin
 currently support Linux and macOS; Windows and GitHub Enterprise Server are not
 available. Official runner registrations execute one job and expire after six hours;
 idle registrations are removed after ten minutes. Choose a runner image with the
-official runner's dependencies, or use the Ubuntu preset.
+official runner's dependencies, or use the Ubuntu preset. The official runner's
+container runs as the connected server user's UID and GID; steps that need root
+require a server connected as root.
 
 GitHub dispatch and rerun POSTs have durable command receipts. If GitHub accepts a
 request but its response is lost, Openship does not send the POST twice. Refresh

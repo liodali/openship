@@ -64,6 +64,7 @@ import { parseRepoUrl } from "../github/github.service";
 import { resolveRecords, lookupAddresses } from "../../lib/dns-resolver";
 import type { ExecutionContext as RequestContext } from "@repo/platform";
 import { getTrustedHostCapacity } from "../../lib/host-capacity";
+import { gpuTargetCheck, servicesRequestingGpu } from "../../lib/gpu-target";
 import { getTemplateForOrg } from "../apps/catalog-source";
 import { repos } from "@repo/db";
 import { requireLinkedCloudServer, remoteCloudRequest } from "../../lib/cloud/server-link";
@@ -1432,6 +1433,29 @@ async function checkHostCapacity(
   };
 }
 
+async function checkGpuTarget(
+  organizationId: string,
+  serverId: string | undefined,
+  isLocalTarget: boolean,
+  services: readonly DeployableService[] | undefined,
+): Promise<PreflightCheck | null> {
+  const gpuServices = servicesRequestingGpu(services);
+  if (gpuServices.length === 0) return null;
+  const server = serverId
+    ? await repos.server.getInOrganization(serverId, organizationId).catch((diagnosticFailure) => {
+        // A server row we cannot read only drops the manual GPU mark; detection still decides.
+        observeCaughtError(diagnosticFailure, "platform/engine/modules/deployments/preflight");
+        return null;
+      })
+    : null;
+  const capacity = await getTrustedHostCapacity(serverId, organizationId, { isLocalTarget });
+  return gpuTargetCheck({
+    gpuServices,
+    override: (server?.gpuOverride as "yes" | "no" | null | undefined) ?? null,
+    capacity: capacity.source === "docker" ? capacity : null,
+  });
+}
+
 export async function runPreflightChecks(
   snapshot: DeploymentConfigSnapshot,
   opts?: PreflightOptions,
@@ -1496,6 +1520,18 @@ export async function runPreflightChecks(
       effectiveTarget === "local",
     );
     if (hostCapacity) checks.push(hostCapacity);
+  }
+
+  // A service that asks for a GPU should land on a server that has one. Warn-only (see
+  // gpuTargetCheck). Same gate as host capacity: cloud/cluster size from tiers, never probe a box.
+  if (snapshot.organizationId && effectiveTarget !== "cloud" && effectiveTarget !== "cluster") {
+    const gpuCheck = await checkGpuTarget(
+      snapshot.organizationId,
+      snapshot.serverId,
+      effectiveTarget === "local",
+      opts?.composeServices,
+    );
+    if (gpuCheck) checks.push(gpuCheck);
   }
 
   if (!hasEndpointRouting && opts?.slug && !opts?.customDomain) {

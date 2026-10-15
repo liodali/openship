@@ -354,7 +354,15 @@
       "addDomain": "添加域名",
       "primaryDomain": "主域名",
       "domainN": "域名 {n}",
-      "remove": "移除"
+      "remove": "移除",
+      "domainBehavior": "域名行为",
+      "primaryHost": "将 {hostname} 设为主域名",
+      "redirectHostDescription": "{from} 重定向到 {to}。",
+      "serveBoth": "同时提供服务",
+      "serveBothDescription": "两个主机名都提供应用服务。",
+      "customRouting": "自定义路由",
+      "redirectDomain": "重定向域名",
+      "redirectSummary": "重定向到 {hostname}。"
     },
     "configEditor": {
       "remove": "移除",

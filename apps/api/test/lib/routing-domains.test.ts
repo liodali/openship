@@ -165,6 +165,21 @@ const customSvc = {
 } as any;
 
 describe("buildProjectRouteDomains", () => {
+  it("routes a CLI custom domain only after its public endpoint is attached", () => {
+    const input = {
+      project: { slug: "cli-app" } as any,
+      projectDomains: [{ hostname: "app.example.com", domainType: "custom", targetPort: null, targetPath: null }] as any,
+      runtimeName: "bare",
+      usesManagedRouting: false,
+      isStatic: false,
+    };
+    expect(buildProjectRouteDomains(input)).toEqual([]);
+    expect(buildProjectRouteDomains({
+      ...input,
+      publicEndpoints: [{ domainType: "custom", customDomain: "app.example.com", port: 3000 }],
+    })).toEqual([expect.objectContaining({ hostname: "app.example.com", targetPort: 3000 })]);
+  });
+
   it("keeps a Cloud web endpoint when local managed routing is disabled", () => {
     const input = {
       project: { slug: "cloud-app" } as any,

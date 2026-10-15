@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import type { ContainerStabilitySample } from "@repo/adapters";
+import type { ServiceIncident } from "@repo/db";
 
 /**
  * The health watch's contract is a NOISE contract, and it is not expressible in
@@ -74,6 +75,11 @@ const h = vi.hoisted(() => {
     listThrows: null as string | null,
     /** Set to make `listAllContainers` never settle — a half-open bridge. */
     listHangs: false,
+    /**
+     * The same wedge, but releasable: the list is accepted and answers only when the
+     * test says so, which is how a reply that lands after the group deadline is watched.
+     */
+    listGate: null as Promise<void> | null,
     /** Set to drop `stabilityProbe`, leaving the sweep with the container list only. */
     noProbe: false,
     /** Set to make every inspect hang — a daemon that answered `ps` and then wedged. */
@@ -336,6 +342,7 @@ function fakeRuntime(box: string | null = null) {
     listAllContainers: async () => {
       if (h.disconnectOnList) h.disconnected = true;
       if (h.listThrows) throw new Error(h.listThrows);
+      if (h.listGate) await h.listGate;
       // Accepted and never answered. A rejection is the polite failure; this is the
       // one the deadline exists for.
       if (h.listHangs) return new Promise<never>(() => {});
@@ -609,6 +616,7 @@ beforeEach(() => {
   h.localServer = null;
   h.listThrows = null;
   h.listHangs = false;
+  h.listGate = null;
   h.noProbe = false;
   h.sampleHangs = false;
   h.sampleGate = null;
@@ -647,6 +655,10 @@ describe("automatic monitoring coverage and lifecycle", () => {
     await tick();
     expect(listWorkloadHealthSnapshots("org1").find(row => row.projectId === projectId)?.state).toBe("unknown");
     expect(openFor(projectId)).toHaveLength(0);
+    // One miss replaces certainty with unknown. It does not page — a single refused
+    // probe is the same false outage as one deadline.
+    expect(h.incidents.filter(row => row.kind === "server_unreachable" && row.status === "open")).toHaveLength(0);
+    await tick();
     expect(h.incidents.filter(row => row.kind === "server_unreachable" && row.status === "open")).toHaveLength(1);
   });
 
@@ -1428,6 +1440,7 @@ describe("unreachable server", () => {
     h.platformTarget = "desktop";
     seedApp({ serverId: "remote-recovery" });
     h.listThrows = "Timed out while waiting for handshake";
+    expect(await tick()).toMatchObject({ unreachable: 1, opened: 0, pending: 1 });
     expect(await tick()).toMatchObject({ unreachable: 1, opened: 1 });
 
     h.disconnected = true;
@@ -1462,6 +1475,12 @@ describe("unreachable server", () => {
     h.emit.mockClear();
 
     h.listThrows = "connect ETIMEDOUT 10.0.0.9:22";
+    const missed = await tick();
+    expect(missed.unreachable).toBe(1);
+    expect(missed.opened).toBe(0);
+    expect(missed.pending).toBe(1);
+    expect(emitted("server.unreachable")).toHaveLength(0);
+
     const summary = await tick();
 
     expect(summary.unreachable).toBe(1);
@@ -1487,6 +1506,10 @@ describe("unreachable server", () => {
     expect(back.resolved).toBe(1);
     expect(emitted("server.reachable")).toHaveLength(1);
     expect(payloads("server.reachable")[0]?.message).toContain("answering again");
+    // Opened on the second miss, still down for the three ticks above, then this
+    // answer. That is 20s, not the few hundred milliseconds that used to read
+    // "after 0s".
+    expect(payloads("server.reachable")[0]?.downtime).toBe("20s");
     expect(emitted("service.recovered")).toHaveLength(0);
     expect(openFor(seeds[0]!.projectId)).toHaveLength(1);
   });
@@ -1503,6 +1526,7 @@ describe("unreachable server", () => {
     seedApp({ serverId: null });
 
     h.listThrows = "connect ENOENT /var/run/docker.sock";
+    expect((await tick()).opened).toBe(0);
     const down = await tick();
     expect(down.unreachable).toBe(1);
     expect(down.opened).toBe(1);
@@ -1720,32 +1744,276 @@ describe("unreachable server", () => {
     // Timers are faked for this test alone: the deadline is a real `setTimeout`, and
     // 90s of wall clock for one assertion is not a trade worth making.
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], now: Date.now() });
-    let summary: Awaited<ReturnType<typeof tick>>;
     try {
       const { runHealthWatch } = await import("@repo/platform/engine/modules/monitoring/health-watch");
       const run = runHealthWatch();
       await vi.advanceTimersByTimeAsync(120_000);
-      summary = await run;
+      const summary = await run;
+
+      // One deadline is a miss, not a page — the same rule as a refused connection.
+      // The wedged transport is still torn down: `withTimeout` races the read, it
+      // cannot cancel it, and the chain has to be free for the next sweep.
+      expect(summary.unreachable).toBe(1);
+      expect(summary.opened).toBe(0);
+      expect(summary.pending).toBe(1);
+      expect(summary.errors).toBe(0);
+      expect(emitted("server.unreachable")).toHaveLength(0);
+      expect(h.disposed).toHaveBeenCalledTimes(1);
+
+      // A second sweep that also gets nothing, outside the confirm gap, pages once.
+      h.disposed.mockClear();
+      const secondRun = runHealthWatch();
+      await vi.advanceTimersByTimeAsync(120_000);
+      const confirmed = await secondRun;
+      expect(confirmed.unreachable).toBe(1);
+      expect(confirmed.opened).toBe(1);
+      expect(confirmed.errors).toBe(0);
+      expect(emitted("server.unreachable")).toHaveLength(1);
+      expect(payloads("server.unreachable")[0]?.message).toContain("2 projects");
+      expect(payloads("server.unreachable")[0]?.errorMessage).toContain("within 90s");
+      expect(h.disposed).toHaveBeenCalledTimes(1);
     } finally {
-      vi.useFakeTimers({ toFake: ["Date"], now: START });
+      vi.useFakeTimers({ toFake: ["Date"], now: Date.now() });
     }
 
-    // A box that cannot answer inside the deadline IS unreachable — the same
-    // incident as a refused connection, which is the one an operator needs.
-    expect(summary.unreachable).toBe(1);
-    expect(summary.opened).toBe(1);
-    expect(summary.errors).toBe(0);
-    expect(emitted("server.unreachable")).toHaveLength(1);
-    expect(payloads("server.unreachable")[0]?.message).toContain("2 projects");
-    expect(payloads("server.unreachable")[0]?.errorMessage).toContain("within 90s");
-    // And the wedged transport is torn down rather than held for the process's life:
-    // `withTimeout` races the read, it cannot cancel it.
-    expect(h.disposed).toHaveBeenCalledTimes(1);
-
-    // The chain is free: the next sweep runs normally.
+    // The chain is free, and a later answer is a real all-clear — not "after 0s".
     h.listHangs = false;
-    expect((await tick()).unreachable).toBe(0);
+    const back = await tick({ afterMs: 60_000 });
+    expect(back.unreachable).toBe(0);
+    expect(back.resolved).toBe(1);
+    expect(emitted("server.reachable")).toHaveLength(1);
+    expect(payloads("server.reachable")[0]?.downtime).not.toBe("0s");
   });
+
+  it("does not page from one miss, and a real answer clears it", async () => {
+    seedApp({ serverId: "srvOnce" });
+    h.listThrows = "connect ETIMEDOUT 10.0.0.9:22";
+    expect((await tick()).opened).toBe(0);
+    expect(emitted("server.unreachable")).toHaveLength(0);
+
+    h.listThrows = null;
+    const back = await tick();
+    expect(back.resolved).toBe(0);
+    expect(emitted("server.reachable")).toHaveLength(0);
+
+    // Forgiven, not stored: the next single miss is the first one again.
+    h.listThrows = "connect ETIMEDOUT 10.0.0.9:22";
+    expect((await tick()).opened).toBe(0);
+    expect(emitted("server.unreachable")).toHaveLength(0);
+  });
+
+  it("does not confirm a server miss from a burst inside the confirm gap", async () => {
+    seedApp({ serverId: "srvBurst" });
+    h.listThrows = "connect ECONNREFUSED 10.0.0.9:22";
+
+    for (let i = 0; i < 4; i++) {
+      const burst = await tick({ afterMs: 200 });
+      expect(burst.opened).toBe(0);
+      expect(burst.pending).toBe(1);
+    }
+    expect(emitted("server.unreachable")).toHaveLength(0);
+
+    expect((await tick({ afterMs: 4_000 })).opened).toBe(1);
+    expect(emitted("server.unreachable")).toHaveLength(1);
+  });
+
+  it("does not re-page an open server incident after the process restarts", async () => {
+    seedApp({ serverId: "srvRestart" });
+    h.listThrows = "connect ECONNREFUSED 10.0.0.9:22";
+    await tick();
+    await tick();
+    expect(emitted("server.unreachable")).toHaveLength(1);
+
+    restart();
+    h.emit.mockClear();
+
+    // The miss counter was process memory. The open row is what dedups, so the
+    // first miss after a restart touches the incident and stays quiet.
+    const again = await tick();
+    expect(again.opened).toBe(0);
+    expect(emitted("server.unreachable")).toHaveLength(0);
+    expect(h.incidents.filter((r) => r.status === "open" && r.kind === "server_unreachable")).toHaveLength(1);
+  });
+
+  it("does not forgive a miss or resolve when the container list returns after the deadline", async () => {
+    // The false pair: the 90s deadline writes the group off, then the `docker ps`
+    // that was already in flight — or the sweep queued behind it — answers in a
+    // few hundred milliseconds. Closing from that reply mails "after 0s". The
+    // late list must not clear the miss either, or the next deadline can never
+    // be the confirming one.
+    seedApp({ serverId: "srvLateList" });
+    seedApp({ serverId: "srvLateList" });
+    let release!: () => void;
+    h.listGate = new Promise<void>((resolve) => (release = resolve));
+
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], now: Date.now() });
+    try {
+      const { runHealthWatch } = await import("@repo/platform/engine/modules/monitoring/health-watch");
+      const run = runHealthWatch();
+      await vi.advanceTimersByTimeAsync(120_000);
+      const summary = await run;
+      expect(summary.unreachable).toBe(1);
+      expect(summary.opened).toBe(0);
+      expect(summary.pending).toBe(1);
+      expect(emitted("server.unreachable")).toHaveLength(0);
+
+      release();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(emitted("server.reachable")).toHaveLength(0);
+      expect(h.incidents.filter((r) => r.kind === "server_unreachable")).toHaveLength(0);
+
+      h.listGate = null;
+      h.listHangs = true;
+      const second = runHealthWatch();
+      await vi.advanceTimersByTimeAsync(120_000);
+      const confirmed = await second;
+      expect(confirmed.opened).toBe(1);
+      expect(emitted("server.unreachable")).toHaveLength(1);
+      expect(emitted("server.reachable")).toHaveLength(0);
+    } finally {
+      h.listGate = null;
+      h.listHangs = false;
+      vi.useFakeTimers({ toFake: ["Date"], now: START });
+    }
+  });
+
+  it("confirms repeated inspect deadlines and waits for a complete read before recovery", async () => {
+    seedApp({ serverId: "srvInspectDeadline" });
+    h.sampleHangs = true;
+    vi.useFakeTimers({
+      toFake: ["Date", "setTimeout", "clearTimeout"],
+      now: Date.now(),
+    });
+    try {
+      const { runHealthWatch } =
+        await import("@repo/platform/engine/modules/monitoring/health-watch");
+      const firstRun = runHealthWatch();
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(await firstRun).toMatchObject({
+        unreachable: 1,
+        opened: 0,
+        pending: 1,
+      });
+
+      const secondRun = runHealthWatch();
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(await secondRun).toMatchObject({ unreachable: 1, opened: 1 });
+      expect(emitted("server.unreachable")).toHaveLength(1);
+
+      // A successful list is still not recovery if the following inspects hang.
+      const thirdRun = runHealthWatch();
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(await thirdRun).toMatchObject({
+        unreachable: 1,
+        opened: 0,
+        resolved: 0,
+      });
+      expect(emitted("server.unreachable")).toHaveLength(1);
+      expect(emitted("server.reachable")).toHaveLength(0);
+      expect(
+        h.incidents.filter(
+          (row) => row.kind === "server_unreachable" && row.status === "open",
+        ),
+      ).toHaveLength(1);
+
+      h.sampleHangs = false;
+      expect(await tick()).toMatchObject({ unreachable: 0, resolved: 1 });
+      expect(emitted("server.reachable")).toHaveLength(1);
+      expect(payloads("server.reachable")[0]?.downtime).not.toBe("0s");
+    } finally {
+      h.sampleHangs = false;
+      vi.useFakeTimers({ toFake: ["Date"], now: START });
+    }
+  });
+
+  it("keeps snapshot-only reads out of daemon confirmation and recovery", async () => {
+    seedApp({ serverId: "srvReadOnlyConfirmation" });
+    h.listThrows = "connect ECONNREFUSED 10.0.0.9:22";
+    expect(await tick()).toMatchObject({ unreachable: 1, opened: 0, pending: 1 });
+
+    h.listThrows = null;
+    expect((await checkCurrent()).summary).toMatchObject({
+      unreachable: 0,
+      opened: 0,
+      resolved: 0,
+    });
+
+    h.listThrows = "connect ECONNREFUSED 10.0.0.9:22";
+    expect(await tick()).toMatchObject({ unreachable: 1, opened: 1 });
+    expect(emitted("server.unreachable")).toHaveLength(1);
+
+    h.listThrows = null;
+    expect((await checkCurrent()).summary).toMatchObject({
+      unreachable: 0,
+      opened: 0,
+      resolved: 0,
+    });
+    expect(
+      h.incidents.filter(
+        (row) => row.kind === "server_unreachable" && row.status === "open",
+      ),
+    ).toHaveLength(1);
+    expect(emitted("server.reachable")).toHaveLength(0);
+
+    expect(await tick()).toMatchObject({ unreachable: 0, resolved: 1 });
+    expect(emitted("server.reachable")).toHaveLength(1);
+  });
+
+  it("does not classify a slow recovery write as a daemon deadline", async () => {
+    seedApp({ serverId: "srvRecoveryWrite" });
+    h.listThrows = "connect ECONNREFUSED 10.0.0.9:22";
+    await tick();
+    await tick();
+    const incident = h.incidents.find(
+      (row) => row.kind === "server_unreachable" && row.status === "open",
+    )!;
+    expect(incident).toBeDefined();
+    h.emit.mockClear();
+    h.listThrows = null;
+
+    const { repos } = await import("@repo/db");
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    vi.mocked(repos.serviceIncident.findOpenForServer).mockImplementationOnce(
+      async () => {
+        await gate;
+        return incident as unknown as ServiceIncident;
+      },
+    );
+    vi.useFakeTimers({
+      toFake: ["Date", "setTimeout", "clearTimeout"],
+      now: Date.now(),
+    });
+    try {
+      const { runHealthWatch } =
+        await import("@repo/platform/engine/modules/monitoring/health-watch");
+      let completed = false;
+      const run = runHealthWatch().then((summary) => {
+        completed = true;
+        return summary;
+      });
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(completed).toBe(false);
+      expect(h.emit).not.toHaveBeenCalled();
+      expect(incident.status).toBe("open");
+
+      release();
+      expect(await run).toMatchObject({
+        unreachable: 0,
+        opened: 0,
+        resolved: 1,
+        errors: 0,
+      });
+      expect(emitted("server.reachable")).toHaveLength(1);
+      expect(emitted("server.unreachable")).toHaveLength(0);
+    } finally {
+      release();
+      vi.useFakeTimers({ toFake: ["Date"], now: START });
+    }
+  });
+
 });
 
 // ─── One group, one daemon ───────────────────────────────────────────────────

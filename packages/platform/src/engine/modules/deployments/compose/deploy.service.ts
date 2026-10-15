@@ -36,6 +36,8 @@ import {
   isWildcardHostname,
   withTimeout,
   type ComposeAdvanced,
+  validateComposeGpuConfig,
+  parseComposeShmSize,
   type ProxySettings,
 } from "@repo/core";
 import { getTemplateForOrg } from "../../apps/catalog-source";
@@ -1011,6 +1013,8 @@ async function deployComposeServicesUnlocked(
   for (const service of enabled) {
     if (!opts?.strictScope || !opts.targetServiceIds || opts.targetServiceIds.has(service.id)) {
       parseContainerHosts(service.advanced?.extraHosts);
+      validateComposeGpuConfig(service.advanced);
+      parseComposeShmSize(service.advanced?.shmSize);
     }
   }
   await assertCloudDeploymentLimits(project.organizationId, {
@@ -1418,11 +1422,19 @@ async function deployComposeServicesUnlocked(
       let prepared = byRef.get(key);
       if (!prepared) {
         logger.log(`Preparing image ${image} before service cutover...\n`);
+        const started = Date.now();
+        const heartbeat = setInterval(() => logger.log(`Still preparing ${image} (${Math.floor((Date.now() - started) / 1000)}s)...\n`), 15_000);
+        heartbeat.unref?.();
         const policy = refresh ? deploymentImagePullPolicy(dep, opts?.forcePullImages, image)
           : { force: false, refreshMutableTag: false };
-        prepared = await runtime.prepareDeploymentImage(image, {
-          ...policy, requirePresent: retained, signal: opts?.signal,
-        });
+        try {
+          prepared = await runtime.prepareDeploymentImage(image, {
+            ...policy, requirePresent: retained, signal: opts?.signal, logger,
+          });
+          logger.log(`Image ${image} is ready (${Math.floor((Date.now() - started) / 1000)}s).\n`);
+        } finally {
+          clearInterval(heartbeat);
+        }
         byRef.set(key, prepared);
       }
       preparedImages.set(service.id, { ...prepared, requestedRef });

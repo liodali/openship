@@ -121,27 +121,27 @@ afterEach(async () => {
 
 describe("merged project navigation", () => {
   it.each(["server", "local"] as const)(
-    "opens Health links under Monitoring and switches between both sections on %s",
+    "opens Health links under Monitoring & Logs and switches sections on %s",
     async (deployTarget) => {
       await render("health", deployTarget);
-      expectSelected("Monitoring", "health");
+      expectSelected("Monitoring & Logs", "health");
       expect([...host.querySelectorAll("nav a")].map((link) => link.textContent)).toEqual([
-        "Monitoring", "Health",
+        "Monitoring", "Logs", "Health",
       ]);
       for (const layout of ["desktop", "mobile"]) {
         expect(host.querySelector(`[data-layout="${layout}"] a[href="/projects/project/health"]`)).toBeNull();
       }
 
       await act(async () => sectionLink("monitoring").click());
-      expectSelected("Monitoring", "monitoring");
+      expectSelected("Monitoring & Logs", "monitoring");
       expect(window.location.pathname).toBe("/projects/project/monitoring");
       await act(async () => sectionLink("health").click());
-      expectSelected("Monitoring", "health");
+      expectSelected("Monitoring & Logs", "health");
       expect(window.location.pathname).toBe("/projects/project/health");
 
       await render("overview", deployTarget);
       await render("health", deployTarget);
-      expectSelected("Monitoring", "health");
+      expectSelected("Monitoring & Logs", "health");
     },
   );
 
@@ -155,12 +155,43 @@ describe("merged project navigation", () => {
     expect(host.querySelector("output")?.textContent).toBe("overview");
     await render("monitoring", deployTarget);
     expect(host.querySelector("output")?.textContent).toBe("monitoring");
-    expect(host.querySelector("nav")).toBeNull();
+    expect([...host.querySelectorAll("nav a")].map((link) => link.textContent)).toEqual([
+      "Monitoring", "Logs",
+    ]);
     expect(host.querySelector('a[href="/projects/project/health"]')).toBeNull();
     for (const layout of ["desktop", "mobile"]) {
       const selected = host.querySelector(`[data-layout="${layout}"] a[aria-current="page"]`);
-      expect(selected?.textContent).toBe("Monitoring");
+      expect(selected?.textContent).toBe("Monitoring & Logs");
     }
+  });
+
+  it.each([
+    { selfHosted: true, deployTarget: "server" as const },
+    { selfHosted: true, deployTarget: "local" as const },
+    { selfHosted: true, deployTarget: "cloud" as const },
+    { selfHosted: false, deployTarget: "cloud" as const },
+    { selfHosted: false, deployTarget: "server" as const },
+  ])("keeps existing Logs links in the shared group for $deployTarget with selfHosted=$selfHosted", async ({ selfHosted, deployTarget }) => {
+    platform.selfHosted = selfHosted;
+    await render("logs", deployTarget);
+    expectSelected("Monitoring & Logs", "logs");
+    for (const layout of ["desktop", "mobile"]) {
+      expect(host.querySelector(`[data-layout="${layout}"] a[href="/projects/project/logs"]`)).toBeNull();
+      const group = host.querySelector<HTMLAnchorElement>(
+        `[data-layout="${layout}"] a[href="/projects/project/monitoring"]`,
+      );
+      expect(group?.textContent).toBe("Monitoring & Logs");
+      await act(async () => group!.click());
+      expectSelected("Monitoring & Logs", "monitoring");
+      await act(async () => sectionLink("logs").click());
+      expectSelected("Monitoring & Logs", "logs");
+      expect(window.location.pathname).toBe("/projects/project/logs");
+    }
+
+    // Reloading or following a saved Logs URL selects the same section.
+    await render("overview", deployTarget);
+    await render("logs", deployTarget);
+    expectSelected("Monitoring & Logs", "logs");
   });
 
   it.each(["server", "cloud"] as const)(

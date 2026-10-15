@@ -1086,13 +1086,15 @@ export async function collectDeploymentManifest(
     .map((r) => r.containerId)
     .filter((id): id is string => !!id);
   const containerIds = [
-    ...new Set(
-      serviceContainerIds.length > 0
+    ...new Set([
+      ...(serviceContainerIds.length > 0
         ? serviceContainerIds
         : dep.containerId
           ? [dep.containerId]
-          : [],
-    ),
+          : []),
+      // Runtime roles (workers, schedulers) die with the release that owns them.
+      ...(dep.roleContainers ?? []).map((ref) => ref.containerId).filter((id) => !!id),
+    ]),
   ];
 
   // A project-less deployment has no retained releases to protect, so the keep
@@ -1422,12 +1424,20 @@ async function destroyResourceOnce(
       // continued serving the hostname. Isolate failures per target: stopping at
       // the first broken edge leaves every later (possibly healthy) edge dirty.
       const failures: string[] = [];
+      let foreignRoute = false;
       const targetResults = await observedAllSettled(
-        routeContexts.map(({ routing }) => routing.removeRoute(resource.ref)), "platform/engine/modules/projects/project-cleanup.service",
+        routeContexts.map(({ routing }) =>
+          routing.removeProjectRoute
+            ? routing.removeProjectRoute(resource.ref)
+            : routing.removeRoute(resource.ref),
+        ),
+        "platform/engine/modules/projects/project-cleanup.service",
       );
       for (const [index, result] of targetResults.entries()) {
         if (result.status === "rejected") {
           failures.push(`${routeContexts[index]!.key}: ${safeErrorMessage(result.reason)}`);
+        } else if (result.value === "foreign") {
+          foreignRoute = true;
         }
       }
       // Then the Cloud edge record, which is a SEPARATE resource for a managed
@@ -1440,7 +1450,9 @@ async function destroyResourceOnce(
       // still failed and the project row is therefore staying alive. The retry
       // will release it after every target has converged.
       const providerOwnsRelease = routeContexts.length > 0 && routeContexts.every(context => context.key.startsWith("cloud:"));
-      if (organizationId && failures.length === 0 && !providerOwnsRelease) {
+      // A migrated hostname may now belong to another active project. Preserve
+      // that provider route even when historical self-hosted targets were cleaned.
+      if (organizationId && failures.length === 0 && !providerOwnsRelease && !foreignRoute) {
         try {
           const released = await releaseManagedHostnames([resource.ref], { organizationId });
           if (released.failures.length > 0) {

@@ -65,13 +65,13 @@ export interface ProjectRouteState {
 }
 
 export function deriveEnvironmentPublicEndpoints(
-  publicEndpoints: Array<Pick<StoredPublicEndpoint, "port" | "targetPath">>,
+  publicEndpoints: Array<Pick<StoredPublicEndpoint, "port" | "targetPath" | "redirectTo">>,
   slug: string,
 ): StoredPublicEndpoint[] {
   const normalizedSlug = slug.trim().toLowerCase();
   if (!normalizedSlug) return [];
 
-  const primaryEndpoint = publicEndpoints[0];
+  const primaryEndpoint = publicEndpoints.find((endpoint) => !endpoint.redirectTo);
   if (!primaryEndpoint) return [];
 
   if (primaryEndpoint.targetPath) {
@@ -112,13 +112,14 @@ function draftEndpointsWithIds(
     ]),
   );
 
+  const primaryIndex = endpoints.findIndex((endpoint) => !endpoint.redirectTo && !endpoint.customDomain?.startsWith("*."));
   return endpoints.map((endpoint, index) => {
     const hostname = publicEndpointHostname(endpoint) ?? "";
     return {
       ...endpoint,
       id: hostname ? idByHostname.get(hostname.toLowerCase()) : undefined,
       hostname,
-      isPrimary: index === 0,
+      isPrimary: index === primaryIndex,
     } satisfies ProjectRouteEndpoint;
   });
 }
@@ -145,7 +146,8 @@ function buildRouteState(
   projectDomains: Domain[],
   publicEndpoints: ProjectRouteEndpoint[],
 ): ProjectRouteState {
-  const primaryEndpoint = publicEndpoints[0];
+  const primaryEndpoint = publicEndpoints.find((endpoint) => endpoint.isPrimary && !endpoint.redirectTo)
+    ?? publicEndpoints.find((endpoint) => !endpoint.redirectTo);
 
   return {
     projectDomains,

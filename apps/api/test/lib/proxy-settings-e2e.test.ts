@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/db", () => ({
   repos: {
+    domain: { listByProject: vi.fn(async () => []) },
     deployment: {
       findById: vi.fn(async () => ({
         id: "dep-1",

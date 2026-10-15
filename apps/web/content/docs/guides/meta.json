@@ -14,6 +14,7 @@
     "openship-json",
     "environment-variables",
     "custom-domains",
+    "cloudflare-tunnel",
     "persistent-storage",
     "sleep-mode-resources",
     "---Operate---",

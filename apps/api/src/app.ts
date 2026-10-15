@@ -453,6 +453,7 @@ async function startControllerBackground(): Promise<void> {
       });
       console.log(`[boot] backup runner: ${runner.describe()}`);
       (await import("@repo/platform/engine/modules/actions/lifecycle")).startActionController();
+      (await import("@repo/platform/engine/modules/ingress/lifecycle")).startIngressController();
 
       // Generic job schedule: seed built-in system jobs (SSL renewal, orphan GC,
       // prunes, deployment reconcile) into the `job` table and register every

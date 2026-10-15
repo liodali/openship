@@ -441,7 +441,10 @@ describe("Supabase Cloud installation failure and deletion", () => {
     const result = await remove(owner, projectId);
     expect(result.status, JSON.stringify(result.body)).toBe(409);
     expect(result.body.code).toBe("PROJECT_TEARDOWN_FAILED");
-    expect(await repos.project.findById(projectId)).toMatchObject({ deletionInProgress: false });
+    expect(await repos.project.findById(projectId)).toMatchObject({
+      deletionInProgress: true,
+      lifecycleOperation: { kind: "delete", status: "failed", error: expect.stringMatching(/\S/) },
+    });
     expect(await repos.project.listEnvVars(projectId)).toEqual(secrets);
     expect(workspaces.size).toBe(1);
     expect(requests.slice(beforeDelete).some(request => request.startsWith("DELETE "))).toBe(false);

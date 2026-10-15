@@ -111,3 +111,45 @@ it("adds domains with the caller's selected type when its internal type switch i
     "3000",
   );
 });
+
+it("clears incoming redirects when the serving hostname is removed", async () => {
+  const serving = createPublicEndpoint({
+    domainType: "custom",
+    customDomain: "example.com",
+    port: "3000",
+  });
+  const redirect = createPublicEndpoint({
+    domainType: "custom",
+    customDomain: "www.example.com",
+    port: "3000",
+    redirectTo: "example.com",
+    redirectStatus: 301,
+  });
+  const onChange = vi.fn();
+  await act(async () =>
+    root.render(
+      <PublicEndpointsCard
+        projectName="site"
+        endpoints={[serving, redirect]}
+        hasServer
+        runtimePort="3000"
+        allowRedirects
+        onChange={onChange}
+      />,
+    ),
+  );
+  const remove = Array.from(container.querySelectorAll("button")).find(
+    (button) => button.textContent?.trim() === "Remove",
+  )!;
+  await act(async () => remove.click());
+  expect(onChange).toHaveBeenLastCalledWith(
+    [
+      expect.objectContaining({
+        customDomain: "www.example.com",
+        redirectTo: undefined,
+        redirectStatus: undefined,
+      }),
+    ],
+    "3000",
+  );
+});

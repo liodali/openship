@@ -202,12 +202,19 @@ export type RequestOptions = Omit<RequestInit, "body"> & {
 
 const inflightRequests = new Map<string, Promise<unknown>>();
 let resourceScope = "";
+let requestScopeVersion = 0;
+
+/** Snapshot before queuing a mutation; discard it if the account/org changes. */
+export function getApiRequestScopeVersion(): number {
+  return requestScopeVersion;
+}
 
 /** Connection identity is non-secret. A new account must start new requests,
  * even if the previous account still has an identical GET in flight. */
 export function setApiResourceScope(scope: string): void {
   if (resourceScope === scope) return;
   resourceScope = scope;
+  requestScopeVersion++;
   inflightRequests.clear();
   // Old-account requests must not update the new connection's notice.
   reachabilitySequence = ++requestSequence;
@@ -292,7 +299,10 @@ export function subscribeActiveOrganization(listener: () => void): () => void {
 export function setActiveOrganizationId(orgId: string | null) {
   const changed = _currentOrgId !== orgId;
   _currentOrgId = orgId;
-  if (changed) organizationListeners.forEach(listener => listener());
+  if (changed) {
+    requestScopeVersion++;
+    organizationListeners.forEach(listener => listener());
+  }
   if (typeof window !== "undefined") {
     try {
       if (window.localStorage) {

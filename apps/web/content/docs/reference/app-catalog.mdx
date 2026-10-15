@@ -60,6 +60,8 @@ autocomplete field names rather than typing them from memory.
     tags: { type: 'string[]', description: 'Free-form keywords used for catalog search.' },
     framework: { type: 'string', description: 'Stack slug for the created project. Usually "docker-compose" for template apps.' },
     services: { type: 'TemplateServiceSpec[]', description: 'The containers to run. Required in practice for template apps.' },
+    supportsCloud: { type: 'boolean', description: 'Defaults to true. Set false for self-hosted-only apps. The installer rejects managed Cloud before creating a project. Requires schemaVersion 2.' },
+    gpu: { type: '"recommended" | "required"', description: 'NVIDIA GPU placement. Recommended offers CPU or NVIDIA mode; services with GPU requests default to required. Requires schemaVersion 2.' },
     configFields: { type: 'AppConfigField[]', description: 'Machine-generated or derived env. Never rendered as a form input.' },
     flowHref: { type: 'string', description: 'For kind:"flow" — internal route of the bespoke wizard. Must start with "/".' },
     settings: { type: 'AppSettingGroup[]', description: 'The curated settings form, and the install wizard inputs.' },
@@ -134,6 +136,8 @@ name, never an IP or a localhost address.
     name: { type: 'string', description: 'Service name, and its hostname on the project network.', required: true },
     image: { type: 'string', description: 'Prebuilt image to pull. Pin a version — unpinned tags are rejected in review. Exactly one of image | build per service.' },
     replacesImages: { type: 'string[]', description: 'Exact retired image names eligible for explicit operator-reviewed repair. Never automatically applied to installed services.' },
+    gpus: { type: 'ComposeGpu | ComposeGpu[]', description: 'NVIDIA requests applied in GPU mode; uses the same count/deviceIds/capabilities/options validation as Compose and the service API. Requires schemaVersion 2.' },
+    shmSize: { type: 'number', description: 'Private container /dev/shm size in bytes (1 byte–1 TiB). No host IPC or privileged mode. Requires schemaVersion 2.' },
     replacesBuilds: { type: 'string[]', description: 'SHA-256 fingerprints of exact retired inline recipes eligible for explicit operator-reviewed conversion to this image. The repair tool requires the same official base and preserves custom recipes.' },
     resources: { type: '{ cpuCores, memoryMb, diskMb }', description: 'Advisory sizing recommendation: CPU at least 0.25, whole MB of RAM at least 128, and whole MB of disk at least 64. All three fields are required when supplied. Never copied into installed container limits.' },
     build: { type: 'ServiceBuild', description: 'Inline Docker build context — for a service Openship must BUILD rather than pull. Mutually exclusive with image. See Building an image.' },
@@ -148,6 +152,7 @@ name, never an IP or a localhost address.
     healthcheck: { type: 'ComposeHealthcheck', description: '{ test, interval, timeout, retries, startPeriod, disable }. disable:true turns off an image baked-in check.' },
     restart: { type: '"no" | "always" | "on-failure" | "unless-stopped"', description: 'Restart policy.' },
     command: { type: 'string', description: 'Override the container command.' },
+    entrypointArgv: { type: 'string[]', description: 'Exact image entrypoint override, mapped to the existing Compose entrypoint. An empty array clears it. Requires minEngine >= 0.9.2.' },
     commandArgv: { type: 'string[]', description: 'Exact container command arguments; useful for invoking a mounted startup script through its interpreter.' },
   }}
 />
@@ -180,7 +185,9 @@ before exposing a public installer, and redeployment must preserve existing acco
 Use `build` when the image actually needs additional software or compiled assets, as with
 PocketBase's binary installation. It is an inline Docker build context that Openship
 materializes at deploy time and builds on the deploy host through the normal compose build pipeline.
-Building subsumes an entrypoint override: the Dockerfile sets its own `ENTRYPOINT`.
+Use `entrypointArgv` with a read-only startup file when a published image has an executable
+entrypoint that cannot invoke the helper. Keep its native initialization behavior and gate
+the template to Openship 0.9.2 or newer. A build can also set its own `ENTRYPOINT`.
 
 Set **exactly one** of `image` or `build` per service. Neither (nothing to run) and both (ambiguous)
 are rejected — `service "<name>" must set exactly one of image|build`.
@@ -475,6 +482,7 @@ same-org source picker and wires it in one shot. Same-org only, and always user-
     'requires[].label': { type: 'string | localized', description: 'How the wizard names what is needed.', required: true },
     'requires[].envKey': { type: 'string', description: 'Env key the chosen connection is written to.', required: true },
     'requires[].category': { type: 'string', description: 'Restrict candidate sources to this category.' },
+    'requires[].bundleId': { type: 'string', description: 'Match a specific provides bundle and use its first output. Prevents wiring an incompatible backend from the same category. Requires schemaVersion 2.' },
     'requires[].mode': { type: '"internal" | "public"', description: 'Which form of the source value to wire in.' },
     'requires[].optional': { type: 'boolean', description: 'Install can proceed without it.' },
   }}

@@ -49,6 +49,8 @@ export interface AppCatalogEntry {
    *  app; when present the wizard shows it against the chosen destination and
    *  self-hosted deployments treat it as a recommendation. */
   minResources?: AppMinResources;
+  gpu?: AppTemplate["gpu"];
+  supportsCloud?: boolean;
   configFields: AppCatalogField[];
 }
 
@@ -171,6 +173,7 @@ export const appsApi = {
    *  install wizard's per-endpoint routing choice — it is the ONLY way an app
    *  install gets a public hostname. */
   install: (body: {
+    useGpu?: boolean;
     serverId?: string;
     templateId: string;
     name?: string;

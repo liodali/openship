@@ -29,6 +29,7 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/platform/engine/lib/project-runtime-lock", () => ({
+  withProjectStateLock: async (_id: string, work: () => Promise<unknown>) => work(),
   withProjectRuntimeLock: async (_id: string, run: () => Promise<unknown>) => run(),
 }));
 

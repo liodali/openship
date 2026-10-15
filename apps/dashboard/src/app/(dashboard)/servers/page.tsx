@@ -30,6 +30,7 @@ import { newServerBillingHref } from "@/lib/billing-links";
 import { useCloudResourceKey } from "@/context/CloudResourceContext";
 import { ServerListSkeleton } from "./_components/server-list-skeleton";
 import * as CountryFlags from "country-flag-icons/react/3x2";
+import { ManagedResourcesPage } from "@/components/resources/ManagedResourcesPage";
 
 const FLAGS = CountryFlags as Record<
   string,
@@ -70,6 +71,11 @@ const STATUS: Record<Reachability, { dot: string; text: string }> = {
 };
 
 export default function ServersPage() {
+  const { selfHosted } = usePlatform();
+  return selfHosted ? <ServerInventoryPage /> : <ManagedResourcesPage />;
+}
+
+function ServerInventoryPage() {
   const resourceKey = useCloudResourceKey();
   const resourceRef = useRef(resourceKey);
   resourceRef.current = resourceKey;

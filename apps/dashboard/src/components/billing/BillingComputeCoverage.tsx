@@ -26,7 +26,7 @@ export function BillingComputeCoverage({ state }: { state: BillingState }) {
   return (
     <section className="space-y-3 rounded-2xl bg-card p-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-base font-medium">{t.billing.purchase.monthly}</h2>
+        <h2 className="text-base font-medium">{copy.title}</h2>
         <span className={`flex items-center gap-2 text-sm ${compute.covered ? "text-success" : "text-warning"}`}>
           <span aria-hidden="true" className="size-2.5 rounded-full border-2 border-current" />
           {compute.covered ? copy.covered : copy.needsAttention}

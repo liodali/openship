@@ -1,6 +1,7 @@
 import { reportCaughtError as observeCaughtError } from "@repo/core/diagnostics";
 import { spawn } from "node:child_process";
-import { access, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { access, lstat, mkdtemp, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, sep } from "node:path";
 
@@ -13,6 +14,7 @@ import { assembleGitClone } from "./build-pipeline";
 import { GIT_SUBMODULE_UPDATE_ARGS } from "./git-clone";
 import { localGitSshWriter, materializeGitSsh, type GitSshMaterial } from "./git-ssh-material";
 import { generateDockerfile } from "./docker-build-plan";
+import { generatedBuildIgnore } from "./docker-recipes/cache";
 import { dockerfileNeedsBuildKit } from "./docker-buildkit-trace";
 import {
   dockerBuildContextDirectory,
@@ -696,18 +698,34 @@ export async function resolveServiceDockerfile(
       }),
       "utf-8",
     );
+    if (config.buildCache) {
+      const ignoreFile = join(contextDir, ".dockerignore");
+      const info = await lstat(ignoreFile).catch(error => {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      });
+      // Never follow a repository symlink to read or overwrite a host file.
+      if (!info || info.isFile()) {
+        const contents = info ? await readFile(ignoreFile, "utf8") : "";
+        const temporary = join(contextDir, `.openship-dockerignore-${randomUUID()}`);
+        try {
+          await writeFile(temporary, generatedBuildIgnore(contents));
+          await rename(temporary, ignoreFile);
+        } finally { await rm(temporary, { force: true }); }
+      }
+    }
   }
 
   const dockerfileName = repositoryDockerfileName ?? generatedName;
-  // Read only a repository Dockerfile: a generated recipe is ours and never uses
-  // BuildKit-only syntax, so re-reading it back off disk would be pure cost. A read
+  // Generated recipes declare cache mounts only on a confirmed BuildKit path.
+  // Reading a repository Dockerfile still detects its own syntax. A read
   // failure here must not fail the build — the builder choice is an optimization,
   // and the build itself is about to read the same file.
   const requiresBuildKit = hasRepositoryDockerfile
     ? await readFile(join(buildContextDir, ...dockerfileName.split("/")), "utf-8")
         .then(dockerfileNeedsBuildKit)
         .catch((diagnosticFailure) => { observeCaughtError(diagnosticFailure, "adapters/runtime/docker-build-context"); return false; })
-    : false;
+    : config.buildCache === true;
   const ignoreContextPath =
     opts?.dockerignorePruned === false
       ? await loadContextIgnore(buildContextDir, contextKeepPaths(dockerfileName))
@@ -716,7 +734,7 @@ export async function resolveServiceDockerfile(
   // walking — the seed `entries` list is queued unconditionally — so the top level
   // has to be filtered here or a `.dockerignore`d root directory would still ship.
   const contextEntries = (await readdir(buildContextDir)).filter(
-    (entry) => !ignoreContextPath?.(entry),
+    (entry) => !/^\.openship-dockerignore-[a-f0-9-]{36}$/.test(entry) && !ignoreContextPath?.(entry),
   );
 
   return {

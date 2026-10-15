@@ -1,3 +1,9 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { mkdtemp, mkdir, writeFile, readFile, access, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { commandToArgv } from "@repo/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PassThrough } from "node:stream";
 import type { Oblien } from "oblien";
@@ -677,4 +683,47 @@ describe("containers on one Oblien Docker workspace", () => {
     expect(runtime.executor.writeFile).not.toHaveBeenCalled();
     expect(runtime.executor.exec).toHaveBeenCalledTimes(2); // Allocate and remove only the isolated staging directory.
   });
+});
+
+it("removes failed static staging files while preserving application data and neighboring projects", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "openship-delete-static-"));
+  const project = join(directory, "project-a");
+  const staging = join(project, "bare", ".builds");
+  const data = join(project, "database", "keep.txt");
+  const neighbor = join(directory, "project-b", "keep.txt");
+  try {
+    await mkdir(join(staging, "failed-build"), { recursive: true });
+    await mkdir(join(project, "database"), { recursive: true });
+    await mkdir(join(directory, "project-b"), { recursive: true });
+    await writeFile(join(staging, "failed-build", "index.html"), "unused build");
+    await writeFile(data, "application data");
+    await writeFile(neighbor, "neighbor data");
+    Object.defineProperty(runtime, "projectPaths", {
+      get: () => ({
+        mounts: project,
+        bare: join(project, "bare"),
+        routes: join(project, "routes"),
+      }),
+    });
+    // Worker quiescence/cache ownership is covered by the cache teardown suite.
+    // This test executes the actual filesystem cleanup in a private directory.
+    Object.defineProperty(runtime, "clearManagedProjectBuildCache", { value: async () => {} });
+    vi.mocked(runtime.executor.exec).mockImplementation(async (command) => {
+      const args = commandToArgv(command);
+      if (
+        !args ||
+        args.slice(0, 3).join(" ") !== "rm -rf --" ||
+        args.length < 4 ||
+        args.slice(3).some((path) => !resolve(path).startsWith(`${resolve(project)}/`))
+      )
+        throw new Error("Unexpected command outside the private cleanup fixture");
+      return (await promisify(execFile)("/bin/rm", args.slice(1))).stdout;
+    });
+    await runtime.cleanupProject("project-a", { wipeVolumes: false });
+    await expect(access(staging)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(data, "utf8")).toBe("application data");
+    expect(await readFile(neighbor, "utf8")).toBe("neighbor data");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });

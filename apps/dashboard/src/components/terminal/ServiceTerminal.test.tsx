@@ -69,6 +69,7 @@ afterEach(async () => {
 async function render(patch: Partial<PtyConnection> = {}) {
   Object.assign(mocks.connection, patch);
   await act(async () => root.render(<I18nProvider><ServiceTerminal serviceId="api-service" name="api" enabled onConnected={mocks.connected} /></I18nProvider>));
+  await act(async () => vi.dynamicImportSettled());
 }
 function button(label: string) {
   return [...host.querySelectorAll("button")].find((el) => el.textContent?.trim() === label);

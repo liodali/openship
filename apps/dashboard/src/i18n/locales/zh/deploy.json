@@ -221,7 +221,8 @@
     "off": "关闭",
     "previewTitle": "部署预览",
     "previewHint": "继续配置应用。部署将从下一页开始。",
-    "back": "返回"
+    "back": "返回",
+    "gpuBadge": "GPU"
   },
   "summary": {
     "buildAndDeploy": "构建并部署：",

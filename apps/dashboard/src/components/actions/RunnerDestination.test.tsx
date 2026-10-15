@@ -31,7 +31,6 @@ const render = async () =>
     root.render(
       <I18nProvider>
         <RunnerDestination
-          onSaved={h.saved}
           onCancel={() => {}}
           renderForm={(server, back): ReactNode => (
             <div data-testid="form">
@@ -46,7 +45,7 @@ const render = async () =>
 beforeEach(() => {
   (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
   vi.resetAllMocks();
-  h.selfHosted = false;
+  h.selfHosted = true;
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -70,36 +69,13 @@ it("continues with the server returned by the shared acquisition modal", async (
   expect(host.querySelector('[data-testid="form"]')?.textContent).toContain("Dedicated CI");
   expect(h.saved).not.toHaveBeenCalled(); // A saved server is not yet a verified runner.
 });
-it("selects temporary profiles without registering the persistent server again", async () => {
-  const runner = {
-    id: "cloud-small",
-    name: "Temporary Linux",
-    kind: "cloud",
-    enabled: true,
-    error: null,
-    capabilities: null,
-    config: { mode: "container", cpu: 2, memoryMb: 4096, labels: [] },
-    labels: [],
-  };
-  h.runners.mockResolvedValue([runner, { ...runner, id: "off", enabled: false }]);
-  await render();
-  await click("temporary");
-  const choices = [...host.querySelectorAll("button")].filter((button) =>
-    button.textContent?.includes("Temporary Linux"),
-  );
-  expect(choices).toHaveLength(1);
-  await act(async () => choices[0]!.click());
-  expect(h.saved).toHaveBeenCalledWith(runner);
-  expect(h.add).not.toHaveBeenCalled();
-});
-it("keeps temporary funding scoped to Cloud and distinguishes a failed load from no runners", async () => {
-  h.selfHosted = true;
-  await render();
-  expect(host.querySelector<HTMLButtonElement>('button[value="temporary"]')!.disabled).toBe(true);
+it("opens the managed runner form directly in Cloud, without purchase or temporary VM choices", async () => {
   h.selfHosted = false;
   await render();
-  h.runners.mockRejectedValue(new Error("Budget connection unavailable"));
-  await click("temporary");
-  expect(host.textContent).toContain("Budget connection unavailable");
-  expect(h.saved).not.toHaveBeenCalled();
+  expect(host.querySelector('[data-testid="form"]')).not.toBeNull();
+  expect(host.querySelector('button[value="existing"]')).toBeNull();
+  expect(host.querySelector('button[value="dedicated"]')).toBeNull();
+  expect(host.querySelector('button[value="temporary"]')).toBeNull();
+  expect(h.add).not.toHaveBeenCalled();
+  expect(h.runners).not.toHaveBeenCalled();
 });

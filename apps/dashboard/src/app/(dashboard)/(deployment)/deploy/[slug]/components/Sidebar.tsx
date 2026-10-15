@@ -506,6 +506,7 @@ const Sidebar: React.FC<{ destinationReady: boolean }> = ({ destinationReady }) 
         <ComposeChecklist />
       ) : (
         <DomainSettings
+          serverId={config.serverId}
           projectId={config.projectId}
           projectName={config.projectName}
           endpoints={config.publicEndpoints}

@@ -55,6 +55,7 @@
     }
   },
   "nav": {
+    "resources": "Облачные пространства",
     "support": "Поддержка",
     "scale": "Масштабирование",
     "home": "Главная",
@@ -125,7 +126,8 @@
         "analytics": "Аналитика",
         "automation": "Автоматизация",
         "mail": "Почта",
-        "other": "Инструменты"
+        "other": "Инструменты",
+        "ai": "ИИ и модели"
       },
       "installing": "Установка…",
       "install": "Установить",
@@ -140,7 +142,18 @@
       "needsUpdateBadge": "Требуется обновление",
       "needsVersionBadge": "Требуется v{version}",
       "removedToast": "Приложение «{name}» удалено.",
-      "removeFailedToast": "Не удалось удалить приложение."
+      "removeFailedToast": "Не удалось удалить приложение.",
+      "gpu": {
+        "recommended": "Рекомендуется GPU",
+        "required": "Требуется NVIDIA GPU",
+        "mode": "Вычисления",
+        "cpu": "Только CPU",
+        "nvidia": "Графический процессор NVIDIA",
+        "hint": "Режим NVIDIA требует совместимый драйвер и NVIDIA Container Toolkit на сервере.",
+        "cloudUnsupported": "Это приложение работает только на собственном сервере. Выберите подключённый сервер.",
+        "selfHostedOnly": "Только свой сервер",
+        "noGpu": "GPU не обнаружен. Проверьте драйвер NVIDIA и Container Toolkit или выберите CPU."
+      }
     },
     "projects": {
       "title": "Проекты",

@@ -358,6 +358,9 @@
   },
   "runnerSetup": {
     "subtitle": "サーバーとすぐに使える実行環境を選択します。",
+    "cloudSubtitle": "Cloud スペースとジョブ用の環境を選択してください。",
+    "selectCloudSpace": "Cloud スペースを選択すると、対応する環境が表示されます。",
+    "trustedCloudSpace": "ジョブはこの Cloud スペースのリソースを共有します。信頼できるワークフローのみ実行してください。",
     "environment": "既定の環境",
     "browse": "カタログを見る",
     "catalog": "ランナーカタログ",

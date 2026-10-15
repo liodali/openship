@@ -358,6 +358,9 @@
   },
   "runnerSetup": {
     "subtitle": "Wähle einen Server und eine einsatzbereite Umgebung.",
+    "cloudSubtitle": "Wähle einen Cloud-Space und eine einsatzbereite Job-Umgebung.",
+    "selectCloudSpace": "Wähle einen Cloud-Space, um kompatible Umgebungen zu sehen.",
+    "trustedCloudSpace": "Jobs teilen die Kapazität dieses Cloud-Spaces. Führe nur vertrauenswürdige Workflows aus.",
     "environment": "Standardumgebung",
     "browse": "Katalog öffnen",
     "catalog": "Runner-Katalog",

@@ -185,14 +185,25 @@ if ! bash /opt/openship-mail/db-bootstrap.sh; then
   exit 1
 fi
 
-# 5. pre-create the log files the fail2ban jails tail, so a jail never starts
-#    against a missing path (rsyslog populates them as the daemons log).
+# 5. fail2ban setup:
+#    a) pre-create the log files the fail2ban jails tail, so a jail never starts
+#       against a missing path (rsyslog populates them as the daemons log).
 mkdir -p /var/log/dovecot /var/log/iredapd /var/log/supervisor
 touch /var/log/mail.log \
       /var/log/dovecot/dovecot.log /var/log/dovecot/imap.log \
       /var/log/dovecot/pop3.log /var/log/dovecot/lda.log /var/log/dovecot/sieve.log \
       /var/log/iredapd/iredapd.log
 chown -R iredapd:iredapd /var/log/iredapd 2>/dev/null || true
+
+#    b) fix leading commas in jail port lists (e.g. `,,25,587,...` -> `25,587,...`)
+#       because HTTP/HTTPS ports are absent in the container image and cause
+#       nftables syntax errors when generating banning rules.
+sed -i -E 's/port=",,/port="/g' /etc/fail2ban/jail.d/*.local 2>/dev/null || true
+
+#    c) configure the helper's TCP endpoint AND credentials. A .pgpass entry
+#       alone cannot select a host/port. The dedicated files are also used by
+#       cron/manual invocations that do not inherit the container environment.
+python3 /opt/openship-mail/configure-fail2ban-db.py
 
 # 6. DKIM: reuse the key on the mount, else generate one (per domain).
 if [ -n "$FIRST_DOMAIN" ] && [ ! -s "/var/lib/dkim/${FIRST_DOMAIN}.pem" ]; then

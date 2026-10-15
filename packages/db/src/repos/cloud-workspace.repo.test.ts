@@ -52,6 +52,22 @@ beforeEach(async () => {
 });
 
 describe("migration placement and server lifecycle", () => {
+  it("finds ready cache hosts without projects and skips uncreated/deleting/remote hosts", async () => {
+    const ready = await createWorkspace();
+    const pending = await createWorkspace();
+    const deleting = await createWorkspace();
+    const remote = await createWorkspace();
+    for (const workspace of [ready, pending, deleting, remote]) {
+      await hosts.reserve({ ownerWorkspaceId: workspace.id, namespace: workspace.namespace!, image: "docker", resources }, "org-a");
+      await db.update(schema.cloudDockerWorkspace).set({ workspaceId: `provider-${workspace.id}`,
+        state: workspace.id === pending.id ? "provisioning" : "ready" })
+        .where(eq(schema.cloudDockerWorkspace.ownerWorkspaceId, workspace.id));
+    }
+    await db.update(schema.cloudWorkspace).set({ deletionInProgress: new Date() }).where(eq(schema.cloudWorkspace.id, deleting.id));
+    await db.update(schema.cloudWorkspace).set({ remote: { apiUrl: "https://example.com", userId: "u", organizationId: "org-a",
+      serverId: "s", workspaceId: "w" } }).where(eq(schema.cloudWorkspace.id, remote.id));
+    expect(await workspaces.listBuildCacheHosts()).toEqual([{ id: ready.id, organizationId: "org-a" }]);
+  });
   it.each([
     ["managed", "managed"], ["ssh", "managed"], ["managed", "ssh"],
   ])("saves and restores %s → %s placement and storage atomically", async (sourceKind, targetKind) => {

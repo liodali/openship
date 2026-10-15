@@ -592,6 +592,44 @@ describe("parseOpenshipConfig", () => {
       expect(config?.roles?.[0]?.replicas).toBe(1);
     });
 
+    it.each(["Jobs", "jobs_1", "-jobs", "jobs-", "my worker", "jobs.1", "é", "a".repeat(64)])(
+      "rejects the non-DNS-label role name %j",
+      (name) => {
+        const { errors } = parseOpenshipConfig({
+          roles: [{ name, kind: "worker", command: "bin/jobs" }],
+        });
+        expect(errors.some((e) => e.startsWith("roles[0].name:") && e.includes("DNS label"))).toBe(
+          true,
+        );
+      },
+    );
+
+    it.each(["a", "jobs", "queue-2", "0", "a-b-c", "a".repeat(63)])(
+      "accepts the DNS-label role name %j",
+      (name) => {
+        const { errors, config } = parseOpenshipConfig({
+          roles: [{ name, kind: "worker", command: "bin/jobs" }],
+        });
+        expect(errors).toEqual([]);
+        expect(config?.roles?.[0]?.name).toBe(name);
+      },
+    );
+
+    it("accepts replicas up to 100 and rejects 101", () => {
+      const { errors: ok, config } = parseOpenshipConfig({
+        roles: [{ name: "jobs", kind: "worker", command: "bin/jobs", replicas: 100 }],
+      });
+      expect(ok).toEqual([]);
+      expect(config?.roles?.[0]?.replicas).toBe(100);
+
+      const { errors } = parseOpenshipConfig({
+        roles: [{ name: "jobs", kind: "worker", command: "bin/jobs", replicas: 101 }],
+      });
+      expect(errors.some((e) => e.startsWith("roles[0].replicas:") && e.includes("100"))).toBe(
+        true,
+      );
+    });
+
     it("rejects health.kind http for roles and accepts process and exec", () => {
       const { errors } = parseOpenshipConfig({
         roles: [

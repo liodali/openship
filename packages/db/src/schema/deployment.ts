@@ -117,6 +117,14 @@ export const deployment = pgTable(
     /* ── Container details ──────────────────────────────────────────────── */
     /** Adapter container ID (for stop/start/destroy) */
     containerId: text("container_id"),
+    /**
+     * Which container runs which role replica for this deployment (#935). NULL
+     * when the deployment has no roles. Written and read by the deploy fan-out,
+     * teardown and pause/resume; `containerId` above stays the web container.
+     */
+    roleContainers: jsonb("role_containers").$type<
+      { role: string; replica: number; containerId: string }[] | null
+    >(),
     /** External URL where deployment is reachable */
     url: text("url"),
 

@@ -1,3 +1,4 @@
+import { defaultAppearance, mergeAppearanceImport } from "@repo/core";
 import { Command, Option } from "commander";
 import { UserSettingsSchemas, parseInput } from "@repo/contracts";
 import { getShipClient } from "../lib/ship-client";
@@ -104,3 +105,37 @@ settingsCommand
       return getShipClient().settings.setGitForwarding({ enabled: state === "on" });
     }),
   );
+
+const appearance = settingsCommand
+  .command("appearance")
+  .description("Manage personal theme JSON on the selected instance");
+appearance
+  .command("get")
+  .description("Export saved appearance JSON")
+  .action(() =>
+    printResult(async () => (await getShipClient().settings.getAppearance()).appearance),
+  );
+appearance
+  .command("set")
+  .argument("<file>", "Appearance JSON file, or - for stdin")
+  .description("Import and save a personal theme library")
+  .action((file: string) =>
+    printResult(async () => {
+      const settings = getShipClient().settings;
+      const value = readJsonInput(file);
+      const appearance =
+        value === null
+          ? null
+          : mergeAppearanceImport(
+              value,
+              (await settings.getAppearance()).appearance ?? defaultAppearance(),
+            );
+      return settings.setAppearance(
+        parseInput(UserSettingsSchemas.setAppearance.input, { appearance }),
+      );
+    }),
+  );
+appearance
+  .command("reset")
+  .description("Clear saved personal appearance")
+  .action(() => printResult(() => getShipClient().settings.setAppearance({ appearance: null })));

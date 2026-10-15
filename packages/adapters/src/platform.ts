@@ -90,6 +90,7 @@ export interface PlatformConfig {
     | "provisionLock"
     | "bridgeLock"
     | "resolveRegistryAuth"
+    | "buildCacheProtection"
   >;
   /**
    * Admin-scoped Oblien operations that namespace tokens can't perform.

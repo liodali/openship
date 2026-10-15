@@ -313,6 +313,11 @@ http {
   async function vhosts(): Promise<Record<string, string>> {
     const out: Record<string, string> = {};
 
+    out["canonical"] = await renderVhost({
+      domain: "www.canonical.test", tls: false, targetUrl: "http://127.0.0.1:9901",
+      redirectHost: { target: "canonical.test", statusCode: 301 },
+    } as RouteConfig);
+
     // #510 itself: a wildcard whose destination refers back to the capture.
     out["blog"] = await staticSite("blog", {
       redirects: [{ source: "/blog/:path*", destination: "/news/:path*", permanent: true }],
@@ -510,6 +515,14 @@ http {
   it("keeps an exact root separate from a catch-all", async () => {
     expect((await ask(port, "/?request=1", "exactroot.test")).status).toBe(200);
     expect((await ask(port, "/anything", "exactroot.test")).status).toBe(404);
+  });
+
+  it.each([
+    "/", "/docs/a%2Fb?x=1&x=2&encoded=a%2Bb", "/hello/%E2%9C%93?q=%26&empty=&flag",
+  ])("preserves the original URL through a canonical hostname redirect: %s", async (path) => {
+    const answer = await ask(port, path, "www.canonical.test");
+    expect(answer.status).toBe(301);
+    expect(answer.location).toBe(`https://canonical.test${path}`);
   });
 
   it("carries a wildcard capture into the redirect, with the query string", async () => {

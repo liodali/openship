@@ -13,7 +13,7 @@ import type { Runtime } from "oblien";
 import type { ManagedCommandRef } from "@repo/core";
 import { createCloudDockerTransport, dockerWebSocketStream } from "./docker-transport";
 import { CLOUD_DOCKER_BRIDGE_PORT, CLOUD_DOCKER_BRIDGE_SOURCE, CLOUD_DOCKER_BRIDGE_VERSION } from "./docker-bridge-source";
-import { withManagedCommandTracking } from "./command-tracking";
+import { currentManagedCommandTracking, withManagedCommandTracking } from "./command-tracking";
 import { openCloudDockerStream, recoverCloudDockerRequest } from "./docker-request";
 
 /** Real Python bridge + WebSocket + private Unix socket. The upstream is a fake
@@ -150,6 +150,32 @@ describe("Oblien Docker byte transport", () => {
     });
     expect(completed).toBe(1);
     expect(pending.size).toBe(0);
+  });
+
+  it("drains a real streamed Docker acknowledgement before an in-scope phase check", async () => {
+    const pending = new Map<string, ManagedCommandRef>();
+    let acknowledge!: () => void;
+    const acknowledgement = new Promise<void>(resolve => { acknowledge = resolve; });
+    await withManagedCommandTracking({
+      record: async ref => { pending.set(ref.marker, ref); },
+      complete: async marker => { await acknowledgement; pending.delete(marker); },
+    }, async () => {
+      const stream = await openCloudDockerStream(guest(), "test-vm");
+      try {
+        const ended = once(stream, "end");
+        stream.resume();
+        stream.end("POST /archive HTTP/1.1\r\nHost: docker\r\nContent-Length: 3\r\n\r\none");
+        await ended;
+        expect(pending.size).toBe(1);
+        setImmediate(acknowledge);
+        await currentManagedCommandTracking()!.flush();
+        // This check runs before withManagedCommandTracking's finalizer.
+        expect(pending.size).toBe(0);
+      } finally {
+        acknowledge();
+        stream.destroy();
+      }
+    });
   });
 
   it("keeps a mutation reserved after a lost controller until Docker finishes it", async () => {

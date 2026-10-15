@@ -354,7 +354,15 @@
       "addDomain": "Добавить домен",
       "primaryDomain": "Основной домен",
       "domainN": "Домен {n}",
-      "remove": "Удалить"
+      "remove": "Удалить",
+      "domainBehavior": "Поведение домена",
+      "primaryHost": "{hostname} — основной",
+      "redirectHostDescription": "{from} перенаправляет на {to}.",
+      "serveBoth": "Обслуживать оба",
+      "serveBothDescription": "Приложение доступно по обоим именам хоста.",
+      "customRouting": "Своя маршрутизация",
+      "redirectDomain": "Домен перенаправления",
+      "redirectSummary": "Перенаправляет на {hostname}."
     },
     "configEditor": {
       "remove": "Удалить",

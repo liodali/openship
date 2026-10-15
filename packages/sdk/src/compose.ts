@@ -26,6 +26,8 @@ import {
   composePortToSpec,
   parseComposeNamespace,
   parseContainerHosts,
+  readComposeGpuConfig,
+  readComposeShmConfig,
   type ComposeAdvanced,
 } from "@repo/core";
 /** Rewrite an absolute build context (as docker resolves it) back to a repo-relative path. */
@@ -196,6 +198,14 @@ export function mapComposeService(
   // namespaces the same way it lost read-only mounts.
   const { advanced, errors: namespaceErrors } = mapNamespaces(name, d);
   errors.push(...namespaceErrors);
+  const gpu = readComposeGpuConfig(d);
+  Object.assign(advanced, gpu.config);
+  const shm = readComposeShmConfig(d.shm_size);
+  Object.assign(advanced, shm.config);
+  errors.push(...shm.issues.map((issue) => `  ${name}: ${issue.reason}`));
+  errors.push(
+    ...gpu.issues.filter((issue) => issue.blocking).map((issue) => `  ${name}: ${issue.reason}`),
+  );
   // `docker compose config` has already expanded args, including turning `$$`
   // into a literal `$`. An explicit empty marker prevents the API from ever
   // treating that normalized literal as a raw template on a later deploy.

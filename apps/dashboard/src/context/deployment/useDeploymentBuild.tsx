@@ -772,6 +772,7 @@ export function useDeploymentBuild(
             buildCommand: config.options.buildCommand,
             startCommand: config.options.startCommand,
             releaseCommands: config.releaseCommands,
+            roles: config.roles,
             githubChecks: config.githubChecks,
             outputDirectory: config.options.outputDirectory,
             productionPaths: config.options.productionPaths,
@@ -888,6 +889,7 @@ export function useDeploymentBuild(
         readiness: config.readiness ?? undefined,
         githubChecks: config.githubChecks,
         releaseCommands: config.releaseCommands,
+        roles: config.roles,
       });
 
       if (!projectData.success || !projectData.project_id) {

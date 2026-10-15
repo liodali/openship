@@ -165,10 +165,11 @@ function imageRefreshFixture() {
     containerId: `old-${service.name}`, imageRef: service.image, status: "success", ip: "172.18.0.2",
   }));
   h.previousDeployment.createdAt = new Date(1_000);
+  const { logger } = recordingLogger();
   const run = (options: Parameters<typeof deployComposeServices>[4] = {}, trigger = "manual") =>
     deployComposeServices({ ...project, activeDeploymentId: "d-old", routeStrategy: "container-ip" } as Project,
-      { ...dep, trigger }, runtime, recordingLogger().logger, options);
-  return { runtime, run, images, inspect, pull, activate, metadata, dbRef, apiRef, dbId, apiId, nextId };
+      { ...dep, trigger }, runtime, logger, options);
+  return { runtime, run, logger, images, inspect, pull, activate, metadata, dbRef, apiRef, dbId, apiId, nextId };
 }
 
 /** Stops the deploy at the first thing after the notice, so the test exercises the
@@ -272,8 +273,8 @@ it("deploys Cloud Compose endpoints, internal paths, generated files and contain
   expect(api.cloudProxyPorts).toEqual([8080]);
   expect(api.volumes.some((volume: string) => volume.endsWith(":/etc/app.yml:ro"))).toBe(true);
   expect(executor.writeFile).toHaveBeenCalledWith(expect.any(String), "enabled: true", expect.any(Object));
-  expect(pullImage).toHaveBeenCalledWith("web:v1", { force: true });
-  expect(pullImage).toHaveBeenCalledWith("api:v1", { force: true });
+  expect(pullImage).toHaveBeenCalledWith("web:v1", { force: true, logger });
+  expect(pullImage).toHaveBeenCalledWith("api:v1", { force: true, logger });
   expect(h.upsertServiceDeployment).toHaveBeenCalledWith(expect.objectContaining({
     serviceId: "svc-web", containerId: "web-container", hostPorts: { 8080: 30001, 9090: 30002 },
     allocatedResources: { containerId: "web-container", cpuCores: 1, memoryMb: 1024 },
@@ -480,7 +481,7 @@ describe("compose deploy — host channel unavailable", () => {
       f.images.set(ref, f.metadata(ref, f.nextId));
     });
     await expect(f.run()).rejects.toThrow("pinned image unavailable");
-    expect(f.pull).toHaveBeenCalledWith(pinned, { force: false });
+    expect(f.pull).toHaveBeenCalledWith(pinned, { force: false, logger: f.logger });
     expect(f.activate).not.toHaveBeenCalled();
     expect(f.runtime.destroy).not.toHaveBeenCalled();
   });
@@ -500,7 +501,7 @@ describe("compose deploy — host channel unavailable", () => {
     h.services[0]!.image = f.apiRef;
     f.pull.mockImplementation(async ref => { f.images.set(ref, f.metadata(ref, f.nextId)); });
     await f.run({ targetServiceIds: new Set(["svc-db", "svc-api"]) });
-    expect(f.pull).toHaveBeenCalledExactlyOnceWith(f.apiRef, { force: true });
+    expect(f.pull).toHaveBeenCalledExactlyOnceWith(f.apiRef, { force: true, logger: f.logger });
     expect(f.activate).toHaveBeenCalledTimes(2);
     expect(f.activate.mock.calls.every(call => call[1].image === `ghcr.io/acme/api@${f.nextId}`)).toBe(true);
   });
@@ -524,7 +525,7 @@ describe("compose deploy — host channel unavailable", () => {
     const result = await f.run({ targetServiceIds: new Set(["svc-db"]) });
     expect(result.status).toBe("ready");
     expect(f.inspect).toHaveBeenCalledWith(f.apiId);
-    expect(f.pull).toHaveBeenCalledExactlyOnceWith(f.dbRef, { force: true });
+    expect(f.pull).toHaveBeenCalledExactlyOnceWith(f.dbRef, { force: true, logger: f.logger });
     expect(f.activate.mock.calls.map(call => call[1].image)).toEqual([`postgres@${f.dbId}`, f.apiId]);
     expect(f.inspect.mock.invocationCallOrder[0]).toBeLessThan(f.activate.mock.invocationCallOrder[0]!);
   });
@@ -583,7 +584,7 @@ describe("compose deploy — host channel unavailable", () => {
       { targetServiceIds: new Set(["svc-api"]) },
     );
     expect(result.status).toBe("ready");
-    expect(pullImage).not.toHaveBeenCalledWith(image, { force: true });
+    expect(pullImage).not.toHaveBeenCalledWith(image, { force: true, logger });
     expect(deployServiceWorkload).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       image: IMAGE_ID, forcePull: false,
     }), expect.anything());
@@ -1489,8 +1490,8 @@ describe("compose deploy — host channel unavailable", () => {
       ),
     ).rejects.toThrow("registry unavailable");
 
-    expect(pullImage).toHaveBeenNthCalledWith(1, "ghcr.io/acme/api:staging", { force: true });
-    expect(pullImage).toHaveBeenNthCalledWith(2, "ghcr.io/acme/worker:staging", { force: true });
+    expect(pullImage).toHaveBeenNthCalledWith(1, "ghcr.io/acme/api:staging", { force: true, logger });
+    expect(pullImage).toHaveBeenNthCalledWith(2, "ghcr.io/acme/worker:staging", { force: true, logger });
     expect(pullImage).toHaveBeenCalledTimes(2);
     expect(pullImage).not.toHaveBeenCalledWith("postgres:17", expect.anything());
     expect(pullImage).not.toHaveBeenCalledWith("my-private-app:local", expect.anything());
@@ -1533,7 +1534,7 @@ describe("compose deploy — host channel unavailable", () => {
       { targetServiceIds: new Set(["svc-api"]), strictScope: true },
     );
     expect(result.status).toBe("ready");
-    expect(pullImage).toHaveBeenCalledExactlyOnceWith("ghcr.io/acme/api:stable", { force: true });
+    expect(pullImage).toHaveBeenCalledExactlyOnceWith("ghcr.io/acme/api:stable", { force: true, logger });
     expect(deployServiceWorkload).toHaveBeenCalledOnce();
     expect(deployServiceWorkload).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       serviceName: "api", forcePull: false,
@@ -1607,7 +1608,7 @@ describe("compose deploy — host channel unavailable", () => {
     ).rejects.toThrow("stop after cohort classification");
 
     expect(pullImage).toHaveBeenCalledTimes(1);
-    expect(pullImage).toHaveBeenCalledWith("ghcr.io/acme/api:staging", { force: true });
+    expect(pullImage).toHaveBeenCalledWith("ghcr.io/acme/api:staging", { force: true, logger });
     expect(deployServiceWorkload).not.toHaveBeenCalled();
   });
 
@@ -2207,3 +2208,13 @@ describe("compose deploy — host channel unavailable", () => {
 });
 
 vi.mock("@repo/platform/engine/lib/platform-config", () => ({ platform: () => ({ target: "selfhosted" }) }));
+
+it("rejects an invalid GPU request before pulling images or replacing any sibling", async () => {
+  const fixture = imageRefreshFixture();
+  h.services[0]!.updatedAt = new Date(2000);
+  h.services[1]!.advanced = { gpus: { driver: "amd", count: 1 } };
+  await expect(fixture.run()).rejects.toThrow(/only.*NVIDIA/);
+  expect(fixture.pull).not.toHaveBeenCalled();
+  expect(fixture.activate).not.toHaveBeenCalled();
+  expect(fixture.runtime.destroy).not.toHaveBeenCalled();
+});

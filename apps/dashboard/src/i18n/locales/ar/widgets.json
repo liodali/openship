@@ -354,7 +354,15 @@
       "addDomain": "إضافة نطاق",
       "primaryDomain": "النطاق الأساسي",
       "domainN": "النطاق {n}",
-      "remove": "إزالة"
+      "remove": "إزالة",
+      "domainBehavior": "سلوك النطاق",
+      "primaryHost": "{hostname} هو النطاق الأساسي",
+      "redirectHostDescription": "يعيد {from} التوجيه إلى {to}.",
+      "serveBoth": "تقديم التطبيق على كليهما",
+      "serveBothDescription": "يعرض اسما النطاق التطبيق.",
+      "customRouting": "توجيه مخصص",
+      "redirectDomain": "نطاق إعادة التوجيه",
+      "redirectSummary": "يعيد التوجيه إلى {hostname}."
     },
     "configEditor": {
       "remove": "إزالة",

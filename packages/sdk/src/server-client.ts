@@ -1,5 +1,6 @@
 import {
   ResourceIdSchema,
+  ServerMonitorFormatSchema,
   parseInput,
   ServerCollectionSchemas,
   ServerResourceSchemas,
@@ -393,7 +394,8 @@ export function createRemoteServerOperations(http: HttpClient): ServerOperations
     },
     async *monitor(value, options = {}) {
       const id = parseInput(ResourceIdSchema, value);
-      yield* http.events(`/system/monitor/stream?serverId=${encodeURIComponent(id)}`, {
+      const format = options.format === undefined ? "" : `&format=${parseInput(ServerMonitorFormatSchema, options.format)}`;
+      yield* http.events(`/system/monitor/stream?serverId=${encodeURIComponent(id)}${format}`, {
         signal: options.signal,
       });
     },

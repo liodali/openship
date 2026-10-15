@@ -354,7 +354,15 @@
       "addDomain": "Domain hinzufügen",
       "primaryDomain": "Primäre Domain",
       "domainN": "Domain {n}",
-      "remove": "Entfernen"
+      "remove": "Entfernen",
+      "domainBehavior": "Domain-Verhalten",
+      "primaryHost": "{hostname} als primäre Domain",
+      "redirectHostDescription": "{from} leitet auf {to} weiter.",
+      "serveBoth": "Beide bedienen",
+      "serveBothDescription": "Beide Hostnamen stellen die App bereit.",
+      "customRouting": "Benutzerdefiniertes Routing",
+      "redirectDomain": "Weiterleitungsdomain",
+      "redirectSummary": "Leitet auf {hostname} weiter."
     },
     "configEditor": {
       "remove": "Entfernen",

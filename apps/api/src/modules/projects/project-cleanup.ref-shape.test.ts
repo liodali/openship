@@ -45,7 +45,7 @@ const h = vi.hoisted(() => ({
   resolvedByDeployment: {} as Record<string, Record<string, unknown>>,
   resolveErrors: {} as Record<string, Error>,
   keep: { images: new Set<string>(), containers: new Set<string>() },
-  removeRoute: vi.fn(async () => {}),
+  removeRoute: vi.fn(async (_domain: string) => {}),
   releaseManagedHostnames: vi.fn(async () => ({ failures: [] as string[] })),
   convergeClaims: vi.fn(async () => ({
     released: 0,
@@ -104,6 +104,8 @@ vi.mock("@repo/platform/engine/modules/deployments/pinned-host-ports", () => ({
 }));
 
 import { CloudDockerRuntime, CloudInfraProvider, DockerRuntime } from "@repo/adapters";
+import { cloudDockerProjectPaths } from "../../../../../packages/adapters/src/runtime/cloud/docker-paths";
+import { managedRoutingFixture } from "../../../../../packages/adapters/test/managed-routing-fixture";
 import { resolveDeploymentRuntime, disposeRuntime } from "@repo/platform/engine/lib/deployment-runtime";
 import {
   collectDeploymentManifest,
@@ -201,8 +203,31 @@ describe("Cloud Docker project teardown", () => {
   Object.defineProperty(cloudDocker, "docker", { value: { ping: vi.fn(async () => {}) } });
   const routing = Object.assign(Object.create(CloudInfraProvider.prototype), {
     listProjectRouteHostnames: listRoutes, removeRoute: h.removeRoute,
+    removeProjectRoute: async (domain: string) => { await h.removeRoute(domain); return "removed" as const; },
   });
   const ownedProject = { ...project, serverId: "managed-server", workspaceId: "owner-workspace" };
+
+  function managedRoutes() {
+    const fixture = managedRoutingFixture();
+    Object.assign(fixture.scope, {
+      projectId: project.id,
+      workspaceId: "shared-vm",
+      routeRoot: cloudDockerProjectPaths(project.id).routes,
+    });
+    h.resolveCloudPlatform.mockResolvedValue({
+      platform: { runtime: cloudDocker, routing: fixture.infra },
+    });
+    const addPage = (slug: string, owner: string) =>
+      fixture.records.set(slug, {
+        id: fixture.records.size + 1,
+        slug,
+        domain: "opsh.io",
+        namespace: fixture.namespace,
+        source_workspace_id: fixture.scope.workspaceId,
+        exported_path: `${cloudDockerProjectPaths(owner).routes}/${slug}`,
+      });
+    return { ...fixture, addPage };
+  }
   beforeEach(() => {
     h.cloudBinding = { ownerWorkspaceId: "owner-workspace", namespace: "org-ns", workspaceId: "shared-vm" };
     h.deployments = [deployment({ containerId: "web-container", meta: { deployTarget: "cloud", runtimeMode: "docker",
@@ -236,6 +261,105 @@ describe("Cloud Docker project teardown", () => {
     expect(result.failed).toContainEqual(expect.objectContaining({ ref: "app.opsh.io", type: "route" }));
     expect(cloudDocker.removeVolume).not.toHaveBeenCalled();
     expect(cleanupProject).not.toHaveBeenCalled();
+  });
+  it("deletes owned routes and storage while preserving stale service hostnames now owned by another project", async () => {
+    const fixture = managedRoutes();
+    fixture.addPage("old-app", project.id);
+    fixture.addPage("app", "active-project");
+    fixture.addPage("console", "active-project");
+    h.projectServices = [{ id: "svc_1", name: "web" }];
+    h.derivedServiceRoutes = [{ hostname: "app.opsh.io" }, { hostname: "console.opsh.io" }];
+
+    const manifest = await collectProjectManifest(ownedProject as never, { wipeVolumes: true });
+    expect(
+      manifest.resources
+        .filter((resource) => resource.type === "route")
+        .map((resource) => resource.ref),
+    ).toEqual(["old-app.opsh.io", "app.opsh.io", "console.opsh.io"]);
+    expect((await executeCleanup(manifest)).failed).toEqual([]);
+
+    expect(fixture.pages.delete).toHaveBeenCalledExactlyOnceWith("old-app");
+    expect([...fixture.records.keys()]).toEqual(["app", "console"]);
+    expect(fixture.pages.get).toHaveBeenCalledWith("app");
+    expect(fixture.pages.get).toHaveBeenCalledWith("console");
+    expect(fixture.executor.rm).not.toHaveBeenCalled();
+    expect(cloudDocker.removeVolume).toHaveBeenCalledExactlyOnceWith("project-data");
+    expect(cloudDocker.removeNetwork).toHaveBeenCalledExactlyOnceWith(project.slug);
+    expect(cleanupProject).toHaveBeenCalledExactlyOnceWith(project.id, { wipeVolumes: true });
+    expect(h.releaseManagedHostnames).not.toHaveBeenCalled();
+  });
+  it.each(["unreadable", "ambiguous"])(
+    "blocks destructive storage cleanup when stale route ownership is %s",
+    async (failure) => {
+      vi.useFakeTimers();
+      try {
+        const fixture = managedRoutes();
+        fixture.addPage("app", "active-project");
+        h.projectServices = [{ id: "svc_1", name: "web" }];
+        h.derivedServiceRoutes = [{ hostname: "app.opsh.io" }];
+        const manifest = await collectProjectManifest(ownedProject as never, { wipeVolumes: true });
+        if (failure === "unreadable") {
+          fixture.pages.get.mockRejectedValue(new Error("provider read unavailable"));
+        } else {
+          fixture.records.set("another-app", {
+            ...fixture.records.get("app"),
+            id: 2,
+            slug: "another-app",
+            custom_domain: "app.opsh.io",
+          });
+        }
+
+        const pending = executeCleanup(manifest);
+        await vi.runAllTimersAsync();
+        const result = await pending;
+
+        expect(result.failed).toContainEqual(
+          expect.objectContaining({
+            type: "route",
+            ref: "app.opsh.io",
+            error: expect.stringContaining(
+              failure === "unreadable" ? "provider read unavailable" : "ambiguous",
+            ),
+          }),
+        );
+        expect(fixture.pages.delete).not.toHaveBeenCalled();
+        expect(fixture.records.has("app")).toBe(true);
+        expect(cloudDocker.removeVolume).not.toHaveBeenCalled();
+        expect(cloudDocker.removeNetwork).not.toHaveBeenCalled();
+        expect(cleanupProject).not.toHaveBeenCalled();
+        expect(h.releaseManagedHostnames).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+  it("cleans a legacy physical target without releasing a hostname belonging to another Cloud project", async () => {
+    const fixture = managedRoutes();
+    fixture.addPage("app", "active-project");
+    h.projectServices = [{ id: "svc_1", name: "web" }];
+    h.derivedServiceRoutes = [{ hostname: "app.opsh.io" }];
+    const manifest = await collectProjectManifest(ownedProject as never, { wipeVolumes: true });
+    const removeLegacyRoute = vi.fn(async () => {});
+    manifest.routeContexts = [
+      {
+        key: "legacy-host",
+        routing: { removeRoute: removeLegacyRoute } as never,
+        hostPortTarget: { targetKey: "local", legacyTargetKeys: [], stable: true },
+        serverId: "legacy-server",
+        runtimeMode: "docker",
+        edgeProxy: { listLoopbackUpstreamPortsStrict: vi.fn(async () => new Set<number>()) },
+      },
+    ];
+
+    expect((await executeCleanup(manifest)).failed).toEqual([]);
+
+    expect(removeLegacyRoute).toHaveBeenCalledExactlyOnceWith("app.opsh.io");
+    expect(fixture.pages.delete).not.toHaveBeenCalled();
+    expect(fixture.records.has("app")).toBe(true);
+    expect(h.releaseManagedHostnames).not.toHaveBeenCalled();
+    expect(cloudDocker.removeNetwork).toHaveBeenCalledExactlyOnceWith(project.slug);
+    expect(cleanupProject).toHaveBeenCalledExactlyOnceWith(project.id, { wipeVolumes: true });
+    expect(h.convergeClaims).toHaveBeenCalledOnce();
   });
   it("previews and optionally wipes only owned unattached volumes after a failed first deployment", async () => {
     h.deployments[0]!.containerId = null;

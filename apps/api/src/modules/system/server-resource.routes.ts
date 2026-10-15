@@ -1,3 +1,4 @@
+import { ServerMonitorFormatSchema } from "@repo/contracts";
 /** Server resource API shared by connected hosts and managed Cloud instances. */
 import { Hono } from "hono";
 import { Type } from "@sinclair/typebox";
@@ -119,7 +120,7 @@ r.get(
   {
     tag: "server:read",
     authorizationHandledByOperation: true,
-    query: Type.Object({ serverId: ResourceIdSchema }, { additionalProperties: false }),
+    query: Type.Object({ serverId: ResourceIdSchema, format: Type.Optional(ServerMonitorFormatSchema) }, { additionalProperties: false }),
     mcpExcluded:
       "SSE transport for live progress. Use the resource’s JSON status/log tools over MCP, or an authenticated HTTP client for streaming.",
   },

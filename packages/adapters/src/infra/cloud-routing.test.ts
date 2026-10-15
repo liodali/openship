@@ -5,6 +5,19 @@ beforeEach(() => { h = managedRoutingFixture(); });
 const route = { domain: "app.opsh.io", targetUrl: "http://127.0.0.1:3000", tls: true };
 
 describe("project routes on a managed server", () => {
+  it.each([301, 302, 307, 308])("publishes a terminal canonical redirect and can return to serving the app (%s)", async statusCode => {
+    const redirect = { ...route, redirectHost: { target: "primary.example.com", statusCode } };
+    await h.infra.registerRoute(redirect);
+    await h.infra.registerRoute(redirect);
+    expect(h.routes.set).toHaveBeenLastCalledWith(route.domain, {
+      routes: [{ match: { path: "/(.*)", type: "wildcard" }, action: { kind: "redirect", status: statusCode, to: "https://primary.example.com/$1" } }],
+    });
+    expect(h.pages.create).toHaveBeenCalledOnce();
+    await h.infra.registerRoute(route);
+    expect(h.routes.set).toHaveBeenLastCalledWith(route.domain, { routes: [{ match: { path: "/", type: "prefix" }, action: { kind: "proxy", workspace: h.workspaceId, port: 3000 } }] });
+    expect(h.pages.create).toHaveBeenCalledOnce();
+  });
+
   it("publishes only explicit paths without adding a root proxy or static fallback", async () => {
     await h.infra.registerRoute({
       domain: route.domain, tls: true, notFound: true,

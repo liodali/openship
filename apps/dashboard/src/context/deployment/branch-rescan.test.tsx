@@ -291,6 +291,49 @@ describe("deploy branch detection", () => {
     expect(current.config.releaseCommands).toEqual(["node migrate.js"]);
   });
 
+  it("hydrates saved roles when editing a project", async () => {
+    const roles = [{ name: "jobs", kind: "worker", command: "bin/jobs" }];
+    api.getInfo.mockResolvedValueOnce({ data: { project: {
+      id: "project-1", name: "Demo", framework: "node", gitOwner: "example", gitRepo: "demo",
+      gitBranch: "main", roles,
+    } } });
+    api.listServices.mockResolvedValueOnce({ services: [] });
+    await act(async () => { await current.initializeFromProject("project-1"); });
+    expect(current.config.roles).toEqual(roles);
+  });
+
+  it.each([{ roles: [{ name: "queue", kind: "worker", command: "bin/queue" }] }, { roles: [] }])(
+    "preserves a saved roles setting through rescan, save and deploy: $roles",
+    async ({ roles }) => {
+      await act(async () => current.updateConfig({ roles: roles as never }));
+      api.prepare.mockResolvedValueOnce(scan("openship", { roles: [{ name: "upstream", kind: "worker", command: "x" }] }));
+      await selectBranch("openship");
+      expect(current.config.roles).toEqual(roles);
+      await act(async () => button(baseDictionary.deploy.sidebar.saveChanges).click());
+      expect(api.setOptions).toHaveBeenCalledWith("project-1", expect.objectContaining({ roles }));
+      await act(async () => { await build.startDeployment(); });
+      expect(api.ensure).toHaveBeenCalledWith(expect.objectContaining({ roles }));
+    },
+  );
+
+  it.each([
+    { label: "declared roles", roles: [{ name: "jobs", kind: "worker" as const, command: "bin/jobs" }] },
+    { label: "a declared empty list", roles: [] },
+  ])("carries $label from a new project's scan through to the ensure request", async ({ roles }) => {
+    api.prepare.mockResolvedValueOnce(scan("main", { roles }));
+    await act(async () => { await current.initializeFromRepo("example", "fresh"); });
+    expect(current.config.roles).toEqual(roles);
+    await act(async () => { await build.startDeployment(); });
+    expect(api.ensure).toHaveBeenCalledWith(expect.objectContaining({ roles }));
+  });
+
+  it("does not send roles for a scan that declared none", async () => {
+    await act(async () => { await current.initializeFromRepo("example", "fresh"); });
+    expect(current.config.roles).toBeUndefined();
+    await act(async () => { await build.startDeployment(); });
+    expect(api.ensure.mock.calls.at(-1)?.[0]?.roles).toBeUndefined();
+  });
+
   it.each([false, true])("keeps the managed server on Cloud draft restoration (empty service read: %s)", async empty => {
     api.getInfo.mockResolvedValueOnce({ data: { project: {
       id: "project-1", name: "Cloud app", framework: "docker-compose", gitOwner: "example", gitRepo: "demo",
@@ -335,6 +378,19 @@ describe("deploy branch detection", () => {
     });
     expect(current.config.releaseCommands).toEqual(["node migrate.js"]);
     expect(current.config.framework).toBe("node");
+  });
+
+  it.each([
+    { label: "with a stack selected", context: { stack: "node", name: "Uploaded app" } },
+    { label: "with the stack detected", context: undefined },
+  ])("imports roles from an uploaded folder $label", async ({ context }) => {
+    const roles = [{ name: "jobs", kind: "worker", command: "bin/jobs" }];
+    api.folderScan.mockResolvedValue({ ...scan("main"), name: "Uploaded app", roles });
+    await act(async () => {
+      const result = await current.initializeFromUpload("upload-1", context);
+      expect(result.success).toBe(true);
+    });
+    expect(current.config.roles).toEqual(roles);
   });
 
   it("rescans from the branch dropdown, replaces compose defaults, and preserves project edits", async () => {

@@ -53,11 +53,12 @@ import {
   type BuildKind,
   type WorkloadType,
   type OpenshipEnv,
+  type StackRole,
 } from "@repo/core";
 import type { LogEntry, ResourceConfig } from "@repo/adapters";
 import { decodeResources } from "../../lib/resources";
 import { resolveEnvDirtyServiceIds } from "./env-drift";
-import { withProjectRuntimeLock } from "../../lib/project-runtime-lock";
+import { withProjectStateLock } from "../../lib/project-runtime-lock";
 import { resolveDeploymentEnvironment } from "./deployment-environment";
 import type { TBuildAccessBody } from "@repo/contracts";
 import { platform } from "../../lib/platform-config";
@@ -246,6 +247,14 @@ export interface DeploymentConfigSnapshot {
    * release phase, so those redeploy exactly as they always did.
    */
   releaseCommands?: string[];
+  /**
+   * Extra processes (workers, a scheduler) this release runs beside the web
+   * app, frozen for the same reason as `releaseCommands`: a redeploy of an OLD
+   * deployment must run the roles THAT release declared. Absent on every row
+   * written before the field existed and on every project without roles, so
+   * those snapshots are unchanged.
+   */
+  roles?: StackRole[];
   resources: ResourceConfig | null;
   buildResources: ResourceConfig | null;
   /** Whether the project needs a running server (false = static, deploy via Pages) */
@@ -482,6 +491,11 @@ export function buildConfigSnapshot(project: Project, branch?: string): Deployme
     // snapshot byte-identical to a pre-release-phase one.
     ...(Array.isArray(project.releaseCommands) && project.releaseCommands.length > 0
       ? { releaseCommands: project.releaseCommands as string[] }
+      : {}),
+    // Same rule: only a non-empty list, so a project without roles snapshots
+    // byte-identical to before. when/unless are preset-only and never frozen.
+    ...(Array.isArray(project.roles) && project.roles.length > 0
+      ? { roles: project.roles.map(({ when: _when, unless: _unless, ...role }) => role) }
       : {}),
     resources: (project.resources as ResourceConfig) || null,
     buildResources: (project.buildResources as ResourceConfig) || null,
@@ -1314,7 +1328,8 @@ export async function createQueuedDeployment(opts: Parameters<typeof createQueue
   // A service env apply owns the same lock until its replacement is durable.
   // Once a queued row exists, apply refuses it via listInFlightByProject, so
   // neither ordering can replace the same container concurrently.
-  return withProjectRuntimeLock(opts.projectId, () => createQueuedDeploymentUnlocked(opts));
+  // Submission only changes DB state; the worker owns shared host admission.
+  return withProjectStateLock(opts.projectId, () => createQueuedDeploymentUnlocked(opts));
 }
 
 async function createQueuedDeploymentUnlocked(opts: {

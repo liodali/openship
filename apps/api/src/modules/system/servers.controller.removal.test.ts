@@ -31,6 +31,7 @@ type Teardown = {
 const ok = (): Teardown => ({ ok: true, rowDeleted: true, unrecoverable: [], orphaned: [] });
 
 const h = vi.hoisted(() => ({
+  ingress: vi.fn(async () => null as { id: string } | null),
   clusterMembership: vi.fn(async () => null as { clusterId: string } | null),
   assert: vi.fn(async (_ctx: ExecutionContext, _input: PermissionInput) => {}),
   /** Call log in order, so "row deleted last" is checkable rather than assumed. */
@@ -76,6 +77,7 @@ const h = vi.hoisted(() => ({
 vi.mock("@repo/db", () => ({
   withAdvisoryLock: async (_key: string, fn: () => Promise<unknown>) => fn(),
   repos: {
+    ingress: { byServer: h.ingress },
     serverCluster: { membership: h.clusterMembership },
     server: {
       listByOrganization: vi.fn(async () => h.rows),
@@ -152,6 +154,7 @@ const project = (id: string, over: Record<string, unknown> = {}) => ({
 beforeEach(() => {
   vi.clearAllMocks();
   h.clusterMembership.mockResolvedValue(null);
+  h.ingress.mockResolvedValue(null);
   h.calls.length = 0;
   h.assert.mockImplementation(async () => {});
   h.teardown.mockImplementation(async (_ctx, id) => {
@@ -442,4 +445,12 @@ vi.mock("@repo/platform/engine/lib/platform", async () => {
   const { authorization } = await import("@repo/platform/engine/lib/authorization");
   const servers = createServerOperations(authorization, serverDependencies);
   return { getPlatformKernel: () => ({ servers }) };
+});
+
+it("keeps ingress cleanup authority before starting destructive workload removal", async () => {
+  h.ingress.mockResolvedValueOnce({id:"igc_pending_cleanup"});
+  const {c}=context("srv1", {destroyOnSource:"true"});
+  await expect(deleteServer(c)).rejects.toMatchObject({code:"SERVER_INGRESS_CONNECTED",statusCode:409});
+  expect(h.teardown).not.toHaveBeenCalled();
+  expect(h.serverDelete).not.toHaveBeenCalled();
 });

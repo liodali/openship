@@ -8,6 +8,8 @@
  * in Electron's ConfigStore - they never touch this API.
  */
 import { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
+import { APPEARANCE_MAX_BYTES } from "@repo/core";
 import {
   UserSettingsSchemas,
   UpdateBuildModeBody,
@@ -59,5 +61,31 @@ r.patch("/forward-git", { tag: "settings:write", auditHandledByOperation: true, 
 /** GET /webhook-deliveries - org-wide webhook delivery feed (incl forwarded/unmatched GitHub pushes) */
 r.get("/webhook-deliveries", { tag: "settings:read", mcp: { description: "List the org's webhook delivery feed, including pushes forwarded to Cloud or from unmanaged repos (paginated)." } }, orgDeliveries);
 
-export const settingsRoutes = r.hono;
+// Bound JSON before parsing, allowing indentation and the response wrapper.
+r.use("/appearance", bodyLimit({ maxSize: APPEARANCE_MAX_BYTES * 2 }));
+r.get(
+  "/appearance",
+  {
+    tag: "settings:read",
+    mcp: {
+      description:
+        "Get the authenticated user's personal theme library and active appearance. Does not read other users' themes.",
+    },
+  },
+  ctrl.getAppearance,
+);
+r.put(
+  "/appearance",
+  {
+    tag: "settings:write",
+    auditHandledByOperation: true,
+    body: UserSettingsSchemas.setAppearance.input,
+    mcp: {
+      description:
+        "Save the authenticated user's versioned appearance JSON, including validated theme tokens and embedded WOFF2 fonts. Null resets saved appearance.",
+    },
+  },
+  ctrl.setAppearance,
+);
 
+export const settingsRoutes = r.hono;

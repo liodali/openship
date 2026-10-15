@@ -58,6 +58,14 @@ changing the API setting does not move a running database. Start-only repairs re
 the existing container binding. Inside the PostgreSQL container the port remains
 5432, and the mail daemons use the selected host port.
 
+At container boot, fail2ban receives its own root-readable PostgreSQL connection
+settings and password file in `/etc/fail2ban/openship-postgresql.{conf,pgpass}`.
+Its database helper reads these files for the selected TCP host and port, including
+direct or scheduled invocations without the container environment. Other users'
+`.pgpass` files are preserved. SQL failures return an error instead of reporting a
+successful ban. This repair ships in the mail engine image; existing installations
+receive it when that image is updated and the engine container is recreated.
+
 ```
 openship Postgres ($DATABASE_URL)                 ← unrelated to mail
 └── schema "public"

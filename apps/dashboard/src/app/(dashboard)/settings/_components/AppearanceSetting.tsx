@@ -1,6 +1,8 @@
 "use client";
 
 import { useId } from "react";
+import Link from "next/link";
+import { Button } from "@/components/ui/button";
 import { Icon as UiIcon } from "@repo/ui/icons";
 import { useI18n } from "@/components/i18n-provider";
 import { useTheme } from "@/components/theme-provider";
@@ -9,18 +11,27 @@ import { SettingsSection } from "./SettingsSection";
 const THEMES = ["light", "dim", "dark", "system"] as const;
 
 export function AppearanceSetting() {
-  const { theme, setTheme } = useTheme();
+  const { preferences, setTheme } = useTheme();
   const { t } = useI18n();
   const copy = t.settings.appearance;
   const groupName = useId();
 
   return (
-    <SettingsSection icon="sun-moon" title={copy.title} description={copy.description}>
+    <SettingsSection
+      icon="sun-moon"
+      title={copy.title}
+      description={copy.description}
+      action={
+        <Button asChild variant="secondary" size="sm">
+          <Link href="/settings?tab=general&view=appearance">{copy.customize}</Link>
+        </Button>
+      }
+    >
       <div className="@container">
         <fieldset className="grid grid-cols-2 gap-3 @xl:grid-cols-4">
           <legend className="sr-only">{copy.title}</legend>
           {THEMES.map((value) => {
-            const selected = theme === value;
+            const selected = preferences.active === value;
             return (
               <label key={value} className="min-w-0 cursor-pointer">
                 <input

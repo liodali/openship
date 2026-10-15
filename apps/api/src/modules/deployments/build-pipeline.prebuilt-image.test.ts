@@ -1563,6 +1563,42 @@ describe("single-app prebuilt release-image pipeline", () => {
     );
   });
 
+  it("keeps a successful deploy ready and surfaces a previous role container it could not remove", async () => {
+    // The new release declares no roles, so the rollout only retires the old one on commit.
+    const previous = deployment({
+      id: "previous-deployment",
+      containerId: "old-container",
+      status: "ready",
+      roleContainers: [{ role: "queue", replica: 1, containerId: "old-queue-01" }],
+    });
+    const next = deployment();
+    mocks.findDeploymentById.mockImplementation(async (id) =>
+      id === "previous-deployment" ? previous : next,
+    );
+    vi.mocked(resolveDeploymentRuntime).mockResolvedValue({ runtime: resolvedRuntime } as never);
+    mocks.destroy.mockImplementation(async (id) => {
+      if (id === "old-queue-01") throw new Error("Docker removal failed");
+    });
+
+    await kickoffBuild(project({ activeDeploymentId: "previous-deployment" }), next);
+    await drainDeploymentExecutions();
+
+    expect(mocks.destroy).toHaveBeenCalledWith("old-queue-01");
+    expect(mocks.onFailure).not.toHaveBeenCalled();
+    expect(mocks.onSuccess).toHaveBeenCalledOnce();
+    const result = mocks.onSuccess.mock.calls[0]![1] as {
+      warningMessage?: string;
+      metaPatch?: Record<string, unknown>;
+    };
+    expect(result.warningMessage).toBe(
+      "Previous role container queue replica 1 (old-queue-01) could not be removed. " +
+        "It may still be running the previous release's code. Remove it manually.",
+    );
+    // Not a routing problem: no "Retry routing" signal.
+    expect(result.metaPatch?.deployWarning).toBeUndefined();
+    expect(result.metaPatch?.edgeUnsynced).toBeUndefined();
+  });
+
   it("protects a bare explicit container-ip deploy from stale edge ports before activation", async () => {
     // Bare still binds the target host's loopback namespace. The user-facing
     // strategy cannot turn that physical topology into a container bridge.

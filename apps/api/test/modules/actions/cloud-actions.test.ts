@@ -457,9 +457,26 @@ describe("connected Cloud Actions authority", () => {
     expect((await request("/actions/workflows")).status).toBe(200);
     expect(h.fetch).not.toHaveBeenCalled();
   });
-  it("surfaces unavailable Cloud and upstream policy errors", async () => {
+  it.each([
+    ["unreachable", () => null],
+    ["invalid response", () => new Response("<html>Gateway error</html>")],
+    ["upstream refusal", () => Response.json({ error: "Forbidden" }, { status: 403 })],
+  ] as const)(
+    "keeps local workflows when optional Cloud discovery returns %s",
+    async (_name, reply) => {
+      const { row } = await localWorkflow();
+      h.fetch.mockResolvedValueOnce(reply());
+      const response = await request("/actions/workflows");
+      expect(response.status).toBe(200);
+      expect((await response.json()).data.map((item: ActionWorkflowView) => item.id)).toEqual([
+        row.id,
+      ]);
+      expect(await repos.actions.workflow(owner.orgId, workflow.id)).toBeUndefined();
+    },
+  );
+  it("surfaces unavailable Cloud and upstream policy errors for Cloud-owned resources", async () => {
     h.fetch.mockResolvedValueOnce(null);
-    const lost = await request("/actions/workflows");
+    const lost = await request("/actions/workflows/cloud-workflow");
     expect(lost.status).toBe(503);
     expect((await lost.json()).code).toBe("CLOUD_UNREACHABLE");
     h.fetch.mockResolvedValueOnce(
@@ -472,7 +489,7 @@ describe("connected Cloud Actions authority", () => {
     expect(changed.status).toBe(409);
     expect((await changed.json()).code).toBe("ACTIONS_APPROVAL_CHANGED");
     h.fetch.mockResolvedValueOnce(new Response("<html>Gateway error</html>"));
-    expect((await request("/actions/workflows")).status).toBe(502);
+    expect((await request("/actions/workflows/cloud-workflow")).status).toBe(502);
   });
   it("stays local while disconnected or on the canonical Cloud API", async () => {
     h.linked.clear();

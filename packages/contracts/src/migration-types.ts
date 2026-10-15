@@ -1,4 +1,4 @@
-import type { PromptPayload } from "@repo/core";
+import type { PromptPayload, ComposeGpuConfig } from "@repo/core";
 
 // ─── Types (mirror apps/api docker-inspect.service.ts DiscoveredStack) ────────
 
@@ -10,6 +10,10 @@ export interface DiscoveredVolumeMount {
 }
 
 export interface DiscoveredService {
+  /** Live GPU settings; an empty object explicitly clears stale declarations. */
+  gpu?: ComposeGpuConfig;
+  gpuImportError?: string;
+  shmSize?: number;
   name: string;
   source: "compose" | "container";
   containerId?: string;

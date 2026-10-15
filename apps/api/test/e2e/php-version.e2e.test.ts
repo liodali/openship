@@ -170,6 +170,8 @@ describeDockerE2E("PHP selection through build, deploy and rollback (#937)", () 
     const initial83 = await ready(first.deployment.id);
     await check(initial83, "8.3");
     const custom83 = `openship-runtime-test/php:${project.id}-83`;
+    // BuildKit's FROM cache does not populate Docker's image store for tagging.
+    await runtime.pullImage("dunglas/frankenphp:1-php8.3-bookworm");
     await runtime.docker
       .getImage("dunglas/frankenphp:1-php8.3-bookworm")
       .tag({ repo: "openship-runtime-test/php", tag: `${project.id}-83` });
@@ -261,7 +263,7 @@ describeDockerE2E("PHP selection through build, deploy and rollback (#937)", () 
       `require("http").createServer((req, res) => res.end(process.versions.node)).listen(process.env.PORT || 8000, "0.0.0.0");`,
     );
     const customNode = `openship-runtime-test/node:${project.id}`;
-    await createHostExecutor().exec("docker pull node:22-bookworm-slim", {timeout: 180_000});
+    await runtime.pullImage("node:22-bookworm-slim");
     await runtime.docker
       .getImage("node:22-bookworm-slim")
       .tag({ repo: "openship-runtime-test/node", tag: project.id });

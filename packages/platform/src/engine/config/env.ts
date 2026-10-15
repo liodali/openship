@@ -359,6 +359,8 @@ const envSchema = z.object({
   /** Control-plane endpoint. Override only for an Oblien staging installation. */
   OBLIEN_API_URL: z.url().default("https://api.oblien.com"),
   OBLIEN_RUNTIME_URL: z.url().default("https://workspace.oblien.com"),
+  /** Optional published software preset for NEW managed Docker workspaces. */
+  OBLIEN_DOCKER_PRESET: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/).optional(),
   /**
    * Shared secret we hand Oblien when registering our webhook via
    * `webhooks.create` (see `ensureOblienWebhook`). Oblien signs each delivery

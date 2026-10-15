@@ -103,6 +103,7 @@ try {
         await reconcileAllSchedules();
         await reconcileJobs();
         (await import("./engine/modules/actions/lifecycle")).startActionController();
+        (await import("./engine/modules/ingress/lifecycle")).startIngressController();
         const { scheduleBillingAnniversary } = await import("./engine/modules/billing/billing-anniversary.cron");
         await scheduleBillingAnniversary();
         const { startNotificationRunner } = await import("./engine/lib/notification-workers");
@@ -120,6 +121,7 @@ try {
       await stopNotificationRunner();
       const { shutdownJobRunner } = await import("./engine/lib/job-runner");
       await (await import("./engine/modules/actions/lifecycle")).stopActionController();
+      await (await import("./engine/modules/ingress/lifecycle")).stopIngressController();
       await shutdownJobRunner(Infinity);
       const { stopAllContainerEventWatchers } = await import("./engine/modules/monitoring/container-events");
       await stopAllContainerEventWatchers({ closing: true });

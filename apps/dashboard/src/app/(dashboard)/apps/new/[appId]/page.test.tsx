@@ -13,6 +13,7 @@ import AppInstallPage from "./page";
 
 const h = vi.hoisted(() => ({
   template: vi.fn(),
+  home: vi.fn(),
   hostFit: vi.fn(),
   services: vi.fn(),
   info: vi.fn(),
@@ -43,7 +44,7 @@ vi.mock("@/lib/api", () => ({
     updateSettings: h.updateSettings,
   },
   servicesApi: { list: h.services, update: h.updateService },
-  projectsApi: { getInfo: h.info },
+  projectsApi: { getInfo: h.info, getHome: h.home },
   deployApi: { buildAccess: h.build, getBuildStatus: h.buildStatus, buildRedeploy: h.redeploy },
 }));
 vi.mock("next/navigation", () => ({
@@ -160,6 +161,7 @@ beforeEach(() => {
   h.appId = "convex";
   h.query = "projectId=draft";
   h.template.mockReset();
+  h.home.mockResolvedValue({ projects: [] });
   h.hostFit.mockReset().mockResolvedValue({
     data: {
       minResources: null,
@@ -233,6 +235,37 @@ async function renderApp(
   });
   await render();
 }
+
+it.each([false, true])("installs Ollama using the catalog GPU choice (%s)", async useGpu => {
+  await renderApp({ appId: "ollama", cloud: false, template: { ...getAppTemplate("ollama")!, available: true } });
+  if (useGpu) {
+    await click("CPU");
+    await click("NVIDIA GPU");
+  }
+  await click(baseDictionary.projectSettings.appInstall.install);
+  expect(h.install).toHaveBeenCalledWith(expect.objectContaining({ templateId: "ollama", useGpu }));
+});
+
+it("refuses a self-hosted-only app in the Cloud wizard before checkout or installation", async () => {
+  await renderApp({ appId: "open-webui", cloud: true, template: { ...getAppTemplate("open-webui")!, available: true } });
+  expect(button(baseDictionary.projectSettings.appInstall.install).disabled).toBe(true);
+  expect(container.textContent).toContain("This app is self-hosted only");
+  expect(h.install).not.toHaveBeenCalled();
+  expect(h.showCloudPricing).not.toHaveBeenCalled();
+});
+
+it("offers an Ollama API provider without mistaking other AI apps for that protocol", async () => {
+  h.home.mockResolvedValue({ projects: [
+    { id: "provider", name: "My Ollama", appTemplateId: "ollama" },
+    { id: "incompatible", name: "My vLLM", appTemplateId: "vllm" },
+    { id: "frontend", name: "My chat", appTemplateId: "open-webui" },
+  ] });
+  await renderApp({ appId: "open-webui", cloud: false, template: { ...getAppTemplate("open-webui")!, available: true } });
+  await click("None");
+  expect(document.body.textContent).toContain("My Ollama");
+  expect(document.body.textContent).not.toContain("My vLLM");
+  expect(document.body.textContent).not.toContain("My chat");
+});
 
 it("installs Cloud webmail with external IMAP/SMTP settings through the normal app and deployment APIs", async () => {
   await renderApp({ appId: "webmail", cloud: true });

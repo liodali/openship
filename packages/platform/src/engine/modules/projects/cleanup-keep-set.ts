@@ -84,6 +84,11 @@ export async function computeCleanupKeepSet(
     if (!dep) continue;
     const own = usableRef(dep?.containerId);
     if (own) containers.add(own);
+    // A live release's workers and scheduler are as live as its web container.
+    for (const role of dep.roleContainers ?? []) {
+      const ref = usableRef(role.containerId);
+      if (ref) containers.add(ref);
+    }
 
     const rows = await repos.service.listByDeployment(dep.id);
     for (const row of rows) {

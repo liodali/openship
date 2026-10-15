@@ -235,7 +235,7 @@ export function AddServiceModal({ open, projectId, projectName, isCloudProject, 
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
 
   // Every application service uses the shared Docker engine and OCI catalog.
-  const catalog = LOCAL_SERVICE_CATALOG;
+  const catalog = cloudOnly ? LOCAL_SERVICE_CATALOG.filter(entry => !entry.gpus && entry.supportsCloud !== false) : LOCAL_SERVICE_CATALOG;
 
   // Configure step state. Ports is a single-line, comma-separated string -
   // 95% of services have one port and the old textarea wasted vertical space.
@@ -397,6 +397,11 @@ export function AddServiceModal({ open, projectId, projectName, isCloudProject, 
       // arguments. Matching catalog images keep argv intact (never `sh -c`).
       ...(trimmedImage === selected?.image && selected.commandArgv
         ? { commandArgv: [...selected.commandArgv] }
+        : {}),
+      // A catalog entry that needs a GPU (the Ollama GPU variant) carries its
+      // request; a replacement image keeps nothing, like commandArgv above.
+      ...(trimmedImage === selected?.image && selected.gpus
+        ? { advanced: { gpus: { ...selected.gpus } } }
         : {}),
       restart: "unless-stopped",
       enabled: true,

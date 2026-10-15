@@ -18,6 +18,32 @@ const exec = promisify(execFile);
 
 const cleanups: Array<() => Promise<void>> = [];
 
+it("keeps generated session files and concurrent ignore-write temporaries out of application copies", async () => {
+  const repo = await makeRepo("node_modules\n!public\n");
+  await rm(join(repo, "Dockerfile"));
+  const temporary = ".openship-dockerignore-00000000-0000-0000-0000-000000000000";
+  await writeFile(join(repo, temporary), "concurrent writer");
+  const resolved = await Promise.all(["first", "second"].map(session => resolveServiceDockerfile(repo,
+    { ...config(repo), buildCache: true }, { generatedName: `Dockerfile.openship.${session}` })));
+  expect(await readFile(join(repo, ".dockerignore"), "utf8")).toContain("node_modules\n!public\n");
+  expect(await readFile(join(repo, ".dockerignore"), "utf8")).toContain("Dockerfile.openship*\n");
+  for (const context of resolved) {
+    expect(context.requiresBuildKit).toBe(true);
+    expect(context.contextEntries).not.toContain(temporary);
+  }
+});
+
+it("never follows a repository ignore symlink when preparing cache metadata", async () => {
+  const repo = await makeRepo("");
+  await rm(join(repo, "Dockerfile"));
+  const external = join(repo, "original-ignore");
+  await writeFile(external, "unchanged");
+  await rm(join(repo, ".dockerignore"));
+  await symlink(external, join(repo, ".dockerignore"));
+  await resolveServiceDockerfile(repo, { ...config(repo), buildCache: true });
+  expect(await readFile(external, "utf8")).toBe("unchanged");
+});
+
 it("refuses explicit PHP selection on a user Dockerfile without rewriting it", async () => {
   const repo = await makeRepo("");
   const original = await readFile(join(repo, "Dockerfile"), "utf8");

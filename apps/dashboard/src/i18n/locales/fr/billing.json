@@ -17,7 +17,7 @@
     "viewPlan": "Voir mon offre",
     "serverTitle": "{name} est prêt",
     "serverDescription": "Votre offre {plan} est active. Les applications et les builds partagent les ressources de ce serveur.",
-    "openServer": "Ouvrir le serveur"
+    "openServer": "Voir l’espace Cloud"
   },
   "capacity": {
     "title": "Capacité et utilisation",
@@ -534,12 +534,12 @@
     "customBuildLimit": "Définir une limite"
   },
   "workspaces": {
-    "title": "Serveurs Cloud gérés",
-    "singular": "Serveur Cloud",
+    "title": "Espaces Cloud",
+    "singular": "Espace Cloud",
     "description": "Choisissez une offre et déployez. Openship gère le serveur ; vos projets partagent CPU, mémoire et stockage.",
-    "loading": "Chargement de le serveur…",
+    "loading": "Chargement des espaces Cloud…",
     "choose": "Choisir un serveur",
-    "chooseBilling": "Sélectionnez un serveur pour afficher sa facturation.",
+    "chooseBilling": "Choisissez un espace Cloud pour voir sa facturation.",
     "dedicatedProjects": "Facturation des projets dédiés",
     "dedicatedProjectsHint": "Projets existants disposant de leurs propres machines Cloud.",
     "shared": "Plusieurs projets",
@@ -552,10 +552,10 @@
     "defaultName": "Production",
     "defaultHint": "Choisissez une offre et déployez. Nous créons et gérons votre serveur automatiquement.",
     "noneAvailable": "Créez un serveur compatible ou libérez un espace dédié avant d’y placer ce projet.",
-    "manage": "Gérer les serveurs",
+    "manage": "Gérer l’espace Cloud",
     "subscriptionHint": "Les nouveaux serveurs sont facturés séparément.",
     "placementHint": "Les projets partagent les ressources de cet espace. En supprimer un laisse les autres en place.",
-    "create": "Créer un serveur",
+    "create": "Ajouter un espace Cloud",
     "mode": "Isolation des projets",
     "createHint": "La création d’un espace est gratuite. Choisissez ensuite son forfait ; la facturation commence après le paiement.",
     "cloudOnly": "Les serveurs gérés sont disponibles dans Openship Cloud. Utilisez Serveurs pour gérer votre infrastructure auto-hébergée.",
@@ -573,7 +573,7 @@
     "provision": "Démarrer le serveur",
     "resume": "Reprendre le serveur",
     "resize": "Appliquer la capacité de l’offre",
-    "operation": "Activité de le serveur",
+    "operation": "Activité",
     "nextAttempt": "Prochaine tentative :",
     "resizeConfirm": "Appliquer la capacité de l’offre actuelle ?",
     "before": "Hôte actuel",
@@ -583,12 +583,12 @@
     "confirmResize": "Appliquer et redémarrer",
     "rename": "Renommer",
     "save": "Enregistrer",
-    "delete": "Supprimer le serveur",
-    "confirmDelete": "Supprimer cet espace vide",
+    "delete": "Supprimer l’espace Cloud",
+    "confirmDelete": "Supprimer cet espace Cloud inutilisé",
     "deleteHint": "Supprimer les projets n’annule pas l’abonnement. Arrêtez le renouvellement dans Facturation et attendez la fin de la période payée avant de supprimer un serveur abonné. La suppression efface définitivement le serveur vide et les données restantes du disque.",
     "buildCapacityTitle": "Vérifiez la capacité de le serveur",
     "buildCapacityHint": "Les compilations utilisent la capacité libre de cet espace. Arrêtez un service inutilisé ou augmentez la capacité, puis réessayez.",
-    "openWorkspace": "Ouvrir le serveur",
+    "openWorkspace": "Voir l’espace Cloud",
     "retryDeployment": "Réessayer le déploiement",
     "states": {
       "ready": "Prêt",
@@ -629,7 +629,7 @@
     },
     "existingServerHint": "Utilise l’offre de ce serveur.",
     "destination": "Destination",
-    "newProjectServer": "Nouveau serveur dédié",
+    "newProjectServer": "Nouvel espace Cloud",
     "oneProject": "1 projet",
     "savedDestinationHint": "Ce projet conserve son serveur et ses données.",
     "uploadDestinationHint": "Les fichiers source sont sur ce serveur. Lancez un nouvel envoi pour choisir une autre destination.",
@@ -641,7 +641,7 @@
     "resourceSummary": "{cpu} vCPU · {memory} Go de RAM · {disk} Go de stockage",
     "switchingBilling": "Chargement de la facturation de {name}…",
     "activity": {
-      "empty": "Aucune opération sur le serveur pour le moment.",
+      "empty": "Aucune configuration ni modification de capacité pour le moment.",
       "waitingForLogs": "En attente des journaux de l’opération…",
       "noLogs": "Aucun journal n’a été enregistré pour cette opération.",
       "status": {
@@ -649,10 +649,11 @@
         "running": "En cours",
         "succeeded": "Terminée",
         "failed": "Échouée"
-      }
+      },
+      "description": "Configuration, changements de capacité et reprise de cet espace Cloud."
     },
-    "billingServers": "Vos serveurs",
-    "billingServersUnavailable": "Impossible de charger vos serveurs."
+    "billingServers": "Espaces Cloud",
+    "billingServersUnavailable": "Impossible de charger vos espaces Cloud."
   },
   "custom": {
     "name": "Sur mesure",
@@ -682,7 +683,7 @@
     "resizeDescription": "Votre offre a changé. Vérifiez la nouvelle capacité et les projets concernés avant de redémarrer ce serveur.",
     "applying": "Mise à jour des ressources du serveur. Suivez la progression sur sa page.",
     "reviewResize": "Vérifier le changement de ressources",
-    "openServer": "Ouvrir le serveur"
+    "openServer": "Voir l’espace Cloud"
   },
   "planChange": {
     "title": "Vérifier le changement de forfait",
@@ -719,7 +720,7 @@
   },
   "purchase": {
     "mode": "Mode de facturation",
-    "monthly": "Serveurs mensuels",
+    "monthly": "Forfaits mensuels",
     "payg": "Usage prépayé",
     "title": "Hébergement prépayé",
     "description": "Choisissez un palier de ressources, ajoutez des crédits et payez l’utilisation de vos serveurs.",
@@ -772,6 +773,7 @@
     }
   },
   "compute": {
+    "title": "Couverture mensuelle",
     "covered": "Calcul couvert",
     "needsAttention": "Couverture à vérifier",
     "included": "CPU, RAM et stockage inclus sont couverts 24 h/24 pendant le mois payé. Aucun crédit de calcul ni recharge.",
@@ -842,7 +844,7 @@
     "choosePlan": "Choisir une offre",
     "deleteServer": "Supprimer le serveur inutilisé",
     "openPayment": "Ouvrir le paiement",
-    "removing": "La suppression du serveur a été demandée. Suivez sa progression dans Serveurs.",
+    "removing": "La suppression de l’espace Cloud a été demandée. Suivez sa progression dans Espaces Cloud.",
     "states": {
       "open": "En attente de paiement",
       "unconfirmed": "Récupérez le lien de paiement d’origine",

@@ -24,6 +24,20 @@ expect, that's why.
 
 The home tab contains language, interface preferences, and self-hosted build preferences.
 
+## Appearance
+
+Open **Settings → General** to use the existing Light, Dim, Dark and System switches; preset changes apply immediately. Choose **Customize** to open the editor inline (`/settings?tab=general&view=appearance`) while General stays selected, and **Back to General** to return. Built-in presets remain unchanged; editing one in the editor creates a personal copy. System follows the device, using Dim for a dark Desktop environment and Dark on the web.
+
+The editor groups all registered design tokens into surfaces, text, controls, status, effects and scales. Search by token name, edit its color or value, and reset individual overrides. Typography controls the interface and monospace fonts, size, weight and line height. Uploaded WOFF2 files are embedded in theme JSON, so custom fonts travel with an export.
+
+Edits preview immediately across the dashboard, including open terminals, without restarting their sessions. **Save** persists the theme to the authenticated user on the connected instance. **Discard** restores the saved appearance. The bottom controls retain a readable base palette; **Reset** previews the default Light appearance and clears the personal library only when you save. Navigating away discards the unsaved preview; a full reload warns about unsaved changes.
+
+Import a JSON file, paste JSON, or load a public HTTPS JSON URL that permits browser CORS requests. URL imports omit credentials and are fetched once, rather than continuously following remote changes. A single-theme import replaces a matching theme ID or adds it to the library; a library import replaces the draft library. Nothing is persisted until Save.
+
+**Download theme** exports the active theme; **Download all** exports the personal library. The versioned format supports up to 32 themes, two WOFF2 fonts per theme (256 KiB each), and 1 MiB total. Unsupported tokens, invalid values, cyclic token references and incompatible versions are rejected. These preferences affect this account's dashboard, not deployed applications or other members.
+
+The [appearance API and CLI](/docs/api/settings#personal-appearance) use the same format. Saving requires a version of the API that supports the appearance endpoints; a failed settings read stays visible and blocks saving until a retry succeeds.
+
 ## Git
 
 The **Git** tab owns outbound source-control access. On self-hosted instances, workspace owners first see

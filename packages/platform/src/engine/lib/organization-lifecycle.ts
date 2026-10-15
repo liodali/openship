@@ -181,6 +181,9 @@ export const organizationOptions = {
     },
 
     beforeDeleteOrganization: async ({ organization, user }) => {
+      if ((await repos.ingress.list(organization.id)).length) {
+        throw new APIError("CONFLICT", { message: "Disconnect the organization's Cloudflare tunnels and finish hostname cleanup before deleting the organization.", code: "ORG_DELETE_INGRESS_ACTIVE" });
+      }
       if ((await repos.cloudWorkspace.listByOrganization(organization.id)).length) {
         throw new APIError("CONFLICT", { message: "Delete the organization's Cloud workspaces and end their subscriptions before deleting the organization.", code: "ORG_DELETE_CLOUD_WORKSPACES_ACTIVE" });
       }

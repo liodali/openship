@@ -4,18 +4,15 @@ import type { CloudWorkspaceSummary } from "@repo/contracts";
 import { useI18n } from "@/components/i18n-provider";
 import { ServiceStatusIndicator } from "@/components/services/ServiceStatusBadge";
 
-export function ManagedServerStatus({ workspace }: { workspace: CloudWorkspaceSummary }) {
+export function ManagedServerStatus({
+  workspace,
+  compact = false,
+}: {
+  workspace: CloudWorkspaceSummary;
+  compact?: boolean;
+}) {
   const { t } = useI18n();
-  if (workspace.connectionIssue)
-    return (
-      <span
-        role="status"
-        className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-warning-bg px-2 py-1 text-xs font-medium text-warning"
-      >
-        <ServiceStatusIndicator status="unknown" />
-        {t.servers.managedControls.cloudConnection.labels[workspace.connectionIssue]}
-      </span>
-    );
+  const connectionIssue = workspace.connectionIssue;
   const operation = workspace.operation?.status;
   const state =
     operation === "failed"
@@ -25,35 +22,41 @@ export function ManagedServerStatus({ workspace }: { workspace: CloudWorkspaceSu
           ? "queued"
           : "running_operation"
         : workspace.state;
-  const healthy = ["ready", "running", "active"].includes(state);
-  const failed = ["failed", "unreachable"].includes(state);
-  const pending = [
-    "queued",
-    "running_operation",
-    "provisioning",
-    "starting",
-    "stopping",
-    "deleting",
-  ].includes(state);
-  const label = (t.billing.workspaces.states as Record<string, string>)[state] ?? state;
+  const healthy = !connectionIssue && ["ready", "running", "active"].includes(state);
+  const failed = !connectionIssue && ["failed", "unreachable"].includes(state);
+  const pending =
+    !connectionIssue &&
+    ["queued", "running_operation", "provisioning", "starting", "stopping", "deleting"].includes(
+      state,
+    );
+  const label = connectionIssue
+    ? t.servers.managedControls.cloudConnection.labels[connectionIssue]
+    : ((t.billing.workspaces.states as Record<string, string>)[state] ?? state);
 
   return (
     <span
       role="status"
-      className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-1 text-xs font-medium ${
-        failed
-          ? "bg-danger/10 text-danger"
-          : healthy
-            ? "bg-success-bg text-success"
-            : pending
-              ? "bg-info-bg text-info"
-              : "bg-muted/60 text-muted-foreground"
-      }`}
+      title={compact ? label : undefined}
+      className={
+        compact
+          ? "inline-flex shrink-0 items-center"
+          : `inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-1 text-xs font-medium ${
+              connectionIssue
+                ? "bg-warning-bg text-warning"
+                : failed
+                  ? "bg-danger/10 text-danger"
+                  : healthy
+                    ? "bg-success-bg text-success"
+                    : pending
+                      ? "bg-info-bg text-info"
+                      : "bg-muted/60 text-muted-foreground"
+            }`
+      }
     >
       <ServiceStatusIndicator
         status={failed ? "failed" : healthy ? "running" : pending ? "deploying" : "unknown"}
       />
-      {label}
+      {compact ? <span className="sr-only">{label}</span> : label}
     </span>
   );
 }

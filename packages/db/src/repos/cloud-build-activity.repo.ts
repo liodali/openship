@@ -78,9 +78,9 @@ export async function reserveCloudBuildActivity(
   if (
     resources &&
     (!Number.isFinite(resources.cpuCores) ||
-      resources.cpuCores <= 0 ||
+      resources.cpuCores < 0 ||
       !Number.isFinite(resources.memoryMb) ||
-      resources.memoryMb <= 0)
+      resources.memoryMb < 0)
   )
     throw new AppError(
       "Invalid Cloud build reservation resources",
@@ -377,9 +377,9 @@ export function createCloudBuildActivityRepo(db: Database) {
               allocations.some(
                 (item) =>
                   !Number.isFinite(item.cpuCores) ||
-                  item.cpuCores <= 0 ||
+                  item.cpuCores < 0 ||
                   !Number.isFinite(item.memoryMb) ||
-                  item.memoryMb <= 0,
+                  item.memoryMb < 0,
               ) ||
               !Number.isFinite(cpu) ||
               !Number.isFinite(memory) ||

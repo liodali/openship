@@ -17,7 +17,7 @@
     "viewPlan": "自分のプランを見る",
     "serverTitle": "{name} の準備ができました",
     "serverDescription": "{plan} プランが有効になりました。アプリとビルドはこのサーバーのリソースを共有します。",
-    "openServer": "サーバーを開く"
+    "openServer": "クラウドスペースを表示"
   },
   "capacity": {
     "title": "容量と使用状況",
@@ -534,12 +534,12 @@
     "customBuildLimit": "上限を設定"
   },
   "workspaces": {
-    "title": "マネージド Cloud サーバー",
-    "singular": "Cloud サーバー",
+    "title": "クラウドスペース",
+    "singular": "クラウドスペース",
     "description": "プランを選んでデプロイするだけ。サーバーは Openship が管理し、プロジェクトは CPU、メモリ、ストレージを共有します。",
-    "loading": "サーバーを読み込み中…",
+    "loading": "クラウドスペースを読み込み中…",
     "choose": "サーバーを選択",
-    "chooseBilling": "サーバーを選択して請求情報を表示します。",
+    "chooseBilling": "請求を表示するクラウドスペースを選択してください。",
     "dedicatedProjects": "専用プロジェクトの請求",
     "dedicatedProjectsHint": "個別の Cloud マシンを持つ既存のプロジェクト。",
     "shared": "複数のプロジェクト",
@@ -552,10 +552,10 @@
     "defaultName": "Production",
     "defaultHint": "プランを選んでデプロイしてください。サーバーの作成と管理は自動で行います。",
     "noneAvailable": "このプロジェクトを配置するには、互換性のあるサーバーを作成するか、専用サーバーを空にしてください。",
-    "manage": "サーバーを管理",
+    "manage": "クラウドスペースを管理",
     "subscriptionHint": "新しいサーバーは個別に請求されます。",
     "placementHint": "プロジェクトはこのサーバーのリソースを共有します。1つを削除しても他のプロジェクトは維持されます。",
-    "create": "サーバーを作成",
+    "create": "クラウドスペースを追加",
     "mode": "プロジェクトの分離",
     "createHint": "サーバーの作成は無料です。次にプランを選択してください。課金は購入手続きの完了後に始まります。",
     "cloudOnly": "管理サーバーは Openship Cloud で利用できます。セルフホストのインフラは「サーバー」で管理してください。",
@@ -573,7 +573,7 @@
     "provision": "サーバーを起動",
     "resume": "サーバーを再開",
     "resize": "プランの容量を適用",
-    "operation": "サーバーのアクティビティ",
+    "operation": "アクティビティ",
     "nextAttempt": "次の再試行：",
     "resizeConfirm": "現在のプランの容量を適用しますか？",
     "before": "現在のホスト",
@@ -583,12 +583,12 @@
     "confirmResize": "適用して再起動",
     "rename": "名前を変更",
     "save": "保存",
-    "delete": "サーバーを削除",
-    "confirmDelete": "この空のサーバーを削除",
+    "delete": "クラウドスペースを削除",
+    "confirmDelete": "未使用のクラウドスペースを削除",
     "deleteHint": "プロジェクトを削除してもサブスクリプションはキャンセルされません。「請求」で更新を停止し、有料期間が終了してから契約中のサーバーを削除してください。 削除すると、空のサーバーと残りのディスクデータは完全に失われます。",
     "buildCapacityTitle": "サーバーの容量を確認してください",
     "buildCapacityHint": "ビルドはサーバーの空き容量を使用します。未使用のサービスを停止するか容量を増やしてから、再試行してください。",
-    "openWorkspace": "サーバーを開く",
+    "openWorkspace": "クラウドスペースを表示",
     "retryDeployment": "デプロイを再試行",
     "states": {
       "ready": "準備完了",
@@ -629,7 +629,7 @@
     },
     "existingServerHint": "このサーバーのプランを使用します。",
     "destination": "デプロイ先",
-    "newProjectServer": "新しい専用サーバー",
+    "newProjectServer": "新しいクラウドスペース",
     "oneProject": "1 件のプロジェクト",
     "savedDestinationHint": "このプロジェクトは保存済みのサーバーとデータを維持します。",
     "uploadDestinationHint": "ソースファイルはこのサーバー上にあります。別のデプロイ先を使うには、新しくアップロードしてください。",
@@ -641,7 +641,7 @@
     "resourceSummary": "{cpu} vCPU · {memory} GB RAM · {disk} GB ストレージ",
     "switchingBilling": "{name} の請求情報を読み込み中…",
     "activity": {
-      "empty": "サーバー操作はまだありません。",
+      "empty": "セットアップや容量の変更はまだありません。",
       "waitingForLogs": "操作ログを待機中…",
       "noLogs": "この操作のログは記録されていません。",
       "status": {
@@ -649,10 +649,11 @@
         "running": "実行中",
         "succeeded": "完了",
         "failed": "失敗"
-      }
+      },
+      "description": "このクラウドスペースのセットアップ、容量変更、復旧の状況です。"
     },
-    "billingServers": "サーバー",
-    "billingServersUnavailable": "サーバーを読み込めませんでした。"
+    "billingServers": "クラウドスペース",
+    "billingServersUnavailable": "クラウドスペースを読み込めませんでした。"
   },
   "custom": {
     "name": "カスタム",
@@ -682,7 +683,7 @@
     "resizeDescription": "プランが変更されました。新しい容量と影響を受けるプロジェクトを確認してからサーバーを再起動してください。",
     "applying": "サーバーのリソースを更新中です。サーバーページで進行状況を確認できます。",
     "reviewResize": "リソース変更を確認",
-    "openServer": "サーバーを開く"
+    "openServer": "クラウドスペースを表示"
   },
   "planChange": {
     "title": "プラン変更の確認",
@@ -719,7 +720,7 @@
   },
   "purchase": {
     "mode": "課金方式",
-    "monthly": "月額ホスト",
+    "monthly": "月額プラン",
     "payg": "前払い従量課金",
     "title": "前払いホスティング",
     "description": "リソースティアを選び、クレジットを追加してサーバーの使用量に応じて支払います。",
@@ -772,6 +773,7 @@
     }
   },
   "compute": {
+    "title": "月額プランの適用範囲",
     "covered": "コンピュートは支払い済み",
     "needsAttention": "利用期間をご確認ください",
     "included": "CPU、RAM、付属ストレージは支払い済みの月に24時間利用できます。コンピュートクレジットや追加購入は不要です。",
@@ -842,7 +844,7 @@
     "choosePlan": "プランを選ぶ",
     "deleteServer": "未使用のサーバーを削除",
     "openPayment": "お支払いを開く",
-    "removing": "サーバーの削除をリクエストしました。サーバーページで進捗を確認できます。",
+    "removing": "クラウドスペースの削除をリクエストしました。クラウドスペースで進捗を確認できます。",
     "states": {
       "open": "お支払い待ち",
       "unconfirmed": "元のお支払いリンクを復元してください",

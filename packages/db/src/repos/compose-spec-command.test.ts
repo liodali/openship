@@ -265,6 +265,43 @@ describe("composeWritePatch — entrypoint is compose-owned (#575)", () => {
   });
 });
 
+/**
+ * `gpus` is COMPOSE-OWNED like `entrypoint`: deleting the GPU reservation from the file must release
+ * the card. If it were not swept, a service stays pinned to a GPU its compose file no longer asks for,
+ * and the operator has no field in the UI to clear it.
+ */
+describe("composeWritePatch — gpus is compose-owned", () => {
+  const stored = { advanced: { gpus: { driver: "nvidia", count: "all" as const } } };
+  const fromFile = true;
+
+  it("drops the GPU when the file no longer asks for one", () => {
+    const patch = composeWritePatch({ name: "worker", advanced: {} }, stored, fromFile);
+    expect(patch.advanced?.gpus).toBeUndefined();
+  });
+
+  it("applies the GPU the file declares", () => {
+    const patch = composeWritePatch(
+      { name: "worker", advanced: { gpus: { driver: "nvidia", count: 2 } } },
+      {},
+      fromFile,
+    );
+    expect(patch.advanced?.gpus).toEqual({ driver: "nvidia", count: 2 });
+  });
+
+  it("keeps it when the writer is a frozen snapshot that is not speaking for the file", () => {
+    const patch = composeWritePatch({ name: "worker", advanced: {} }, stored);
+    expect(patch.advanced?.gpus).toEqual({ driver: "nvidia", count: "all" });
+  });
+});
+
+it("clears legacy GPU runtime only when the Compose source owns the update", () => {
+  const stored = { advanced: { runtime: "nvidia" as const, monitoringEnabled: true } };
+  expect(composeWritePatch({ name: "app" }, stored, true).advanced).toEqual({
+    monitoringEnabled: true,
+  });
+  expect(composeWritePatch({ name: "app" }, stored).advanced.runtime).toBe("nvidia");
+});
+
 describe("compose environment templates (#673)", () => {
   it("persists the raw expression instead of its scan-time partial value", () => {
     const spec = toComposeSpec({

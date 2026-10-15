@@ -1,4 +1,31 @@
 {
+  "resources": {
+    "notFound": "Cloud space not found",
+    "notFoundDescription": "This Cloud space is unavailable in your current workspace. It may have been removed, or you may need to switch accounts.",
+    "description": "Apps, builds and data share the capacity of their Cloud space.",
+    "selectPool": "Select a Cloud space",
+    "capacity": "Current capacity",
+    "capacityHint": "Your apps, builds and retained data share these resources.",
+    "addCapacity": "Add Cloud space",
+    "managePlan": "Manage plan",
+    "projects": "Projects",
+    "emptyTitle": "Your apps start here",
+    "emptyDescription": "Choose capacity, then deploy apps and projects to Openship Cloud.",
+    "usageHint": "Current CPU, memory and storage usage.",
+    "noProjects": "No projects here yet.",
+    "spaces": "Cloud spaces",
+    "spacesHint": "Independent capacity for your apps and projects.",
+    "space": "Cloud space",
+    "customPlan": "Custom plan",
+    "projectCount": "Projects: {count}",
+    "live": "Live",
+    "paused": "Paused",
+    "lastReading": "Last reading",
+    "connecting": "Connecting…",
+    "streamUnavailable": "Live updates are unavailable. Showing the last measured usage.",
+    "usageTitle": "Resource usage",
+    "setupPending": "Usage will appear once your Cloud space is set up."
+  },
   "acquire": {
     "connected": {
       "label": "Connect your server",
@@ -1184,13 +1211,13 @@
     "cloudConnection": {
       "titles": {
         "not_connected": "Sign in to Openship Cloud",
-        "account_mismatch": "Connect the server’s Cloud account",
+        "account_mismatch": "Connect this space’s Cloud account",
         "unavailable": "Cloud status unavailable"
       },
       "descriptions": {
-        "not_connected": "This is a saved link to a Cloud server. Sign in to the account and organization that own it to view its live state and manage it.",
-        "account_mismatch": "This server belongs to a different Cloud account or organization. Connect its owning account to continue.",
-        "unavailable": "The server could not be verified through Cloud. Refresh its status before using server controls."
+        "not_connected": "Sign in to the Cloud account and workspace that own this space to view its resources and projects.",
+        "account_mismatch": "This Cloud space belongs to a different account or workspace. Connect the owning account to continue.",
+        "unavailable": "This Cloud space could not be verified. Refresh to check its connection."
       },
       "labels": {
         "not_connected": "Cloud sign-in required",
@@ -1204,5 +1231,25 @@
       "title": "Control unavailable",
       "description": "This control is not available on the connected Cloud API version yet. Openship Cloud needs an update before it can be used."
     }
+  },
+  "gpu": {
+    "title": "GPU",
+    "subtitle": "GPU availability for containers on this server.",
+    "notDetected": "No GPU detected",
+    "notProbed": "Could not check this server right now",
+    "countOne": "1 GPU",
+    "countMany": "{count} GPUs",
+    "runtimeOnly": "NVIDIA runtime found, card count unknown",
+    "modeLabel": "GPU availability",
+    "modeAuto": "Automatic",
+    "modeYes": "GPU available",
+    "modeNo": "No GPU",
+    "modeHint": "Override only if automatic detection is incorrect.",
+    "mismatchYes": "Marked \"GPU available\", but none was detected. GPU services will be sent here anyway.",
+    "mismatchNo": "Marked \"No GPU\", but a GPU was detected. GPU services will be warned off this server.",
+    "saving": "Saving…",
+    "saved": "GPU setting saved",
+    "saveFailed": "Could not save the GPU setting",
+    "badge": "GPU"
   }
 }

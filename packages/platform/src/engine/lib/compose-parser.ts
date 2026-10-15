@@ -16,6 +16,8 @@ import {
   parseComposeNamespace,
   parseContainerHosts,
   parseEnvFile,
+  readComposeGpuConfig,
+  readComposeShmConfig,
 } from "@repo/core";
 import type { ComposeAdvanced, ComposeHealthcheck, ComposeNamespaceField } from "@repo/core";
 
@@ -595,6 +597,13 @@ function parseAdvanced(
   const resources = parseServiceResources(svc, env);
   if (resources) advanced.resources = resources;
 
+  const gpu = readComposeGpuConfig(svc, (value) => interpolateComposeString(value, env));
+  Object.assign(advanced, gpu.config);
+  unsupported.push(...gpu.issues.map((issue) => ({ service: serviceName, ...issue })));
+  const shm = readComposeShmConfig(svc.shm_size, (value) => interpolateComposeString(value, env));
+  Object.assign(advanced, shm.config);
+  unsupported.push(...shm.issues.map((issue) => ({ service: serviceName, ...issue })));
+
   const networkMode = parseNamespaceField(
     svc.network_mode,
     "network_mode",
@@ -706,7 +715,6 @@ const UNSUPPORTED_SERVICE_KEYS: Record<string, string> = {
   security_opt: "security_opt is not modeled — default seccomp/AppArmor apply.",
   sysctls: "sysctls is not modeled — kernel parameters stay at their defaults.",
   ulimits: "ulimits is not modeled — daemon defaults apply.",
-  shm_size: "shm_size is not modeled — /dev/shm stays at Docker's 64MB default.",
   ipc: "ipc is not modeled — the container gets its own IPC namespace.",
   userns_mode: "userns_mode is not modeled.",
   uts: "uts is not modeled.",
@@ -765,6 +773,11 @@ function requestsSomething(value: unknown): boolean {
   return true;
 }
 
+function isNvidiaRuntime(value: unknown, env: Record<string, string>): boolean {
+  if (typeof value !== "string") return false;
+  return interpolateComposeString(value, env).trim().toLowerCase() === "nvidia";
+}
+
 function collectUnsupported(
   serviceName: string,
   svc: Record<string, unknown>,
@@ -773,6 +786,10 @@ function collectUnsupported(
 ): void {
   for (const [key, reason] of Object.entries(UNSUPPORTED_SERVICE_KEYS)) {
     if (!requestsSomething(svc[key])) continue;
+    // `runtime: nvidia` is retained as HostConfig.Runtime. Any other runtime
+    // (`runsc`, `kata`, ...) still falls back to the daemon default and is reported.
+    if (key === "runtime" && isNvidiaRuntime(svc[key], env)) continue;
+    // `gpus` is modeled (readComposeGpuConfig) and is not in this table; nothing to skip here.
     unsupported.push({ service: serviceName, field: key, reason });
   }
 
@@ -789,7 +806,7 @@ function collectUnsupported(
         field: "deploy",
         reason:
           `deploy.${rest.join("/")} is not modeled — Openship runs one container per ` +
-          `service (only deploy.resources.limits is honored).`,
+          `service (only deploy.resources.limits and the GPU in deploy.resources.reservations.devices are honored).`,
       });
     }
   }

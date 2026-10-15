@@ -158,6 +158,9 @@ export interface TeardownOptions {
   /** Protect configuration writes and validate a confirmed transfer snapshot
    * after the deletion claim, before any destructive cleanup. */
   validateConfiguration?: () => Promise<void>;
+  /** Receipt-managed transfers can release their claim for source review on failure.
+   * Ordinary deletion retains its intent once cleanup starts. */
+  failurePolicy?: "retain_intent" | "release_claim";
   /**
    * Record-only ("soft") delete: drop just the Openship DB record and LEAVE the
    * server workload + data + on-server manifest intact, so the project can be
@@ -289,14 +292,11 @@ async function teardownProjectLocked(
     return finalize(steps, false);
   }
 
-  // Everything past the claim runs UNDER the lock. Release it in `finally`
-  // on ANY exit — throw, early return, or normal completion — UNLESS the row
-  // was deleted (then there's no row to unlock). This is what stops a thrown
-  // step from leaving the project permanently stuck at "Another delete is
-  // already running". Runtime adapters own their command deadlines; if this
-  // process dies, Postgres releases the advisory lock and the next caller safely
-  // reclaims the stale boolean while holding that lock.
+  // The advisory lock owns execution; the boolean also fences new work after
+  // partial destruction. Retrying reclaims it, including after a process crash.
   let rowDeleted = false;
+  let destructiveStarted = false;
+  let unexpectedFailure: string | undefined;
   try {
     let project: Project | undefined;
     try {
@@ -407,6 +407,14 @@ async function teardownProjectLocked(
 
     await opts.validateConfiguration?.();
 
+    if (!(await repos.project.beginDeletionCleanup(projectId)))
+      throw new AppError(
+        "Could not fence project cleanup. No resources were removed.",
+        409,
+        "PROJECT_CLEANUP_NOT_CLAIMED",
+      );
+    destructiveStarted = true;
+
     // ── Step 2: Unregister GitHub webhook (unless preserving it). ────────
     // promote-to-cloud keeps the webhook: the cloud copy auto-deploys via the
     // same hook, so deleting it here would break the now-cloud project.
@@ -450,8 +458,8 @@ async function teardownProjectLocked(
       // If runtime cleanup (containers / images / volumes / cloud workspace /
       // routes) or webmail teardown FAILED, KEEP the project row so the leaked
       // resources still have a record to retry against. The `finally` below
-      // releases the lock (rowDeleted stays false), so the next delete attempt
-      // re-runs cleanup. The returned result carries the failed steps
+      // keeps admission fenced; a retry takes the runtime lock and re-runs
+      // cleanup. The returned result carries the failed steps
       // (finalize → ok:false, unrecoverable) so the UI shows what blocked it.
       // GitHub-webhook unregister is best-effort (external state, not a host
       // resource leak) and deliberately does NOT gate the delete.
@@ -524,10 +532,32 @@ async function teardownProjectLocked(
     rowDeleted = await stepDeleteRow(projectId, project.groupId, push);
 
     return finalize(steps, rowDeleted, undefined, { orphaned, unlinked: unlink.unlinked });
+  } catch (error) {
+    unexpectedFailure = safeErrorMessage(error);
+    throw error;
   } finally {
-    // Lock released on every non-deleting exit so a retry is always possible.
     if (!rowDeleted) {
-      await repos.project.clearDeletionInProgress(projectId).catch((diagnosticFailure) => {
+      // Promotion uses its confirmed receipt to preserve/review both copies;
+      // release that operation's transient configuration fence on failure.
+      // It must not reopen a prior ordinary deletion, including after a crash.
+      const retainIntent =
+        (destructiveStarted && opts.failurePolicy !== "release_claim") ||
+        (preload?.organizationId === ctx.organizationId && preload.deletionInProgress &&
+          (preload.lifecycleOperation?.kind === "delete" || !preload.cloudPromotion?.cleanupInProgress));
+      const failure =
+        unexpectedFailure ||
+        steps
+          .filter((step) => step.status === "failed")
+          .map((step) => step.error || step.details || step.step)
+          .join("; ") ||
+        (preload?.lifecycleOperation?.status === "failed"
+          ? preload.lifecycleOperation.error
+          : undefined) ||
+        "Cleanup was interrupted. Retry deletion to finish removing this project.";
+      const persist = retainIntent
+        ? repos.project.markDeletionFailed(projectId, failure.slice(0, 4000))
+        : repos.project.clearDeletionInProgress(projectId);
+      await persist.catch((diagnosticFailure) => {
         observeCaughtError(diagnosticFailure, "platform/engine/modules/projects/project-teardown");
       });
     }

@@ -1,3 +1,4 @@
+import type { AppearancePreferences } from "@repo/core";
 import { api } from "./client";
 import { endpoints } from "./endpoints";
 import { notifyGitHubSourcesChanged } from "./github";
@@ -44,6 +45,9 @@ export interface DeployDefaultsResponse {
 }
 
 export const settingsApi = {
+  getAppearance: () => api.get<{ appearance: AppearancePreferences | null }>("settings/appearance"),
+  setAppearance: (appearance: AppearancePreferences | null) =>
+    api.put<{ appearance: AppearancePreferences | null }>("settings/appearance", { appearance }),
   /** Get the current user's platform settings */
   get: () => api.get<UserSettingsResponse>(endpoints.settings.get),
 
@@ -57,7 +61,9 @@ export const settingsApi = {
 
   /** Update only the default edge→app route strategy */
   updateRouteStrategy: (routeStrategy: RouteStrategy) =>
-    api.patch<{ routeStrategy: RouteStrategy }>(endpoints.settings.routeStrategy, { routeStrategy }),
+    api.patch<{ routeStrategy: RouteStrategy }>(endpoints.settings.routeStrategy, {
+      routeStrategy,
+    }),
 
   /**
    * Update (or clear) the default deploy target.

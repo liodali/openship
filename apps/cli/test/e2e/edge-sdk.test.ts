@@ -1,3 +1,5 @@
+import { Value } from "@sinclair/typebox/value";
+import { ProjectDetailsSchema } from "@repo/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../../src/lib/config", () => ({
   getApiUrl: () => "https://controller.example.test",
@@ -7,6 +9,12 @@ import { edgeCommand } from "../../src/commands/edge";
 import { setJsonMode } from "../../src/lib/output";
 import { runCommand, stubFetch, type FetchStub } from "../helpers/harness";
 import { domainFixture } from "../../../../packages/contracts/test/fixtures";
+const projectInfo = Value.Create(ProjectDetailsSchema);
+projectInfo.project.port = 3000;
+projectInfo.project.options.hasServer = true;
+projectInfo.project.options.workloadType = "web";
+projectInfo.project.options.productionPort = "3000";
+
 let fetchStub: FetchStub;
 beforeEach(() => setJsonMode(true));
 afterEach(() => {
@@ -26,7 +34,11 @@ describe("edge commands share SDK resource operations", () => {
   it("preserves pending DNS verification as a result without turning it into a failed registration", async () => {
     const domain = domainFixture("dom_one");
     fetchStub = stubFetch((request) =>
-      request.url.endsWith("/verify")
+      request.url.endsWith("/info")
+        ? { json: { data: projectInfo } }
+        : request.method === "PATCH"
+          ? { json: { data: projectInfo.project } }
+          : request.url.endsWith("/verify")
         ? {
             status: 422,
             json: {
@@ -47,7 +59,7 @@ describe("edge commands share SDK resource operations", () => {
     ]);
     expect(result.code, result.err).toBe(0);
     expect(JSON.parse(result.out)).toMatchObject({ domain: { id: "dom_one" }, verified: false });
-    expect(fetchStub.calls).toHaveLength(2);
+    expect(fetchStub.calls).toHaveLength(4);
   });
   it("deletes only the hostname found inside the selected project's authorized domain list", async () => {
     fetchStub = stubFetch(() => ({

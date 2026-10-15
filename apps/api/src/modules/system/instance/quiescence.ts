@@ -30,6 +30,7 @@ export async function quiesceController(): Promise<void> {
   closeTerminals();
   await Promise.all([stopNetworkSetups(), stopAllTunnels()]);
   await (await import("@repo/platform/engine/modules/actions/lifecycle")).stopActionController();
+  await (await import("@repo/platform/engine/modules/ingress/lifecycle")).stopIngressController();
   // Recheck after fencing incoming mutations: a dispatch may have arrived
   // between the user's preflight and the durable handoff fence.
   await (await import("@repo/platform/engine/modules/actions/lifecycle")).assertActionsTransferReady();

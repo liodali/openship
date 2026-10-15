@@ -55,6 +55,7 @@
     "viewAllApps": "Tüm {count} uygulamayı gör →"
   },
   "nav": {
+    "resources": "Bulut alanları",
     "support": "Destek",
     "scale": "Ölçeklendirme",
     "home": "Ana Sayfa",
@@ -125,7 +126,8 @@
         "analytics": "Analitik",
         "automation": "Otomasyon",
         "mail": "E-posta",
-        "other": "Araçlar"
+        "other": "Araçlar",
+        "ai": "Yapay zekâ ve modeller"
       },
       "installing": "Kuruluyor…",
       "install": "Kur",
@@ -140,7 +142,18 @@
       "needsUpdateBadge": "Güncelleme gerekli",
       "needsVersionBadge": "v{version} gerekli",
       "removedToast": "\"{name}\" kaldırıldı.",
-      "removeFailedToast": "Uygulama kaldırılamadı."
+      "removeFailedToast": "Uygulama kaldırılamadı.",
+      "gpu": {
+        "recommended": "GPU önerilir",
+        "required": "NVIDIA GPU gerekli",
+        "mode": "İşlem",
+        "cpu": "Yalnızca CPU",
+        "nvidia": "NVIDIA ekran kartı",
+        "hint": "NVIDIA modu sunucunuzda uyumlu sürücü ve NVIDIA Container Toolkit gerektirir.",
+        "cloudUnsupported": "Bu uygulama yalnızca kendi sunucunuzda çalışır. Bağlı bir sunucu seçin.",
+        "selfHostedOnly": "Yalnızca kendi sunucunuz",
+        "noGpu": "GPU algılanmadı. NVIDIA sürücüsünü ve Container Toolkit’i kontrol edin veya CPU seçin."
+      }
     },
     "projects": {
       "title": "Projeler",

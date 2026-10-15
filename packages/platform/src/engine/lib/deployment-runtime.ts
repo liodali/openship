@@ -482,6 +482,10 @@ async function resolveCloudPlatformForOrg(
     cloudServer: {
       ...bindingMeta, ownerWorkspaceId: managedWorkspaceId,
       provisionLock: createProvisionLock(`cloud:server:${binding.workspaceId}`),
+      buildCacheProtection: async () => {
+        const { buildCacheProtection } = await import("./build-cache-protection");
+        return buildCacheProtection(organizationId, managedWorkspaceId);
+      },
       bridgeLock: createProvisionLock(`cloud:docker-bridge:${binding.workspaceId}`),
       resolveRegistryAuth: registryAuthResolver(organizationId),
     },
@@ -1104,7 +1108,9 @@ export async function resolveDeploymentRuntime(
  */
 /**
  * Every container an existing deployment owns: its services' containers when it
- * has any, else its own single container.
+ * has any, else its own single container, then its runtime role containers
+ * (workers, schedulers) in recorded order. The web container comes first, so a
+ * resume starts it first. Duplicate ids appear once.
  *
  * Shared because "the deployment's container" is plural for a compose project and
  * singular everywhere else, and each caller that re-derived it got a different
@@ -1112,7 +1118,7 @@ export async function resolveDeploymentRuntime(
  * compose project stopped the app and left every sidecar running.
  */
 export async function deploymentContainerIds(
-  dep: Pick<Deployment, "id" | "containerId">,
+  dep: Pick<Deployment, "id" | "containerId" | "roleContainers">,
 ): Promise<string[]> {
   // Deliberately NOT error-swallowing: if we can't read the service rows we don't
   // know how many containers this deployment has, and falling back to the single
@@ -1121,10 +1127,16 @@ export async function deploymentContainerIds(
   const serviceIds = [
     ...new Set(rows.map((r) => r.containerId).filter((id): id is string => !!id)),
   ];
-  if (serviceIds.length > 0) return serviceIds;
-  // The compose sentinel is a marker, not a container: returning it made a pause
-  // report success having stopped nothing (docker 404 → `isAbsent` → swallowed).
-  return isRealContainerRef(dep.containerId) ? [dep.containerId] : [];
+  const primaryIds =
+    serviceIds.length > 0
+      ? serviceIds
+      : // The compose sentinel is a marker, not a container: returning it made a pause
+        // report success having stopped nothing (docker 404 → `isAbsent` → swallowed).
+        isRealContainerRef(dep.containerId)
+        ? [dep.containerId]
+        : [];
+  const roleIds = (dep.roleContainers ?? []).map((ref) => ref.containerId).filter((id) => !!id);
+  return [...new Set([...primaryIds, ...roleIds])];
 }
 
 /**

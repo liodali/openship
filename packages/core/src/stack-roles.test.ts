@@ -166,21 +166,24 @@ describe("STACKS.laravel.defaultRoles", () => {
     expect(scheduler?.singleton).toBe(true);
   });
 
-  it("every preset sets a 90s stop grace period the openship.json parser accepts", () => {
+  it("preserves worker and scheduler shutdown settings through the openship.json parser", () => {
     const roles: readonly StackRole[] = STACKS.laravel.defaultRoles ?? [];
-    expect(roles.map((r) => r.stopGracePeriod)).toEqual(["90s", "90s", "90s"]);
+    expect(roles.map((r) => r.stopGracePeriod)).toEqual(["90s", "90s", "10s"]);
+    expect(roles.find((r) => r.name === "scheduler")?.stopSignal).toBe("SIGTERM");
     // Presets bypass the parser, so run each value through it here.
     const { config, errors } = parseOpenshipConfig({
-      roles: roles.map(({ name, kind, command, singleton, stopGracePeriod }) => ({
+      roles: roles.map(({ name, kind, command, singleton, stopSignal, stopGracePeriod }) => ({
         name,
         kind,
         command,
         singleton,
+        stopSignal,
         stopGracePeriod,
       })),
     });
     expect(errors).toEqual([]);
-    expect(config?.roles?.map((r) => r.stopGracePeriod)).toEqual(["90s", "90s", "90s"]);
+    expect(config?.roles?.map((r) => r.stopGracePeriod)).toEqual(["90s", "90s", "10s"]);
+    expect(config?.roles?.find((r) => r.name === "scheduler")?.stopSignal).toBe("SIGTERM");
   });
 
   // "web" is never part of defaultRoles - it is derived from
@@ -289,6 +292,54 @@ describe("STACKS.laravel.defaultRoles", () => {
         configRoles: [horizonWorker, queueWorker],
       }),
     ).toEqual([horizonWorker, queueWorker]);
+  });
+
+  // Pins today's kind-based dedup (#935). No Pulse preset exists: this one is
+  // hypothetical, the smallest case of two worker presets that both match
+  // without competing for one slot. The resolver reads any two matching
+  // presets of one kind as ambiguous and drops every role of that kind, so
+  // the selected queue or horizon role goes too. The scheduler is another
+  // kind and survives. These tests document current behaviour without
+  // selecting a future exclusivity design.
+  describe("with a second, independent worker preset (hypothetical Pulse)", () => {
+    const pulse: StackRole = {
+      name: "pulse",
+      kind: "worker",
+      command: "exec php artisan pulse:work",
+      when: { deps: ["laravel/pulse"] },
+    };
+    const defaultRoles = [...(STACKS.laravel.defaultRoles ?? []), pulse];
+    const files = ["artisan", "composer.json"];
+
+    it("drops the selected queue role along with pulse, leaving only the scheduler", () => {
+      expect(
+        resolveStackRoles({
+          defaultRoles,
+          deps: ["laravel/framework", "laravel/pulse"],
+          files,
+        }).map((r) => r.name),
+      ).toEqual(["scheduler"]);
+    });
+
+    it("drops the selected horizon role the same way", () => {
+      expect(
+        resolveStackRoles({
+          defaultRoles,
+          deps: ["laravel/framework", "laravel/horizon", "laravel/pulse"],
+          files,
+        }).map((r) => r.name),
+      ).toEqual(["scheduler"]);
+    });
+
+    it("leaves queue + scheduler alone while the extra preset does not match", () => {
+      expect(
+        resolveStackRoles({
+          defaultRoles,
+          deps: ["laravel/framework"],
+          files,
+        }).map((r) => r.name),
+      ).toEqual(["queue", "scheduler"]);
+    });
   });
 });
 

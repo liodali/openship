@@ -185,10 +185,9 @@ describe("desktop MCP Cloud workflow", () => {
         "from-the-real-source",
       );
       expect(h.kickoff).toHaveBeenCalledTimes(1);
-      expect(h.cloudFetch.mock.calls.map((call) => call[1])).toEqual([
-        `/api/cloud/servers/remote-server-${owner.userId}/activity`,
-        `/api/cloud/servers/remote-server-${owner.userId}/activity/release`,
-      ]);
+      // DB-only submission does not acquire host privileges; the detached worker
+      // acquires its build activity when it actually starts.
+      expect(h.cloudFetch).not.toHaveBeenCalled();
     },
   );
 

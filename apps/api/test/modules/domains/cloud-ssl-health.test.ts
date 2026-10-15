@@ -8,6 +8,7 @@ const h = vi.hoisted(() => ({
 vi.mock("@repo/db", () => ({ repos: { domain: { findDueCloudSslChecks: h.find } } }));
 vi.mock("@repo/platform/engine/lib/domain-ssl", () => ({ manageDomainSsl: h.manage }));
 vi.mock("@repo/platform/engine/lib/project-runtime-lock", () => ({
+  withProjectStateLock: async (_id: string, work: () => Promise<unknown>) => work(),
   withLiveProjectRuntimeMutation: (id: string, work: (project: { id: string }) => Promise<void>) =>
     work({ id }),
 }));

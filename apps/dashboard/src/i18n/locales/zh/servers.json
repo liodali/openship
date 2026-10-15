@@ -1,4 +1,31 @@
 {
+  "resources": {
+    "notFound": "未找到资源",
+    "notFoundDescription": "这些资源在当前工作区中不可用。它们可能已被删除，或属于其他账户。",
+    "description": "应用、构建和数据共享所在云空间的容量。",
+    "selectPool": "选择云空间",
+    "capacity": "当前主机",
+    "capacityHint": "应用、构建和保留的数据共享这些资源。",
+    "addCapacity": "添加云空间",
+    "managePlan": "管理套餐",
+    "projects": "项目",
+    "emptyTitle": "从这里开始部署应用",
+    "emptyDescription": "选择容量，然后将应用和项目部署到 Openship Cloud。",
+    "usageHint": "当前的 CPU、内存和存储使用情况。",
+    "noProjects": "这里还没有项目。",
+    "spaces": "云空间",
+    "spacesHint": "为应用和项目提供独立容量。",
+    "space": "云空间",
+    "customPlan": "自定义套餐",
+    "projectCount": "项目：{count}",
+    "live": "实时",
+    "paused": "已暂停",
+    "lastReading": "最近读数",
+    "connecting": "正在连接…",
+    "streamUnavailable": "实时更新不可用。正在显示最近测量的使用量。",
+    "usageTitle": "资源使用情况",
+    "setupPending": "云空间设置完成后将显示使用情况。"
+  },
   "github": {
     "title": "GitHub 访问",
     "desc": "此服务器如何向 GitHub 认证以克隆私有仓库。",
@@ -1204,5 +1231,25 @@
       "title": "此控制功能不可用",
       "description": "当前连接的 Cloud API 版本尚不支持此控制功能。需要更新 Openship Cloud 后才能使用。"
     }
+  },
+  "gpu": {
+    "title": "GPU",
+    "subtitle": "此服务器上容器的 GPU 可用性。",
+    "notDetected": "未检测到 GPU",
+    "notProbed": "目前无法检查此服务器",
+    "countOne": "1 个 GPU",
+    "countMany": "{count} 个 GPU",
+    "runtimeOnly": "已找到 NVIDIA 运行时,显卡数量未知",
+    "modeLabel": "GPU 可用性",
+    "modeAuto": "自动",
+    "modeYes": "有 GPU",
+    "modeNo": "无 GPU",
+    "modeHint": "仅在自动检测不正确时覆盖此设置。",
+    "mismatchYes": "已标记为“有 GPU”,但未检测到。GPU 服务仍会被发送到此处。",
+    "mismatchNo": "已标记为“无 GPU”,但检测到了 GPU。在此服务器上使用 GPU 服务时将收到警告。",
+    "saving": "正在保存…",
+    "saved": "GPU 设置已保存",
+    "saveFailed": "无法保存 GPU 设置",
+    "badge": "GPU"
   }
 }

@@ -11,6 +11,7 @@ import { useLogStream } from "@/hooks/useSSEConnection";
 import { useToast } from "@/context/ToastContext";
 import { useProjectSettings } from "@/context/ProjectSettingsContext";
 import { useTheme } from "@/components/theme-provider";
+import { readTerminalTheme, observeTerminalAppearance } from "@/lib/terminal-appearance";
 import { api } from "@/lib/api";
 import { useI18n, interpolate } from "@/components/i18n-provider";
 import { TerminalCardShell } from "@/components/terminal/TerminalCardShell";
@@ -75,7 +76,6 @@ export const TerminalLogs: React.FC<TerminalLogsProps> = ({
     } = useProjectSettings();
 
     const { resolvedTheme } = useTheme();
-    const isDarkMode = resolvedTheme !== "light"; // dim + dark both use the dark terminal
 
     const [searchQuery, setSearchQuery] = useState("");
     const [hasMatches, setHasMatches] = useState(false);
@@ -89,57 +89,7 @@ export const TerminalLogs: React.FC<TerminalLogsProps> = ({
     const lastLogIndexRef = useRef(0); // Track last written log index to prevent duplicates
     const terminalLogCountRef = useRef(0);
     const effectShows = useRef(false);
-    const getDarkTheme = () => ({
-        background: '#060606',
-        foreground: '#e5e5e5',
-        cursor: '#ffffff',
-        cursorAccent: '#060606',
-        selectionBackground: 'rgba(255, 255, 255, 0.25)',
-        selectionForeground: '#ffffff',
-        black: '#000',
-        red: '#ff5556',
-        green: '#51fa7b',
-        yellow: '#f2fa8c',
-        blue: '#6372a4',
-        magenta: '#ff79c6',
-        cyan: '#86eafd',
-        white: '#d3d7cf',
-        brightBlack: '#6b7280',
-        brightRed: '#ff8888',
-        brightGreen: '#7dffaa',
-        brightYellow: '#f7ffb3',
-        brightBlue: '#8a9cd6',
-        brightMagenta: '#ffa1dd',
-        brightCyan: '#b0f3ff',
-        brightWhite: '#ffffff',
-    });
-
-    const getLightTheme = () => ({
-        background: '#ffffff',
-        foreground: '#1a1a1a',
-        cursor: '#1a1a1a',
-        cursorAccent: '#ffffff',
-        selectionBackground: 'rgba(59, 130, 246, 0.3)',
-        selectionForeground: '#1a1a1a',
-        black: '#1a1a1a',
-        red: '#dc2626',
-        green: '#16a34a',
-        yellow: '#ca8a04',
-        blue: '#2563eb',
-        magenta: '#c026d3',
-        cyan: '#0891b2',
-        white: '#6b7280',
-        brightBlack: '#4b5563',
-        brightRed: '#ef4444',
-        brightGreen: '#22c55e',
-        brightYellow: '#eab308',
-        brightBlue: '#3b82f6',
-        brightMagenta: '#d946ef',
-        brightCyan: '#06b6d4',
-        brightWhite: '#111827',
-    });
-
-    const getTerminalTheme = () => isDarkMode ? getDarkTheme() : getLightTheme();
+    const getTerminalTheme = () => readTerminalTheme(terminalRef.current);
     const initializeTerminal = async () => {
         if (!terminalRef.current) return;
 
@@ -288,6 +238,13 @@ export const TerminalLogs: React.FC<TerminalLogsProps> = ({
             terminalLogsData.xtermInstance.options.theme = getTerminalTheme();
         }
     }, [resolvedTheme]);
+
+    useEffect(() => {
+        if (!terminalReady || !terminalRef.current || !xtermRef.current) return;
+        return observeTerminalAppearance(xtermRef.current.xterm, terminalRef.current, () =>
+            xtermRef.current?.fitAddon.fit(),
+        );
+    }, [terminalReady]);
 
     useEffect(() => {
         onLogsChange(terminalLogsData.logs);
@@ -594,7 +551,7 @@ export const TerminalLogs: React.FC<TerminalLogsProps> = ({
     useEffect(() => {
         isStreamingRef.current = terminalLogsData.isStreaming;
     }, [terminalLogsData.isStreaming]);
-    
+
     const writeAnimated = async (term: any, text: any, delay = 5) => {
         for (const char of text) {
             if(isStreamingRef.current) return;
@@ -607,7 +564,7 @@ export const TerminalLogs: React.FC<TerminalLogsProps> = ({
         if (effectShows.current) return;
         const term = xtermRef.current.xterm;
         const fitAddon = xtermRef.current.fitAddon;
-      
+
         if (fitAddon) fitAddon.fit();
         term.reset();
         effectShows.current = true;

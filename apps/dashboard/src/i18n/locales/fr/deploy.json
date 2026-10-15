@@ -221,7 +221,8 @@
     "off": "désactivé",
     "previewTitle": "Aperçu du déploiement",
     "previewHint": "Continuez pour configurer votre application. Le déploiement démarre depuis la page suivante.",
-    "back": "Retour"
+    "back": "Retour",
+    "gpuBadge": "GPU"
   },
   "summary": {
     "buildAndDeploy": "Builder et déployer :",

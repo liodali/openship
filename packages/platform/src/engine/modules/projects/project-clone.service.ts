@@ -63,6 +63,7 @@ const PROJECT_FIELDS_NOT_CLONED = [
   // Lifecycle flags: a copy of a paused or half-deleted project starts clean and running.
   "deletedAt",
   "deletionInProgress",
+  "lifecycleOperation",
   "disabledAt",
   // Detected from the live site; the copy has no site yet, so copying these would show the
   // original's icon next to a project that has never served a request.

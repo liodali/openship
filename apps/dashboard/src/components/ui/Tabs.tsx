@@ -30,6 +30,8 @@ interface TabsProps<K extends string> {
   onChange: (key: K) => void;
   className?: string;
   size?: "sm" | "md";
+  /** Filled horizontal buttons for a local selection beneath section tabs. */
+  variant?: "underline" | "pills";
   /** Distribute padded tabs evenly across the available width. */
   fullWidth?: boolean;
   /** Vertical tabs use filled rows and Up/Down keyboard navigation. */
@@ -42,13 +44,14 @@ interface TabsProps<K extends string> {
   ariaLabel?: string;
 }
 
-/** Controlled tab navigation: an underline strip, filled list, or two-column grid. */
+/** Controlled tab navigation: an underline strip, filled buttons/list, or two-column grid. */
 export function Tabs<K extends string>({
   tabs,
   value,
   onChange,
   className = "",
   size = "md",
+  variant = "underline",
   fullWidth = false,
   orientation = "horizontal",
   columns = 1,
@@ -60,7 +63,8 @@ export function Tabs<K extends string>({
   const visibleTabs = tabs.filter((tab) => !tab.hidden);
   const localPanels = !!idPrefix && visibleTabs.every((tab) => !tab.href);
   const grid = columns === 2;
-  const filled = grid || orientation === "vertical";
+  const stacked = grid || orientation === "vertical";
+  const filled = stacked || variant === "pills";
 
   useLayoutEffect(() => {
     const strip = stripRef.current;
@@ -70,12 +74,12 @@ export function Tabs<K extends string>({
     const revealActive = () => {
       const bounds = strip.getBoundingClientRect();
       const tab = active.getBoundingClientRect();
-      const delta = filled
+      const delta = stacked
         ? tab.top < bounds.top ? tab.top - bounds.top
           : tab.bottom > bounds.bottom ? tab.bottom - bounds.bottom : 0
         : tab.left < bounds.left ? tab.left - bounds.left
           : tab.right > bounds.right ? tab.right - bounds.right : 0;
-      if (delta) strip.scrollBy(filled ? { top: delta } : { left: delta });
+      if (delta) strip.scrollBy(stacked ? { top: delta } : { left: delta });
     };
     revealActive();
     if (typeof ResizeObserver === "undefined") return;
@@ -83,7 +87,7 @@ export function Tabs<K extends string>({
     observer.observe(strip);
     observer.observe(active);
     return () => observer.disconnect();
-  }, [value, size, fullWidth, filled, columns, visibleTabs.length]);
+  }, [value, size, variant, fullWidth, stacked, columns, visibleTabs.length]);
 
   const captureActive = (element: HTMLElement | null) => { activeRef.current = element; };
   const navigate = (event: React.KeyboardEvent<HTMLButtonElement>, key: K) => {
@@ -122,16 +126,17 @@ export function Tabs<K extends string>({
           ? "grid grid-cols-2 items-stretch overflow-y-auto"
           : orientation === "vertical"
             ? "flex flex-col items-stretch overflow-y-auto"
-            : "flex items-center overflow-x-auto border-b border-border/50",
-        !filled && fullWidth && "justify-between",
+            : ["flex items-center overflow-x-auto", !filled && "border-b border-border/50"],
+        !stacked && fullWidth && "justify-between",
         className,
       )}
     >
       {visibleTabs.map(({ key, label, icon: Icon, leading, href, count }) => {
         const active = key === value;
         const className = cn(
-          "relative inline-flex min-w-0 shrink-0 items-center gap-2 whitespace-nowrap py-2.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/40",
+          "relative inline-flex min-w-0 shrink-0 items-center gap-2 whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/40",
           size === "sm" ? "px-3 text-xs" : "px-4 text-sm",
+          variant === "pills" && !stacked ? "py-2" : "py-2.5",
           filled
             ? ["rounded-xl text-start", active
               ? "bg-muted font-medium text-foreground"

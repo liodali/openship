@@ -43,6 +43,7 @@ export function projectPromotionDigest(dump: DatabaseDump): string {
     // A failed teardown clears its admission flag and touches this timestamp.
     // Neither changes the project's configuration or the imported source.
     delete row.deletionInProgress;
+    delete row.lifecycleOperation;
     delete row.updatedAt;
     delete row.favicon;
     delete row.faviconCheckedAt;

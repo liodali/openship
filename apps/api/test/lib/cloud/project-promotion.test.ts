@@ -9,7 +9,7 @@ function source(): DatabaseDump {
     sourceDriver: "pglite",
     scope: { kind: "project", projectId: "proj_checksum" },
     tables: {
-      project: [{ id: "proj_checksum", slug: "receipt-test", cloudPromotion: null }],
+      project: [{ id: "proj_checksum", slug: "receipt-test", cloudPromotion: null, lifecycleOperation: null }],
       service: [
         {
           id: "svc_b",
@@ -44,6 +44,7 @@ describe("project promotion checksum compatibility", () => {
     for (const rows of Object.values(dump.tables)) rows.reverse();
     dump.tables = Object.fromEntries(Object.entries(dump.tables).reverse());
     dump.tables.project[0].deletionInProgress = true;
+    dump.tables.project[0].lifecycleOperation = { kind: "delete", status: "failed", error: "Cleanup failed" };
     dump.tables.project[0].cloudPromotion = { cleanupInProgress: true };
     dump.tables.project[0].updatedAt = "2026-10-06T00:00:00.000Z";
     expect(projectPromotionDigest(dump)).toBe(receiptDigest);

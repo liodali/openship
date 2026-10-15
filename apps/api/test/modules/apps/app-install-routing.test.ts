@@ -26,6 +26,9 @@ const {
   listServicesMock: vi.fn(),
 }));
 
+// Exercise the installer that introduces catalog entrypoint overrides.
+vi.mock("@repo/platform/engine/lib/release-dist", () => ({ readApiVersion: () => "0.9.2" }));
+
 vi.mock("@repo/db", () => ({
   repos: {
     project: {
@@ -193,6 +196,65 @@ it.each(["self-hosted", "cloud"] as const)(
     expect(JSON.stringify(service.advanced.files)).not.toContain(
       wordpress.find((field) => field.key === "OPENSHIP_ADMIN_PASSWORD")!.value,
     );
+  },
+);
+
+it.each(
+  ["paperless-ngx", "wiki-js", "homepage", "immich", "jellyfin"].flatMap((templateId) =>
+    ["self-hosted", "cloud"].map((mode) => ({ templateId, mode })),
+  ),
+)(
+  "installs $templateId with private dependencies and encrypted setup ($mode)",
+  async ({ templateId, mode }) => {
+    const template = getAppTemplate(templateId)!;
+    const services = template.services!;
+    listServicesMock.mockResolvedValue(
+      services.map((service) => ({ id: "svc-" + service.name, name: service.name })),
+    );
+    const endpoint = template.endpoints!.find((endpoint) => endpoint.kind === "http")!;
+    await installApp(ctx, {
+      templateId,
+      ...(mode === "cloud" ? { serverId: "cloud-server", deployTarget: "cloud" as const } : {}),
+      routes: [
+        {
+          service: endpoint.service,
+          port: endpoint.port,
+          mode: "custom",
+          customDomain: "app.example.com",
+        },
+      ],
+    });
+    const envWrites = new Map(
+      setEnvMock.mock.calls.map((call) => [
+        call[2],
+        call[3].vars as Array<{ key: string; value: string; isSecret: boolean }>,
+      ]),
+    );
+    const secretGroups = new Map<string, string>();
+    for (const spec of services) {
+      const service = createServiceMock.mock.calls.find((call) => call[2]?.name === spec.name)![2];
+      expect(service.image).toBe(spec.image);
+      expect(service.advanced.build).toBeUndefined();
+      expect(service.advanced.resources).toBeUndefined();
+      expect(service.commandArgv).toEqual(spec.commandArgv);
+      if (spec.entrypointArgv) expect(service.advanced.entrypoint).toEqual(spec.entrypointArgv);
+      if (spec.name !== endpoint.service)
+        expect(service).toMatchObject({ exposed: false, ports: [], publicEndpoints: [] });
+      const variables = envWrites.get("svc-" + spec.name) ?? [];
+      for (const field of template.configFields ?? []) {
+        if (field.service !== spec.name || !field.secret) continue;
+        const value = variables.find((value) => value.key === field.key)!;
+        expect(value.isSecret).toBe(true);
+        expect(value.value).toMatch(/^[a-f0-9]{64}$/);
+        expect(JSON.stringify(service.environment)).not.toContain(value.value);
+        expect(JSON.stringify(service.advanced.files ?? [])).not.toContain(value.value);
+        if (field.generateGroup) {
+          if (secretGroups.has(field.generateGroup))
+            expect(value.value).toBe(secretGroups.get(field.generateGroup));
+          else secretGroups.set(field.generateGroup, value.value);
+        }
+      }
+    }
   },
 );
 

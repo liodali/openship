@@ -11,6 +11,7 @@ import { Type } from "@sinclair/typebox";
 export const InstallAppBody = Type.Object({
   serverId: Type.Optional(Type.String({ minLength: 1, maxLength: 128, description: "Connected or managed Cloud server to run this app on." })),
   templateId: Type.String({ minLength: 1, description: "Catalog app/template id to install." }),
+  useGpu: Type.Optional(Type.Boolean({ description: "Use the template's NVIDIA GPU requests. Recommended apps default to CPU; required GPU apps cannot disable it. Self-hosted GPU servers only." })),
   name: Type.Optional(Type.String({ description: "Project name (defaults from the template)." })),
   config: Type.Optional(
     Type.Record(Type.String(), Type.String(), {

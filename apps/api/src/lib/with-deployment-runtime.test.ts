@@ -175,13 +175,13 @@ describe("deploymentContainerIds", () => {
     }));
     const { deploymentContainerIds } = await import("@repo/platform/engine/lib/deployment-runtime");
 
-    expect(await deploymentContainerIds({ id: "dep_1", containerId: "app" })).toEqual(["svc-a"]);
+    expect(await deploymentContainerIds({ id: "dep_1", containerId: "app", roleContainers: null })).toEqual(["svc-a"]);
 
     vi.resetModules();
     vi.doMock("@repo/db", () => ({ repos: { service: { listByDeployment: async () => [] } } }));
     const fresh = await import("@repo/platform/engine/lib/deployment-runtime");
-    expect(await fresh.deploymentContainerIds({ id: "dep_1", containerId: "app" })).toEqual(["app"]);
-    expect(await fresh.deploymentContainerIds({ id: "dep_1", containerId: null })).toEqual([]);
+    expect(await fresh.deploymentContainerIds({ id: "dep_1", containerId: "app", roleContainers: null })).toEqual(["app"]);
+    expect(await fresh.deploymentContainerIds({ id: "dep_1", containerId: null, roleContainers: null })).toEqual([]);
   });
 });
 

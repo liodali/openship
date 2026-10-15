@@ -648,13 +648,42 @@ export function createProjectRepo(db: Database, encryption: ConfigurationEncrypt
       return rows.length > 0;
     },
 
-    /** Release the deletion-in-progress flag — call on every failure path so
-     *  ordinary project writes are admitted again after a partial teardown. */
+    /** Release a transient fence after preflight rejection or receipt-managed
+     * promotion cleanup. Ordinary partial deletion stays fenced. */
     async clearDeletionInProgress(id: string) {
       await db
         .update(project)
-        .set({ deletionInProgress: false, cloudPromotion: sql`${project.cloudPromotion} - 'cleanupInProgress'`, updatedAt: new Date() })
+        .set({
+          deletionInProgress: false,
+          lifecycleOperation: null,
+          cloudPromotion: sql`${project.cloudPromotion} - 'cleanupInProgress'`,
+          updatedAt: new Date(),
+        })
         .where(eq(project.id, id));
+    },
+
+    /** Workers have quiesced. Fence configuration before reading cleanup manifests. */
+    async beginDeletionCleanup(id: string): Promise<boolean> {
+      const rows = await db
+        .update(project)
+        .set({ lifecycleOperation: { kind: "delete", status: "running" }, updatedAt: new Date() })
+        .where(
+          and(eq(project.id, id), eq(project.deletionInProgress, true), isNull(project.deletedAt)),
+        )
+        .returning();
+      return rows.length > 0;
+    },
+
+    /** Caller holds the project runtime lock. A retry preserves this operation's fence. */
+    async markDeletionFailed(id: string, error: string) {
+      await db
+        .update(project)
+        .set({
+          deletionInProgress: true,
+          lifecycleOperation: { kind: "delete", status: "failed", error },
+          updatedAt: new Date(),
+        })
+        .where(and(eq(project.id, id), isNull(project.deletedAt)));
     },
 
     /**

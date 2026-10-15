@@ -180,6 +180,18 @@ describe("syncProjectPublicRoutes", () => {
       redirectStatus: null,
     };
 
+    it("chooses the serving hostname as primary when the redirect is submitted first", async () => {
+      await syncProjectPublicRoutes({
+        projectId: "proj_123", currentDomains: [],
+        endpoints: [
+          { domainType: "custom", customDomain: "example.com", port: 3000, redirectTo: "www.example.com", redirectStatus: 301 },
+          { domainType: "custom", customDomain: "www.example.com", port: 3000 },
+        ],
+      });
+      expect(domainRepo.create).toHaveBeenCalledWith(expect.objectContaining({ hostname: "example.com", isPrimary: false }));
+      expect(domainRepo.create).toHaveBeenCalledWith(expect.objectContaining({ hostname: "www.example.com", isPrimary: true }));
+    });
+
     it("persists redirectTo + redirectStatus on a NEW row", async () => {
       await syncProjectPublicRoutes({
         projectId: "proj_123",

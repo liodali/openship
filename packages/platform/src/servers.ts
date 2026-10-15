@@ -3,6 +3,8 @@ import {
   AppError,
   OperationError,
   ResourceIdSchema,
+  ServerMonitorFormatSchema,
+  type ServerMonitorOptions,
   parseInput,
   ServerCollectionSchemas,
   ServerResourceSchemas,
@@ -75,6 +77,7 @@ export interface ServerDependencies {
       ctx: ExecutionContext,
       serverId: string,
       signal?: AbortSignal,
+      format?: ServerMonitorOptions["format"],
     ): Promise<AsyncIterable<DeploymentEvent>>;
   };
 }
@@ -138,7 +141,7 @@ export type PlatformServerOperations = PlatformScopedOperations<typeof ServerCol
     openMonitor(
       ctx: ExecutionContext,
       id: string,
-      options?: { signal?: AbortSignal },
+      options?: ServerMonitorOptions,
     ): Promise<OperationResult<AsyncIterable<DeploymentEvent>>>;
   };
 export function createServerOperations(
@@ -284,7 +287,8 @@ export function createServerOperations(
         resourceId: id,
         action: "read",
       });
-      const source = await installations().monitor(context, id, options.signal);
+      const format = options.format === undefined ? undefined : parseInput(ServerMonitorFormatSchema, options.format);
+      const source = await installations().monitor(context, id, options.signal, format);
       return { context, data: authorizedEvents(context, id, "read", source) };
     },
   });

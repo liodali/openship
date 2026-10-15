@@ -155,6 +155,7 @@ vi.mock("@repo/platform/engine/modules/projects/project-git-webhook", () => ({
   findSharedWebhookId: async () => null,
 }));
 vi.mock("@repo/platform/engine/lib/project-runtime-lock", () => ({
+  withProjectStateLock: async (_id: string, work: () => Promise<unknown>) => work(),
   withLiveProjectRuntimeMutation: async (
     _projectId: string,
     mutate: (project: typeof h.project) => Promise<unknown>,

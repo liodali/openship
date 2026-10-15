@@ -55,6 +55,7 @@ const h = vi.hoisted(() => ({
   manageSsl: vi.fn(),
   servers: new Map<string, { organizationId: string; [key: string]: unknown }>(),
   serverCreate: vi.fn(), serverUpdate: vi.fn(), serverRemove: vi.fn(), serverWorkloads: vi.fn(),
+  serverInvalidate: vi.fn(),
   serverExec: vi.fn(), serverWithExecutor: vi.fn(), serverModuleScan: vi.fn(), serverModuleApply: vi.fn(),
   serverRateRead: vi.fn(), serverRateApply: vi.fn(),
   componentCheck: vi.fn(), installDocker: vi.fn(), installEdge: vi.fn(), removeEdge: vi.fn(),
@@ -95,6 +96,7 @@ vi.mock("@repo/db", () => ({
   schema: {},
   getDriver: () => "postgres",
   repos: {
+    ingress: { byServer: async () => null },
     serverCluster: { membership: async () => null },
     clusterDatabase: { list: async () => [] },
     user: { findFoundingAdmin: async () => ({ id: "founder" }) },
@@ -324,15 +326,18 @@ vi.mock("@repo/platform/engine/lib/deployment-runtime", async importOriginal => 
 
 vi.mock("@repo/platform/engine/lib/startup/self-server", () => ({ ensureLocalServer: vi.fn(async () => null), localServerHostChannel: vi.fn(async () => null) }));
 vi.mock("@repo/platform/engine/lib/geo-ip", () => ({ primeGeo: vi.fn(async () => {}), countryForIp: () => null }));
-vi.mock("@repo/platform/engine/lib/host-capacity", () => ({ invalidateHostCapacity: vi.fn(async () => {}), getTrustedHostCapacity: h.hostCapacity }));
+vi.mock("@repo/platform/engine/lib/host-capacity", () => ({ invalidateHostCapacity: vi.fn(async () => {}), getTrustedHostCapacity: h.hostCapacity, getHostCapacity: vi.fn(async () => ({ cpuCores: 0, memoryMb: 0, source: "unknown" })) }));
 vi.mock("@repo/platform/engine/lib/openresty-paths", () => ({
   invalidateOpenRestyPaths: vi.fn(async () => {}),
   withOpenRestyRouting: async (_id: string, work: (routing: unknown) => unknown) => work({ getRateLimitConfig: h.serverRateRead, applyRateLimit: h.serverRateApply }),
 }));
 vi.mock("@repo/platform/engine/lib/ssh-manager", () => ({
   sshManager: {
-    withExecutor: h.serverWithExecutor, invalidate: vi.fn(),
-    acquire: async () => ({ exec: h.monitorExec }), retain: h.serverRetain, release: h.serverRelease,
+    withExecutor: h.serverWithExecutor,
+    invalidate: h.serverInvalidate,
+    acquire: async () => ({ exec: h.monitorExec }),
+    retain: h.serverRetain,
+    release: h.serverRelease,
   },
 }));
 vi.mock("@repo/platform/engine/lib/agent-exec", () => ({ execOnHost: h.serverExec }));
@@ -2222,6 +2227,19 @@ describe("server HTTP/native parity", () => {
       await expect(servers.create({ sshHost: "example.com", sshPort: 99999 })).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
     }
     expect(h.serverCreate).not.toHaveBeenCalled();
+  });
+
+  it("updates GPU metadata through HTTP/native without disconnecting retained SSH sessions", async () => {
+    const local = await native();
+    for (const servers of [local.servers, remote().servers]) {
+      await expect(servers.update("server-a", { gpuOverride: "yes" })).resolves.toMatchObject({
+        gpu: { available: true, override: "yes" },
+      });
+    }
+    expect(h.serverInvalidate).not.toHaveBeenCalled();
+    expect(h.audit.mock.calls.at(-1)?.[0]).toMatchObject({ after: { gpuOverride: "yes" } });
+    await local.servers.update("server-a", { sshHost: "gpu.example.com" });
+    expect(h.serverInvalidate).toHaveBeenCalledExactlyOnceWith("server-a");
   });
 
   it("requires server admin for execution and rate-limit writes, beyond a write grant", async () => {

@@ -48,6 +48,7 @@ import {
   type OpenshipResources,
   type OpenshipReadiness,
   type OpenshipMonorepoApp,
+  type StackRole,
   type ComposeAdvanced,
   type WorkloadType,
   resolveTierResources,
@@ -294,6 +295,12 @@ export interface ProjectInfo {
    * Absent means no release phase, which is the default for every project.
    */
   releaseCommands?: string[];
+  /**
+   * Declared runtime roles (queue workers, a scheduler) that run from the same
+   * image as the web app. Absent means web only; a declared `[]` means
+   * explicitly no roles, which is why the overlay tests for presence.
+   */
+  roles?: StackRole[];
   /**
    * What the selected `openship.json` parse REFUSED, when it refused anything (#641).
    * Advisory only: an invalid config has never failed a scan or a deploy, it just
@@ -607,6 +614,8 @@ function applyOpenshipOverlay(info: ProjectInfo, config: OpenshipConfig | undefi
   if (config.readiness) info.readiness = config.readiness;
   // Declared `[]` is meaningful (release phase off), so test for presence.
   if (config.releaseCommands) info.releaseCommands = config.releaseCommands;
+  // Same presence test: a declared `[]` opts out of the stack's role presets.
+  if (config.roles) info.roles = config.roles;
 
   // Declared compose services replace detection: the project IS a services
   // project. runtimeMode="docker" then falls out of buildProductionProjectInput's
@@ -708,6 +717,10 @@ export function projectInfoToScanResponse(result: ProjectInfo, options: SourceSc
     ...(publicInfo.resources && { resources: publicInfo.resources }),
     ...(publicInfo.readiness && { readiness: publicInfo.readiness }),
     ...(publicInfo.releaseCommands && { releaseCommands: publicInfo.releaseCommands }),
+    // parseRoles rejects kind "web", which the wire contract's `kind` also excludes.
+    ...(publicInfo.roles && {
+      roles: publicInfo.roles as (StackRole & { kind: "worker" | "scheduler" })[],
+    }),
     ...(publicInfo.configDiagnostics && { configDiagnostics: publicInfo.configDiagnostics }),
     ...(publicInfo.rootEnv &&
       Object.keys(publicInfo.rootEnv).length > 0 && {

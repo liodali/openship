@@ -1,4 +1,31 @@
 {
+  "resources": {
+    "notFound": "リソースが見つかりません",
+    "notFoundDescription": "これらのリソースは現在のワークスペースでは利用できません。削除されたか、別のアカウントに属している可能性があります。",
+    "description": "アプリ、ビルド、データは同じクラウドスペースの容量を共有します。",
+    "selectPool": "クラウドスペースを選択",
+    "capacity": "現在のホスト",
+    "capacityHint": "アプリ、ビルド、保存データでこれらのリソースを共有します。",
+    "addCapacity": "クラウドスペースを追加",
+    "managePlan": "プランを管理",
+    "projects": "プロジェクト",
+    "emptyTitle": "ここからアプリを始めましょう",
+    "emptyDescription": "容量を選び、Openship Cloud にアプリやプロジェクトをデプロイします。",
+    "usageHint": "現在のCPU、メモリ、ストレージ使用量。",
+    "noProjects": "まだプロジェクトはありません。",
+    "spaces": "クラウドスペース",
+    "spacesHint": "アプリとプロジェクトごとの独立した容量。",
+    "space": "クラウドスペース",
+    "customPlan": "カスタムプラン",
+    "projectCount": "プロジェクト: {count}",
+    "live": "ライブ",
+    "paused": "一時停止",
+    "lastReading": "最終測定",
+    "connecting": "接続中…",
+    "streamUnavailable": "ライブ更新を利用できません。最後に測定した使用量を表示しています。",
+    "usageTitle": "リソース使用量",
+    "setupPending": "クラウドスペースの設定が完了すると使用量が表示されます。"
+  },
   "github": {
     "title": "GitHub アクセス",
     "desc": "このサーバーがプライベートリポジトリをクローンするために GitHub へ認証する方法。",
@@ -1204,5 +1231,25 @@
       "title": "操作を利用できません",
       "description": "接続先の Cloud API バージョンはこの操作にまだ対応していません。利用するには Openship Cloud の更新が必要です。"
     }
+  },
+  "gpu": {
+    "title": "GPU",
+    "subtitle": "このサーバー上のコンテナでのGPUの利用可否。",
+    "notDetected": "GPUは検出されませんでした",
+    "notProbed": "現在このサーバーを確認できません",
+    "countOne": "GPU 1基",
+    "countMany": "GPU {count}基",
+    "runtimeOnly": "NVIDIAランタイムを検出、カード数は不明",
+    "modeLabel": "GPUの利用可否",
+    "modeAuto": "自動",
+    "modeYes": "GPUあり",
+    "modeNo": "GPUなし",
+    "modeHint": "自動検出が誤っている場合のみ変更してください。",
+    "mismatchYes": "「GPUあり」に設定されていますが、検出されませんでした。GPUサービスはそれでもここに送られます。",
+    "mismatchNo": "「GPUなし」に設定されていますが、GPUが検出されました。このサーバーでGPUサービスを使うと警告されます。",
+    "saving": "保存中…",
+    "saved": "GPU設定を保存しました",
+    "saveFailed": "GPU設定を保存できませんでした",
+    "badge": "GPU"
   }
 }

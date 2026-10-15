@@ -616,6 +616,41 @@ describe("buildConfigSnapshot — release commands", () => {
   });
 });
 
+/**
+ * Runtime roles (#935) follow the release-commands rule: frozen only when the
+ * project has some, so a project without roles snapshots byte-identical to
+ * before. when/unless are preset gating and never reach a snapshot.
+ */
+describe("buildConfigSnapshot: roles", () => {
+  const worker = { name: "jobs", kind: "worker", command: "bin/jobs", replicas: 2 };
+
+  it("freezes the project's declared roles onto the snapshot", () => {
+    const scheduler = { name: "cron", kind: "scheduler", command: "bin/cron", singleton: true };
+    const snapshot = buildConfigSnapshot(baseProject({ roles: [worker, scheduler] }) as any);
+    expect(snapshot.roles).toEqual([worker, scheduler]);
+  });
+
+  it("omits the key entirely for null, [] and a project that never declared any", () => {
+    for (const roles of [null, [], undefined]) {
+      const snapshot = buildConfigSnapshot(baseProject({ roles }) as any);
+      expect("roles" in snapshot).toBe(false);
+    }
+  });
+
+  it("never carries the preset-only when/unless fields", () => {
+    const snapshot = buildConfigSnapshot(
+      baseProject({
+        roles: [
+          { ...worker, when: { deps: ["solid_queue"] }, unless: { deps: ["sidekiq"] } },
+        ],
+      }) as any,
+    );
+    expect(snapshot.roles).toEqual([worker]);
+    expect(snapshot.roles?.[0]).not.toHaveProperty("when");
+    expect(snapshot.roles?.[0]).not.toHaveProperty("unless");
+  });
+});
+
 describe("triggerDeployment", () => {
   beforeEach(() => {
     vi.clearAllMocks();

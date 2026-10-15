@@ -1,6 +1,9 @@
 import * as z from "zod";
 import { compareSemver } from "../updates/semver";
 import { MIN_CPU_CORES, MIN_MEMORY_MB } from "../resources";
+import { hasComposeGpuRequest, normalizeComposeGpuRequests } from "../compose-gpu";
+import { MAX_COMPOSE_SHM_BYTES } from "../compose-shared-memory";
+import type { TemplateServiceSpec } from "../app-templates";
 
 /**
  * Runtime shape gate for a repo-fetched app-catalog overlay. The BUNDLED catalog
@@ -21,7 +24,7 @@ import { MIN_CPU_CORES, MIN_MEMORY_MB } from "../resources";
 /** Highest catalog `schemaVersion` this build understands. An overlay entry
  *  above this is dropped (kept last-good), never mis-installed. Bump in lockstep
  *  with CURRENT_SCHEMA_VERSION when a breaking shape change ships. */
-export const MAX_SUPPORTED_SCHEMA = 1;
+export const MAX_SUPPORTED_SCHEMA = 2;
 
 /**
  * Is a template's `minEngine` satisfied by this instance's Openship version?
@@ -63,6 +66,17 @@ const serviceBuild = z.object({
 
 const serviceSpec = z.object({
   name: z.string(),
+  gpus: z.unknown().superRefine((value, ctx) => {
+    try {
+      if (value == null) throw new Error("GPU request cannot be null");
+      normalizeComposeGpuRequests(value);
+    }
+    catch (error) {
+      // diagnostics-ignore: expected catalog validation errors are returned to the author.
+      ctx.addIssue({ code: "custom", message: error instanceof Error ? error.message : "Invalid GPU request" });
+    }
+  }).optional(),
+  shmSize: z.number().int().min(1).max(MAX_COMPOSE_SHM_BYTES).optional(),
   /** Prebuilt image to pull. Exactly one of `image`/`build` must be set per service. */
   image: z.string().optional(),
   /** Exact retired defaults eligible for an explicit operator repair. Never auto-upgrade. */
@@ -108,6 +122,8 @@ const serviceSpec = z.object({
    * (`a && b`), `commandArgv` when the image needs exact argv.
    */
   commandArgv: z.array(z.string()).optional(),
+  /** Exact image entrypoint override. An empty array clears the image default. */
+  entrypointArgv: z.array(z.string()).optional(),
   /**
    * How long Docker waits after SIGTERM before SIGKILL (compose duration, e.g.
    * "10m"). The engine has always honored `advanced.stopGracePeriod`; only the
@@ -228,6 +244,7 @@ const requires = z.object({
   id: z.string(),
   label: localized,
   category: z.string().optional(),
+  bundleId: z.string().min(1).optional(),
   envKey: z.string(),
   mode: z.enum(["internal", "public"]).optional(),
   optional: z.boolean().optional(),
@@ -304,7 +321,9 @@ export const appTemplateSchema = z.object({
   }).optional(),
   kind: z.enum(["template", "flow"]),
   logo: z.string(),
-  category: z.enum(["backend", "database", "cms", "mail", "analytics", "automation", "other"]),
+  category: z.enum(["backend", "database", "cms", "mail", "analytics", "automation", "ai", "other"]),
+  gpu: z.enum(["recommended", "required"]).optional(),
+  supportsCloud: z.boolean().optional(),
   tags: z.array(z.string()).optional(),
   framework: z.string().optional(),
   services: z.array(serviceSpec).optional(),
@@ -360,7 +379,25 @@ export const appTemplateSchema = z.object({
   updatedAt: z.string().optional(),
   repository: z.string().url().optional(),
 }).superRefine((data, ctx) => {
-  // Referential integrity — catch dangling references at the gate rather than at
+  if ((data.supportsCloud === false || data.gpu || (data.requires ?? []).some((requirement) => requirement.bundleId) || (data.services ?? []).some((s) => s.gpus !== undefined || s.shmSize !== undefined)) && (data.schemaVersion ?? 1) < 2) {
+    ctx.addIssue({ code: "custom", path: ["schemaVersion"], message: "GPU, shared-memory, Cloud compatibility and connection bundle fields require schemaVersion >= 2" });
+  }
+  if (data.gpu && !(data.services ?? []).some((s) => hasComposeGpuRequest({ gpus: (Array.isArray(s.gpus) ? s.gpus : [s.gpus]).filter((request) => request && typeof request === "object") as TemplateServiceSpec["gpus"] }))) {
+    ctx.addIssue({ code: "custom", path: ["gpu"], message: "GPU placement requires a service GPU request" });
+  }
+  for (const [index, service] of (data.services ?? []).entries()) {
+      if (
+        service.entrypointArgv !== undefined &&
+        (!data.minEngine || !templateEngineOk("0.9.2", data.minEngine))
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["services", index, "entrypointArgv"],
+          message: "entrypointArgv requires minEngine >= 0.9.2",
+        });
+      }
+    }
+    // Referential integrity — catch dangling references at the gate rather than at
   // deploy time. Only enforced when the template declares services (flow apps
   // have none). `template:` sources aren't a direct service ref (they embed
   // {{env:svc:KEY}} placeholders), so only env:/publicUrl: sources are checked.

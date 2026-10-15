@@ -10,6 +10,7 @@ const h = vi.hoisted(() => ({
   save: vi.fn(), merge: vi.fn(), join: vi.fn(), leave: vi.fn(), dispose: vi.fn(), authorize: vi.fn(),
 }));
 vi.mock("@repo/platform/engine/lib/project-runtime-lock", () => ({
+  withProjectStateLock: async (_id: string, work: () => Promise<unknown>) => work(),
   withProjectRuntimeLock: async (_id: string, run: () => Promise<unknown>) => run(),
 }));
 

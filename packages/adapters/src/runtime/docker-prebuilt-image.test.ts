@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { ImageArtifactConfig } from "../types";
 import { DockerRuntime } from "./docker";
+import { BuildLogger } from "./build-pipeline";
 
 const config = (overrides: Partial<ImageArtifactConfig> = {}): ImageArtifactConfig => ({
   sessionId: "prebuilt-session",
@@ -49,10 +50,13 @@ describe("DockerRuntime.prepareImage", () => {
 
   it("pulls the application image and freezes the deploy artifact to its digest", async () => {
     const { runtime, pullImage, inspectImage } = runtimeWith();
+    const logger = new BuildLogger();
 
-    const result = await runtime.prepareImage(config({ forcePull: true }));
+    const result = await runtime.prepareImage(config({ forcePull: true }), logger);
 
-    expect(pullImage).toHaveBeenCalledWith("ghcr.io/example/app:latest", { force: true });
+    expect(pullImage).toHaveBeenCalledWith("ghcr.io/example/app:latest", {
+      force: true, signal: expect.any(AbortSignal), logger,
+    });
     expect(inspectImage).toHaveBeenCalledTimes(2);
     expect(result).toMatchObject({
       status: "deploying",

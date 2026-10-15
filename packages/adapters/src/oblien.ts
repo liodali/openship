@@ -1,3 +1,4 @@
+import { workspaceMetricsStream } from "./oblien-metrics";
 import { reportCaughtError as observeCaughtError } from "@repo/core/diagnostics";
 import {
   Oblien as OblienSdk, OblienError, AuthenticationError, ConflictError,
@@ -178,6 +179,7 @@ function providerError(status: number, body: unknown): OblienError {
  * requests, reject credential redirects, and keep provider bodies private while
  * preserving SDK cancellation and token refresh/restore. */
 export class Oblien extends OblienSdk {
+  readonly streamWorkspaceMetrics: (workspaceId: string, signal?: AbortSignal) => AsyncIterable<unknown>;
   /** Provider's public egress picker. SDK 2.10 exposes applying an IP but not
    * listing it. Keep this fixed endpoint and strip all pool credentials here. */
   async listOutboundIps(): Promise<{ ip: string; countryCode: string | null }[]> {
@@ -214,6 +216,13 @@ export class Oblien extends OblienSdk {
       setToken(token);
     };
     this._http.restoreAuth = () => { auth = new Headers(original); restoreAuth(); };
+    this.streamWorkspaceMetrics = (workspaceId, signal) => workspaceMetricsStream(async (subscriptionSignal) => {
+      if (!/^[a-zA-Z0-9_-]{1,128}$/.test(workspaceId)) throw new Error("Invalid Cloud workspace identity");
+      const url = new URL(`/workspace/${encodeURIComponent(workspaceId)}/stats/stream`, base);
+      const headers = new Headers(auth);
+      headers.set("Accept", "text/event-stream");
+      return fetch(url, { headers, redirect: "error", signal: subscriptionSignal });
+    }, signal);
     this._http.request = async <T>(request: RequestOptions): Promise<T> => {
       request.signal?.throwIfAborted();
       const url = new URL(request.path, base);

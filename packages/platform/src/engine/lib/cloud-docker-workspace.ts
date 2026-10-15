@@ -339,6 +339,7 @@ async function ensureDockerHost(
           slug: workspaceSlug(ownerId),
           namespace,
           image: binding.image,
+          ...(env.OBLIEN_DOCKER_PRESET ? { preset: env.OBLIEN_DOCKER_PRESET } : {}),
           mode: "temporary",
           wait_ready: false,
           idempotency_key: binding.provisionKey,

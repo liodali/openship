@@ -1,4 +1,6 @@
 "use client";
+
+import { hasComposeGpuRequest } from "@repo/core";
 import { DeployActions } from "@/components/actions/DeployActions";
 import { DeployGitHubChecks } from "@/components/import-project/DeployGitHubChecks";
 
@@ -141,6 +143,7 @@ const DeployRepository: React.FC = () => {
             ? t.billing.workspaces.uploadDestinationHint
             : config.projectId && config.workspaceId ? t.billing.workspaces.savedDestinationHint : undefined,
         forDeployment: true,
+        needsGpu: (config.services ?? []).some(service => hasComposeGpuRequest(service.advanced)),
         autoSelectFirst: savedTargetState === "none",
         useSavedDefault: savedTargetState === "none",
         onSelect: (server) => updateConfig({

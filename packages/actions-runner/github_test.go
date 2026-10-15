@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -148,5 +149,39 @@ func TestOfficialDockerProxyRemovesShortSocketDirectory(t *testing.T) {
 	p.Close()
 	if _, err = os.Stat(temp); !os.IsNotExist(err) {
 		t.Fatal("temporary socket directory retained")
+	}
+}
+func TestOfficialContainerFilesStayReadableBySupervisor(t *testing.T) {
+	if exec.Command("docker", "info").Run() != nil {
+		t.Skip("Docker is unavailable")
+	}
+	r := officialRequest(t)
+	r.GitHub.Image = "alpine:3.22"
+	r.ContainerCPU, r.ContainerRAM = 1, 256
+	runnerRoot := filepath.Join(r.Directory, "runner")
+	if err := os.MkdirAll(runnerRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	name := "openship-github-" + r.ID
+	args, err := githubContainerArgs(r, runnerRoot, name, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = exec.Command("docker", "rm", "--force", name).Run() })
+	if out, err := exec.Command("docker", args...).CombinedOutput(); err != nil {
+		t.Fatalf("container did not start: %v: %s", err, out)
+	}
+	// Mirror the assignment gate (mode 0600 record) and runner diagnostics.
+	record := `{"id":"` + strings.Repeat("a", 64) + `","repository":"owner/repo","repositoryId":"1","runId":"2","attempt":1}`
+	script := `umask 077 && mkdir -p _diag && echo log > _diag/Runner.log && touch "$HOME/.gitconfig" && printf '%s' "$1" > ../github-admission.json`
+	if out, err := exec.Command("docker", "exec", name, "/bin/sh", "-c", script, "sh", record).CombinedOutput(); err != nil {
+		t.Fatalf("container could not write session files: %v: %s", err, out)
+	}
+	request, err := readGitHubAdmission(r.Directory)
+	if err != nil || request == nil || request.RunID != "2" {
+		t.Fatalf("supervisor could not read the admission record: %v", err)
+	}
+	if err := os.RemoveAll(r.Directory); err != nil {
+		t.Fatalf("supervisor could not remove the session directory: %v", err)
 	}
 }

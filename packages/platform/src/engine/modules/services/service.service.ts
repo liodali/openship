@@ -23,6 +23,7 @@ import {
   looksLikeSecretKey,
   mergeAdvanced,
   parseContainerHosts,
+  validateComposeGpuConfig,
   normalizeServiceLabel,
   normalizeAliasStrict,
   resolveCommandArgv,
@@ -672,6 +673,7 @@ export async function createService(
   // strips the `null`-means-remove sentinels the update path accepts, so a
   // caller can send one payload shape to both.
   const advanced = mergeAdvanced(null, data.advanced);
+  validateComposeGpuConfig(advanced);
   if (advanced.extraHosts !== undefined) {
     advanced.extraHosts = parseContainerHosts(advanced.extraHosts);
   }
@@ -807,6 +809,7 @@ export async function updateService(
   // deep merge would make a partially-specified healthcheck inherit stale fields.
   if ("advanced" in patch) {
     patch.advanced = mergeAdvanced(svc.advanced as ComposeAdvanced | null, patch.advanced);
+    validateComposeGpuConfig(patch.advanced as ComposeAdvanced);
     const extraHosts = (patch.advanced as ComposeAdvanced).extraHosts;
     if (extraHosts !== undefined) {
       (patch.advanced as ComposeAdvanced).extraHosts = parseContainerHosts(extraHosts);
@@ -1499,6 +1502,7 @@ export async function syncComposeServices(
       ? unmaskEnv(svc.environment, storedEnvByName.get(svc.name) ?? null)
       : svc.environment;
     const advanced = svc.advanced as ComposeAdvanced | undefined;
+    validateComposeGpuConfig(advanced);
     if (advanced?.extraHosts !== undefined) {
       advanced.extraHosts = parseContainerHosts(advanced.extraHosts);
     }

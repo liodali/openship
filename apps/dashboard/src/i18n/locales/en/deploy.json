@@ -221,7 +221,8 @@
     "off": "off",
     "previewTitle": "Deployment preview",
     "previewHint": "Continue to configure your app. Deployment starts from the next page.",
-    "back": "Back"
+    "back": "Back",
+    "gpuBadge": "GPU"
   },
   "summary": {
     "buildAndDeploy": "Build & deploy:",

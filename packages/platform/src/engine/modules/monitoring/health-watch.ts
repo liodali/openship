@@ -138,10 +138,15 @@ const SERVER_CONCURRENCY = 4;
  * runner's own timeout marks the run failed but cannot cancel the body, so nothing
  * recovers it and nothing says so: a monitor that silently stopped monitoring.
  *
- * Falling into the gate-3 catch is the right outcome rather than a workaround — a
- * box that cannot answer inside 90s IS unreachable, and that is the incident an
- * operator needs. Generous enough that no healthy box trips it: the whole budget
- * of 120 inspects over a laggy bridge is a few seconds.
+ * Falling into the gate-3 catch is one miss, not yet a page. A box that cannot
+ * answer inside 90s is unreachable for THIS sweep, but one wedged probe is not an
+ * outage: the sweep already queued on `sweepChain` often gets a fresh connection
+ * and answers at once, and opening here is what mailed "answering again after 0s"
+ * for a daemon that was never down. The incident waits for a second counted miss
+ * (`AGREE_TICKS` / `MIN_CONFIRM_GAP_MS`, the same rule as a workload fault). A
+ * network-wide gap is not this counter — that one is recorded immediately and
+ * stays silent. Generous enough that no healthy box trips the deadline: the whole
+ * budget of 120 inspects over a laggy bridge is a few seconds.
  */
 const GROUP_DEADLINE_MS = 90_000;
 /**
@@ -283,6 +288,22 @@ interface WatchMemory {
  * message too many rather than silence. Both halves are pinned by tests.
  */
 const MEMORY = new Map<string, WatchMemory>();
+
+/**
+ * Consecutive daemon misses per (server × org), this process only.
+ *
+ * Same split as `MEMORY`: losing it costs re-earning the second observation,
+ * never a second page. An open `server_unreachable` row dedups the next miss,
+ * including the one that lands after a control-plane restart emptied this map.
+ */
+interface ServerMiss {
+  /** Misses that counted. A repeat inside `MIN_CONFIRM_GAP_MS` does not. */
+  agreed: number;
+  /** When the last COUNTED miss landed. */
+  lastSeenAtMs: number;
+}
+
+const SERVER_MISSES = new Map<string, ServerMiss>();
 
 /** Latest authoritative observation exposed to the org-wide Monitoring → Health
  * surface. This is deliberately fed by the existing grouped sweep/event hybrid:
@@ -935,6 +956,110 @@ async function incidentServerId(
   return serverId ?? (await repos.server.findLocal(organizationId))?.id ?? null;
 }
 
+/**
+ * Write the server-scoped incident for a miss that is allowed to record.
+ *
+ * No server row means nothing to dedup against, so this does not notify — an
+ * undeduped alert would repeat every minute.
+ */
+async function commitServerUnreachable(
+  summary: HealthWatchSummary,
+  opts: {
+    organizationId: string;
+    serverId: string | null;
+    reason: string;
+    affectedProjects: number;
+    cause: unknown;
+  },
+): Promise<void> {
+  const target = await incidentServerId(opts.serverId, opts.organizationId);
+  if (!target) {
+    summary.errors++;
+    errorDiagnostics.error("platform/engine/modules/monitoring/health-watch",
+      `[health-watch] local docker unreachable: ${opts.reason}`, opts.cause,
+    );
+    return;
+  }
+  try {
+    const existing = await repos.serviceIncident.findOpenForServer(target);
+    const server = existing ? undefined : (await repos.server.getMany([target])).get(target);
+    const transition = await recordServerUnreachable({
+      organizationId: opts.organizationId,
+      serverId: target,
+      serverName: existing?.serviceName ?? server?.name ?? "this server",
+      reason: opts.reason,
+      affectedProjects: opts.affectedProjects,
+      existing,
+    });
+    if (transition === "opened") summary.opened++;
+  } catch (inner) {
+    summary.errors++;
+    errorDiagnostics.error("platform/engine/modules/monitoring/health-watch",
+      `[health-watch] could not record unreachable server: ${safeErrorMessage(inner)}`, inner,
+    );
+  }
+}
+
+/**
+ * One observation that this box's daemon did not answer.
+ *
+ * Same notifying rule as a workload fault: `AGREE_TICKS` counted misses, spaced
+ * at least `MIN_CONFIRM_GAP_MS` apart, before an incident is opened. One deadline
+ * — or one refused connection — is `pending`, which is what asks the accelerator
+ * for a second look. An incident that is already open still dedups on this miss;
+ * the row, not this counter, is what makes a second page impossible.
+ */
+async function observeDaemonMiss(
+  summary: HealthWatchSummary,
+  opts: {
+    organizationId: string;
+    serverId: string | null;
+    reason: string;
+    affectedProjects: number;
+    cause: unknown;
+  },
+): Promise<void> {
+  const key = watchGroupKey(opts.serverId, opts.organizationId);
+  const nowMs = Date.now();
+  const previous = SERVER_MISSES.get(key);
+  const held = previous !== undefined && nowMs - previous.lastSeenAtMs < MIN_CONFIRM_GAP_MS;
+  const agreed = held && previous ? previous.agreed : (previous?.agreed ?? 0) + 1;
+  SERVER_MISSES.set(key, {
+    agreed,
+    lastSeenAtMs: held && previous ? previous.lastSeenAtMs : nowMs,
+  });
+
+  let existing: ServiceIncident | undefined;
+  try {
+    const target = await incidentServerId(opts.serverId, opts.organizationId);
+    if (!target) {
+      // No server row to hang the incident on (a control-plane docker socket that
+      // was never registered). Nothing to dedup against, so don't notify at all.
+      summary.errors++;
+      errorDiagnostics.error("platform/engine/modules/monitoring/health-watch",
+        `[health-watch] local docker unreachable: ${opts.reason}`, opts.cause,
+      );
+      return;
+    }
+    existing = await repos.serviceIncident.findOpenForServer(target);
+  } catch (inner) {
+    summary.errors++;
+    errorDiagnostics.error("platform/engine/modules/monitoring/health-watch",
+      `[health-watch] could not record unreachable server: ${safeErrorMessage(inner)}`, inner,
+    );
+    return;
+  }
+
+  // Inside the confirm gap, or still one short of agreement and nothing open yet.
+  // A held miss carries no new information, so it does not touch an open row.
+  if (held || (agreed < AGREE_TICKS && !existing)) {
+    if (!existing) summary.pending++;
+    return;
+  }
+
+  await commitServerUnreachable(summary, opts);
+}
+
 async function sweepServerGroup(ctx: GroupContext): Promise<void> {
   const { group, summary } = ctx;
   const first = group[0];
@@ -956,6 +1081,19 @@ async function sweepServerGroup(ctx: GroupContext): Promise<void> {
       GROUP_DEADLINE_MS,
       GROUP_DEADLINE_REASON,
     );
+
+    // Only a completed read can forgive a miss or announce recovery. A container
+    // list can succeed while an inspect still hangs; timed-out reads keep running
+    // detached and must never reach this transition. Snapshot-only reads do not
+    // change the continuous watcher's confirmation state.
+    if (handle.listed && !ctx.currentOnly) {
+      SERVER_MISSES.delete(watchGroupKey(serverId, organizationId));
+      const target = await incidentServerId(serverId, organizationId);
+      if (target) {
+        const existing = await repos.serviceIncident.findOpenForServer(target);
+        if (existing && (await resolveServerIncident(existing))) summary.resolved++;
+      }
+    }
   } catch (err) {
     const reason = safeErrorMessage(err);
     // Set before anything else: from here the group's verdict is decided WITHOUT
@@ -998,9 +1136,9 @@ async function sweepServerGroup(ctx: GroupContext): Promise<void> {
     // came back. PAST that point the daemon has demonstrably answered, so a failure
     // is ours — a rejected incident write, a bug — and reporting it as an unreachable
     // box tells every project on a healthy machine that it can't be monitored, with
-    // a Postgres error for a message. This tick may even have just announced the box
-    // answering again (`readServerGroup` closes that incident before the loop), so
-    // the pair would read "is answering again" followed by "can't reach Docker".
+    // a Postgres error for a message. Server recovery writes also happen only after
+    // the bounded daemon read completes, so a slow recovery write cannot be
+    // mistaken for a daemon deadline.
     //
     // The DEADLINE is exempt: an inspect that hangs after the list came back is a
     // wedged daemon or a dead bridge, which is precisely what gate 3 is for. A
@@ -1021,30 +1159,25 @@ async function sweepServerGroup(ctx: GroupContext): Promise<void> {
       ctx.unreachableServers.add(watchGroupKey(serverId, organizationId));
       summary.unreachable = ctx.unreachableServers.size;
     }
-    const target = await incidentServerId(serverId, organizationId);
-    if (!target) {
-      // No server row to hang the incident on (a control-plane docker socket that
-      // was never registered). Nothing to dedup against, so don't notify at all —
-      // an undeduped alert here would repeat every minute.
-      summary.errors++;
-      errorDiagnostics.error("platform/engine/modules/monitoring/health-watch", `[health-watch] local docker unreachable: ${reason}`, err);
-      return;
-    }
-    try {
-      const existing = await repos.serviceIncident.findOpenForServer(target);
-      const server = existing ? undefined : (await repos.server.getMany([target])).get(target);
-      const transition = await recordServerUnreachable({
+    // A network-wide gap is recorded at once and stays silent — it is not evidence
+    // that this host's daemon missed. A daemon miss pages only on the second
+    // counted observation, unless an incident is already open.
+    if (networkUnavailable) {
+      await commitServerUnreachable(summary, {
         organizationId,
-        serverId: target,
-        serverName: existing?.serviceName ?? server?.name ?? "this server",
+        serverId,
         reason,
         affectedProjects: group.length,
-        existing,
+        cause: err,
       });
-      if (transition === "opened") summary.opened++;
-    } catch (inner) {
-      summary.errors++;
-      errorDiagnostics.error("platform/engine/modules/monitoring/health-watch", `[health-watch] could not record unreachable server: ${safeErrorMessage(inner)}`, inner);
+    } else {
+      await observeDaemonMiss(summary, {
+        organizationId,
+        serverId,
+        reason,
+        affectedProjects: group.length,
+        cause: err,
+      });
     }
   } finally {
     // Tears down the SSH loopback bridge; a no-op on the socket transport. On a
@@ -1121,19 +1254,12 @@ async function readServerGroup(
     }
 
     const live = await runtime.listAllContainers();
+    // A list that lands after the deadline already wrote this group off is not an
+    // answer. `withTimeout` cannot cancel the read, so this is the call that was
+    // still in flight. Forgiving it would clear the miss the catch just counted,
+    // and resolving here is what mailed "answering again after 0s".
+    if (handle.abandoned) return;
     handle.listed = true;
-
-    // The box answered — close its unreachable incident if it had one. Through the
-    // same resolver the open path uses, so a LOCAL group can close the incident it
-    // opened: that one hangs on the self-server row, which keying this off `serverId`
-    // alone (null, here) could never reach.
-    if (!ctx.currentOnly) {
-      const incidentTarget = await incidentServerId(serverId, organizationId);
-      if (incidentTarget) {
-        const stale = await repos.serviceIncident.findOpenForServer(incidentTarget);
-        if (stale && (await resolveServerIncident(stale))) summary.resolved++;
-      }
-    }
 
     const byContainerId = new Map(live.map((c) => [c.id, c]));
     const sampler = runtime.supports("stabilityProbe") ? runtime.sampleStability?.bind(runtime) : undefined;

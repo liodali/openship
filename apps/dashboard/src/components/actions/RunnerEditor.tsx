@@ -20,6 +20,7 @@ import { Modal } from "@/components/ui/Modal";
 import { useDialogFocus } from "@/hooks/useDialogFocus";
 import ServerSelector from "@/components/shared/ServerSelector";
 import { useI18n } from "@/components/i18n-provider";
+import { usePlatform } from "@/context/PlatformContext";
 import { RunnerDestination } from "./RunnerDestination";
 import { ActionError } from "./ActionStatus";
 import { ActionField } from "./ActionField";
@@ -53,6 +54,7 @@ function Form({
   const { t } = useI18n();
   const a = t.actions;
   const c = a.runnerSetup;
+  const { selfHosted } = usePlatform();
   const mutation = useActionMutation();
   const emulation = useActionMutation();
   const busy = mutation.busy || emulation.busy;
@@ -175,7 +177,7 @@ function Form({
           <h1 className="text-2xl font-medium tracking-tight text-foreground">
             {runner?.name ?? a.newRunner}
           </h1>
-          <p className="mt-1 text-sm text-muted-foreground">{c.subtitle}</p>
+          <p className="mt-1 text-sm text-muted-foreground">{selfHosted ? c.subtitle : c.cloudSubtitle}</p>
         </div>
         <Button type="button" variant="ghost" onClick={onCancel} disabled={busy}>
           {a.cancel}
@@ -200,7 +202,7 @@ function Form({
             }}
             forDeployment
             autoSelectFirst={false}
-            label={a.server}
+            label={selfHosted ? a.server : t.servers.resources.space}
             disabled={!!runner || busy || cloud}
           />
           {serverId && (
@@ -266,7 +268,7 @@ function Form({
               </div>
             </div>
             <p className="text-xs leading-relaxed text-muted-foreground">
-              {serverId ? c.defaultImageHint : c.selectServer}
+              {serverId ? c.defaultImageHint : selfHosted ? c.selectServer : c.selectCloudSpace}
             </p>
             <ActionError
               message={config.mode === "container" && !config.image?.trim() ? null : mismatch}
@@ -471,7 +473,7 @@ function Form({
             {mutation.busy ? a.saving : a.saveRunner}
           </Button>
           <p className="text-xs leading-relaxed text-muted-foreground">
-            {config.mode === "native" ? c.trustedNative : c.trustedContainer}
+            {!selfHosted ? c.trustedCloudSpace : config.mode === "native" ? c.trustedNative : c.trustedContainer}
           </p>
         </aside>
       </div>
@@ -513,7 +515,6 @@ function Loader({ id }: { id?: string }) {
           />
         ) : (
           <RunnerDestination
-            onSaved={() => router.push("/actions")}
             onCancel={() => router.push("/actions")}
             renderForm={(server, back) => (
               <Form
@@ -573,7 +574,6 @@ export function RunnerSetupDialog({
       >
         <RunnerDestination
           key={scope}
-          onSaved={onSaved}
           onCancel={close}
           renderForm={(server, back) => (
             <Form

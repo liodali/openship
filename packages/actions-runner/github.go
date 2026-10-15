@@ -239,14 +239,10 @@ func runGitHubRunner(parent context.Context, request jobRequest, events *eventWr
 		_ = cleanNativeProcesses(cleanup, request.ID)
 	}()
 	if g.Image != "" {
-		args := []string{"run", "--detach", "--name", dockerName, "--label", "io.openship.actions.job=" + request.ID, "--cpus", fmt.Sprint(request.ContainerCPU), "--memory", fmt.Sprintf("%dm", request.ContainerRAM), "--user", "0:0", "--workdir", runnerRoot, "--volume", request.Directory + ":" + request.Directory, "--env", "RUNNER_ALLOW_RUNASROOT=1", "--env", "OPENSHIP_ACTION_WORKER_ID=" + request.ID}
-		if request.DockerSocket {
-			args = append(args, "--volume", proxy.path+":/var/run/docker.sock", "--env", "DOCKER_HOST=unix:///var/run/docker.sock")
+		args, err := githubContainerArgs(request, runnerRoot, dockerName, proxy.path)
+		if err != nil {
+			return result, err
 		}
-		if request.ContainerPlatform != "" {
-			args = append(args, "--platform", request.ContainerPlatform)
-		}
-		args = append(args, "--entrypoint", "/bin/sh", g.Image, "-c", "while :; do sleep 3600; done")
 		if err := githubCommand(ctx, environment, "", nil, nil, "docker", args...); err != nil {
 			return result, fmt.Errorf("GitHub runner container could not start: %w", err)
 		}
@@ -280,6 +276,30 @@ func runGitHubRunner(parent context.Context, request jobRequest, events *eventWr
 		return result, fmt.Errorf("GitHub runner exited before confirming shutdown: %w", err)
 	}
 	return result, nil
+}
+
+// The container shares its session directory with this supervisor, which reads
+// the admission record and later removes the directory. Run as the supervisor's
+// own identity so a non-root SSH user can still read and clean those files.
+func githubContainerArgs(request jobRequest, runnerRoot, dockerName, proxyPath string) ([]string, error) {
+	uid, gid := os.Getuid(), os.Getgid()
+	args := []string{"run", "--detach", "--name", dockerName, "--label", "io.openship.actions.job=" + request.ID, "--cpus", fmt.Sprint(request.ContainerCPU), "--memory", fmt.Sprintf("%dm", request.ContainerRAM), "--user", fmt.Sprintf("%d:%d", uid, gid), "--workdir", runnerRoot, "--volume", request.Directory + ":" + request.Directory, "--env", "RUNNER_ALLOW_RUNASROOT=1", "--env", "OPENSHIP_ACTION_WORKER_ID=" + request.ID}
+	if uid != 0 {
+		// The image may have no account, or a home owned by another user, for
+		// this identity. Workflow tools need a writable HOME.
+		home := filepath.Join(request.Directory, "home")
+		if err := os.MkdirAll(home, 0700); err != nil {
+			return nil, err
+		}
+		args = append(args, "--env", "HOME="+home)
+	}
+	if request.DockerSocket {
+		args = append(args, "--volume", proxyPath+":/var/run/docker.sock", "--env", "DOCKER_HOST=unix:///var/run/docker.sock")
+	}
+	if request.ContainerPlatform != "" {
+		args = append(args, "--platform", request.ContainerPlatform)
+	}
+	return append(args, "--entrypoint", "/bin/sh", request.GitHub.Image, "-c", "while :; do sleep 3600; done"), nil
 }
 
 func githubCommand(ctx context.Context, env []string, dir string, input io.Reader, events *eventWriter, binary string, args ...string) error {

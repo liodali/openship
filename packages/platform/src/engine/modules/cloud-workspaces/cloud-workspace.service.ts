@@ -40,10 +40,43 @@ import { withProjectRuntimeLock } from "../../lib/project-runtime-lock";
 import { assertWorkspaceCheckoutsSettled } from "../billing/workspace-checkout";
 import { createLinkedCloudServer, linkedServerRequest, linkedServerSummary, localizeCloudSummary, requireLinkedCloudServer, confirmLinkedServerDeletion } from "../../lib/cloud/server-link";
 
+const cloudSpaceProgress = {
+  waiting: "Waiting for the Cloud space to finish its current operation…",
+  checking: "Checking the Cloud space and its current subscription…",
+  preparing: "Preparing your Cloud space…",
+  resizing: "Applying Cloud space capacity; running projects will briefly restart…",
+  removing: "Confirming cleanup before removing this unused Cloud space…",
+  resized: "Cloud space capacity applied; previously running services restored.",
+  ready: "Your Cloud space is ready for projects.",
+} as const;
+
+// Progress is persisted across releases. Normalize only our exact historical
+// messages when reading it; provider diagnostics and stored records stay intact.
+const legacyCloudSpaceProgress = new Map<string, string>([
+  ["Waiting for the server to finish its current operation…", cloudSpaceProgress.waiting],
+  ["Checking the server and its current subscription…", cloudSpaceProgress.checking],
+  ["Preparing the subscribed Docker host…", cloudSpaceProgress.preparing],
+  ["Resizing the server; running projects will briefly restart…", cloudSpaceProgress.resizing],
+  ["Confirming provider cleanup before removing this empty server…", cloudSpaceProgress.removing],
+  ["Server capacity applied; previously running services restored.", cloudSpaceProgress.resized],
+  ["Server is ready for projects.", cloudSpaceProgress.ready],
+]);
+
+function presentOperation(
+  operation: CloudWorkspaceSummary["operation"],
+): CloudWorkspaceSummary["operation"] {
+  return operation
+    ? {
+        ...operation,
+        logs: operation.logs.map((message) => legacyCloudSpaceProgress.get(message) ?? message),
+      }
+    : null;
+}
+
 function requireSaas() {
   if (!env.CLOUD_MODE)
     throw new AppError(
-      "Managed servers are available in Openship Cloud",
+      "Cloud spaces are available in Openship Cloud",
       400,
       "CLOUD_WORKSPACE_TARGET_UNAVAILABLE",
     );
@@ -61,7 +94,8 @@ async function linkedSummaryOperation(
   const result = await linkedServerRequest<CloudWorkspaceSummary>(ctx.organizationId, id, suffix, {
     method, ...(input === undefined ? {} : { body: JSON.stringify(input) }),
   });
-  return localizeCloudSummary(row, result);
+  const localized = await localizeCloudSummary(row, result);
+  return { ...localized, operation: presentOperation(localized.operation) };
 }
 
 async function linkedResizePreview(ctx: ExecutionContext, id: string) {
@@ -83,11 +117,11 @@ async function resizeLinked(ctx: ExecutionContext, id: string, input: ResizeMana
     let owner = await requireLinkedCloudServer(ctx.organizationId, id);
     if (owner.operation?.id === input.idempotencyKey) {
       if (owner.operation.kind !== "resize" || owner.operation.revision !== input.revision || !owner.operation.remoteRevision)
-        throw new AppError("This request key belongs to a different server operation", 409, "IDEMPOTENCY_KEY_CONFLICT");
+        throw new AppError("This request key belongs to a different Cloud space operation", 409, "IDEMPOTENCY_KEY_CONFLICT");
     } else {
       const preview = await linkedResizePreview(ctx, id);
       if (preview.revision !== input.revision)
-        throw new AppError("The server changed. Review its resize again.", 409, "CLOUD_WORKSPACE_CHANGED");
+        throw new AppError("The Cloud space changed. Review its capacity change again.", 409, "CLOUD_WORKSPACE_CHANGED");
       await repos.cloudWorkspace.requestOperation(id, ctx.organizationId, {
         ...operation("resize", input.idempotencyKey), revision: input.revision,
         remoteRevision: preview.remoteRevision, resources: preview.after,
@@ -108,7 +142,10 @@ async function resizeLinked(ctx: ExecutionContext, id: string, input: ResizeMana
 }
 
 export async function summary(row: CloudWorkspace, live = false): Promise<CloudWorkspaceSummary> {
-  if (row.remote) return linkedServerSummary(row);
+  if (row.remote) {
+    const linked = await linkedServerSummary(row);
+    return { ...linked, operation: presentOperation(linked.operation) };
+  }
   requireSaas();
   const [binding, projects, server] = await Promise.all([
     repos.cloudDockerWorkspace.find({ ownerWorkspaceId: row.id }, row.organizationId),
@@ -160,7 +197,7 @@ export async function summary(row: CloudWorkspace, live = false): Promise<CloudW
     projectCount: projects.length + row.linkedProjects.reduce((count, link) => count + link.projects.length, 0),
     state,
     resources,
-    operation,
+    operation: presentOperation(operation),
     createdAt: row.createdAt.toISOString(),
   };
 }
@@ -185,14 +222,14 @@ export async function create(
     if (id) {
       const existing = await repos.cloudWorkspace.findByIdInOrganization(id, ctx.organizationId);
       if (existing?.deletionInProgress || await repos.cloudWorkspace.findWorkspaceDeletion(id, ctx.organizationId))
-        throw new AppError("This server purchase was removed. Start a new purchase from Pricing.", 409, "CLOUD_WORKSPACE_PURCHASE_REMOVED");
+        throw new AppError("This Cloud space purchase was removed. Start a new purchase from Pricing.", 409, "CLOUD_WORKSPACE_PURCHASE_REMOVED");
       if (existing) return summary(existing);
     }
     const rows = await repos.cloudWorkspace.listByOrganization(ctx.organizationId);
     // Draft identities don't reserve machines. Bound abandoned checkout drafts.
     if (rows.filter((row) => !row.namespace && row.planTierId === "free").length >= 10)
       throw new AppError(
-        "Finish setup or remove an unused server before adding another",
+        "Finish setup or remove an unused Cloud space before adding another",
         409,
         "CLOUD_WORKSPACE_DRAFT_LIMIT",
       );
@@ -209,12 +246,12 @@ export async function rename(ctx: ExecutionContext, id: string, input: { name: s
   if (!env.CLOUD_MODE) {
     await linkedServerRequest(ctx.organizationId, id, "", { method: "PATCH", body: JSON.stringify(input) });
     const row = await repos.cloudWorkspace.rename(id, ctx.organizationId, input.name.trim());
-    if (!row) throw new AppError("Managed server not found", 404, "CLOUD_WORKSPACE_NOT_FOUND");
+    if (!row) throw new AppError("Cloud space not found", 404, "CLOUD_WORKSPACE_NOT_FOUND");
     return summary(row);
   }
   requireSaas();
   const row = await repos.cloudWorkspace.rename(id, ctx.organizationId, input.name.trim());
-  if (!row) throw new AppError("Managed server not found", 404, "CLOUD_WORKSPACE_NOT_FOUND");
+  if (!row) throw new AppError("Cloud space not found", 404, "CLOUD_WORKSPACE_NOT_FOUND");
   return summary(row);
 }
 export async function getUsage(ctx: ExecutionContext, id: string) {
@@ -254,7 +291,7 @@ function operation(
     attempts: 0,
     nextAttemptAt: null,
     error: null,
-    logs: ["Waiting for the server to finish its current operation…"],
+    logs: [cloudSpaceProgress.waiting],
   };
 }
 function dispatch(id: string) {
@@ -325,7 +362,7 @@ async function readWorkspaceResourceChange(
   const host = await readCloudWorkspaceHost(organizationId, id);
   if (!host.provider || !host.binding?.workspaceId)
     throw new AppError(
-      "Start this managed server before resizing it",
+      "Set up this Cloud space before changing its capacity",
       409,
       "CLOUD_WORKSPACE_NOT_READY",
     );
@@ -336,7 +373,7 @@ async function readWorkspaceResourceChange(
     (pending.status !== "failed" || pending.restartWorkloads !== undefined)
   ) {
     throw new AppError(
-      "Finish or retry the current server operation first",
+      "Finish or retry the current Cloud space operation first",
       409,
       "CLOUD_WORKSPACE_BUSY",
     );
@@ -344,7 +381,7 @@ async function readWorkspaceResourceChange(
   const before = host.provider.allocation;
   if (after.diskMb < before.diskMb)
     throw new AppError(
-      "A server disk cannot shrink in place. Choose Custom to keep its current disk while changing CPU or memory, or move its data to a smaller server.",
+      "Cloud space storage cannot shrink in place. Choose Custom to keep the current storage while changing CPU or memory, or move its data to a smaller Cloud space.",
       409,
       "CLOUD_WORKSPACE_DISK_SHRINK",
     );
@@ -377,10 +414,10 @@ export async function applyApprovedWorkspaceResize(
     await assertCloudCanSpend(organizationId, id);
     const allowed = await cloudSubscriptionWorkspaceResources(organizationId, id);
     if (Object.entries(plan.after).some(([key, value]) => value !== allowed[key as keyof typeof allowed]))
-      throw new AppError("The paid server capacity changed. Review its resize again.", 409, "CLOUD_WORKSPACE_CHANGED");
+      throw new AppError("The paid Cloud space capacity changed. Review its capacity change again.", 409, "CLOUD_WORKSPACE_CHANGED");
     const current = await readWorkspaceResourceChange(organizationId, id, plan.after);
     if (current.revision !== plan.revision)
-      throw new AppError("The server or its projects changed. Review its resize again.", 409, "CLOUD_WORKSPACE_CHANGED");
+      throw new AppError("The Cloud space or its projects changed. Review its capacity change again.", 409, "CLOUD_WORKSPACE_CHANGED");
     return queueWorkspaceResize(organizationId, id, plan, requestKey);
   }, undefined, { lifecycle: true, scope: "lifecycle" });
   dispatch(id);
@@ -404,7 +441,7 @@ export async function resize(
   if (owner.operation?.id === input.idempotencyKey) {
     if (owner.operation.kind !== "resize" || owner.operation.revision !== input.revision) {
       throw new AppError(
-        "This request key belongs to a different server operation",
+        "This request key belongs to a different Cloud space operation",
         409,
         "IDEMPOTENCY_KEY_CONFLICT",
       );
@@ -416,7 +453,7 @@ export async function resize(
     const plan = await previewResize(ctx, id);
     if (plan.revision !== input.revision)
       throw new AppError(
-        "The server changed. Review its resize again.",
+        "The Cloud space changed. Review its capacity change again.",
         409,
         "CLOUD_WORKSPACE_CHANGED",
       );
@@ -476,7 +513,7 @@ async function hostForDeletion(row: CloudWorkspace) {
   const recovered = await findOwnedDockerWorkspace(getOblienClient(), row.id, binding.namespace);
   if (!recovered)
     throw new AppError(
-      "Server setup has not been confirmed. Retry setup before deleting it so its disk can be located safely.",
+      "Cloud space setup has not been confirmed. Retry setup before removing it so its storage can be located safely.",
       409,
       "CLOUD_WORKSPACE_PROVISIONING_UNCONFIRMED",
     );
@@ -493,7 +530,7 @@ async function hostForDeletion(row: CloudWorkspace) {
 function assertSubscriptionEnded(state: Awaited<ReturnType<typeof syncOblienEntitlement>>) {
   if (state.grant || (state.subscription && state.subscription.status !== "canceled")) {
     throw new AppError(
-      "Cancel this server's subscription and wait for its paid period to end before deleting it. Projects and data are retained meanwhile.",
+      "Cancel this Cloud space's subscription and wait for its paid period to end before removing it. Projects and data are retained meanwhile.",
       409,
       "CLOUD_WORKSPACE_SUBSCRIPTION_ACTIVE",
     );
@@ -509,7 +546,7 @@ async function withMemberRuntimeLocks<T>(row: CloudWorkspace, work: () => Promis
     ids.some((id) => !row.operation?.restartProjectIds?.includes(id))
   ) {
     throw new AppError(
-      "The projects on this server changed. Review the resize again.",
+      "The projects in this Cloud space changed. Review the capacity change again.",
       409,
       "CLOUD_WORKSPACE_CHANGED",
     );
@@ -529,14 +566,14 @@ async function reconcileLinkedOperation(id: string): Promise<void> {
     await requireLinkedCloudServer(row.organizationId, id);
     if (op.kind === "delete" && await confirmLinkedServerDeletion(row)) return;
     const server = await linkedServerRequest<ServerDetail>(row.organizationId, id, "");
-    if (!server.managed) throw new AppError("Managed server not found", 404, "SERVER_NOT_FOUND");
+    if (!server.managed) throw new AppError("Cloud space not found", 404, "SERVER_NOT_FOUND");
     if (server.managed.operation?.id === op.id) {
       await localizeCloudSummary(row, server.managed);
       return;
     }
     try {
       if (op.kind === "resize") {
-        if (!op.remoteRevision) throw new Error("The server resize has no Cloud revision");
+        if (!op.remoteRevision) throw new Error("The Cloud space capacity change has no Cloud revision");
         await linkedSummaryOperation(row, id, "/resize", "POST", {
           revision: op.remoteRevision, confirmRestart: true, idempotencyKey: op.id,
         });
@@ -579,10 +616,10 @@ export async function processWorkspaceOperation(id: string): Promise<void> {
         if (message) op.logs = [...op.logs, message.trim()].slice(-40);
         await repos.cloudWorkspace.updateOperation(id, op, op.id);
       };
-      await save("Checking the server and its current subscription…");
+      await save(cloudSpaceProgress.checking);
       try {
         if (op.kind === "ensure") {
-          await save("Preparing the subscribed Docker host…");
+          await save(cloudSpaceProgress.preparing);
           await ensureCloudWorkspaceHost({
             ownerWorkspaceId: id,
             organizationId: row.organizationId,
@@ -591,7 +628,7 @@ export async function processWorkspaceOperation(id: string): Promise<void> {
           await assertCloudCanSpend(row.organizationId, id);
           const { binding, provider } = await readCloudWorkspaceHost(row.organizationId, id);
           if (!binding?.workspaceId || !provider || !op.resources)
-            throw new Error("The server resize target is unavailable");
+            throw new Error("The Cloud space capacity change target is unavailable");
           const allowed = await cloudSubscriptionWorkspaceResources(row.organizationId, id);
           if (
             Object.entries(op.resources).some(
@@ -599,10 +636,10 @@ export async function processWorkspaceOperation(id: string): Promise<void> {
             )
           )
             throw new Error(
-              "The server plan changed. Review its capacity before retrying the resize.",
+              "The Cloud space plan changed. Review its capacity before retrying the change.",
             );
           const { client, namespace } = await getNamespaceClient(row.organizationId, id);
-          await save("Resizing the server; running projects will briefly restart…");
+          await save(cloudSpaceProgress.resizing);
           await withMemberRuntimeLocks(row, () =>
             createProvisionLock(`cloud:server:${binding.workspaceId}`).run(() =>
               resizeDockerWorkspace({
@@ -636,13 +673,13 @@ export async function processWorkspaceOperation(id: string): Promise<void> {
               if (row.namespace) assertSubscriptionEnded(await sync({ syncResourceLimits: false }));
               if ((await repos.project.listByWorkspace(id, row.organizationId)).length)
                 throw new AppError(
-                  "The server still has projects",
+                  "The Cloud space still has projects",
                   409,
                   "CLOUD_WORKSPACE_NOT_EMPTY",
                 );
               if ((await requireCloudWorkspace(row.organizationId, id)).linkedProjects.some(link => link.projects.length))
-                throw new AppError("The server still has projects on a connected installation", 409, "CLOUD_WORKSPACE_NOT_EMPTY");
-              await save("Confirming provider cleanup before removing this empty server…");
+                throw new AppError("The Cloud space still has projects on a connected installation", 409, "CLOUD_WORKSPACE_NOT_EMPTY");
+              await save(cloudSpaceProgress.removing);
               const binding = await hostForDeletion(row);
               if (binding?.workspaceId) {
                 const client = getOblienClient();
@@ -674,8 +711,8 @@ export async function processWorkspaceOperation(id: string): Promise<void> {
         };
         await save(
           op.kind === "resize"
-            ? "Server capacity applied; previously running services restored."
-            : "Server is ready for projects.",
+            ? cloudSpaceProgress.resized
+            : cloudSpaceProgress.ready,
         );
       } catch (error) {
         observeCaughtError(error, "platform/engine/modules/cloud-workspaces/cloud-workspace.service");

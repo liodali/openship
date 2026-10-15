@@ -17,7 +17,7 @@
     "viewPlan": "Ver mi plan",
     "serverTitle": "{name} está listo",
     "serverDescription": "Tu plan {plan} está activo. Las aplicaciones y las compilaciones comparten los recursos de este servidor.",
-    "openServer": "Abrir servidor"
+    "openServer": "Ver espacio Cloud"
   },
   "capacity": {
     "title": "Capacidad y uso",
@@ -534,12 +534,12 @@
     "customBuildLimit": "Establecer límite"
   },
   "workspaces": {
-    "title": "Servidores Cloud administrados",
-    "singular": "Servidor Cloud",
+    "title": "Espacios Cloud",
+    "singular": "Espacio Cloud",
     "description": "Elige un plan y despliega. Openship administra el servidor; tus proyectos comparten CPU, memoria y almacenamiento.",
-    "loading": "Cargando servidor…",
+    "loading": "Cargando espacios Cloud…",
     "choose": "Elige un servidor",
-    "chooseBilling": "Selecciona un servidor para ver su facturación.",
+    "chooseBilling": "Elige un espacio Cloud para ver su facturación.",
     "dedicatedProjects": "Facturación de proyectos dedicados",
     "dedicatedProjectsHint": "Proyectos existentes con sus propias máquinas Cloud.",
     "shared": "Varios proyectos",
@@ -552,10 +552,10 @@
     "defaultName": "Production",
     "defaultHint": "Elige un plan y despliega. Creamos y administramos tu servidor automáticamente.",
     "noneAvailable": "Crea un servidor compatible o libera uno dedicado antes de asignar este proyecto.",
-    "manage": "Gestionar servidores",
+    "manage": "Gestionar espacio Cloud",
     "subscriptionHint": "Los servidores nuevos se facturan por separado.",
     "placementHint": "Los proyectos comparten la capacidad de este espacio. Eliminar uno no afecta a los demás.",
-    "create": "Crear servidor",
+    "create": "Añadir espacio Cloud",
     "mode": "Aislamiento de proyectos",
     "createHint": "Crear un espacio es gratis. Elige su plan después; la facturación comienza al completar el pago.",
     "cloudOnly": "Los servidores administrados están disponibles en Openship Cloud. Usa Servidores para gestionar la infraestructura autohospedada.",
@@ -573,7 +573,7 @@
     "provision": "Iniciar espacio",
     "resume": "Reanudar servidor",
     "resize": "Aplicar capacidad del plan",
-    "operation": "Actividad del servidor",
+    "operation": "Actividad",
     "nextAttempt": "Próximo intento:",
     "resizeConfirm": "¿Aplicar la capacidad del plan actual?",
     "before": "Host actual",
@@ -583,12 +583,12 @@
     "confirmResize": "Aplicar y reiniciar",
     "rename": "Renombrar",
     "save": "Guardar",
-    "delete": "Eliminar servidor",
-    "confirmDelete": "Eliminar este espacio vacío",
+    "delete": "Eliminar espacio Cloud",
+    "confirmDelete": "Eliminar este espacio Cloud sin uso",
     "deleteHint": "Eliminar proyectos no cancela una suscripción. Detén la renovación en Facturación y espera a que termine el período pagado antes de eliminar un servidor con suscripción. La eliminación borra permanentemente el servidor vacío y los datos restantes del disco.",
     "buildCapacityTitle": "Revisa la capacidad del servidor",
     "buildCapacityHint": "Las compilaciones usan la capacidad libre de este espacio. Detén un servicio inactivo o aumenta la capacidad y vuelve a intentarlo.",
-    "openWorkspace": "Abrir servidor",
+    "openWorkspace": "Ver espacio Cloud",
     "retryDeployment": "Reintentar despliegue",
     "states": {
       "ready": "Listo",
@@ -629,7 +629,7 @@
     },
     "existingServerHint": "Usa el plan de este servidor.",
     "destination": "Destino",
-    "newProjectServer": "Nuevo servidor dedicado",
+    "newProjectServer": "Nuevo espacio Cloud",
     "oneProject": "1 proyecto",
     "savedDestinationHint": "Este proyecto conserva su servidor y sus datos.",
     "uploadDestinationHint": "Los archivos fuente están en este servidor. Inicia una nueva carga para usar otro destino.",
@@ -641,7 +641,7 @@
     "resourceSummary": "{cpu} vCPU · {memory} GB de RAM · {disk} GB de almacenamiento",
     "switchingBilling": "Cargando facturación de {name}…",
     "activity": {
-      "empty": "Todavía no hay operaciones del servidor.",
+      "empty": "Aún no hay operaciones de configuración ni cambios de capacidad.",
       "waitingForLogs": "Esperando registros de la operación…",
       "noLogs": "No se guardaron registros de esta operación.",
       "status": {
@@ -649,10 +649,11 @@
         "running": "En curso",
         "succeeded": "Completada",
         "failed": "Fallida"
-      }
+      },
+      "description": "Configuración, cambios de capacidad y recuperación de este espacio Cloud."
     },
-    "billingServers": "Tus servidores",
-    "billingServersUnavailable": "No se pudieron cargar tus servidores."
+    "billingServers": "Espacios Cloud",
+    "billingServersUnavailable": "No se pudieron cargar tus espacios Cloud."
   },
   "custom": {
     "name": "Personalizado",
@@ -682,7 +683,7 @@
     "resizeDescription": "Tu plan ha cambiado. Revisa la nueva capacidad y los proyectos afectados antes de reiniciar este servidor.",
     "applying": "Actualizando recursos del servidor. Puedes seguir el progreso en su página.",
     "reviewResize": "Revisar cambio de recursos",
-    "openServer": "Abrir servidor"
+    "openServer": "Ver espacio Cloud"
   },
   "planChange": {
     "title": "Revisar cambio de plan",
@@ -719,7 +720,7 @@
   },
   "purchase": {
     "mode": "Modelo de facturación",
-    "monthly": "Servidores mensuales",
+    "monthly": "Planes mensuales",
     "payg": "Uso prepago",
     "title": "Hosting prepago",
     "description": "Elige un nivel de recursos, añade créditos y paga por el uso de tus servidores.",
@@ -772,6 +773,7 @@
     }
   },
   "compute": {
+    "title": "Cobertura mensual",
     "covered": "Cómputo cubierto",
     "needsAttention": "Revisa la cobertura",
     "included": "CPU, RAM y almacenamiento incluido están cubiertos las 24 horas durante el mes pagado. Sin créditos de cómputo ni recargas.",
@@ -842,7 +844,7 @@
     "choosePlan": "Elegir un plan",
     "deleteServer": "Eliminar servidor sin usar",
     "openPayment": "Abrir pago",
-    "removing": "Se solicitó eliminar el servidor. Puedes seguir el progreso en Servidores.",
+    "removing": "Se solicitó eliminar el espacio Cloud. Puedes seguir el progreso en Espacios Cloud.",
     "states": {
       "open": "Esperando el pago",
       "unconfirmed": "Recupera el enlace de pago original",

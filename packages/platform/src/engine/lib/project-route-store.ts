@@ -98,7 +98,7 @@ function desiredProjectRoutes(endpoints?: StoredPublicEndpoint[] | null): Desire
 
     seen.add(hostname);
     const redirect = normalizeRedirect(endpoint);
-    const isPrimary = !hasPrimary && !isWildcardHostname(hostname);
+    const isPrimary = !hasPrimary && !redirect.redirectTo && !isWildcardHostname(hostname);
     if (isPrimary) hasPrimary = true;
     return [{
       hostname,

@@ -256,6 +256,8 @@ export async function updateCredential(
 export async function deleteCredential(organizationId: string, id: string): Promise<void> {
   const row = await repos.credential.findById(organizationId, id);
   if (!row) throw new NotFoundError("Credential", id);
+  if ((await repos.ingress.list(organizationId)).some(c => c.credentialId === id))
+    throw new ConflictError("Disconnect the Cloudflare Tunnel using this credential before deleting it. Pending hostname cleanup still needs the credential.");
   await repos.credential.remove(organizationId, id);
 }
 

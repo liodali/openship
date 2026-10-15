@@ -34,5 +34,8 @@ export function generateDockerfile(config: BuildConfig): string {
       config.runtimeImage,
     );
   }
-  return recipes[getDockerBuildRecipe(config.stack, config.isStatic)](config);
+  const recipe = recipes[getDockerBuildRecipe(config.stack, config.isStatic)](config);
+  if (!config.buildCache) return recipe;
+  // Automatic platform args need declaring in each stage for mount ID expansion.
+  return recipe.replace(/^(FROM .+)$/gm, "$1\nARG TARGETPLATFORM");
 }

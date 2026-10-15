@@ -328,6 +328,47 @@ afterEach(async () => {
 });
 
 describe("subscription-owned Cloud workspace lifecycle", () => {
+  it("presents historical Cloud space progress without rewriting provider diagnostics or stored logs", async () => {
+    await provision();
+    const row = (await repos.cloudWorkspace.findById(workspace.id))!;
+    const providerDiagnostic = "Oblien server diagnostic: Server is ready for projects. (HTTP 503)";
+    const logs = [
+      "Waiting for the server to finish its current operation…",
+      "Checking the server and its current subscription…",
+      "Preparing the subscribed Docker host…",
+      "Resizing the server; running projects will briefly restart…",
+      "Confirming provider cleanup before removing this empty server…",
+      "Server capacity applied; previously running services restored.",
+      "Server is ready for projects.",
+      "Your Cloud space is ready for projects.",
+      providerDiagnostic,
+    ];
+    await repos.cloudWorkspace.updateOperation(
+      workspace.id,
+      { ...row.operation!, logs },
+      row.operation!.id,
+    );
+
+    const result = await request("GET", `/${workspace.id}`);
+    expect(result.status).toBe(200);
+    expect(result.body.managed.operation).toMatchObject({
+      id: row.operation!.id,
+      status: "succeeded",
+      logs: [
+        "Waiting for the Cloud space to finish its current operation…",
+        "Checking the Cloud space and its current subscription…",
+        "Preparing your Cloud space…",
+        "Applying Cloud space capacity; running projects will briefly restart…",
+        "Confirming cleanup before removing this unused Cloud space…",
+        "Cloud space capacity applied; previously running services restored.",
+        "Your Cloud space is ready for projects.",
+        "Your Cloud space is ready for projects.",
+        providerDiagnostic,
+      ],
+    });
+    expect((await repos.cloudWorkspace.findById(workspace.id))?.operation?.logs).toEqual(logs);
+  });
+
   it("keeps a first app's server identity through the plan refusal, payment and draft retry", async () => {
     owner = await seedOwner();
     const install = async () => {

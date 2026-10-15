@@ -32,6 +32,7 @@ export * from "./domain-retry";
 export * from "./utils";
 export * from "./runtime-version";
 export * from "./errors";
+export * from "./operation-state";
 export * from "./service-routing";
 export * from "./volume-spec";
 export * from "./source-access";
@@ -118,3 +119,8 @@ export * from "./github-installation-scope";
 
 export * from "./pricing/actions";
 export * from "./deployment-checks";
+export * from "./compose-gpu";
+export * from "./compose-shared-memory";
+export * from "./apps/gpu";
+
+export * from "./appearance";

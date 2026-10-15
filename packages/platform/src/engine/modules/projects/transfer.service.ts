@@ -316,6 +316,7 @@ async function promoteProjectToCloudLocked(ctx: RequestContext, projectId: strin
     // of a snapshot that did not contain it.
     force: false,
     preserveWebhook: true,
+    failurePolicy: "release_claim",
     validateConfiguration: async () => {
       await assertUnchangedSource(projectId, receipt);
       if (local?.gitOwner && local?.gitRepo && local?.webhookId) {

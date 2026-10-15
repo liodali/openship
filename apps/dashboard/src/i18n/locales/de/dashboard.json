@@ -55,6 +55,7 @@
     "appsEmptyDesc": "Ein Klick, vollständig selbst gehostet — Datenbanken, Automatisierung, Analytics, Passwort-Vaults und mehr, auf deinen eigenen Servern."
   },
   "nav": {
+    "resources": "Cloud-Bereiche",
     "support": "Support",
     "scale": "Skalierung",
     "home": "Startseite",
@@ -131,7 +132,8 @@
         "analytics": "Analytics",
         "automation": "Automatisierung",
         "mail": "Mail",
-        "other": "Tools"
+        "other": "Tools",
+        "ai": "KI & Modelle"
       },
       "addCustom": "Eigene hinzufügen",
       "howToAddApp": "Wie man eine App hinzufügt",
@@ -140,7 +142,18 @@
       "needsUpdateBadge": "Aktualisierung erforderlich",
       "needsVersionBadge": "Erfordert v{version}",
       "removedToast": "„{name}“ entfernt.",
-      "removeFailedToast": "Die App konnte nicht entfernt werden."
+      "removeFailedToast": "Die App konnte nicht entfernt werden.",
+      "gpu": {
+        "recommended": "GPU empfohlen",
+        "required": "NVIDIA-GPU erforderlich",
+        "mode": "Rechenleistung",
+        "cpu": "Nur CPU",
+        "nvidia": "NVIDIA-GPU",
+        "hint": "Der NVIDIA-Modus benötigt einen kompatiblen Treiber und das NVIDIA Container Toolkit auf deinem Server.",
+        "cloudUnsupported": "Diese App unterstützt nur eigene Server. Wähle einen verbundenen eigenen Server.",
+        "selfHostedOnly": "Nur eigener Server",
+        "noGpu": "Keine GPU erkannt. Prüfe den NVIDIA-Treiber und das Container Toolkit oder wähle CPU."
+      }
     },
     "projects": {
       "title": "Projekte",

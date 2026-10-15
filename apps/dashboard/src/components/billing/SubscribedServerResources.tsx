@@ -1,5 +1,6 @@
 "use client";
 
+import { cloudSpaceHref } from "@/lib/cloud-spaces";
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -61,7 +62,7 @@ function ResourceChange({ serverId, state }: { serverId: string; state: BillingS
     <section className="space-y-4 rounded-2xl bg-card p-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-base font-medium">{t.billing.custom.resizeTitle}</h2>
-        <Button asChild variant="ghost" size="sm"><Link href={`/servers/${encodeURIComponent(serverId)}`}>{t.billing.custom.openServer}</Link></Button>
+        <Button asChild variant="ghost" size="sm"><Link href={cloudSpaceHref(serverId)}>{t.billing.custom.openServer}</Link></Button>
       </div>
       {error ? (
         <div role="alert" className="space-y-3 text-sm text-danger">

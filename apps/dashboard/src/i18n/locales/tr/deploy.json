@@ -221,7 +221,8 @@
     "off": "kapalı",
     "previewTitle": "Dağıtım önizlemesi",
     "previewHint": "Uygulamanızı yapılandırmak için devam edin. Dağıtım sonraki sayfadan başlatılır.",
-    "back": "Geri"
+    "back": "Geri",
+    "gpuBadge": "GPU"
   },
   "summary": {
     "buildAndDeploy": "Derle ve Dağıt:",

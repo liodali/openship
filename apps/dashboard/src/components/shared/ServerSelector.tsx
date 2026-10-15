@@ -17,6 +17,7 @@ import { DESKTOP_LOCAL_DEPLOY_ENABLED } from "@/hooks/useLocalDeployGate";
 import { dockerMigrationApi } from "@/lib/api/server-migration";
 import { getApiErrorMessage } from "@/lib/api/client";
 import { matchesServer } from "@/lib/server-reference";
+import { sortForGpu } from "@/lib/server-gpu";
 
 export interface ServerOption {
   id: string;
@@ -45,6 +46,13 @@ export interface ServerSelectorProps {
   requiredCapability?: keyof NonNullable<ServerDetail["capabilities"]>;
   /** Cloud import sources use this same picker with a restricted inventory. */
   migrationSource?: boolean;
+  /**
+   * The deployment has a service that asks for a GPU. GPU servers are listed (and auto-selected)
+   * first; no server is hidden, because a manual mark and the deploy-time warning are how the
+   * operator overrides a wrong guess.
+   */
+  needsGpu?: boolean;
+  selfHostedOnly?: boolean;
 }
 
 function option(server: ServerDetail | ServerInfo): ServerOption {
@@ -82,6 +90,8 @@ export function useServerSelection({
   forDeployment = false,
   requiredCapability,
   migrationSource = false,
+  needsGpu = false,
+  selfHostedOnly = false,
 }: ServerSelectorProps, enabled = true) {
   const { selfHosted, deployMode } = usePlatform();
   const restrictedSource = migrationSource && !selfHosted;
@@ -95,7 +105,7 @@ export function useServerSelection({
   const [internalId, setInternalId] = useState<string | null>(null);
   const autoSelected = useRef(false);
   const canAddServer = restrictedSource || selfHosted || requiredCapability !== "ssh";
-  const openAddServer = useAddServerModal({ connectedOnly: requiredCapability === "ssh" || restrictedSource, migrationSource: restrictedSource });
+  const openAddServer = useAddServerModal({ connectedOnly: selfHostedOnly || requiredCapability === "ssh" || restrictedSource, migrationSource: restrictedSource });
   const requestedId = value === undefined ? internalId : value;
   const selectedId = data?.servers.find(server => matchesServer(server, requestedId))?.id ?? requestedId;
   const onSelectRef = useRef(onSelect);
@@ -152,7 +162,8 @@ export function useServerSelection({
     return () => { active = false; };
   }, [enabled, readOnly, useSavedDefault, contextKey]);
 
-  const rows = (data?.servers ?? []).filter((server) => {
+  const rows = sortForGpu(data?.servers ?? [], needsGpu).filter((server) => {
+    if (selfHostedOnly && server.managed) return false;
     if (!restrictedSource && requiredCapability && !server.capabilities?.[requiredCapability]) return false;
     if (excludeIds?.includes(server.id)) return false;
     if (!server.managed) return true;
@@ -164,7 +175,7 @@ export function useServerSelection({
   });
   const ids = rows.map((row) => row.id).join(",");
   const automaticCloud =
-    !selfHosted && forDeployment && data?.servers.length === 0 && !selectedId;
+    !selfHostedOnly && !selfHosted && forDeployment && data?.servers.length === 0 && !selectedId;
   useEffect(() => {
     if (
       !enabled || disabled || readOnly || loading || error ||
@@ -256,12 +267,13 @@ export function ServerSelectorView({
     restrictedSource, removeSource, removing, actionError,
   } = selection;
   const effective = selectedId ?? "";
+  const fieldLabel = label ?? (!selfHosted && !restrictedSource ? t.servers.resources.selectPool : copy.serverLabel);
   const addLabel = restrictedSource ? t.migration.sources.connect : !selfHosted && forDeployment ? managedCopy.newProjectServer : copy.addNewServer;
   return (
     <div className={compact ? "space-y-2" : "mb-5 space-y-2"}>
       {!compact && (
         <label className="block text-sm font-medium text-foreground">
-          {label ?? copy.serverLabel}
+          {fieldLabel}
         </label>
       )}
       {readOnly ? (
@@ -292,7 +304,7 @@ export function ServerSelectorView({
             </div>
           ) : (
             <ServerPicker
-              label={label ?? copy.serverLabel}
+              label={fieldLabel}
               showLabel={false}
               selectedId={effective}
               servers={rows}
@@ -316,7 +328,7 @@ export function ServerSelectorView({
             onClick={addServer}
           >
             <Icon name="plus" className="size-3.5" aria-hidden />
-            {restrictedSource ? addLabel : copy.addServer}
+            {selfHosted && !restrictedSource ? copy.addServer : addLabel}
           </Button>
         </div>
       )}

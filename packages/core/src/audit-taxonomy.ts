@@ -397,6 +397,43 @@ export const AUDIT_EVENTS: Record<string, AuditEventDef> = {
     tone: "warning",
   },
 
+  "ingress.connection_created": {
+    category: "servers",
+    action: "requested public ingress setup for",
+    label: "Tunnel connection requested",
+    description: "Server tunnel setup was queued; its persisted status records completion or failure.",
+  },
+  "ingress.defaults_updated": {
+    category: "servers",
+    action: "changed domain defaults for",
+    label: "Tunnel defaults changed",
+    description: "Automatic enrollment or the Access policy for future hostnames changed.",
+  },
+  "ingress.retry_requested": {
+    category: "servers",
+    action: "requested ingress recovery for",
+    label: "Tunnel retry requested",
+  },
+  "ingress.disconnection_requested": {
+    category: "servers",
+    action: "requested ingress removal for",
+    label: "Tunnel disconnection requested",
+    tone: "warning",
+    description: "Owned hostname and connector cleanup was queued before removing the connection.",
+  },
+  "ingress.hostname_saved": {
+    category: "domains",
+    action: "configured public ingress for",
+    label: "Hostname ingress saved",
+    description: "The hostname connection or Access policy was saved for reconciliation.",
+  },
+  "ingress.hostname_disconnect_requested": {
+    category: "domains",
+    action: "requested ingress removal for",
+    label: "Hostname disconnection requested",
+    tone: "warning",
+  },
+
   /* ---------------- Servers ---------------- */
   "server.added": {
     category: "servers",
@@ -1113,6 +1150,7 @@ export const AUDIT_RESOURCE_LABELS: Record<string, string> = {
   deployment: "a deployment",
   domain: "a domain",
   dns_credential: "a DNS provider",
+  ingress_connection: "a Cloudflare Tunnel connection",
   credential: "a credential",
   server: "a server",
   mail_server: "the mail server",

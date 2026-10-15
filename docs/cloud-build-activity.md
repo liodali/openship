@@ -30,6 +30,17 @@ checks current CPU/memory capacity, memory headroom, and active sibling build
 allocations. This closes the downsize-between-reservation-and-activation case.
 The bound provider identity is then persisted on the activity.
 
+Unset CPU and memory caps stay zero in the admission ledger and in Docker: those
+dimensions share the host rather than reserving all of it. Each source build still
+owns a distinct row and consumes a plan concurrency slot. Explicit dimensions keep
+their existing capacity and usage checks. Image-only deployment phases retain
+lifecycle protection without consuming a source-build slot.
+
+Creating the queued deployment is DB-only work under `withProjectStateLock`, which
+shares the project advisory lock with runtime mutations and deletion. It never
+claims exclusive workspace admission. That state-only scope cannot upgrade to
+runtime privileges; actual workers acquire the existing shared build activity.
+
 ## Ownership boundaries
 
 Wrap the entire detached worker in

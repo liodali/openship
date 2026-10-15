@@ -5,6 +5,7 @@ import type { Project } from "@repo/db";
 const h = vi.hoisted(() => ({
   managed: vi.fn(), entitlement: vi.fn(), owner: vi.fn(), find: vi.fn(), reserve: vi.fn(), attach: vi.fn(), ready: vi.fn(), active: vi.fn(),
   token: vi.fn(), spend: vi.fn(), create: vi.fn(), retry: vi.fn(), get: vi.fn(), start: vi.fn(), resume: vi.fn(),
+  env: { CLOUD_MODE: true, OBLIEN_API_URL: "https://staging.oblien.test", OBLIEN_DOCKER_PRESET: undefined as string | undefined },
   permanent: vi.fn(), resize: vi.fn(), wait: vi.fn(), credentials: [] as unknown[],
   inFlight: vi.fn(), discard: vi.fn(), list: vi.fn(), exec: vi.fn(), invalidate: vi.fn(), dispose: vi.fn(),
 }));
@@ -14,7 +15,7 @@ vi.mock("@repo/db", () => ({
     cloudWorkspace: { findByIdInOrganization: h.managed },
     cloudDockerWorkspace: { find: h.find, reserve: h.reserve, attach: h.attach, markReady: h.ready, discardUncreated: h.discard } },
 }));
-vi.mock("@repo/platform/engine/config/env", () => ({ env: { CLOUD_MODE: true, OBLIEN_API_URL: "https://staging.oblien.test" } }));
+vi.mock("@repo/platform/engine/config/env", () => ({ env: h.env }));
 vi.mock("@repo/platform/engine/lib/openship-cloud", () => ({ issueNamespaceToken: h.token }));
 vi.mock("@repo/platform/engine/lib/cloud/client", () => ({ getOrgCloudToken: vi.fn() }));
 vi.mock("@repo/platform/engine/modules/billing/billing-oblien-quota", () => ({ assertCloudCanSpend: h.spend, syncOblienEntitlement: h.entitlement }));
@@ -43,6 +44,7 @@ const input = { projectId: project.id, organizationId: project.organizationId };
 const ownerRef = { ownerWorkspaceId: project.workspaceId! };
 let binding: Record<string, any> | undefined;
 beforeEach(() => {
+  h.env.OBLIEN_DOCKER_PRESET = undefined;
   vi.resetAllMocks(); h.credentials.length = 0; binding = undefined;
   h.owner.mockResolvedValue(project);
   h.managed.mockResolvedValue({ id: project.workspaceId, name: "Production", namespace: "namespace-a", organizationId: project.organizationId });
@@ -84,6 +86,15 @@ beforeEach(() => {
 });
 
 describe("Subscribed Cloud server provisioning and retry", () => {
+  it("selects published software only for new workspace creation, keeping existing servers running", async () => {
+    h.env.OBLIEN_DOCKER_PRESET = "docker-build-cache";
+    await ensureCloudDockerWorkspace(input);
+    expect(h.create).toHaveBeenCalledWith(expect.objectContaining({ preset: "docker-build-cache", image: "oblien/docker:29" }));
+    h.create.mockClear();
+    await ensureCloudDockerWorkspace(input);
+    expect(h.create).not.toHaveBeenCalled();
+    expect(h.start).not.toHaveBeenCalled();
+  });
   it("uses namespace credentials and stores provider identity before readiness", async () => {
     h.wait.mockImplementation(async () => {
       expect(binding?.workspaceId).toBe("workspace-a");

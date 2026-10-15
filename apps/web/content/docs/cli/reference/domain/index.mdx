@@ -17,7 +17,7 @@ openship domain [options] [command]
 | Subcommand | Purpose |
 | --- | --- |
 | [`list [options]`](/docs/cli/reference/domain#openship-domain-list) | List a project's custom domains |
-| [`add [options] <hostname>`](/docs/cli/reference/domain#openship-domain-add) | Add a custom domain to a project |
+| [`add [options] <hostname>`](/docs/cli/reference/domain#openship-domain-add) | Add a custom domain and route it on the next deploy |
 | [`preview <hostname>`](/docs/cli/reference/domain#openship-domain-preview) | Preview the DNS records a hostname would need (no changes saved) |
 | [`verify [options] <id>`](/docs/cli/reference/domain#openship-domain-verify) | Run DNS verification for a domain |
 | [`primary <id>`](/docs/cli/reference/domain#openship-domain-primary) | Make a domain the project's primary hostname |
@@ -33,7 +33,7 @@ openship domain [options] [command]
 
 ## openship domain add
 
-Add a custom domain to a project
+Add a custom domain and route it on the next deploy
 
 ```text
 openship domain add [options] <hostname>

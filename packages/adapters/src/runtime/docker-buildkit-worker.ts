@@ -5,11 +5,17 @@ import { sq } from "./build-pipeline";
 
 /** Buildx's docker-container driver names its container from the explicit node.
  * Keep compatible with the original single-node builder's implicit `<name>0`. */
-export function projectBuildKitWorker(projectId: string) {
+function buildKitWorker(projectId: string, prefix: string) {
   if (!projectId) throw new Error("BuildKit worker requires a project identity");
-  const builderName = `openship-${createHash("sha256").update(projectId).digest("hex").slice(0, 24)}`;
+  const builderName = `${prefix}${createHash("sha256").update(projectId).digest("hex").slice(0, 24)}`;
   const nodeName = `${builderName}0`;
   return { builderName, nodeName, containerName: `buildx_buildkit_${nodeName}` };
+}
+
+/** Version the worker identity so unlabeled state left by older releases is
+ * never mistaken for a managed, retained cache volume. */
+export function projectBuildKitWorker(projectId: string) {
+  return buildKitWorker(projectId, "openship-cache-");
 }
 
 /** Requires exclusive ownership of this project's builds. First stop/recover
@@ -20,7 +26,17 @@ export async function removeProjectBuildKitWorker(
   executor: Pick<CommandExecutor, "exec">,
   projectId: string,
 ): Promise<void> {
-  const { builderName, containerName } = projectBuildKitWorker(projectId);
+  for (const [worker, keepState] of [
+    [buildKitWorker(projectId, "openship-"), false],
+    [projectBuildKitWorker(projectId), true],
+  ] as const) await removeBuildKitWorker(executor, worker, keepState);
+}
+
+async function removeBuildKitWorker(
+  executor: Pick<CommandExecutor, "exec">,
+  { builderName, containerName }: ReturnType<typeof projectBuildKitWorker>,
+  keepState: boolean,
+): Promise<void> {
   const list = `docker container ls --all --filter ${sq(`name=^/${containerName}$`)} --format ${sq("{{.Names}}")}`;
   const exists = async () => {
     const names = (await executor.exec(list)).trim().split(/\r?\n/).filter(Boolean);
@@ -30,7 +46,8 @@ export async function removeProjectBuildKitWorker(
   };
   try {
     // Buildx state may already be missing. The daemon check below is authoritative.
-    await executor.exec(`docker buildx rm --force ${sq(builderName)}`).catch(() => {
+    // Managed cache GC owns state deletion after the worker is confirmed absent.
+    await executor.exec(`docker buildx rm --force${keepState ? " --keep-state" : ""} ${sq(builderName)}`).catch(() => {
       /* diagnostics-ignore: Confirmed daemon absence below supersedes CLI metadata errors. */
     });
     if (await exists()) {

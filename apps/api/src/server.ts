@@ -230,6 +230,7 @@ async function shutdown(signal: NodeJS.Signals, exitCode = 0): Promise<void> {
     // reload abandons in-flight jobs rather than the database.
     await Promise.all([
       (await import("@repo/platform/engine/modules/actions/lifecycle")).stopActionController(fastReload ? 500 : 20_000),
+      (await import("@repo/platform/engine/modules/ingress/lifecycle")).stopIngressController(),
       shutdownJobRunner(fastReload ? 500 : 20_000),
     ]);
   } catch (err) {

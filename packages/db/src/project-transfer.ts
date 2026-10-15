@@ -47,6 +47,7 @@ export const PROJECT_TRANSFER_TABLES = new Set([
 
 /** These project children require their instance's runtime ownership to travel with them. */
 export const PROJECT_TRANSFER_UNSUPPORTED_TABLES: Readonly<Record<string, string>> = {
+  ingress_hostname: "Disconnect managed Cloudflare hostnames before transferring this project individually. Use a whole-instance export to preserve its server, credentials and provider ownership.",
   action_project:
     "Projects linked to Actions require a whole-instance export to preserve workflow secrets, runners and execution authority.",
   action_deployment:
@@ -122,6 +123,23 @@ export const transferReferences = topoOrderedTables().flatMap((spec) => {
   }
   return [...references.values()];
 });
+
+/** Derive child ownership from schema FKs, including children reached through a
+ * domain or deployment. Organization/server parents do not imply project ownership. */
+const projectOwnershipReferences = new Map<string, typeof transferReferences>();
+const projectOwnedTables = new Set(["project"]);
+for (const spec of topoOrderedTables()) {
+  const refs = transferReferences.filter(ref =>
+    ref.table === spec.sqlName && projectOwnedTables.has(ref.parent),
+  );
+  if (refs.length) {
+    // An explicit project FK is authoritative. Avoid scanning deployment history
+    // or following another linked project's child when that owner is available.
+    const direct = refs.filter(ref => ref.parent === "project");
+    projectOwnershipReferences.set(spec.sqlName, direct.length ? direct : refs);
+    projectOwnedTables.add(spec.sqlName);
+  }
+}
 
 /** Bounded parameter batches, shared by project exports and import preflight. */
 export function createTransferReader(
@@ -273,8 +291,23 @@ export async function selectProjectTransfer(
     }
   }
   const projectIds = ids(tables.project!);
+  const ownedRows = new Map<string, Promise<Row[]>>();
+  const readOwnedRows = (table: string): Promise<Row[]> => {
+    if (table === "project") return Promise.resolve(tables.project!);
+    const cached = ownedRows.get(table);
+    if (cached) return cached;
+    const refs = projectOwnershipReferences.get(table) ?? [];
+    const rows = Promise.all(refs.map(async ref =>
+      read(table, ref.column, ids(await readOwnedRows(ref.parent), ref.parentColumn)),
+    )).then(parts => parts.flat());
+    ownedRows.set(table, rows);
+    return rows;
+  };
   for (const [table, reason] of Object.entries(PROJECT_TRANSFER_UNSUPPORTED_TABLES)) {
-    if ((await read(table, "projectId", projectIds)).length) {
+    if (!projectOwnershipReferences.has(table))
+      throw new Error(`Unsupported transfer child ${table} has no project ownership path`);
+    // Ownership gates deliberately ignore the user's export exclusions.
+    if ((await readOwnedRows(table)).length) {
       throw new AppError(reason, 409, "CLUSTER_TRANSFER_UNSUPPORTED");
     }
   }

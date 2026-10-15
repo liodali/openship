@@ -1,5 +1,6 @@
 "use client";
 
+import { cloudSpaceHref } from "@/lib/cloud-spaces";
 import { observedAllSettled, reportCaughtError as observeCaughtError } from "@repo/core/diagnostics";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -212,7 +213,7 @@ function CheckoutConfirmation({
             )}
             {showSetup && (
               <Button asChild variant="secondary" size="sm">
-                <Link href={`/servers/${encodeURIComponent(setupServerId)}?tab=activity`}>
+                <Link href={cloudSpaceHref(setupServerId!, "activity")}>
                   {t.billing.checkout.viewSetup}
                 </Link>
               </Button>

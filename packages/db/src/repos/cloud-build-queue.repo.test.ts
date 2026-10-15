@@ -428,7 +428,7 @@ it("claims the worker and reserves Cloud resources together, exactly once", asyn
 
 it("rolls back the worker claim when resource validation or workspace identity fails", async () => {
   for (const reservation of [
-    { workspaceId: "w1", resources: { cpuCores: 0, memoryMb: 1024 } },
+    { workspaceId: "w1", resources: { cpuCores: -1, memoryMb: 1024 } },
     { workspaceId: "w2", resources: null },
     { workspaceId: "missing", resources: null },
   ]) {

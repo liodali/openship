@@ -1,5 +1,6 @@
 "use client";
 
+import { cloudSpaceHref } from "@/lib/cloud-spaces";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -316,7 +317,7 @@ function CheckoutRow({
         <div className="min-w-0">
           <h3 className="truncate text-base font-medium">{item.name}</h3>
           <Link
-            href={`/servers/${encodeURIComponent(item.server.serverId)}`}
+            href={cloudSpaceHref(item.server.serverId)}
             className="mt-1 inline-block text-sm text-muted-foreground hover:text-foreground focus-visible:outline-ring"
           >
             {item.server.name}

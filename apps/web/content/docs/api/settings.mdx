@@ -7,6 +7,48 @@ User settings apply to the authenticated user. There is no settings ID to select
 are checked against the current organization and access grants; an inaccessible default server is hidden.
 Use [installation settings](/docs/api/system) for instance-wide configuration.
 
+## Personal appearance
+
+`GET /api/settings/appearance` returns `{ "appearance": null }` for an unset preference, or an appearance library. `PUT /api/settings/appearance` accepts the same wrapper. Pass `null` to clear the saved appearance. Both endpoints operate exclusively on the authenticated user and retain the existing settings permissions; there is no user ID selector. Other settings and credentials are preserved.
+
+```ts
+const { appearance } = await ship.settings.getAppearance();
+await ship.settings.setAppearance({ appearance });
+// Clear the saved personal appearance.
+await ship.settings.setAppearance({ appearance: null });
+```
+
+A library has `version: 1`, an `active` preset (`light`, `dim`, `dark`, `system`) or custom theme ID, and `themes`. Each theme contains `version: 1`, `id`, `name`, `base`, `tokens`, `typography` and optional embedded `fonts`. Missing token overrides inherit the base theme. Token references may use registered variables of the same type and must not form cycles. Unknown tokens, executable CSS, remote font references, unsupported versions and excessive payloads are rejected.
+
+```json
+{
+  "version": 1,
+  "active": "ocean",
+  "themes": [{
+    "version": 1,
+    "id": "ocean",
+    "name": "Ocean",
+    "base": "dim",
+    "tokens": { "--th-bg-page": "#142333", "--radius": "12px" },
+    "typography": {
+      "sans": "system", "mono": "systemMono",
+      "size": 16, "monoSize": 13, "lineHeight": 1.5, "weight": 400
+    },
+    "fonts": []
+  }]
+}
+```
+
+The same library JSON can be exported, imported and reset from the CLI. `set` also accepts a single theme exported by the dashboard and merges it by ID into the current library.
+
+```bash
+openship --json settings appearance get > appearance.json
+openship settings appearance set appearance.json
+openship settings appearance reset
+```
+
+Font choices are `gellix`, `system`, `serif` or `custom` for the interface and `mono`, `systemMono` or `custom` for monospace. A custom choice requires a matching font asset with `role`, `name` and base64 WOFF2 `data`. Each font is limited to 256 KiB; the full library is limited to 1 MiB and 32 themes. All clients validate the same schema. Existing instances receive a nullable column through an additive migration; older users retain their default appearance.
+
 ## Read preferences
 
 <Tabs items={['SDK', 'REST API']} groupId="api-transport" persist>
@@ -166,5 +208,7 @@ transfers; target capabilities determine the effective transport.
 | Choose how source is transferred to build servers. | `settings.setCloneStrategy(input)` | `PATCH /api/settings/clone-strategy-preference`<br />`settings:write` |
 | Set source transfer preferences. | `settings.setTransferPreferences(input)` | `PATCH /api/settings/transfer`<br />`settings:write` |
 | Configure forwarding of Git identity to build servers. | `settings.setGitForwarding(input)` | `PATCH /api/settings/forward-git`<br />`settings:write` |
+| Read the authenticated user’s saved appearance and portable theme library. | `settings.getAppearance()` | `GET /api/settings/appearance`<br />`settings:read` |
+| Save or reset personal appearance, validated tokens and embedded WOFF2 fonts. | `settings.setAppearance(input)` | `PUT /api/settings/appearance`<br />`settings:write` |
 
 {/* api-operations:end */}

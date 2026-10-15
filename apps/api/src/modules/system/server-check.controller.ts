@@ -47,7 +47,7 @@ export async function attachInstallStream(c: Context) {
   return operationEvents(c, signal => operations().openInstallEvents(operationContext(c), { sessionId: c.req.query("id") }, { signal }));
 }
 export async function monitorStream(c: Context) {
-  return operationEvents(c, signal => operations().openMonitor(operationContext(c), c.req.query("serverId")!, { signal }));
+  return operationEvents(c, signal => operations().openMonitor(operationContext(c), c.req.query("serverId")!, { signal, format: c.req.query("format") as "stats" | "usage" | undefined }));
 }
 
 // First-run admission remains an HTTP integration; the connection test itself is shared.

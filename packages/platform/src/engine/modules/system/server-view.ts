@@ -1,10 +1,39 @@
-import type { CloudWorkspaceSummary } from "@repo/contracts";
+import type { CloudWorkspaceSummary, ServerGpu } from "@repo/contracts";
+import { effectiveGpu, type HostCapacity } from "@repo/core";
 import { repos } from "@repo/db";
 import { env } from "../../config";
 import { countryForIp } from "../../lib/geo-ip";
 
+/**
+ * GPU annotation for a server row. `capacity` is the daemon probe (`null` when it could not be read),
+ * the row's `gpuOverride` is the manual mark. Pure, so the "manual wins in both directions" rule is
+ * testable without a daemon.
+ */
+export function serverGpu(
+  override: "yes" | "no" | null | undefined,
+  capacity: HostCapacity | null,
+): ServerGpu {
+  const probed = !!capacity && capacity.source !== "unknown";
+  const eff = effectiveGpu(probed ? capacity : null, override ?? null);
+  const seen = probed ? effectiveGpu(capacity, null) : null;
+  const detected = seen?.hasGpu ?? false;
+  return {
+    available: eff.hasGpu,
+    detected,
+    // The probed card count is a fact about the machine; a manual "no" hides the card from
+    // scheduling but must not erase how many the daemon reported.
+    count: eff.count ?? seen?.count ?? null,
+    override: override ?? null,
+    probed,
+  };
+}
+
 /** Public shape - what the controller returns to clients (no SSH secrets). */
-export function serializeServer(s: Awaited<ReturnType<typeof repos.server.get>>, cloud: CloudWorkspaceSummary | null = null) {
+export function serializeServer(
+  s: Awaited<ReturnType<typeof repos.server.get>>,
+  cloud: CloudWorkspaceSummary | null = null,
+  capacity: HostCapacity | null = null,
+) {
   if (!s) return null;
   return {
     id: s.id,
@@ -32,6 +61,8 @@ export function serializeServer(s: Awaited<ReturnType<typeof repos.server.get>>,
     country: s.sshHost ? countryForIp(s.sshHost) : null,
     connection: s.workspaceId ? "cloud" as const : s.isLocal ? "local" as const : "ssh" as const,
     managed: cloud,
+    // Managed (cloud) servers have no GPU model; everything else gets the annotation.
+    ...(cloud || s.workspaceId ? {} : { gpu: serverGpu(s.gpuOverride, capacity) }),
     terminalSessionLimit: cloud ? 1 : env.TERMINAL_MAX_SESSIONS_PER_USER,
     capabilities: {
       monitor: s.purpose !== "migration_source",

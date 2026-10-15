@@ -32,6 +32,18 @@ export const ProjectSchema = Type.Object({
   workspaceId: Type.Optional(nullableString()),
   clusterId: Type.Optional(nullableString()),
   activeDeploymentId: Type.Optional(nullableString()),
+  deletionInProgress: Type.Optional(Type.Boolean()),
+  lifecycleOperation: Type.Optional(
+    Type.Union([
+      Type.Null(),
+      Type.Object({ kind: Type.Literal("delete"), status: Type.Literal("running") }),
+      Type.Object({
+        kind: Type.Literal("delete"),
+        status: Type.Literal("failed"),
+        error: Type.String(),
+      }),
+    ]),
+  ),
   runtimeMode: Type.Optional(nullableString()),
   cloudStaticHosting: EnsureProjectBody.properties.cloudStaticHosting,
   deployTarget: Type.Optional(nullableString()),
@@ -40,6 +52,7 @@ export const ProjectSchema = Type.Object({
   installCommand: Type.Optional(nullableString()),
   startCommand: Type.Optional(nullableString()),
   releaseCommands: EnsureProjectBody.properties.releaseCommands,
+  roles: EnsureProjectBody.properties.roles,
   outputDirectory: Type.Optional(nullableString()),
   rootDirectory: Type.Optional(nullableString()),
   hasServer: Type.Optional(Type.Boolean()),

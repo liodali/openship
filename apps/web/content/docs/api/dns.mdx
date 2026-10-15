@@ -204,6 +204,8 @@ repointing is not adoption: Openship leaves such a record's comment untouched, s
 
 {/* api-operations:start */}
 
+### Resource methods
+
 | Operation | SDK | REST API |
 | --- | --- | --- |
 | List supported DNS providers and their credential fields. | `dns.listProviders()` | `GET /api/dns/providers`<br />`settings:read` |
@@ -212,5 +214,18 @@ repointing is not adoption: Openship leaves such a record's comment untouched, s
 | Store a DNS provider credential. | `dns.addCredential(input)` | `POST /api/dns/credentials`<br />`settings:admin` |
 | Remove a DNS credential. | `dns.removeCredential(input)` | `DELETE /api/dns/credentials/:id`<br />`settings:admin` |
 | Check access to the requested DNS zone. | `dns.verifyZone(input)` | `POST /api/dns/verify-zone`<br />`settings:read` |
+
+### Cloudflare Tunnel ingress
+
+| Operation | SDK | REST API |
+| --- | --- | --- |
+| Read persisted tunnel connections, optionally filtered by deployment server. | `dns.listIngressConnections(input)` | `GET /api/dns/ingress`<br />`settings:read` |
+| Discover accounts, named tunnels and optional reusable Access policies using a saved Cloudflare credential. Requires an organization administrator. | `dns.discoverIngress(input)` | `POST /api/dns/ingress/discover`<br />`settings:admin` |
+| Connect or create a named Cloudflare Tunnel on a self-hosted deployment server. Setup continues asynchronously. | `dns.connectIngress(input)` | `POST /api/dns/ingress`<br />`settings:admin` |
+| Set automatic enrollment and Access policy defaults for future custom domains. Existing hostnames keep their settings. | `dns.updateIngress(input)` | `PUT /api/dns/ingress/:id`<br />`settings:admin` |
+| Retry persisted tunnel setup or cleanup without creating another connection. | `dns.retryIngress(input)` | `POST /api/dns/ingress/:id/retry`<br />`settings:admin` |
+| Disconnect a server tunnel and queue ownership-checked cleanup. Existing tunnels and reusable policies are retained. | `dns.removeIngress(input)` | `DELETE /api/dns/ingress/:id`<br />`settings:admin` |
+| Read persisted tunnel, DNS and Access status for a project domain. | `dns.getDomainIngress(input)` | `GET /api/dns/ingress/domains/:id`<br />`settings:read` |
+| Connect a custom domain to its deployment server tunnel, change its Access policy or request disconnection. | `dns.setDomainIngress(input)` | `PUT /api/dns/ingress/domains/:id`<br />`settings:admin` |
 
 {/* api-operations:end */}

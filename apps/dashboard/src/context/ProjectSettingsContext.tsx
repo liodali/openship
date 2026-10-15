@@ -1063,22 +1063,23 @@ const ProjectSettingsState: React.FC<ProviderProps> = ({
       { id: "services", label: tl.services, icon: "layers" },
       { id: "domains", label: tl.domains, icon: "globe" },
       { id: "deployments", label: tl.deployments, icon: "rocket" },
-      { id: "actions", label: t.actions.title, icon: "play-circle" },
       // Shown on cloud AND self-hosted, deliberately: both halves of the tab work
       // in both modes through adapters that already exist — resource usage via
       // RuntimeAdapter.getUsage (dockerode | Oblien metrics) and visitor geography
       // via the traffic-source resolver (OpenResty mgmt API | Oblien analytics).
       {
         id: "monitoring",
-        label: tl.monitoring,
+        label: tl.monitoringAndLogs,
         icon: "activity",
         // Incidents belong beside metrics. The health watch covers local/SSH
         // workloads; cloud monitoring continues to use its existing adapters.
-        sections: healthAvailable ? [
+        sections: [
           { id: "monitoring", label: tl.monitoring },
-          { id: "health", label: tl.health },
-        ] : undefined,
+          { id: "logs", label: tl.logs },
+          ...(healthAvailable ? [{ id: "health", label: tl.health }] : []),
+        ],
       },
+      { id: "actions", label: t.actions.title, icon: "play-circle" },
       {
         id: "source",
         label: tl.sourceAndTriggers,
@@ -1088,7 +1089,6 @@ const ProjectSettingsState: React.FC<ProviderProps> = ({
           { id: "webhooks", label: tl.webhooks },
         ],
       },
-      { id: "logs", label: tl.logs, icon: "file-text" },
       { id: "backup", label: tl.backup, icon: "database-backup" },
       { id: "advanced", label: tl.settings, icon: "wrench" },
     ];

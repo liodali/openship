@@ -54,12 +54,12 @@ openship edge domains|domain [options] [command]
 | Subcommand | Purpose |
 | --- | --- |
 | [`list [options]`](/docs/cli/reference/edge#openship-edge-domains-list) | List a project's domains routed through the edge |
-| [`add [options] <hostname>`](/docs/cli/reference/edge#openship-edge-domains-add) | Register a hostname on the edge, bound to a port (auto-verifies SSL) |
+| [`add [options] <hostname>`](/docs/cli/reference/edge#openship-edge-domains-add) | Register a hostname for routing on the next deploy (auto-verifies SSL) |
 | [`rm [options] <hostname>`](/docs/cli/reference/edge#openship-edge-domains-rm) | Remove a hostname from the edge |
 
 ## openship edge domains add
 
-Register a hostname on the edge, bound to a port (auto-verifies SSL)
+Register a hostname for routing on the next deploy (auto-verifies SSL)
 
 ```text
 openship edge domains add [options] <hostname>
@@ -74,7 +74,7 @@ openship edge domains add [options] <hostname>
 | `-p, --project <id>` | Attach to an existing project (uses its target port) |
 | `--port <n>` | Bind a new tracked project to 127.0.0.1:&lt;n&gt; |
 | `--primary` | Mark this domain as the project's primary (default: false) |
-| `--no-verify` | Skip DNS verification + SSL issuance (just claim the hostname) |
+| `--no-verify` | Skip DNS verification + SSL issuance (still configure routing) |
 
 ## openship edge domains list
 

@@ -65,8 +65,8 @@ describe("getNavSections (the platform rail)", () => {
       "actions",
       "issues",
     ]);
-    expect(keysOf(find(s, "infrastructure"))).toEqual(["servers", "emails", "jobs"]);
-    expect(keysOf(find(s, "settings"))).toEqual(["backups", "settings", "audit"]);
+    expect(keysOf(find(s, "infrastructure"))).toEqual(["servers", "emails", "jobs", "backups"]);
+    expect(keysOf(find(s, "settings"))).toEqual(["settings", "audit"]);
   });
 
   it("includes Billing before Cloud infrastructure and links the generic email client", () => {
@@ -76,8 +76,9 @@ describe("getNavSections (the platform rail)", () => {
       href: "/actions",
     });
     expect(s.at(-1)?.items.at(-1)).toMatchObject({ key: "support", href: "/support" });
-    expect(keysOf(find(s, "settings"))).toEqual(["backups", "settings", "billing", "audit"]);
-    expect(keysOf(find(s, "infrastructure"))).toEqual(["servers", "emails", "jobs"]);
+    expect(keysOf(find(s, "settings"))).toEqual(["settings", "billing", "audit"]);
+    expect(keysOf(find(s, "infrastructure"))).toEqual(["resources", "emails", "jobs", "backups"]);
+    expect(find(s, "infrastructure")?.items[0]).toMatchObject({ href: "/resources", alsoAt: ["/servers"] });
   });
 
   it("keeps Infrastructure before Settings on a cloud-linked self-hosted box", () => {
@@ -85,10 +86,10 @@ describe("getNavSections (the platform rail)", () => {
     expect(sectionsOf(s)).toEqual(["main", "infrastructure", "settings", "help"]);
     const keys = s.flatMap((x) => keysOf(x));
     expect(s.at(-1)?.items.at(-1)).toMatchObject({ key: "support", href: "/support" });
-    for (const host of ["servers", "emails", "jobs"]) {
+    for (const host of ["servers", "emails", "jobs", "backups"]) {
       expect(keys.indexOf(host), host).toBeLessThan(keys.indexOf("billing"));
     }
-    expect(keysOf(find(s, "settings"))).toEqual(["backups", "settings", "billing", "audit"]);
+    expect(keysOf(find(s, "settings"))).toEqual(["settings", "billing", "audit"]);
   });
 
   it("keeps /emails in the platform rail", () => {

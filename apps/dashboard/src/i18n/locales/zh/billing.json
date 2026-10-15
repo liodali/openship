@@ -17,7 +17,7 @@
     "viewPlan": "查看我的套餐",
     "serverTitle": "{name} 已就绪",
     "serverDescription": "您的 {plan} 套餐已生效。应用和构建共享此服务器的资源。",
-    "openServer": "打开服务器"
+    "openServer": "查看云空间"
   },
   "capacity": {
     "title": "容量与用量",
@@ -534,12 +534,12 @@
     "customBuildLimit": "设置上限"
   },
   "workspaces": {
-    "title": "托管 Cloud 服务器",
-    "singular": "Cloud 服务器",
+    "title": "云空间",
+    "singular": "云空间",
     "description": "选择套餐即可部署。Openship 管理服务器，项目共享 CPU、内存和存储。",
-    "loading": "正在加载服务器…",
+    "loading": "正在加载云空间…",
     "choose": "选择服务器",
-    "chooseBilling": "选择服务器以查看其账单。",
+    "chooseBilling": "选择云空间以查看其账单。",
     "dedicatedProjects": "独立项目计费",
     "dedicatedProjectsHint": "拥有独立 Cloud 主机的现有项目。",
     "shared": "多个项目",
@@ -552,10 +552,10 @@
     "defaultName": "Production",
     "defaultHint": "选择套餐即可部署。我们会自动创建并管理您的服务器。",
     "noneAvailable": "请创建兼容的服务器或腾空一个独立服务器，再放置此项目。",
-    "manage": "管理服务器",
+    "manage": "管理云空间",
     "subscriptionHint": "新服务器单独计费。",
     "placementHint": "项目共享此服务器的资源。删除一个项目不会影响其他项目。",
-    "create": "创建服务器",
+    "create": "添加云空间",
     "mode": "项目隔离",
     "createHint": "创建服务器免费。接下来选择套餐，完成付款后才开始计费。",
     "cloudOnly": "托管服务器适用于 Openship Cloud。请使用“服务器”管理自托管基础设施。",
@@ -573,7 +573,7 @@
     "provision": "启动服务器",
     "resume": "恢复服务器",
     "resize": "应用套餐容量",
-    "operation": "服务器活动",
+    "operation": "活动",
     "nextAttempt": "下次重试：",
     "resizeConfirm": "应用当前套餐的容量？",
     "before": "当前主机",
@@ -583,12 +583,12 @@
     "confirmResize": "应用并重启",
     "rename": "重命名",
     "save": "保存",
-    "delete": "删除服务器",
-    "confirmDelete": "删除此空服务器",
+    "delete": "移除云空间",
+    "confirmDelete": "移除此未使用的云空间",
     "deleteHint": "删除项目不会取消订阅。请在账单中停止续订，并等到已付费周期结束后再删除订阅中的服务器。 删除操作会永久移除空服务器及其剩余磁盘数据。",
     "buildCapacityTitle": "请检查服务器容量",
     "buildCapacityHint": "构建使用此服务器的空闲容量。请停止闲置服务或增加容量，然后重试。",
-    "openWorkspace": "打开服务器",
+    "openWorkspace": "查看云空间",
     "retryDeployment": "重试部署",
     "states": {
       "ready": "就绪",
@@ -629,7 +629,7 @@
     },
     "existingServerHint": "使用此服务器的套餐。",
     "destination": "部署目标",
-    "newProjectServer": "新的专用服务器",
+    "newProjectServer": "新建云空间",
     "oneProject": "1 个项目",
     "savedDestinationHint": "此项目保留已保存的服务器和数据。",
     "uploadDestinationHint": "源文件位于此服务器上。如需使用其他部署目标，请重新上传。",
@@ -641,7 +641,7 @@
     "resourceSummary": "{cpu} vCPU · {memory} GB 内存 · {disk} GB 存储",
     "switchingBilling": "正在加载 {name} 的账单…",
     "activity": {
-      "empty": "暂无服务器操作。",
+      "empty": "暂无设置或容量调整记录。",
       "waitingForLogs": "正在等待操作日志…",
       "noLogs": "此操作未记录日志。",
       "status": {
@@ -649,10 +649,11 @@
         "running": "进行中",
         "succeeded": "已完成",
         "failed": "失败"
-      }
+      },
+      "description": "此云空间的设置、容量调整和恢复记录。"
     },
-    "billingServers": "你的服务器",
-    "billingServersUnavailable": "无法加载你的服务器。"
+    "billingServers": "云空间",
+    "billingServersUnavailable": "无法加载您的云空间。"
   },
   "custom": {
     "name": "自定义",
@@ -682,7 +683,7 @@
     "resizeDescription": "你的套餐已更改。重启此服务器之前，请查看新容量及受影响的项目。",
     "applying": "正在更新服务器资源。你可以在服务器页面查看进度。",
     "reviewResize": "查看资源变更",
-    "openServer": "打开服务器"
+    "openServer": "查看云空间"
   },
   "planChange": {
     "title": "确认套餐变更",
@@ -719,7 +720,7 @@
   },
   "purchase": {
     "mode": "计费方式",
-    "monthly": "包月主机",
+    "monthly": "月付套餐",
     "payg": "预付按量计费",
     "title": "预付费托管",
     "description": "选择资源等级、添加额度，并按服务器用量付费。",
@@ -772,6 +773,7 @@
     }
   },
   "compute": {
+    "title": "月度保障",
     "covered": "计算资源已包含",
     "needsAttention": "请检查计算保障状态",
     "included": "已付款月份内全天包含 CPU、内存和配套存储，无需计算积分或充值。",
@@ -842,7 +844,7 @@
     "choosePlan": "选择方案",
     "deleteServer": "删除未使用的服务器",
     "openPayment": "打开付款",
-    "removing": "已请求删除服务器。您可以在“服务器”中查看进度。",
+    "removing": "已请求删除云空间。您可以在“云空间”中查看进度。",
     "states": {
       "open": "等待付款",
       "unconfirmed": "恢复原付款链接",

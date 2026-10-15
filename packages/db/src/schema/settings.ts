@@ -1,12 +1,7 @@
-import {
-  pgTable,
-  text,
-  timestamp,
-  integer,
-  boolean,
-  jsonb,
-} from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, integer, boolean, jsonb } from "drizzle-orm/pg-core";
 import { user } from "./auth";
+
+import type { AppearancePreferences } from "@repo/core";
 
 // ─── Instance Settings ───────────────────────────────────────────────────────
 
@@ -82,9 +77,7 @@ export const instanceSettings = pgTable("instance_settings", {
    * deployments can flip this to "cloud" to keep delivery routed
    * through the central relay.
    */
-  invitationMailSource: text("invitation_mail_source")
-    .notNull()
-    .default("platform"),
+  invitationMailSource: text("invitation_mail_source").notNull().default("platform"),
 
   // ── Team-mode migration ────────────────────────────────────────────────────
   //
@@ -253,6 +246,9 @@ export const userSettings = pgTable("user_settings", {
     .notNull()
     .unique()
     .references(() => user.id, { onDelete: "cascade" }),
+
+  /** Personal themes only; never applied to another member or to deployed apps. */
+  appearance: jsonb("appearance").$type<AppearancePreferences>(),
 
   /**
    * Per-user build strategy override:

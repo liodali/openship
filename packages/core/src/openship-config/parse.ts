@@ -432,6 +432,11 @@ function parseRoleHealth(ctx: Ctx, v: unknown, path: string): RoleHealth | undef
   };
 }
 
+/** Role names land in container names and labels, so they must be DNS labels. */
+const ROLE_NAME_RE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
+/** Matches the existing app-scaling limit (1-100). */
+const MAX_ROLE_REPLICAS = 100;
+
 /**
  * Runtime roles beyond the web process (issue #935). Presence of the field at
  * all - including `[]` - overrides the stack's own `defaultRoles` presets;
@@ -455,6 +460,13 @@ function parseRoles(ctx: Ctx, v: unknown, path: string): StackRole[] | undefined
     const name = ctx.str(item.name, `${p}.name`);
     if (!name?.trim()) {
       ctx.err(`${p}.name`, "requires a non-empty `name`");
+      return;
+    }
+    if (!ROLE_NAME_RE.test(name)) {
+      ctx.err(
+        `${p}.name`,
+        "must be a DNS label: lowercase letters, digits and dashes, starting and ending with a letter or digit, at most 63 characters",
+      );
       return;
     }
     if (seen.has(name)) {
@@ -531,8 +543,8 @@ function parseStopGracePeriod(ctx: Ctx, v: unknown, path: string): string | unde
 
 function parseReplicas(ctx: Ctx, v: unknown, path: string): number | undefined {
   if (v === undefined) return undefined;
-  if (typeof v !== "number" || !Number.isSafeInteger(v) || v < 1) {
-    ctx.err(path, "must be a safe integer >= 1");
+  if (typeof v !== "number" || !Number.isSafeInteger(v) || v < 1 || v > MAX_ROLE_REPLICAS) {
+    ctx.err(path, `must be an integer between 1 and ${MAX_ROLE_REPLICAS}`);
     return undefined;
   }
   return v;

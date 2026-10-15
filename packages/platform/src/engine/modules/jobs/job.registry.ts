@@ -454,7 +454,6 @@ export const SYSTEM_JOB_DEFS: SystemJobDef[] = [
     // Build cache is daemon-wide and has no reliable project label. Keep a 5 GiB
     // LRU budget on each Docker host instead of coupling it to image retention.
     defaultCron: "37 4 * * *",
-    available: () => platform().target !== "cloud",
     run: async () => {
       const r = await runBuildCacheGcSweep();
       return {

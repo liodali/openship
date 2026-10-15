@@ -139,3 +139,19 @@ describe("organization-scoped DNS operations", () => {
     await expect(dns.getCredential(ctx, "dns-a")).rejects.toMatchObject({ code: "INVALID_OPERATION_RESPONSE" });
   });
 });
+
+describe("managed ingress administrator gate",()=>{
+ const cases=[
+  ["discoverIngress",{credentialId:"cred_one"}],
+  ["connectIngress",{serverId:"server-a",credentialId:"cred_one",accountId:"account",name:"Tunnel",connector:"existing",defaultForDomains:true}],
+  ["updateIngress",{id:"connection",defaultForDomains:false,defaultAccessPolicyId:null}],
+  ["retryIngress","connection"],["removeIngress","connection"],
+  ["setDomainIngress",{domainId:"domain-a",connectionId:null}],
+ ] as const;
+ it.each(cases)("requires actual admin membership before %s",async(method,input)=>{
+  const operation=vi.fn(),requireAdmin=vi.fn(async()=>{throw new AppError("Requires admin role",403,"INSUFFICIENT_ROLE");});
+  const dns=createDnsOperations(createAuthorization(state),{requireAdmin,operations:{[method]:operation} as never});
+  await expect((dns[method] as any)(ctx,input)).rejects.toMatchObject({code:"INSUFFICIENT_ROLE"});
+  expect(requireAdmin).toHaveBeenCalledOnce();expect(operation).not.toHaveBeenCalled();
+ });
+});

@@ -276,11 +276,19 @@ describe("service domain controls", () => {
     await input(copy.containerPort, "3000");
     await submitAdd();
     expect(mocks.update).not.toHaveBeenCalled();
-    await act(async () => {
-      const select = host.querySelector<HTMLSelectElement>(`select[aria-label="${copy.service}"]`)!;
-      select.value = service.id;
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    const selectService = async (label: string) => {
+      await click(copy.service);
+      const option = [...document.querySelectorAll<HTMLButtonElement>('[role="option"]')]
+        .find((element) => element.textContent?.startsWith(label));
+      expect(option).toBeDefined();
+      await act(async () => option!.click());
+    };
+    await selectService(service.name);
+    const port = host.querySelector<HTMLInputElement>(`input[aria-label="${copy.containerPort}"]`)!;
+    expect(port.value).toBe("3000");
+    await selectService(copy.selectService);
+    expect(port.value).toBe("");
+    await selectService(service.name);
     await submitAdd();
     expect(mocks.update.mock.calls[0].slice(0, 2)).toEqual(["project-stack", service.id]);
     expect(mocks.update.mock.calls[0][2].publicEndpoints).toEqual([primary, secondary, { ...primary, customDomain: "another.example.com" }]);

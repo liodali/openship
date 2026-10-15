@@ -69,6 +69,31 @@ it.each(["cloud", "local", "linked"])("keeps MinIO's entrypoint argv and generat
     environment: expect.objectContaining({ MINIO_ROOT_PASSWORD: expect.stringMatching(/^[a-f0-9]{48}$/) }),
   }));
 });
+it("sends the GPU request of Ollama (NVIDIA GPU)", async () => {
+  h.mode = "local";
+  const name = "Ollama (NVIDIA GPU)";
+  await render();
+  await pick(name);
+  await act(async () => { submit(); });
+  expect(h.submit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+    advanced: { gpus: { driver: "nvidia", count: 1, capabilities: ["gpu"] } },
+  }));
+});
+it("sends no GPU request for plain Ollama or a replacement image", async () => {
+  h.mode = "local";
+  await render();
+  await pick(getAppTemplate("ollama")!.services![0]!.image!);
+  await act(async () => { submit(); });
+  expect(h.submit.mock.calls[0]![0]).not.toHaveProperty("advanced");
+});
+it("does not carry a catalog GPU request onto a user-selected replacement image", async () => {
+  h.mode = "local";
+  await render();
+  await pick("Ollama (NVIDIA GPU)");
+  await edit("postgres:16-alpine", "example/other:v1");
+  await act(async () => { submit(); });
+  expect(h.submit.mock.calls[0]![0]).not.toHaveProperty("advanced");
+});
 it("does not apply catalog argv to a user-selected replacement image", async () => {
   await render();
   await pick(getAppTemplate("minio")!.services![0]!.image!);
@@ -115,4 +140,11 @@ it("prevents duplicate service creation while a save is pending", async () => {
   expect(h.close).not.toHaveBeenCalled();
   await act(async () => resolve());
   expect(h.close).toHaveBeenCalledOnce();
+});
+
+
+it.each(["cloud", "linked"])("does not offer either self-hosted Ollama mode on managed Cloud (%s)", async mode => {
+  h.mode = mode === "cloud" ? "cloud" : "local";
+  await render(mode === "linked");
+  expect([...host.querySelectorAll("button")].some(button => button.textContent?.includes("Ollama"))).toBe(false);
 });

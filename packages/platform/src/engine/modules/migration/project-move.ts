@@ -28,7 +28,7 @@
  */
 
 import { reportCaughtError as observeCaughtError } from "@repo/core/diagnostics";
-import { deriveProjectDeployTarget } from "@repo/core";
+import { deriveProjectDeployTarget, type StackRole } from "@repo/core";
 import { repos } from "@repo/db";
 
 import { createMigrationDockerRuntime as createServerDockerRuntime } from "./migration-runtime";
@@ -44,6 +44,7 @@ export class ProjectMoveRefused extends Error {
       | "not_server_hosted"
       | "same_server"
       | "control_plane"
+      | "has_roles"
       | "nothing_running"
       | "builds_from_source"
       | "scoped_move"
@@ -72,6 +73,8 @@ export interface MovableProject {
   clusterId?: string | null;
   serverId?: string | null;
   runtimeMode?: string | null;
+  /** Declared worker and scheduler roles. Non-empty means the project cannot move yet. */
+  roles?: readonly StackRole[] | null;
 }
 
 /**
@@ -157,6 +160,16 @@ export function assertProjectMovable(input: {
         : target === "cluster"
         ? `"${project.name}" runs on Kubernetes. Docker host migration cannot move its cluster workloads.`
         : `"${project.name}" isn't bound to a server, so there's no source host to move it from.`,
+    );
+  }
+
+  // Role containers are not part of the discovered workload the pipeline streams and
+  // redeploys, so a move would silently drop them. Refused for every intent until the
+  // pipeline learns to carry them.
+  if ((project.roles?.length ?? 0) > 0) {
+    throw new ProjectMoveRefused(
+      "has_roles",
+      `"${project.name}" runs worker or scheduler roles, and moving roles between servers is not supported yet. Remove its roles and redeploy before moving it.`,
     );
   }
 
@@ -319,6 +332,7 @@ export async function loadProjectMoveWorkload(
   if (
     deriveProjectDeployTarget(project) === "cluster" || project.runtimeMode === "bare" ||
     !project.serverId ||
+    (project.roles?.length ?? 0) > 0 ||
     isControlPlaneProject(project)
   ) {
     return planProjectMove({

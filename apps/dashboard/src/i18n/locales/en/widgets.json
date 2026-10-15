@@ -354,7 +354,15 @@
       "addDomain": "Add domain",
       "primaryDomain": "Primary domain",
       "domainN": "Domain {n}",
-      "remove": "Remove"
+      "remove": "Remove",
+      "domainBehavior": "Domain behavior",
+      "primaryHost": "{hostname} as primary",
+      "redirectHostDescription": "{from} redirects to {to}.",
+      "serveBoth": "Serve both",
+      "serveBothDescription": "Both hostnames serve the app.",
+      "customRouting": "Custom routing",
+      "redirectDomain": "Redirect domain",
+      "redirectSummary": "Redirects to {hostname}."
     },
     "configEditor": {
       "remove": "Remove",

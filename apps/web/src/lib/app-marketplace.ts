@@ -8,6 +8,7 @@ export const APP_CATEGORY_LABELS: Record<AppCategory, string> = {
   mail: "Email",
   analytics: "Analytics",
   automation: "Automation",
+  ai: "AI & models",
   other: "Developer tools",
 };
 
@@ -24,6 +25,8 @@ export interface MarketplaceApp {
   repository?: string;
   minEngine?: string;
   minResources?: AppTemplate["minResources"];
+  gpu?: AppTemplate["gpu"];
+  supportsCloud: boolean;
   features: NonNullable<NonNullable<AppTemplate["marketplace"]>["features"]>;
   article?: string;
   services: { name: string; image?: string; persistent: boolean }[];
@@ -46,6 +49,8 @@ export function marketplaceEntries(templates: readonly AppTemplate[]): Marketpla
       repository: app.repository ? (safeAppContentUrl(app.repository) ?? undefined) : undefined,
       minEngine: app.minEngine,
       minResources: app.minResources,
+      gpu: app.gpu,
+      supportsCloud: app.supportsCloud !== false,
       features: app.marketplace?.features ?? [],
       article: app.marketplace?.article,
       services: (app.services ?? []).map((service) => ({

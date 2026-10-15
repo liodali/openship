@@ -55,6 +55,23 @@ describe("migration environments through the real service store and deploy merge
     io.ensureProject.mockResolvedValue({ project_id: projectId, created: true });
   }, 30_000);
 
+  it("refuses unsupported live GPU settings before creating a project or saving service rows", async () => {
+    io.discover.mockResolvedValue({
+      services: [{ ...container("gpu-container", {}), gpuImportError: "Unsupported GPU request" }],
+    });
+    await expect(
+      adoptServerStack({
+        serverId: "server",
+        organizationId: ctx.organizationId,
+        projectName: "GPU application",
+        serviceContainerIds: ["gpu-container"],
+        ctx,
+      }),
+    ).rejects.toThrow(/Unsupported GPU/);
+    expect(io.ensureProject).not.toHaveBeenCalled();
+    expect(await repos.service.listByProject(projectId)).toEqual([]);
+  });
+
   it("saves, reveals, rotates and deploys exact live values under renamed service IDs", async () => {
     const secret = "literal ${DO_NOT_EXPAND} 'quoted' $value\nsecond=line";
     io.discover.mockResolvedValue({

@@ -42,7 +42,7 @@ const MIN_CPU_CORES = 0.25;
 const finiteNonnegative = (value: number) => Number.isFinite(value) && value >= 0;
 
 /** Admission ledger only; never a Docker resource configuration. Missing limits
- * reserve the full host dimension so uncapped builds do not overlap siblings.
+ * leave that dimension shared, matching Docker's uncapped execution policy.
  * Fully automatic builds need only verified host capacity, not a usage sample.
  * Explicit caps remain unchanged and use live usage for admission. */
 export function decideCloudBuildResources(
@@ -84,12 +84,12 @@ export function decideCloudBuildResources(
   let reservedMemory = 0;
   let reservedCpu = 0;
   for (const reservation of reservations) {
-    // Zero is not a bounded reservation. A corrupt ledger must fail closed.
+    // Zero explicitly means uncapped. Invalid ledger values still fail closed.
     if (
       !Number.isFinite(reservation.memoryMb) ||
-      reservation.memoryMb <= 0 ||
+      reservation.memoryMb < 0 ||
       !Number.isFinite(reservation.cpuCores) ||
-      reservation.cpuCores <= 0
+      reservation.cpuCores < 0
     )
       return { kind: "wait", reason: "reservations-unavailable" };
     reservedMemory += reservation.memoryMb;
@@ -98,12 +98,12 @@ export function decideCloudBuildResources(
   if (!Number.isFinite(reservedMemory) || !Number.isFinite(reservedCpu))
     return { kind: "wait", reason: "reservations-unavailable" };
 
-  const reservationCpu = cpu || capacity.cpuCores;
-  const reservationMemory = memory || memoryBudget;
+  const reservationCpu = cpu;
+  const reservationMemory = memory;
   const tolerance = Number.EPSILON * capacity.cpuCores * (reservations.length + 2);
-  if (reservationMemory > memoryBudget - reservedMemory)
+  if (memory > 0 && reservationMemory > memoryBudget - reservedMemory)
     return { kind: "wait", reason: "memory-pressure" };
-  if (reservationCpu - (capacity.cpuCores - reservedCpu) > tolerance)
+  if (cpu > 0 && reservationCpu - (capacity.cpuCores - reservedCpu) > tolerance)
     return { kind: "wait", reason: "cpu-pressure" };
   if (cpu || memory) {
     if (

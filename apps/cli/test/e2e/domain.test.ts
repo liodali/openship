@@ -1,3 +1,5 @@
+import { Value } from "@sinclair/typebox/value";
+import { ProjectDetailsSchema } from "@repo/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // domain.ts uses the named SDK operations (no local login guard); the config
@@ -18,6 +20,12 @@ import { runCommand, stubFetch, type FetchStub } from "../helpers/harness";
 import { domainFixture } from "../../../../packages/contracts/test/fixtures";
 
 const API = "http://api.test/api";
+
+const projectInfo = Value.Create(ProjectDetailsSchema);
+projectInfo.project.port = 3000;
+projectInfo.project.options.hasServer = true;
+projectInfo.project.options.workloadType = "web";
+projectInfo.project.options.productionPort = "3000";
 
 let fetchStub: FetchStub;
 beforeEach(() => {
@@ -71,7 +79,11 @@ describe("openship domain add", () => {
   };
 
   it("POSTs the hostname to /domains and points the user at verify", async () => {
-    fetchStub = stubFetch(() => ({ status: 201, json: ADDED }));
+    fetchStub = stubFetch((request) => request.url.endsWith("/info")
+      ? { json: { data: projectInfo } }
+      : request.method === "PATCH"
+        ? { json: { data: projectInfo.project } }
+        : { status: 201, json: ADDED });
     const { err, code } = await runCommand(domainCommand, ["add", "app.example.com", "-p", "prj1"]);
     expect(code).toBe(0);
     expect(fetchStub.calls[0].method).toBe("POST");
@@ -81,14 +93,22 @@ describe("openship domain add", () => {
   });
 
   it("sets isPrimary when --primary is passed", async () => {
-    fetchStub = stubFetch(() => ({ status: 201, json: ADDED }));
+    fetchStub = stubFetch((request) => request.url.endsWith("/info")
+      ? { json: { data: projectInfo } }
+      : request.method === "PATCH"
+        ? { json: { data: projectInfo.project } }
+        : { status: 201, json: ADDED });
     await runCommand(domainCommand, ["add", "app.example.com", "-p", "prj1", "--primary"]);
     expect(fetchStub.calls[0].body).toMatchObject({ isPrimary: true });
   });
 
   it("emits the domain and its DNS records as JSON in json mode", async () => {
     setJsonMode(true);
-    fetchStub = stubFetch(() => ({ status: 201, json: ADDED }));
+    fetchStub = stubFetch((request) => request.url.endsWith("/info")
+      ? { json: { data: projectInfo } }
+      : request.method === "PATCH"
+        ? { json: { data: projectInfo.project } }
+        : { status: 201, json: ADDED });
     const { out } = await runCommand(domainCommand, ["add", "app.example.com", "-p", "prj1"]);
     expect(JSON.parse(out)).toEqual({ domain: ADDED.data, records: ADDED.records });
   });

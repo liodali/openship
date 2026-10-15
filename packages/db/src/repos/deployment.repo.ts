@@ -941,6 +941,16 @@ export function createDeploymentRepo(db: Database, encryption: ConfigurationEncr
         .where(eq(deployment.id, id));
     },
 
+    async setRoleContainers(
+      id: string,
+      roleContainers: { role: string; replica: number; containerId: string }[] | null,
+    ) {
+      await db
+        .update(deployment)
+        .set({ roleContainers, updatedAt: new Date() })
+        .where(eq(deployment.id, id));
+    },
+
     /**
      * Persist the smart-deploy changed-files snapshot onto an existing
      * deployment row. Called by the GitHub webhook after the deployment

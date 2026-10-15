@@ -205,12 +205,13 @@ minutes or a separate included transfer allowance. Payment returns reconcile the
 saved purchase, then distinguish confirmed funds from runner setup. Preserve page
 state and show an unavailable balance as unknown, not zero. Connected Macs default
 to native execution and clear incompatible labels when the destination changes.
-Runner setup starts with three destination choices: existing server, dedicated
-managed server, or temporary Cloud pool. Reuse the shared server acquisition and
-plan dialogs; return the new server to the same capability form. Temporary pool
-funding stays in the shared Budget dialog. Preserve the workflow draft and show
-an unavailable pool distinctly from an empty pool. Existing and dedicated servers
-keep their normal billing and explicit per-job capacity limits.
+In Cloud, Add runner opens the capability form directly with the shared Cloud space
+picker. It uses the space's existing capacity and billing; do not add a server-purchase
+or temporary-VM choice before the form. Self-hosted setup offers an existing server
+or the shared managed-server acquisition flow, returning to the same capability form.
+Temporary Cloud profiles and their funding remain in the existing runner list and
+Budget dialog. Preserve the workflow draft and distinguish failed reads from empty
+results. Explicit per-job capacity limits remain optional.
 The capability form starts with the shared server picker and a compact environment summary.
 Browse catalog opens visual Ubuntu, native macOS/Linux and custom-image presets using
 the shared logos and option cards. Only offer presets compatible with the inspected
@@ -228,6 +229,11 @@ it runs and recheck capabilities before displaying the result. Native Macs conti
 use their installed tools and physical CPU.
 
 ## Layout and density
+
+Project navigation groups metrics, runtime/request logs and available Health views
+under **Monitoring & Logs**. Reuse the shared project section tabs above the content
+on desktop and mobile. Keep existing section URLs so saved links and log shortcuts
+open the same view, and show Health only where the project already supports it.
 
 GitHub deployment reporting uses the same compact settings card in Project → Source
 and the shared deploy wizard. Lead with one enabled toggle and a short description;
@@ -256,7 +262,6 @@ the summary denominator. Use UTC calendar days and label the retained-history sc
 cancellations and unfinished attempts from success rate; count queued attempts as in progress.
 Each project retains its own history.
 Old `/deployments` links redirect to Monitoring while preserving filters.
-
 
 Instance relocation has one entry in **Settings → Instance → Instance location**. Keep moving
 the control plane, connecting a Desktop, and backup/archive recovery distinct. Reuse the
@@ -312,6 +317,9 @@ check retryable before starting the move.
   then stack on smaller containers. Catalog installs keep their destination and action together.
   Source deployments use the same destination summary above configuration and target-settings
   screen in Cloud and self-hosted mode; do not add a separate destination panel to the sidebar.
+- Project navigation places Monitoring & Logs before Actions. Keep the Monitoring, Logs and
+  Health section tabs underlined; use the shared compact filled tabs for log-source selection
+  inside Logs. Hide that inner selector when only request logs are available.
 - Single-app deployment progress uses 32px phase markers with 18–20px glyphs. Keep the
   connectors centered and separated from each marker by the card-colored ring, with the
   current phase and step count underneath.
@@ -389,6 +397,7 @@ check retryable before starting the move.
   imports. The page and modal share the whole preparation layout and controls.
 - The Cloud sidebar orders its sections as Main, Settings, then Infrastructure.
   Self-hosted instances keep Infrastructure before Settings, including when connected to Cloud.
+  Backups belongs under Infrastructure beside Servers/Resources, Emails and Jobs, in every platform mode.
   Cloud and Cloud-connected installations add Support as the final entry, under Help.
   Keep it reachable for existing Cloud projects if the connection needs attention, using
   the sidebar's loaded project inventory. The private support center uses a
@@ -494,10 +503,11 @@ check retryable before starting the move.
   Distinguish failed cancellation checks (Refresh) from payments without provider-supported
   cancellation (complete the payment or wait for expiry). Show the support link once;
   neither condition may clear a payable checkout or allow a competing subscription.
-- Monthly servers show purchased resources, paid-through coverage and measured CPU time;
+- Monthly Cloud spaces show purchased resources, paid-through coverage and measured CPU time;
   they have no compute-credit donut, exhaustion alert or credit top-up action. Keep optional
   managed proxy transfer and retained-storage charges distinct from compute coverage, with
-  details in a compact disclosure. Existing metered subscriptions retain their credit view.
+  details in a compact disclosure. Put Monthly coverage after the main billing overview and
+  usage guide, so plan capacity and usage lead the page. Existing metered subscriptions retain their credit view.
   Prepaid PAYG shows package amounts beside their credit value, using the provider's
   conversion and published resource rates. Keep the Openship resource tiers inside the
   resource card, using compact shared tabs above its inputs. Present the selected tier's
@@ -585,13 +595,35 @@ plan changes, provisioning, edits or deletion. Reconnect refreshes the same link
 create another server. A missing control route on an older Cloud API shows **Control unavailable**
 with upgrade guidance; structured resource and permission 404s retain their original meaning.
 
-Managed server navigation leads with Overview, Terminal and SSH access. Group listener inspection
-under Networking, and component health and Runtime API under Settings; preserve existing tab links.
-The managed terminal uses the full content width. Other views keep the shared 340px plan sidebar.
-Network controls separate the outbound connection from internet policy, with one explicit save per
-operation. Show the current connection separately from the draft, use filled controls and responsive
-field pairs, and keep private address/ingress diagnostics in a disclosure. Failed reads retain a
-status retry; they must not appear as an empty pool or trigger a mutation.
+Cloud navigation and the page heading use **Cloud spaces**. Each independently purchased allocation
+is presented as a **Cloud space**: show measured CPU, memory and storage usage
+and assigned projects in Overview, with lifecycle progress in Activity. Put the compact Cloud space
+dropdown in the 340px right column above plan capacity. The picker shows the selected name,
+plan and project count, with a compact status ring at the right of the selected row instead
+of a separate badge below. Keep a readable status label for assistive technology and hover.
+Use the shared cloud icon for managed destinations and Cloud spaces navigation. Activity
+explains setup, capacity changes and recovery, with Cloud space wording in its progress logs.
+Other choices appear only when opened. On narrow screens,
+place the picker before usage and keep plan capacity below the main content. Spaces are deployment destinations using existing purchased workspace identities,
+not organization workspaces or combined capacity. Keep resource and billing actions on the existing billing flow.
+
+Cloud spaces uses the read-only provider metrics stream through Openship's authenticated monitor
+endpoint. Title the card Resource usage, and show Live only after a valid sample; pause hidden pages and cancel subscriptions when
+the space, account or tab changes. Retain and label the last reading on disconnect with Retry.
+Recent charts contain at most 60 samples from the open page, not billed usage or historical analytics.
+Project storage inventory uses the existing snapshot request and is not scanned on every live tick.
+Cloud spaces and Billing reuse the shared destination picker rows, project counts and catalog plan names.
+Keep instant resource readings and project storage on Cloud spaces. Billing retains subscription,
+payment, billing-period usage and entitlement counters, with selected-space links instead of another
+host-usage snapshot. Show actual allocated capacity on Cloud spaces; pending plan changes remain
+in Billing's existing confirmation and resize flow.
+Unfinished Cloud setup shows a calm Cloud space notice and does not subscribe to live metrics.
+
+Managed resources do not expose host terminals, SSH, provider networking, Runtime API credentials,
+listener inspection or manual process controls, including when opened through Desktop or an old
+server link. Project logs and service consoles remain available from their project. Connected
+self-hosted servers retain host administration. Failed reads show a retry and unknown usage;
+never substitute zero usage or an empty project list for an unavailable observation.
 
 Account protection lives in **Settings → Security**, using the existing settings
 navigation and section cards. Keep authenticator setup, recovery codes, and
@@ -659,6 +691,10 @@ Migration retries reuse the shared destination picker after a fresh scan, even w
 from an existing run. Keep loading, fetch errors and empty inventory distinct, and preserve
 the selected destination's validation and transfer review before enabling Migrate.
 
+Catalog brand artwork is bundled in both dashboard and website public assets and mapped in
+the shared `AppLogo` renderer. Preserve upstream attribution and keep setup behavior in
+catalog definitions, rather than adding app-specific dashboard branches.
+
 ## Catalog forms
 
 Use [AppSettingsForm](../apps/dashboard/src/components/app-settings/AppSettingsForm.tsx) for
@@ -710,3 +746,41 @@ and block authorization. Account switching signs out before continuing to login;
 organization switching reloads the same request after the server confirms the
 session change. Preserve callback, device mode, state and PKCE parameters, and
 require another explicit Authorize click after either switch.
+
+In the deployment wizard, Include www keeps the two hostnames as normal public
+endpoints. On Cloud and self-hosted destinations, adding the sibling keeps the typed
+hostname primary and redirects the other with HTTP 301. A filled
+Domain behavior selector offers either hostname as primary or Serve both. Derive
+that selection from the endpoint redirect fields; do not persist a parallel mode.
+Keep existing choices until explicitly edited. Show the redirect target in the
+collapsed domain row and hide app port/static-path fields for redirect domains.
+Choose a serving hostname for primary metadata. Offer the same choices for Cloud
+projects opened in Desktop and for projects managed directly in Cloud. Provider
+implementation details belong in engineering documentation.
+
+Deploy-domain autosaves preserve edit order, including switching to None. Queued
+writes are discarded when the account or organization changes. Reuse the shared
+keyed mutex and API scope generation. Project route edits share the existing
+project runtime lock across preparation, persistence and live application, keeping
+a primary-direction change together across concurrent requests.
+
+## Personal appearance
+
+Keep the original Appearance card and its four immediate theme switches in Settings → General. Its Customize button opens the editor inline at `/settings?tab=general&view=appearance`, keeping General selected in desktop and mobile navigation. Provide Back to General; do not add a dedicated Appearance tab. Inside Customize, use compact labeled icon buttons for Light, Dim, Dark and System instead of large preview cards; keep New theme alongside the selector and preserve the original cards in General. The editor owns personal themes, token editing, typography and portable JSON import/export. The registry and built-in values in `packages/core/src/appearance.ts` and `appearance-defaults.json` are authoritative. Regenerate `apps/dashboard/src/styles/theme-tokens.css` with `node scripts/generate-theme-tokens.mjs`; `theme.css` retains utilities and semantic aliases. Do not duplicate palettes in components. Preset thumbnails use the immutable built-in values; previews and their bridge aliases resolve within `[data-appearance-preview]`.
+
+Use one versioned format across dashboard, API, SDK, CLI and native operations. Save is user-scoped and explicit; a draft updates CSS variables live, while failures preserve the draft. Read failures must not become editable server defaults. Cache by API origin and authenticated user, discard late responses across account switches, and paint validated cached variables before hydration. The editor's recovery controls use the immutable base palette and system font so users can always reset an unreadable theme. WOFF2 assets travel in JSON; do not load arbitrary remote CSS or fonts from imported themes. Terminals subscribe to the shared appearance event, update their existing renderer and refit without reconnecting the PTY.
+
+## Managed public ingress
+
+Cloudflare Tunnel setup belongs in a self-hosted server's existing **Security** tab.
+Reuse the shared credential editor inline; send saved credential IDs to ingress operations.
+Use compact status, a skeleton during reads, and `ConnectionNotice` for unavailable
+status so a failed request cannot look like an empty setup. Poll only pending work
+quickly, and stop polling idle connection cards.
+
+Domain cards keep their existing external-ingress row with an inline **Manage** action.
+Show the persisted tunnel/DNS/Access phase and retry errors there. Server defaults apply
+only to new custom domains and must be explicit in the deployment and Add domain forms.
+Existing hostnames keep their Access choice when server defaults change. Close or reset
+private dialogs on account/organization switches, discard late results, and guard
+backdrop, Escape and close buttons while a write is in flight.

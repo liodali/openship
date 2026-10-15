@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { api, setActiveOrganizationId, setApiResourceScope } from "./client";
+import { api, getApiRequestScopeVersion, setActiveOrganizationId, setApiResourceScope } from "./client";
 const fetchMock = vi.fn();
 beforeEach(() => { fetchMock.mockReset(); vi.stubGlobal("fetch", fetchMock); setApiResourceScope("account-a"); setActiveOrganizationId("org-a"); });
 afterEach(() => { setApiResourceScope(""); setActiveOrganizationId(null); vi.unstubAllGlobals(); });
@@ -24,4 +24,19 @@ it("does not collapse requests carrying different organization scopes", async ()
   const [a, b] = await Promise.all([api.get("projects/home"), api.get("projects/home", { headers: { "X-Organization-Id": "org-b" } })]);
   expect(a).toEqual({ name: "org-a" }); expect(b).toEqual({ name: "org-b" });
   expect(fetchMock).toHaveBeenCalledTimes(2);
+});
+
+it("invalidates deferred mutations across account/org changes, including switching back", () => {
+  const first = getApiRequestScopeVersion();
+  setApiResourceScope("account-a");
+  setActiveOrganizationId("org-a");
+  expect(getApiRequestScopeVersion()).toBe(first);
+  setApiResourceScope("account-b");
+  const second = getApiRequestScopeVersion();
+  expect(second).not.toBe(first);
+  setApiResourceScope("account-a");
+  expect(getApiRequestScopeVersion()).not.toBe(first);
+  const beforeOrg = getApiRequestScopeVersion();
+  setActiveOrganizationId("org-b");
+  expect(getApiRequestScopeVersion()).not.toBe(beforeOrg);
 });

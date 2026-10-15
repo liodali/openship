@@ -1,5 +1,6 @@
 "use client";
 
+import { cloudSpaceHref } from "@/lib/cloud-spaces";
 import { Icon as UiIcon } from "@repo/ui/icons";
 import { PLANS, planServiceResources, formatCpuCores, formatMemoryMb } from "@repo/core";
 import { useI18n, interpolate } from "@/components/i18n-provider";
@@ -9,9 +10,7 @@ import { cloudUsagePercent, hasUnlimitedCloudCredits, isNewCloudCustomer } from 
 import { ResourceLabel, ResourceMeter, ResourceRing } from "./ResourceMeter";
 import { Button } from "@/components/ui/button";
 import Link from "next/link";
-import { ServerUsage } from "@/components/servers/ServerUsage";
 import { CloudActivationSteps } from "./CloudActivationSteps";
-import { BillingComputeCoverage } from "./BillingComputeCoverage";
 
 export type { BillingState };
 
@@ -67,7 +66,10 @@ export function BillingCapacity({ state }: { state: BillingState }) {
     return (
       <>
         {isNewCloudCustomer(state) ? <CloudActivationSteps /> : state.workspace?.serverId && (
-          <ServerUsage key={state.workspace.serverId} serverId={state.workspace.serverId} />
+          <section className="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-card p-5">
+            <p className="text-sm font-medium">{state.workspace.name || t.servers.resources.space}</p>
+            <Button asChild variant="secondary" size="sm"><Link href={cloudSpaceHref(state.workspace.serverId)}>{t.billing.workspaces.openWorkspace}</Link></Button>
+          </section>
         )}
         {(savedProjects > 0 || (state.balance.quotaRemaining ?? 0) !== 0) && (
           <section className="space-y-3 rounded-2xl bg-card p-5 text-sm text-muted-foreground">
@@ -92,10 +94,6 @@ export function BillingCapacity({ state }: { state: BillingState }) {
 
   return (
     <>
-      <BillingComputeCoverage state={state} />
-      {state.workspace?.serverId && (
-        <ServerUsage key={state.workspace.serverId} serverId={state.workspace.serverId} />
-      )}
       <section className="@container/capacity rounded-2xl bg-card p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
@@ -106,7 +104,7 @@ export function BillingCapacity({ state }: { state: BillingState }) {
           </div>
           {state.workspace?.serverId ? (
             <Button asChild variant="secondary" size="sm">
-              <Link href={`/servers/${encodeURIComponent(state.workspace.serverId)}`}>
+              <Link href={cloudSpaceHref(state.workspace.serverId)}>
                 {t.billing.workspaces.openWorkspace}
               </Link>
             </Button>

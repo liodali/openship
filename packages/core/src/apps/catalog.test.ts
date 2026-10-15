@@ -97,6 +97,43 @@ describe("app catalog (JSON)", () => {
   });
 });
 
+describe("published app startup", () => {
+  it("gates exact entrypoint overrides so older engines cannot publish an uninitialized application", () => {
+    const app = getAppTemplate("jellyfin")!;
+    expect(isValidAppTemplate(app)).toBe(true);
+    expect(isValidAppTemplate({ ...app, minEngine: "0.9.1" })).toBe(false);
+    expect(isValidAppTemplate({ ...app, minEngine: undefined })).toBe(false);
+    expect(parseAppTemplate(app, { engineVersion: "0.9.1" })).toMatchObject({ ok: false });
+    expect(parseAppTemplate(app, { engineVersion: "0.9.2" })).toEqual({ ok: true });
+    const cleared = {
+      ...app,
+      services: [{ name: "jellyfin", image: "jellyfin/jellyfin:12.2", entrypointArgv: [] }],
+    };
+    expect(appTemplateSchema.parse(cleared).services![0]!.entrypointArgv).toEqual([]);
+  });
+
+  it.each(["paperless-ngx", "wiki-js", "homepage", "immich", "jellyfin"])(
+    "keeps %s private dependencies and secrets out of public setup",
+    (id) => {
+      const app = getAppTemplate(id)!;
+      expect(app.services!.every((service) => service.image && !service.build)).toBe(true);
+      for (const endpoint of app.endpoints ?? []) {
+        if (endpoint.kind === "tcp")
+          expect(endpoint).toMatchObject({ scope: "internal", allowedModes: ["internal"] });
+      }
+      for (const service of app.services!) {
+        expect(service.volumes?.some((volume) => /docker\.sock|^\/:/.test(volume))).not.toBe(true);
+        for (const field of app.configFields ?? []) {
+          if (field.service === service.name && field.generate === "secret") {
+            expect(field.secret).toBe(true);
+            expect(service.secretEnv).toContain(field.key);
+          }
+        }
+      }
+    },
+  );
+});
+
 describe("mail has exactly one entry point in the catalog", () => {
   /**
    * Openship Mail and Openship Webmail used to be two cards with the same logo,

@@ -52,9 +52,10 @@ export const ProjectSidebar = () => {
   // context so switching here also refetches the overview analytics).
   const domains = useMemo(
     () =>
-      (domainsData?.domains ?? [])
+      [...(domainsData?.domains ?? [])]
+        .sort((a: any, b: any) => Number(!!b.primary) - Number(!!a.primary))
         .map((d: any) => d?.domain)
-        .filter((d: unknown): d is string => typeof d === "string" && d.length > 0),
+        .filter((d: unknown): d is string => typeof d === "string" && d.length > 0 && !d.startsWith("*.")),
     [domainsData?.domains],
   );
 
@@ -62,8 +63,11 @@ export const ProjectSidebar = () => {
   // whether there's a public host, whether it's localhost, and the href — so the
   // sidebar no longer re-derives localhost or keys off an instance-wide flag.
   const isLocal = access.isLocal;
-  const hasDomain = !isLocal && !!access.host;
-  const activeDomain = hasDomain ? selectedDomain || access.host || "" : "";
+  const configuredDomain = domains[0] ?? "";
+  const hasDomain = !isLocal && !!(access.host || configuredDomain);
+  const activeDomain = hasDomain ? selectedDomain || access.host || configuredDomain : "";
+  const activeDomainRow = domainsData?.domains?.find((row: any) => row.domain === activeDomain);
+  const domainPending = hasDomain && activeDomain !== access.host && !activeDomainRow?.verified && activeDomainRow?.status !== "active";
   const canOpen = hasDomain ? !!activeDomain : !!access.url;
   const displayUrl = hasDomain ? activeDomain : (access.host ?? "");
   const siteHref = hasDomain ? `https://${activeDomain}` : (access.url ?? "#");
@@ -147,6 +151,9 @@ export const ProjectSidebar = () => {
                   />
                 ) : (
                   <span className="truncate text-sm font-medium text-foreground">{displayUrl}</span>
+                )}
+                {domainPending && (
+                  <span className="text-xs text-warning">{t.projectSettings.domains.status.pending}</span>
                 )}
                 <a
                   href={siteHref}

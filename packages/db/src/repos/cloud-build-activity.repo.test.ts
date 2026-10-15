@@ -71,6 +71,16 @@ beforeEach(async () => {
   }
 });
 
+it("lets uncapped sibling builds share the host while retaining exclusive lifecycle protection", async () => {
+  const resources = { cpuCores: 0, memoryMb: 0 };
+  for (const id of ["a", "b"]) {
+    await builds.reserve({ ...identity(id), resources });
+    expect(await builds.claim(identity(id), `owner-${id}`)).toMatchObject({ resources });
+  }
+  expect(await builds.listReservations("w", "org")).toHaveLength(2);
+  await expect(workspaces.claimActivity("w", "org", exclusive)).rejects.toMatchObject({ code: "CLOUD_WORKSPACE_ACTIVITY_BUSY" });
+});
+
 it("reserves capacity without host privileges, activates once, and retains a completion tombstone", async () => {
   await builds.reserve({ ...identity(), buildSessionId: "s", resources });
   expect(await builds.listReservations("w", "org")).toHaveLength(1);

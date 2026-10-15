@@ -13,6 +13,7 @@ import {
   ChartNoAxesColumn,
   Workflow,
   Blocks,
+  Cpu,
 } from "lucide-react";
 import {
   APP_CATEGORY_LABELS,
@@ -28,6 +29,7 @@ const categoryIcons = {
   mail: Mail,
   analytics: ChartNoAxesColumn,
   automation: Workflow,
+  ai: Cpu,
   other: Blocks,
 };
 const categories = Object.keys(APP_CATEGORY_LABELS) as Array<keyof typeof APP_CATEGORY_LABELS>;
@@ -178,6 +180,9 @@ export function AppDirectory({
                 <h2 className="mt-5 text-lg font-medium tracking-tight th-text-heading">
                   {app.name}
                 </h2>
+                {(app.gpu || !app.supportsCloud) && <p className="mt-2 text-xs th-text-muted">
+                  {[app.gpu === "required" ? "NVIDIA GPU required" : app.gpu === "recommended" ? "GPU recommended" : null, !app.supportsCloud ? "Self-hosted only" : null].filter(Boolean).join(" · ")}
+                </p>}
                 <p className="mt-2 line-clamp-3 text-sm leading-relaxed th-text-secondary">
                   {app.description}
                 </p>

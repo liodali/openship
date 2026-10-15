@@ -332,3 +332,47 @@ describe("project deletion completion", () => {
     expect(h.sidebar).toHaveBeenCalledOnce();
   });
 });
+
+it("reconciles failed teardown with the durable cleanup error instead of returning to Live", async () => {
+  h.remove.mockRejectedValue(
+    new ApiError(409, "Cleanup failed", {
+      code: "PROJECT_TEARDOWN_FAILED",
+      unrecoverable: [{ step: "runtime_cleanup", error: "cache in use" }],
+    }),
+  );
+  h.info.mockResolvedValue({
+    project: { id: "project-a", deletionInProgress: true, lifecycleOperation: { kind: "delete", status: "failed", error: "cache in use" } },
+  });
+  await renderProject("project-a");
+  await startDelete();
+  expect(settings.projectData).toMatchObject({
+    deletedAt: null,
+    deletionInProgress: true,
+    lifecycleOperation: { kind: "delete", status: "failed", error: "cache in use" },
+  });
+  expect(host.textContent).toContain(baseDictionary.projects.delete.retryCleanup);
+  expect(host.textContent).toContain("cache in use");
+  expect(h.replace).not.toHaveBeenCalled();
+});
+
+it("keeps an unconfirmed deletion pending after connection loss and reconciles when the API returns", async () => {
+  vi.useFakeTimers();
+  h.remove.mockRejectedValue(new ApiError(502, "Connection lost", {}));
+  h.info.mockRejectedValueOnce(new ApiError(502, "Connection lost", {}));
+  await renderProject("project-a");
+  await startDelete();
+  expect(settings.projectData.deletedAt).toBeTruthy();
+  expect(host.textContent).toContain(baseDictionary.projects.delete.retryCleanup);
+  h.info.mockResolvedValue({ project: { id: "project-a", deletionInProgress: true, lifecycleOperation: { kind: "delete", status: "failed", error: "cache in use" } } });
+  await act(async () => vi.advanceTimersByTimeAsync(3000));
+  expect(settings.projectData).toMatchObject({ deletedAt: null, deletionInProgress: true, lifecycleOperation: { kind: "delete", status: "failed", error: "cache in use" } });
+});
+
+it("recognizes a completed deletion when its response was lost", async () => {
+  h.remove.mockRejectedValue(new ApiError(502, "Connection lost", {}));
+  h.info.mockRejectedValue(new ApiError(404, "Not Found", {}));
+  await renderProject("project-a");
+  await startDelete();
+  expect(h.replace).toHaveBeenCalledExactlyOnceWith("/");
+  expect(h.sidebar).toHaveBeenCalledOnce();
+});

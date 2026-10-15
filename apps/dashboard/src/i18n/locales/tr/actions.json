@@ -358,6 +358,9 @@
   },
   "runnerSetup": {
     "subtitle": "Bir sunucu ve kullanıma hazır ortam seçin.",
+    "cloudSubtitle": "Bir Cloud alanı ve kullanıma hazır bir iş ortamı seçin.",
+    "selectCloudSpace": "Uyumlu ortamları görmek için bir Cloud alanı seçin.",
+    "trustedCloudSpace": "İşler bu Cloud alanının kapasitesini paylaşır. Yalnızca güvenilir iş akışlarını çalıştırın.",
     "environment": "Varsayılan ortam",
     "browse": "Kataloğu aç",
     "catalog": "Runner kataloğu",

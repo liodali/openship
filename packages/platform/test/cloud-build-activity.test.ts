@@ -851,3 +851,46 @@ it("does not reclassify a matching error from worker verification", async () => 
   await expect(withCloudBuildActivity(identity(), async () => {})).rejects.toBe(original);
   expect(h.finish).not.toHaveBeenCalled();
 });
+
+it("waits for streamed Docker acknowledgements before releasing static-build capacity", async () => {
+  const acknowledgement = deferred();
+  const extracted = deferred();
+  let released = false;
+  const worker = withCloudBuildActivity(identity(), async () => {
+    const tracking = currentManagedCommandTracking()!;
+    await tracking.record({ workspaceId: "vm", marker: "static-archive", kind: "docker" });
+    tracking.defer(acknowledgement.promise.then(() => tracking.complete("static-archive")));
+    // Archive bytes have already been extracted. Its asynchronous durable
+    // acknowledgement is still in flight when the build phase completes.
+    extracted.resolve();
+    await releaseCloudBuildSlot();
+    released = true;
+  }, undefined, { verifyQuiescence: verifyCloudBuildWorkerStopped });
+  const outcome = worker.then(() => null, error => error);
+  await extracted.promise;
+  await new Promise(resolve => setImmediate(resolve));
+  expect(released).toBe(false);
+  expect(h.removeWorker).not.toHaveBeenCalled();
+  acknowledgement.resolve();
+  expect(await outcome).toBeNull();
+  expect(released).toBe(true);
+  expect(h.rows.get("a")?.commands).toEqual([]);
+  expect(h.rows.get("a")?.slotReleasedAt).toBeInstanceOf(Date);
+  expect(h.rows.get("a")?.finishedAt).toBeInstanceOf(Date);
+});
+
+it("retains build capacity when a streamed acknowledgement fails even if its error is caught", async () => {
+  const failure = new Error("durable acknowledgement unavailable");
+  await expect(withCloudBuildActivity(identity(), async () => {
+    const tracking = currentManagedCommandTracking()!;
+    await tracking.record({ workspaceId: "vm", marker: "static-archive", kind: "docker" });
+    tracking.defer(Promise.reject(failure));
+    await expect(releaseCloudBuildSlot()).rejects.toBe(failure);
+  }, undefined, { verifyQuiescence: verifyCloudBuildWorkerStopped })).rejects.toBe(failure);
+  expect(h.removeWorker).not.toHaveBeenCalled();
+  expect(h.releaseSlot).not.toHaveBeenCalled();
+  expect(h.finish).not.toHaveBeenCalled();
+  expect(h.rows.get("a")?.commands.map(command => command.marker)).toEqual(["static-archive"]);
+  expect(h.rows.get("a")?.slotReleasedAt).toBeNull();
+  expect(h.rows.get("a")?.finishedAt).toBeNull();
+});

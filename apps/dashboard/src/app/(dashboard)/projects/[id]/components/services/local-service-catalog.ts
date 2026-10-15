@@ -17,10 +17,13 @@
  */
 
 import type { ImageCatalogEntry } from "@/lib/api/images";
-import { getAppTemplate } from "@repo/core";
+import { getAppTemplate, appGpuEnvironment } from "@repo/core";
 
 // The app and companion-service entry points must use the same reviewed image
 // and its required command. Keep these defaults in the canonical app template.
+const ollamaTemplate = getAppTemplate("ollama")!;
+const ollama = ollamaTemplate.services![0]!;
+
 const minio = getAppTemplate("minio")!.services!.find((service) => service.name === "minio")!;
 
 function si(slug: string): string {
@@ -272,12 +275,28 @@ export const LOCAL_SERVICE_CATALOG: ImageCatalogEntry[] = [
   {
     id: "ollama",
     name: "Ollama",
-    image: "ollama/ollama:latest",
+    image: ollama.image!,
     logo: si("ollama"),
     category: "vector",
     description: "Run local LLMs (Llama, Mistral, etc.) with an OpenAI-compatible API.",
     ports: [11434],
-    defaultVolumes: ["ollama_data:/root/.ollama"],
+    defaultVolumes: [...ollama.volumes!],
+    defaultEnv: Object.entries(appGpuEnvironment(ollama, false)).map(([key, value]) => ({ key, value })),
+    supportsCloud: ollamaTemplate.supportsCloud,
+  },
+  {
+    id: "ollama-gpu",
+    name: "Ollama (NVIDIA GPU)",
+    image: ollama.image!,
+    logo: si("ollama"),
+    category: "vector",
+    description:
+      "Ollama with one NVIDIA GPU on the server. Needs a GPU server with the NVIDIA Container Toolkit.",
+    ports: [11434],
+    defaultVolumes: [...ollama.volumes!],
+    defaultEnv: Object.entries(ollama.environment ?? {}).map(([key, value]) => ({ key, value })),
+    supportsCloud: ollamaTemplate.supportsCloud,
+    gpus: Array.isArray(ollama.gpus) ? ollama.gpus[0] : ollama.gpus,
   },
 
   /* ── Queues & Streams ─────────────────────────────────────────────── */

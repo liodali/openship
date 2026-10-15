@@ -90,6 +90,23 @@ function existingRuntime(appliedResources: { cpuCores: number; memoryMb: number 
 function queue(target: string, meta = snapshot()) {
   return createQueuedDeployment({ projectId: target, organizationId, branch: "main", environment: "production", framework: "node", meta, envVars: {} });
 }
+
+it("queues another project while a Cloud build owns the same space, without clearing that ownership", async () => {
+  const sibling = await project();
+  for (const target of [projectId, sibling])
+    await db.update(schema.project).set({ workspaceId: managedWorkspaceId }).where(eq(schema.project.id, target));
+  const deploymentId = id("sibling-build");
+  await db.insert(schema.deployment).values({ id: deploymentId, projectId: sibling, organizationId, branch: "main", status: "building" });
+  await db.insert(schema.cloudBuildActivity).values({
+    deploymentId, projectId: sibling, organizationId, workspaceId: managedWorkspaceId,
+    ownerToken: "running-build", resources: { cpuCores: 0, memoryMb: 0 }, startedAt: new Date(),
+  });
+  const queued = await queue(projectId);
+  expect(queued.status).toBe("queued");
+  expect(await repos.cloudBuildActivity.listActive(managedWorkspaceId, organizationId)).toMatchObject([
+    { deploymentId, ownerToken: "running-build", finishedAt: null },
+  ]);
+});
 const composeSnapshot = (): DeploymentConfigSnapshot => ({
   ...snapshot(), serviceDeploymentMode: "services",
   composeServices: ["api", "database"].map(name => ({

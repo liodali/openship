@@ -11,6 +11,8 @@ import { AppLogo } from "@/components/AppLogo";
 import { VerifiedBadge } from "@/components/apps/VerifiedBadge";
 import { HostingBadge } from "@/components/apps/HostingBadge";
 import { UnverifiedBadge } from "@/components/apps/UnverifiedBadge";
+import { AppGpuBadge } from "@/components/apps/AppGpuBadge";
+import { usePlatform } from "@/context/PlatformContext";
 import { AddCustomAppModal } from "@/components/apps/AddCustomAppModal";
 import { useI18n, interpolate } from "@/components/i18n-provider";
 import { useToast } from "@/context/ToastContext";
@@ -24,13 +26,14 @@ import { HelpMenu } from "@/components/HelpMenu";
 
 // Stable display order for the category tab bar; only categories actually
 // present in the catalog are shown.
-const CATEGORY_ORDER = ["backend", "database", "cms", "analytics", "automation", "mail", "other"] as const;
+const CATEGORY_ORDER = ["backend", "database", "cms", "ai", "analytics", "automation", "mail", "other"] as const;
 
 /** Not installable right now: coming-soon OR needs a newer Openship. */
 const isLocked = (a: AppCatalogEntry) => !!a.comingSoon || !!a.requiresUpdate;
 
 export function AppCatalog({ embedded = false }: { embedded?: boolean } = {}) {
   const { t } = useI18n();
+  const { selfHosted } = usePlatform();
   const router = useRouter();
   const { showToast } = useToast();
   const searchParams = useSearchParams();
@@ -82,7 +85,7 @@ export function AppCatalog({ embedded = false }: { embedded?: boolean } = {}) {
   }, [catalog, category, query, t.library]);
 
   const catLabel = (c: string) =>
-    (ap.categories as Record<string, string> | undefined)?.[c] ?? c;
+    (ap.categories as Record<string, string> | undefined)?.[c] ?? (c === "ai" ? "AI & models" : c);
 
   useEffect(() => {
     loadCatalog().finally(() => setLoading(false));
@@ -90,7 +93,7 @@ export function AppCatalog({ embedded = false }: { embedded?: boolean } = {}) {
   }, []);
 
   const install = (app: AppCatalogEntry) => {
-    if (isLocked(app)) return;
+    if (isLocked(app) || (!selfHosted && app.supportsCloud === false)) return;
     // Flow apps (mail) own a bespoke wizard.
     if (app.kind === "flow" && app.flowHref) {
       router.push(app.flowHref);
@@ -216,7 +219,7 @@ export function AppCatalog({ embedded = false }: { embedded?: boolean } = {}) {
         <div className="mt-4 grid grid-cols-1 gap-4 @xl/app-catalog:grid-cols-2 @4xl/app-catalog:grid-cols-3">
           {filtered.map((app) => {
             const busy = installingId === app.id;
-            const locked = isLocked(app);
+            const locked = isLocked(app) || (!selfHosted && app.supportsCloud === false);
             const needsUpdate = !!app.requiresUpdate;
             return (
               <div key={app.id} className="group relative">
@@ -235,11 +238,12 @@ export function AppCatalog({ embedded = false }: { embedded?: boolean } = {}) {
                     <AppLogo appId={app.id} className="size-[22px]" />
                   </div>
                   <div className="min-w-0 flex-1">
+                    {app.supportsCloud === false && <p className="mb-1 text-xs text-muted-foreground">{ap.gpu.selfHostedOnly}</p>}
                     <div className="flex items-center justify-between gap-2">
                       <span className="inline-flex min-w-0 items-center gap-1.5 font-medium text-foreground">
                         <span className="truncate">{app.name}</span>
                         {app.verified && <VerifiedBadge className="shrink-0" />}
-                        <HostingBadge hosting={app.hosting} />
+                        {!app.comingSoon && <HostingBadge hosting={app.hosting} />}
                       </span>
                       {needsUpdate ? (
                         <span className="shrink-0 rounded-full border border-warning/40 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-warning">
@@ -262,6 +266,7 @@ export function AppCatalog({ embedded = false }: { embedded?: boolean } = {}) {
                         ? (ap.needsUpdateDesc || "Update your Openship instance to install this app.")
                         : (t.library as any)?.catalog?.apps?.[app.id] || app.description}
                     </p>
+                    {app.gpu && <div className="mt-2 min-w-0"><AppGpuBadge gpu={app.gpu} /></div>}
                   </div>
                 </button>
                 {app.custom && (

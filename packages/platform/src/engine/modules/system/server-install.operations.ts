@@ -1,3 +1,4 @@
+import { streamCloudResourceUsage } from "../../lib/cloud-resource-usage";
 import { reportCaughtError as observeCaughtError } from "@repo/core/diagnostics";
 import { acquireServerExecution } from "../../lib/server-execution";
 /** Server setup sessions and monitoring, independent of HTTP stream lifetimes. */
@@ -237,8 +238,10 @@ export const serverInstallationDependencies: NonNullable<ServerDependencies["ins
     audit.recordAsync(operationAuditContext(ctx), { eventType: "server:admin", resourceType: "server", resourceId: serverId });
     return source;
   },
-  async monitor(ctx, serverId, signal) {
-    return monitorServer(ctx.organizationId, serverId, signal);
+  async monitor(ctx, serverId, signal, format) {
+    return format === "usage"
+      ? streamCloudResourceUsage(ctx.organizationId, serverId, signal)
+      : monitorServer(ctx.organizationId, serverId, signal);
   },
 };
 
