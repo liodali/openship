@@ -5,7 +5,11 @@
 > (a) `/version` probe skips the BuildKit attempt on Podman outright,
 > (b) the reactive fallback retry uses a never-pooled connection.
 > §6 (CLI folder-deploy `publicEndpoints`) fixed in the SDK's
-> `deploySourceWorkflow`. Both guarded by `scripts/fork/patch-guard.mjs`.
+> `deploySourceWorkflow`. §10 (single-app folder deploy forcing
+> `workloadType=static`) fixed in the same workflow — a single-app scan with a
+> container port now ensures `workloadType=web`, `hasServer=true` and
+> `productionMode=host` (declared `worker`/`static` and multi-service deploys
+> stay authoritative). All guarded by `scripts/fork/patch-guard.mjs`.
 
 Repo: `liodali/openship` (fork), running images
 `gitea.dev.adetify.com/medali/openship-{api,dashboard,edge}:0.9.2`
@@ -359,3 +363,66 @@ podman exec openship_api_1 sh -lc 'cd /app && bun /tmp/probe3.ts'
 # ONLY the two-attempt (BuildKit → classic) sequence fails
 podman exec openship_api_1 sh -lc 'cd /app && bun /tmp/probe5.ts'   # hangs / fails on Podman
 ```
+
+---
+
+## 10. Follow-up — single-app folder deploy forces `workloadType = static`
+
+After the build fix above, `openship deploy --folder` on a **single-app**
+project (one Dockerfile, `services: []`) still fails preflight:
+
+```
+✖ Folder deploy failed
+Pre-deploy checks failed: Endpoint target (8080): Static deployments cannot
+  expose port-targeted routes. Use a static target path instead.
+```
+
+**Cause:** the CLI folder-deploy's `projects/ensure` writes the project as
+`workloadType=static`, `productionMode=static`, `hasServer=false`,
+`hasBuild=false` — even though the scan detected a port (`port: 8080`) and the
+Dockerfile `EXPOSE`s it. Setting `workloadType=web` via the API works, but the
+CLI overwrites it on the next deploy:
+
+```
+before (API ensure web):
+  workloadType=web     productionMode=host    hasServer=True  hasBuild=True
+after CLI deploy attempt:
+  workloadType=static  productionMode=static  hasServer=False hasBuild=False
+```
+
+**Not** the same as a compose project: multi-service projects legitimately carry
+`workloadType=static/none` at the project level and each service declares its own
+endpoint — which is why the real staging project `fsvger-op` (also
+`workloadType=static`) deploys fine.
+
+**Fix direction:** when the folder scan reports a container port (or the
+Dockerfile `EXPOSE`s one), `projects/ensure` for a **single-app** deploy must
+derive `workloadType=web`, `hasServer=true`, `hasBuild=true`, and a routable
+`productionMode` (e.g. `standalone`/`host`) instead of `static`.
+
+Reproduction (project is left `static` after the failed CLI attempt):
+
+```bash
+cd /tmp/openship-buildtest
+openship deploy --project <single-app-project> --folder --watch
+# → Pre-deploy checks failed: Static deployments cannot expose port-targeted routes
+```
+
+Workaround until fixed: drive the deploy through the dashboard (which derives a
+web workload), or post the API flow in §5 with `"workloadType":"web"`.
+
+---
+
+## 11. Verification harness (in-container probes)
+
+The probes used during the investigation were run as
+`podman exec openship_api_1 sh -lc 'cd /app && bun /tmp/probeN.ts'`:
+
+- `probe.ts`  — `createDockerBuildContext` output (`contextEntries`, `dockerfileName`)
+- `probe2.ts` — `packBuildContext` tar listing
+- `probe3.ts` — dockerode classic build alone
+- `probe4.ts` — dockerode classic + labels/buildargs/extrahosts
+- `probe5.ts` — BuildKit(`version=2`) → classic two-attempt sequence
+
+(Removed after the investigation; recreate from the snippets in this file. Only
+`probe5` fails on the old image and passes on `0.9.2-2fd169ba7`.)

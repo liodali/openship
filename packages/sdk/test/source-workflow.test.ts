@@ -132,3 +132,125 @@ describe("deploySourceWorkflow publicEndpoints passthrough", () => {
     ]);
   });
 });
+
+// §10 of the podman build brief: a single-app Dockerfile deploy whose scan
+// reports a container port must ensure a WEB workload. The scan's
+// startCommand/buildCommand are empty (the repository Dockerfile owns the
+// process), which used to derive hasServer=false → workloadType=static →
+// productionMode=static, and the deploy preflight rejected the port-targeted
+// route ("Static deployments cannot expose port-targeted routes").
+describe("deploySourceWorkflow single-app web derivation", () => {
+  // The §10 repro scan: docker project, port detected, no commands.
+  const dockerScan: SourceScan = {
+    ...baseScan,
+    startCommand: "",
+  } as unknown as SourceScan;
+
+  it("derives workloadType=web, hasServer=true, hasBuild=true, productionMode=host for a port-served Dockerfile app", async () => {
+    const { ship, ensure, input } = setup(dockerScan);
+
+    await deploySourceWorkflow(ship, input);
+
+    const body = ensure.mock.calls[0][0] as Record<string, unknown>;
+    expect(body.workloadType).toBe("web");
+    expect(body.hasServer).toBe(true);
+    expect(body.hasBuild).toBe(true);
+    expect(body.productionMode).toBe("host");
+    expect(body.port).toBe(8080);
+  });
+
+  it("respects an explicitly declared static workload over the derivation", async () => {
+    const { ship, ensure, input } = setup({
+      ...dockerScan,
+      workloadType: "static",
+    } as unknown as SourceScan);
+
+    await deploySourceWorkflow(ship, input);
+
+    const body = ensure.mock.calls[0][0] as Record<string, unknown>;
+    expect(body.workloadType).toBe("static");
+    expect(body.hasServer).toBe(false);
+    expect(body.productionMode).toBe("static");
+  });
+
+  it("respects an explicitly declared worker workload over the derivation", async () => {
+    const { ship, ensure, input } = setup({
+      ...dockerScan,
+      workloadType: "worker",
+    } as unknown as SourceScan);
+
+    await deploySourceWorkflow(ship, input);
+
+    const body = ensure.mock.calls[0][0] as Record<string, unknown>;
+    expect(body.workloadType).toBe("worker");
+    expect(body.hasServer).toBe(false);
+  });
+
+  it("leaves multi-service (compose) deploys untouched", async () => {
+    const scan = {
+      ...dockerScan,
+      workloadType: "static",
+      services: [
+        {
+          name: "web",
+          image: "nginx:alpine",
+          ports: [],
+          dependsOn: [],
+          environment: {},
+          volumes: [],
+          publicEndpoints: [{ port: "8080", domainType: "custom", customDomain: "a.example.com" }],
+        },
+      ],
+    } as unknown as SourceScan;
+    const { ship, ensure, input } = setup(scan);
+
+    await deploySourceWorkflow(ship, input);
+
+    const body = ensure.mock.calls[0][0] as Record<string, unknown>;
+    expect(body.workloadType).toBe("static");
+    expect(body.hasServer).toBe(false);
+    expect(body.productionMode).toBe("static");
+  });
+
+  it("leaves a portless single-app upload on the static derivation", async () => {
+    const { port: _port, workloadType: _wt, ...portless } = dockerScan;
+    const { ship, ensure, input } = setup(portless as unknown as SourceScan);
+
+    await deploySourceWorkflow(ship, input);
+
+    const body = ensure.mock.calls[0][0] as Record<string, unknown>;
+    expect(body.workloadType).toBeUndefined();
+    expect(body.hasServer).toBe(false);
+    expect(body.productionMode).toBe("static");
+  });
+
+  it("keeps a declared productionMode authoritative for the web derivation", async () => {
+    const { ship, ensure, input } = setup({
+      ...dockerScan,
+      productionMode: "standalone",
+    } as unknown as SourceScan);
+
+    await deploySourceWorkflow(ship, input);
+
+    const body = ensure.mock.calls[0][0] as Record<string, unknown>;
+    expect(body.workloadType).toBe("web");
+    expect(body.productionMode).toBe("standalone");
+  });
+
+  it("does not force hasBuild for a port-served non-docker framework", async () => {
+    // e.g. a runtime app with no install/build steps and a plain start command.
+    const scan = {
+      ...dockerScan,
+      projectType: "app",
+      stack: "node",
+      startCommand: "node server.js",
+    } as unknown as SourceScan;
+    const { ship, ensure, input } = setup(scan);
+
+    await deploySourceWorkflow(ship, input);
+
+    const body = ensure.mock.calls[0][0] as Record<string, unknown>;
+    expect(body.workloadType).toBe("web");
+    expect(body.hasBuild).toBe(false);
+  });
+});

@@ -29,6 +29,26 @@ function buildAccessEndpoint(endpoint: NonNullable<SourceScan["publicEndpoints"]
   };
 }
 
+/**
+ * Scan service rows differ from the two destinations by ONE field: the
+ * endpoint `port` type. EnsureProjectBody's services use the numeric
+ * PublicEndpointSchema, BuildAccessBody's use the string PublicEndpointInput
+ * (and the scan's own declared shape is the string one). A verbatim
+ * pass-through can only satisfy one of the two, so retype it per destination.
+ */
+function serviceForDestination(service: Record<string, unknown>, portAs: "number" | "string") {
+  const endpoints = service.publicEndpoints as Array<Record<string, unknown>> | undefined;
+  if (!endpoints?.length) return service;
+  return {
+    ...service,
+    publicEndpoints: endpoints.map((endpoint) =>
+      endpoint.port === undefined
+        ? endpoint
+        : { ...endpoint, port: portAs === "number" ? Number(endpoint.port) : String(endpoint.port) },
+    ),
+  };
+}
+
 /** Identical orchestration for native and remote sources; transports only stage the bytes. */
 export async function deploySourceWorkflow(ship: { projects: ProjectOperations; sources: SourceOperations; deployments: DeploymentOperations }, input: DeploySourceInput): Promise<SourceDeploymentResult> {
   const { source, signal, onStep } = input;
@@ -47,6 +67,21 @@ export async function deploySourceWorkflow(ship: { projects: ProjectOperations; 
   const publicEndpoints = scan.publicEndpoints;
   step("Creating project");
   const hasBuild = Boolean(scan.buildCommand) || runtimeNeedsInstall(scan.stack, scan.runtimeVersion, scan.installCommand), hasServer = scan.workloadType !== "worker" && Boolean(scan.startCommand);
+  // A SINGLE-APP deploy whose scan reports a container port is a web workload.
+  // The scan's startCommand is empty when the repository Dockerfile owns the
+  // process, so the legacy derivation above yields hasServer=false → the API
+  // resolves workloadType=static/productionMode=static, and the deploy
+  // preflight rejects the port-targeted route ("Static deployments cannot
+  // expose port-targeted routes"). Derive web like the dashboard wizard does;
+  // an explicitly declared workload (openship.json `workload: worker|static`)
+  // stays authoritative, and multi-service (compose) deploys are untouched —
+  // their project row is legitimately static with per-service endpoints.
+  const webSingleApp = !services?.length
+    && typeof scan.port === "number" && scan.port > 0
+    && scan.workloadType !== "worker" && scan.workloadType !== "static";
+  // A repository Dockerfile owns install + build: hasBuild derives false from
+  // the empty scan commands, but there IS a build (the image build itself).
+  const repoDockerfileBuild = scan.projectType === "docker" || scan.stack === "docker";
   const ensured = await ship.projects.ensure(parseInput(EnsureProjectBody, {
     name: scan.name || input.name || "app", projectId: input.projectId, serverId,
     deploymentEnvironment: input.environment,
@@ -57,10 +92,12 @@ export async function deploySourceWorkflow(ship: { projects: ProjectOperations; 
     roles: scan.roles,
     outputDirectory: scan.outputDirectory, rootDirectory: scan.rootDirectory, buildImage: scan.buildImage, runtimeVersion: scan.runtimeVersion, runtimeImage: scan.runtimeImage,
     productionPaths: Array.isArray(scan.productionPaths) ? scan.productionPaths.join(",") : undefined,
-    hasBuild, hasServer, productionMode: scan.productionMode ?? (hasServer ? "standalone" : "static"),
-    workloadType: scan.workloadType, runtimeMode: scan.runtimeMode,
-    ...(hasServer && scan.port ? { port: scan.port } : {}),
-    ...(services?.length ? { services } : {}),
+    hasBuild: webSingleApp && repoDockerfileBuild ? true : hasBuild,
+    hasServer: webSingleApp || hasServer,
+    productionMode: scan.productionMode ?? (webSingleApp ? "host" : hasServer ? "standalone" : "static"),
+    workloadType: webSingleApp ? "web" : scan.workloadType, runtimeMode: scan.runtimeMode,
+    ...((webSingleApp || hasServer) && scan.port ? { port: scan.port } : {}),
+    ...(services?.length ? { services: services.map((s) => serviceForDestination(s, "number")) } : {}),
     ...(publicEndpoints?.length ? { publicEndpoints } : {}),
     monorepoApps: scan.monorepoApps, monorepoWorkspace: scan.monorepoWorkspace,
     composePath: scan.composePath, volumes: scan.volumes, routingConfig: scan.routing,
@@ -70,7 +107,7 @@ export async function deploySourceWorkflow(ship: { projects: ProjectOperations; 
     projectId: ensured.project_id, uploadSessionId: session.sessionId,
     ...(serverId ? { serverId } : {}),
     environment: input.environment,
-    ...(services?.length ? { services } : {}),
+    ...(services?.length ? { services: services.map((s) => serviceForDestination(s, "string")) } : {}),
     ...(publicEndpoints?.length ? { publicEndpoints: publicEndpoints.map(buildAccessEndpoint) } : {}),
     ...(input.serviceIds?.length ? { serviceIds: input.serviceIds } : {}),
   }));

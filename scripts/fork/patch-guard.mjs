@@ -125,8 +125,9 @@ const sourceWorkflowTs = read("packages/sdk/src/source-workflow.ts") ?? "";
 check(
   "patch 5 (folder-deploy passes publicEndpoints)",
   sourceWorkflowTs.includes("publicEndpoints.map(buildAccessEndpoint)") &&
-    sourceWorkflowTs.includes("...(publicEndpoints?.length ? { publicEndpoints } : {})"),
-  "source-workflow.ts no longer forwards the scan's publicEndpoints to projects/ensure + deployments/build/access — self-hosted folder deploys fail the Cloud preflight again.",
+    sourceWorkflowTs.includes("...(publicEndpoints?.length ? { publicEndpoints } : {})") &&
+    sourceWorkflowTs.includes("webSingleApp"),
+  "source-workflow.ts no longer forwards the scan's publicEndpoints to projects/ensure + deployments/build/access, or lost the single-app web-workload derivation — self-hosted folder deploys fail the Cloud preflight / the static-port preflight again.",
 );
 
 // ── Patch 4: fork badge visible in the dashboard sidebar ────────────────────
