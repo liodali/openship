@@ -11,6 +11,7 @@ import { useTheme } from "@/components/theme-provider";
 import { ThemeIcon } from "@/components/theme-icon";
 import { useBrandName, useI18n, interpolate } from "@/components/i18n-provider";
 import { Logo } from "@/components/logo";
+import { ForkBadge } from "@/components/fork-badge";
 import { useAuth } from "@/context/AuthContext";
 import { usePlatform } from "@/context/PlatformContext";
 import { useCloud } from "@/context/CloudContext";
@@ -321,6 +322,8 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: { mobileOpen?: bo
               {brand}
             </span>
           )}
+          {/* Fork marker (liodali/openship) — guarded by scripts/fork/patch-guard.mjs. */}
+          {!collapsed && <ForkBadge />}
         </div>
 
         {/* Controls */}

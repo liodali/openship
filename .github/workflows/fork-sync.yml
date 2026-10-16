@@ -180,7 +180,7 @@ jobs:
         if: steps.decide.outputs.merged == 'true'
         run: bun install --frozen-lockfile
 
-      - name: Patch guard (are our three patches still intact?)
+      - name: Patch guard (are our four patches still intact?)
         if: steps.decide.outputs.merged == 'true'
         run: node scripts/fork/patch-guard.mjs
 

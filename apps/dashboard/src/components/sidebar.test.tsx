@@ -91,6 +91,14 @@ function PlanLayoutRequest() {
   return null;
 }
 
+it("marks the expanded sidebar as the fork build beside the brand name", async () => {
+  await render();
+  const header = host.querySelector(".app-sidebar-header")!;
+  // The badge names OUR build (liodali/openship), next to the product brand.
+  expect(header.textContent).toContain("fork");
+  expect(header.querySelector(".app-sidebar-header [title*='fork build']")).not.toBeNull();
+});
+
 it("shows Support last when the self-hosted account connects to Cloud, and removes it on disconnect", async () => {
   await render();
   expect(host.querySelector('a[href="/support"]')).toBeNull();

@@ -5,15 +5,17 @@
  *
  * Run by .github/workflows/fork-sync.yml AFTER `git merge upstream/main` and
  * BEFORE anything is pushed. A structural check, not a test suite: it answers
- * one question fast — "did upstream refactor the exact code our three patches
+ * one question fast — "did upstream refactor the exact code our patches
  * live in?" — with a message that names the patch, not a stack trace.
  *
  *   node scripts/fork/patch-guard.mjs
  *
- * The three patches (openship-podman-compatibility.md, Option A):
+ * The three Podman patches (openship-podman-compatibility.md, Option A):
  *   1. extrahosts JSON        — dockerode build request is spec-correct
  *   2. builder mode/fallback  — OPENSHIP_BUILDER_MODE + /session-404 fallback
  *   3. nginx Connection map   — $connection_upgrade instead of "upgrade"
+ * Plus one fork-identity patch:
+ *   4. fork badge             — dashboard sidebar marks our build (fork-badge.tsx)
  *
  * WHEN UPSTREAM ADOPTS THE SAME FIX: resolve the merge by taking THEIR version
  * and delete that check here. Every merged upstream PR shrinks the fork back
@@ -103,6 +105,18 @@ check(
   "apps/edge/nginx.conf no longer defines the map — regenerate with `bun run edge:conf` in packages/adapters.",
 );
 
+// ── Patch 4: fork badge visible in the dashboard sidebar ────────────────────
+// Not a Podman patch — a fork IDENTITY marker. The daily worker's promise is
+// "you can always tell you're on our build"; an upstream sidebar refactor that
+// silently drops the badge breaks that promise, so it gets the same guard.
+const sidebarTsx = read("apps/dashboard/src/components/sidebar.tsx") ?? "";
+check(
+  "patch 4 (fork badge in sidebar)",
+  read("apps/dashboard/src/components/fork-badge.tsx") !== null &&
+    sidebarTsx.includes('from "@/components/fork-badge"'),
+  "the sidebar no longer mounts ForkBadge — an upstream refactor of the sidebar header dropped our fork marker (apps/dashboard/src/components/fork-badge.tsx).",
+);
+
 if (failures.length > 0) {
   console.error("\n✖ fork patch guard: a patch no longer looks intact after the merge.\n");
   for (const f of failures) console.error(`  - ${f}`);
@@ -114,5 +128,5 @@ if (failures.length > 0) {
   process.exit(1);
 }
 console.log(
-  "✔ fork patch guard: all three patches intact (extrahosts JSON, builder fallback, nginx Connection map).",
+  "✔ fork patch guard: all four patches intact (extrahosts JSON, builder fallback, nginx Connection map, fork badge).",
 );
