@@ -1,12 +1,18 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Agent as HttpAgent } from "node:http";
+import { Agent as HttpsAgent } from "node:https";
 import type { BuildConfig } from "../types";
-import { DockerRuntime } from "./docker";
+import { DockerRuntime, useFreshBuildConnection } from "./docker";
 import {
   DOCKER_BUILDER_MODE_ENV,
+  daemonProbeCacheKey,
+  daemonSupportsBuildKitSession,
   isBuildKitSessionUnavailable,
+  isPodmanDaemon,
+  resetDaemonBuildKitProbeCache,
   resolveDockerodeBuilderMode,
 } from "./docker-builder-mode";
 
@@ -291,6 +297,253 @@ describe("DockerRuntime buildViaDockerode BuildKit fallback", () => {
     const { buildViaDockerode, log } = runtimeWith(buildImage);
 
     await buildViaDockerode(buildConfig("session-real-shape"), context, "fallback-test:tag6", log);
+
+    expect(buildImage).toHaveBeenCalledTimes(2);
+    expect((buildImage.mock.calls[1] as unknown[])[1]).not.toHaveProperty("version");
+  });
+});
+
+// ── Daemon BuildKit probe (proactive Podman skip) ────────────────────────────
+//
+// The /version probe exists so a Podman daemon never gets the doomed BuildKit
+// attempt: aborting that in-flight upload taints the pooled connection, and
+// the classic retry on it ships an EMPTY context (the libpod_builder
+// "Dockerfile: no such file" bug). These pin the probe's classification, its
+// per-daemon cache, and the wiring through buildViaDockerode.
+describe("daemonSupportsBuildKitSession probe", () => {
+  const podmanVersion = {
+    Platform: { Name: "linux - Podman Engine 5.8.2" },
+    Components: [{ Name: "Podman Engine", Version: "5.8.2" }],
+  };
+  const dockerVersion = {
+    Platform: { Name: "Docker Engine 27.3.1 (linux)" },
+    Components: [{ Name: "Engine", Version: "27.3.1" }],
+  };
+
+  beforeEach(() => {
+    resetDaemonBuildKitProbeCache();
+  });
+
+  it("classifies Podman by Components name and Platform name", () => {
+    expect(isPodmanDaemon(podmanVersion)).toBe(true);
+    // Either signal alone is enough — releases have varied which one carries it.
+    expect(isPodmanDaemon({ Components: [{ Name: "podman engine" }] })).toBe(true);
+    expect(isPodmanDaemon({ Platform: { Name: "Podman Engine" } })).toBe(true);
+    expect(isPodmanDaemon(dockerVersion)).toBe(false);
+    expect(isPodmanDaemon(null)).toBe(false);
+    expect(isPodmanDaemon({})).toBe(false);
+  });
+
+  it("derives a stable cache key from the modem's coordinates", () => {
+    expect(daemonProbeCacheKey({ socketPath: "/run/podman/podman.sock" })).toBe(
+      "unix:/run/podman/podman.sock",
+    );
+    expect(daemonProbeCacheKey({ host: "127.0.0.1", port: 2375 })).toBe("tcp:127.0.0.1:2375");
+    expect(daemonProbeCacheKey(undefined)).toBeNull();
+    expect(daemonProbeCacheKey({})).toBeNull();
+  });
+
+  it("answers per daemon and caches the probe", async () => {
+    const fetches = vi.fn(async () => podmanVersion);
+    await expect(daemonSupportsBuildKitSession("k1", fetches)).resolves.toBe(false);
+    await expect(daemonSupportsBuildKitSession("k1", fetches)).resolves.toBe(false);
+    expect(fetches).toHaveBeenCalledTimes(1);
+    await expect(
+      daemonSupportsBuildKitSession("k2", vi.fn(async () => dockerVersion)),
+    ).resolves.toBe(true);
+  });
+
+  it("returns null (inconclusive) when the daemon can't be asked", async () => {
+    await expect(
+      daemonSupportsBuildKitSession(
+        "k-err",
+        vi.fn(async () => Promise.reject(new Error("ECONNREFUSED"))),
+      ),
+    ).resolves.toBeNull();
+  });
+});
+
+// ── The fresh-connection retry (tainted-socket isolation) ────────────────────
+describe("useFreshBuildConnection", () => {
+  it("swaps the modem agent and restores it afterwards", () => {
+    const modem: { agent?: unknown } = {};
+    const restore = useFreshBuildConnection({ modem });
+    const swapped = modem.agent;
+    expect(swapped).toBeInstanceOf(HttpAgent);
+    expect((swapped as unknown as { options: { keepAlive?: boolean } }).options.keepAlive).toBe(
+      false,
+    );
+    restore();
+    expect(modem.agent).toBeUndefined();
+  });
+
+  it("uses an https agent for https modems", () => {
+    const modem: { agent?: unknown; protocol?: string } = { protocol: "https" };
+    const restore = useFreshBuildConnection({ modem });
+    expect(modem.agent).toBeInstanceOf(HttpsAgent);
+    restore();
+  });
+
+  it("restore is identity-guarded: a foreign swap is never clobbered", () => {
+    const modem: { agent?: unknown } = { agent: undefined };
+    const restore = useFreshBuildConnection({ modem });
+    modem.agent = "someone-else"; // a concurrent build swapped after us
+    restore();
+    expect(modem.agent).toBe("someone-else");
+  });
+
+  it("tolerates a modem-less client", () => {
+    const restore = useFreshBuildConnection({});
+    expect(() => restore()).not.toThrow();
+  });
+});
+
+// The probe wired through the build path: a daemon that answers "Podman" to
+// /version must never see the BuildKit attempt, and the reactive fallback must
+// give the classic retry a never-pooled connection.
+describe("buildViaDockerode daemon probe + fresh-connection fallback", () => {
+  let contextDir: string | null = null;
+
+  afterEach(async () => {
+    resetDaemonBuildKitProbeCache();
+    if (contextDir) await rm(contextDir, { recursive: true, force: true });
+    contextDir = null;
+  });
+
+  async function freshContext(requiresBuildKit: boolean) {
+    contextDir = await mkdtemp(join(tmpdir(), "openship-probe-"));
+    await writeFile(join(contextDir, "Dockerfile"), "FROM scratch\n");
+    return {
+      contextDir,
+      buildContextDir: contextDir,
+      contextSubdir: "",
+      contextEntries: ["Dockerfile"],
+      dockerfileName: "Dockerfile",
+      rootDirectory: "",
+      usesRepositoryDockerfile: true,
+      requiresBuildKit,
+      ignoreContextPath: undefined,
+      cleanup: vi.fn(async () => {}),
+    };
+  }
+
+  function runtimeWithDaemon(
+    buildImage: unknown,
+    version: () => Promise<unknown>,
+    modem: Record<string, unknown> = { socketPath: "/run/user/1000/podman/podman.sock" },
+  ) {
+    const logs: Array<{ message: string; level?: string }> = [];
+    const runtime = Object.create(DockerRuntime.prototype) as DockerRuntime &
+      Record<string, unknown>;
+    Object.assign(runtime, {
+      connectionOptions: {},
+      transport: { kind: "socket", description: "local socket" },
+      systemManager: null,
+      _docker: { buildImage, listContainers: vi.fn(async () => []), version, modem },
+      estimateContextSize: vi.fn(async () => 0),
+      verifyImageBuilt: vi.fn(async () => {}),
+      streamDockerodeBuild: vi.fn(async () => {}),
+    });
+    const log = { log: (message: string, level?: string) => logs.push({ message, level }) };
+    const buildViaDockerode = (
+      runtime as unknown as Record<string, CallableFunction>
+    ).buildViaDockerode.bind(runtime) as (
+      config: BuildConfig,
+      ctx: unknown,
+      tag: string,
+      log: unknown,
+    ) => Promise<void>;
+    return { buildViaDockerode, log, logs };
+  }
+
+  function buildConfig(sessionId: string): BuildConfig {
+    return {
+      sessionId,
+      projectId: "project-1",
+      slug: "probe-test",
+      repoUrl: "",
+      branch: "main",
+      stack: "docker",
+      buildImage: "",
+      packageManager: "",
+      installCommand: "",
+      buildCommand: "",
+      outputDirectory: "",
+      port: 8080,
+      runtimeImage: "",
+      envVars: {},
+      resources: { cpuCores: 0, memoryMb: 0, diskMb: 0 },
+      cloneOnServer: false,
+    };
+  }
+
+  it("skips the BuildKit attempt outright when /version says Podman", async () => {
+    const context = await freshContext(true);
+    const buildImage = vi.fn(async () => ({ resume: () => {} }));
+    const { buildViaDockerode, log, logs } = runtimeWithDaemon(
+      buildImage,
+      async () => ({ Platform: { Name: "linux - Podman Engine 5.8.2" } }),
+    );
+
+    await buildViaDockerode(buildConfig("probe-podman"), context, "probe-test:tag", log);
+
+    // ONE attempt, classic from the start — no aborted upload, no fallback.
+    expect(buildImage).toHaveBeenCalledTimes(1);
+    const first = (buildImage.mock.calls[0] as unknown[])[1] as Record<string, unknown>;
+    expect(first.version).toBeUndefined();
+    expect(logs.some((l) => /probed via \/version/.test(l.message) && l.level === "warn")).toBe(
+      true,
+    );
+  });
+
+  it("still prefers BuildKit when the daemon is dockerd, and the reactive fallback swaps to a fresh connection", async () => {
+    const context = await freshContext(true);
+    const modem: { agent?: unknown; socketPath?: string } = {
+      socketPath: "/run/user/1000/podman/podman.sock",
+    };
+    const agentsAtCall: unknown[] = [];
+    const buildImage = vi
+      .fn()
+      .mockImplementationOnce(async () => {
+        throw new Error("docker /session failed: HTTP/1.1 404 Not Found — Not Found");
+      })
+      .mockImplementation(async () => {
+        agentsAtCall.push(modem.agent);
+        return { resume: () => {} };
+      });
+    const { buildViaDockerode, log } = runtimeWithDaemon(
+      buildImage,
+      async () => ({ Platform: { Name: "Docker Engine 27.3.1" }, Components: [{ Name: "Engine" }] }),
+      modem,
+    );
+
+    await buildViaDockerode(buildConfig("probe-dockerd"), context, "probe-test:tag2", log);
+
+    expect(buildImage).toHaveBeenCalledTimes(2);
+    // Attempt 1 BuildKit (probe said dockerd), attempt 2 classic…
+    expect((buildImage.mock.calls[0] as unknown[])[1]).toMatchObject({ version: "2" });
+    expect((buildImage.mock.calls[1] as unknown[])[1]).not.toHaveProperty("version");
+    // …and the retry ran on a NEVER-POOLED agent that was restored afterwards.
+    expect(
+      (agentsAtCall[0] as unknown as { options: { keepAlive?: boolean } }).options.keepAlive,
+    ).toBe(false);
+    expect(modem.agent).toBeUndefined();
+  });
+
+  it("keeps the reactive fallback when the probe cannot reach the daemon", async () => {
+    const context = await freshContext(true);
+    const buildImage = vi
+      .fn()
+      .mockImplementationOnce(async () => {
+        throw new Error("docker /session failed: HTTP/1.1 404 Not Found — Not Found");
+      })
+      .mockImplementationOnce(async () => ({ resume: () => {} }));
+    const { buildViaDockerode, log } = runtimeWithDaemon(
+      buildImage,
+      async () => Promise.reject(new Error("probe unreachable")),
+    );
+
+    await buildViaDockerode(buildConfig("probe-unreachable"), context, "probe-test:tag3", log);
 
     expect(buildImage).toHaveBeenCalledTimes(2);
     expect((buildImage.mock.calls[1] as unknown[])[1]).not.toHaveProperty("version");

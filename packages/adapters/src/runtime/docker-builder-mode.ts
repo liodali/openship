@@ -65,3 +65,87 @@ export function isBuildKitSessionUnavailable(error: unknown): boolean {
   if (/docker \/session failed: (?:HTTP\/[\d.]+ )?40[45]\b/.test(message)) return true;
   return /\(HTTP code 404\)/i.test(message) && /\bsession\b/i.test(message);
 }
+
+// ── Daemon BuildKit capability probe ─────────────────────────────────────────
+//
+// The /session fallback above is reactive: the BuildKit attempt goes out, 404s,
+// gets aborted, and the classic retry ships on whatever connection the aborted
+// upload left behind. On Podman that connection delivers an EMPTY build context
+// ("stat /var/tmp/libpod_builder<N>/build/Dockerfile: no such file or
+// directory" — Podman 5.8.2, verified live), because aborting a chunked upload
+// mid-flight leaves the pooled keep-alive socket unreadable at one end.
+//
+// Probing GET /version once per daemon turns that into a proactive decision:
+// a daemon that answers "Podman" never gets the doomed BuildKit attempt at
+// all. The reactive fallback stays as the net for daemons the probe can't
+// classify (probe failure, dockerd genuinely without buildkit, …).
+
+/** Cache: daemon identity → GET /version payload (null when the probe failed). */
+const daemonVersionByDaemon = new Map<string, unknown>();
+
+/** Test hook — the cache is per-process state. */
+export function resetDaemonBuildKitProbeCache(): void {
+  daemonVersionByDaemon.clear();
+}
+
+/** Structural modem view — keeps this module free of a dockerode import. */
+interface DaemonModemView {
+  socketPath?: unknown;
+  host?: unknown;
+  port?: unknown;
+}
+
+/**
+ * Stable per-daemon cache key from a docker-modem's connection coordinates.
+ * Null when the modem doesn't describe a daemon we can name (SSH-composited
+ * modems, cloud bridges without a stable address) — the caller then keeps the
+ * reactive fallback.
+ */
+export function daemonProbeCacheKey(modem: DaemonModemView | null | undefined): string | null {
+  if (!modem || typeof modem !== "object") return null;
+  if (typeof modem.socketPath === "string" && modem.socketPath) return `unix:${modem.socketPath}`;
+  if (typeof modem.host === "string" && modem.host) {
+    return `tcp:${modem.host}:${typeof modem.port === "number" || typeof modem.port === "string" ? modem.port : ""}`;
+  }
+  return null;
+}
+
+/**
+ * Does a GET /version payload describe Podman's Docker-compatible API?
+ *
+ * Podman reports itself in `Components[].Name` ("Podman Engine") and/or
+ * `Platform.Name` ("Podman Engine …" / "linux … podman"); dockerd reports
+ * "Docker Engine". String-contains on /podman/i is deliberately loose — the
+ * consequence of a false positive is only the reactive fallback still working.
+ */
+export function isPodmanDaemon(version: unknown): boolean {
+  if (!version || typeof version !== "object") return false;
+  const v = version as { Platform?: { Name?: unknown }; Components?: Array<{ Name?: unknown }> };
+  const platformName = typeof v.Platform?.Name === "string" ? v.Platform.Name : "";
+  if (/podman/i.test(platformName)) return true;
+  return (v.Components ?? []).some((c) => typeof c?.Name === "string" && /podman/i.test(c.Name));
+}
+
+/**
+ * Does this daemon serve dockerd's embedded BuildKit (`/session`)? Probed once
+ * per daemon per process. `null` = couldn't tell (probe failed) — callers keep
+ * the reactive two-attempt fallback.
+ */
+export async function daemonSupportsBuildKitSession(
+  key: string,
+  fetchVersion: () => Promise<unknown>,
+): Promise<boolean | null> {
+  if (!daemonVersionByDaemon.has(key)) {
+    try {
+      daemonVersionByDaemon.set(key, await fetchVersion());
+    } catch {
+      // Unreachable daemon mid-probe is not a build verdict; don't cache a
+      // failure as a capability. The build itself will surface the error if
+      // the daemon is truly gone.
+      return null;
+    }
+  }
+  const version = daemonVersionByDaemon.get(key);
+  if (version == null) return null;
+  return !isPodmanDaemon(version);
+}

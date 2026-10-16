@@ -232,10 +232,14 @@ import {
   type LegacyBuildContainerTermination,
 } from "./docker-build-container-tracker";
 import {
+  daemonProbeCacheKey,
+  daemonSupportsBuildKitSession,
   isBuildKitSessionUnavailable,
   resolveDockerodeBuilderMode,
   type DockerodeBuilderMode,
 } from "./docker-builder-mode";
+import { Agent as HttpAgent } from "node:http";
+import { Agent as HttpsAgent } from "node:https";
 
 // ─── Connection config ───────────────────────────────────────────────────────
 export type DockerConnectionOptions = DockerTransportOptions & {
@@ -776,6 +780,39 @@ export function packBuildContext(
     // exact intermediate-container id before aborting the request.
     detachCancellation: () => cancelSignal?.removeEventListener("abort", onCancel),
     takeError: () => contextError,
+  };
+}
+
+/**
+ * Give the NEXT build request a never-pooled connection, and hand back the
+ * restore function. Used ONLY on the BuildKit→classic fallback.
+ *
+ * The aborted BuildKit upload leaves the daemon's keep-alive connection
+ * unreadable at one end, and the classic retry shipped on that pooled socket
+ * arrives with an EMPTY context — Podman answers
+ * "stat /var/tmp/libpod_builder<N>/build/Dockerfile: no such file or
+ * directory" (verified live on Podman 5.8.2 rootless; every isolated piece —
+ * context dir, packed tar, direct curl of the same tar — builds fine, only the
+ * two-attempt sequence fails). docker-modem honors an instance-level `agent`
+ * (modem.js: `if (this.agent) optionsf.agent = this.agent`) and otherwise
+ * rides `http.globalAgent`, keep-alive by default on Node 19+ and Bun — so a
+ * per-request fresh agent is exactly the seam that stops the retry from
+ * inheriting the aborted socket. Restoring is identity-guarded so two
+ * concurrent builds on one runtime can't clobber each other's swap.
+ */
+export function useFreshBuildConnection(docker: { modem?: unknown }): () => void {
+  const modem = docker.modem as { agent?: unknown; protocol?: unknown } | undefined;
+  if (!modem || typeof modem !== "object") return () => {};
+  // https modems must get an https.Agent — node rejects a protocol-mismatched
+  // agent with ERR_INVALID_PROTOCOL. SSH modems override the agent entirely in
+  // modem.buildRequest, making this swap a harmless no-op there.
+  const fresh = modem.protocol === "https"
+    ? new HttpsAgent({ keepAlive: false })
+    : new HttpAgent({ keepAlive: false });
+  const previous = modem.agent;
+  modem.agent = fresh;
+  return () => {
+    if (modem.agent === fresh) modem.agent = previous;
   };
 }
 
@@ -2316,6 +2353,35 @@ export class DockerRuntime implements RuntimeAdapter {
    * to lose) and on docker ≥23 the CLI already defaults to it — the prefix mostly
    * buys the log line and the buildx-missing warning.
    */
+  /**
+   * One /version probe per daemon (cached in docker-builder-mode): does this
+   * daemon provably lack dockerd's embedded BuildKit (`/session`)? On Podman
+   * the BuildKit attempt can never work, and aborting its in-flight upload
+   * taints the pooled connection the classic retry would reuse (the
+   * empty-context bug). Returning true means: skip the BuildKit attempt and
+   * go straight to the classic builder. `null` (couldn't tell) keeps the
+   * reactive two-attempt fallback.
+   */
+  private async probeDaemonSkipsBuildKit(log: BuildLogger): Promise<boolean> {
+    let supports: boolean | null = null;
+    try {
+      const key = daemonProbeCacheKey(this.docker.modem as never);
+      if (key) {
+        supports = await daemonSupportsBuildKitSession(key, () => this.docker.version());
+      }
+    } catch (error) {
+      observeCaughtError(error, "adapters/runtime/docker");
+    }
+    if (supports === false) {
+      log.log(
+        "Daemon is Podman (probed via /version) — it has no BuildKit session endpoint, so this BuildKit-syntax Dockerfile is built with the classic builder directly.",
+        "warn",
+      );
+      return true;
+    }
+    return false;
+  }
+
   private selectDockerodeBuilder(
     config: BuildConfig,
     requiresBuildKit: boolean,
@@ -2451,13 +2517,21 @@ export class DockerRuntime implements RuntimeAdapter {
     // the build fails with the daemon's own error (a silent switch to the
     // classic builder would change the build's resource semantics).
     const mode = resolveDockerodeBuilderMode();
+    // Proactive Podman skip (docker-builder-mode probe): when the daemon
+    // provably can't serve /session, the BuildKit attempt would only abort an
+    // in-flight upload and taint the connection the retry reuses. Unknown
+    // daemons keep the reactive fallback below.
+    const skipBuildKit = mode === "auto" && buildContext.requiresBuildKit
+      && (await this.probeDaemonSkipsBuildKit(log));
+    // Restored when the build settles — see useFreshBuildConnection.
+    let restoreBuildConnection: (() => void) | null = null;
     try {
       // Upstream's durable build-cache protection (pending bootstrap images are
       // shielded from the pre-build prune). Once per BUILD, not per attempt —
       // a fallback retry must not re-prune what the first attempt retained.
       await this.retainNativeBuildCache(log);
       for (let attempt = 0; ; attempt++) {
-        const forceClassic = attempt > 0;
+        const forceClassic = attempt > 0 || skipBuildKit;
         const { body, abortSignal, abort, detachCancellation, takeError } = packBuildContext(
           buildContext.buildContextDir,
           buildContext.contextEntries,
@@ -2534,6 +2608,12 @@ export class DockerRuntime implements RuntimeAdapter {
             // the context it would keep alive for the retry.
             abort();
             detachCancellation();
+            // The aborted upload leaves the pooled keep-alive connection
+            // unreadable — the classic retry on that socket ships an EMPTY
+            // context on Podman. Give the retry its own never-pooled
+            // connection (restored in the outer finally).
+            restoreBuildConnection?.();
+            restoreBuildConnection = useFreshBuildConnection(this.docker);
             continue;
           }
           throw failure;
@@ -2542,6 +2622,10 @@ export class DockerRuntime implements RuntimeAdapter {
         }
       }
     } finally {
+      // Back to the shared/pooled agent for everything after this build. Runs
+      // after the last attempt's stream is fully consumed, so the throwaway
+      // agent's sockets are already closed.
+      restoreBuildConnection?.();
       // Clean up only AFTER the daemon has fully consumed the context. dockerode's
       // buildImage promise resolves as soon as the response starts, while tar-fs
       // may still be walking contextDir — deleting it here (the old `finally`
@@ -3703,8 +3787,15 @@ export class DockerRuntime implements RuntimeAdapter {
             // per attempt — a fallback retry must not re-prune.
             await this.retainNativeBuildCache(spec.logger);
             const mode = resolveDockerodeBuilderMode();
-            for (let attempt = 0; ; attempt++) {
-              const forceClassic = attempt > 0;
+            // Same proactive Podman skip as buildViaDockerode — probed once per
+            // daemon, so per-service checks here are cache hits.
+            const skipBuildKit = mode === "auto" && requiresBuildKit
+              && (await this.probeDaemonSkipsBuildKit(spec.logger));
+            // Restored when this service's build settles (useFreshBuildConnection).
+            let restoreBuildConnection: (() => void) | null = null;
+            try {
+              for (let attempt = 0; ; attempt++) {
+              const forceClassic = attempt > 0 || skipBuildKit;
               const { body, abortSignal, abort, detachCancellation, takeError } = packBuildContext(
                 buildContextDir ?? tree!.contextDir,
                 contextEntries ?? [],
@@ -3766,6 +3857,10 @@ export class DockerRuntime implements RuntimeAdapter {
                   );
                   abort();
                   detachCancellation();
+                  // Same tainted-connection isolation as buildViaDockerode: the
+                  // retry must not ship on the aborted upload's pooled socket.
+                  restoreBuildConnection?.();
+                  restoreBuildConnection = useFreshBuildConnection(this.docker);
                   continue;
                 }
                 throw contextErr
@@ -3777,6 +3872,9 @@ export class DockerRuntime implements RuntimeAdapter {
               } finally {
                 detachCancellation();
               }
+              }
+            } finally {
+              restoreBuildConnection?.();
             }
           }
 

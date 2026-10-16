@@ -14,8 +14,9 @@
  *   1. extrahosts JSON        — dockerode build request is spec-correct
  *   2. builder mode/fallback  — OPENSHIP_BUILDER_MODE + /session-404 fallback
  *   3. nginx Connection map   — $connection_upgrade instead of "upgrade"
- * Plus one fork-identity patch:
+ * Plus two fork-identity/UX patches:
  *   4. fork badge             — dashboard sidebar marks our build (fork-badge.tsx)
+ *   5. folder-deploy routes   — SDK passes scan publicEndpoints to ensure + build/access
  *
  * WHEN UPSTREAM ADOPTS THE SAME FIX: resolve the merge by taking THEIR version
  * and delete that check here. Every merged upstream PR shrinks the fork back
@@ -74,6 +75,17 @@ check(
   "docker.ts no longer imports/uses the builder-mode module — no fallback, no OPENSHIP_BUILDER_MODE.",
 );
 check(
+  "patch 2 (Podman probe wired)",
+  dockerTs.includes("probeDaemonSkipsBuildKit") &&
+    dockerTs.includes("daemonSupportsBuildKitSession"),
+  "docker.ts no longer probes the daemon via /version before the BuildKit attempt — on Podman the doomed attempt (and its tainted-connection retry) is back.",
+);
+check(
+  "patch 2 (fresh connection on the classic retry)",
+  dockerTs.includes("useFreshBuildConnection"),
+  "docker.ts no longer swaps the modem agent on the BuildKit→classic fallback — the retry reuses the aborted upload's pooled socket and ships an EMPTY context on Podman (libpod_builder 'Dockerfile: no such file').",
+);
+check(
   "patch 2 (env documented)",
   (read(".env.example") ?? "").includes("OPENSHIP_BUILDER_MODE"),
   ".env.example no longer documents OPENSHIP_BUILDER_MODE.",
@@ -105,6 +117,18 @@ check(
   "apps/edge/nginx.conf no longer defines the map — regenerate with `bun run edge:conf` in packages/adapters.",
 );
 
+// ── Patch 5: folder-deploy carries declared domains to the deploy API ────────
+// The SDK's source workflow dropped the scan's publicEndpoints, so a
+// self-hosted `openship deploy --folder` with declared domains 403'd at the
+// Cloud preflight ("Connect Openship Cloud to use a free subdomain").
+const sourceWorkflowTs = read("packages/sdk/src/source-workflow.ts") ?? "";
+check(
+  "patch 5 (folder-deploy passes publicEndpoints)",
+  sourceWorkflowTs.includes("publicEndpoints.map(buildAccessEndpoint)") &&
+    sourceWorkflowTs.includes("...(publicEndpoints?.length ? { publicEndpoints } : {})"),
+  "source-workflow.ts no longer forwards the scan's publicEndpoints to projects/ensure + deployments/build/access — self-hosted folder deploys fail the Cloud preflight again.",
+);
+
 // ── Patch 4: fork badge visible in the dashboard sidebar ────────────────────
 // Not a Podman patch — a fork IDENTITY marker. The daily worker's promise is
 // "you can always tell you're on our build"; an upstream sidebar refactor that
@@ -128,5 +152,5 @@ if (failures.length > 0) {
   process.exit(1);
 }
 console.log(
-  "✔ fork patch guard: all four patches intact (extrahosts JSON, builder fallback, nginx Connection map, fork badge).",
+  "✔ fork patch guard: all five patches intact (extrahosts JSON, builder fallback, nginx Connection map, fork badge, folder-deploy endpoints).",
 );

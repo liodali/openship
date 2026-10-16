@@ -140,6 +140,16 @@ All three Option-A patches are implemented in this fork's tree:
    (`docker /session failed: HTTP/1.1 404 Not Found — Not Found`), so the
    fallback was dead until the regex tolerated it. An explicit `buildkit` pin
    now fails hard instead of falling back (honoured verbatim).*
+   *Fix 2026-10-16 (openship-podman-build-fix-brief.md): the fallback itself
+   had a second bug — the classic retry reused the aborted BuildKit upload's
+   pooled keep-alive socket, and on Podman its body arrived EMPTY
+   (`stat /var/tmp/libpod_builder…/build/Dockerfile: no such file or
+   directory`). Two additions: (a) a once-per-daemon `GET /version` probe
+   (`isPodmanDaemon`/`daemonSupportsBuildKitSession`) skips the doomed
+   BuildKit attempt outright on Podman, and (b) `useFreshBuildConnection`
+   gives the reactive retry a never-pooled modem agent
+   (`keepAlive: false`) for any daemon the probe can't classify. Both
+   dockerode loops (single build + compose batch) carry the fix.*
 3. **nginx `Connection` fix** — `EDGE_CONNECTION_UPGRADE_MAP` in
    `packages/adapters/src/infra/openresty-lua.ts`; `PROXY_HEADERS` now sends
    `Connection $connection_upgrade`; each managed vhost carries the map in its
