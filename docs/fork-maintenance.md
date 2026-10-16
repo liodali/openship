@@ -16,15 +16,17 @@ the how. Created with the Option A patches (2026-10).
                 │                                                                          │
                 └─ conflict or guard failure → GitHub issue, nothing pushed ───────────────┘
 
- VPS: openship update → CLI from npm → compose reconcile → pull gitea/<ns>/openship-*:<ver> → recreate
+ VPS: openship update → compose reconcile → pull gitea/<ns>/openship-*:<ver> → recreate
+ CLI: npm install -g https://github.com/liodali/openship/releases/download/cli-latest/openship-cli-fork.tgz
 ```
 
 Files that make this up:
 
 | File                                | Role                                                                             |
 | ----------------------------------- | -------------------------------------------------------------------------------- |
-| `.github/workflows/fork-sync.yml`   | the worker: daily merge, guards, push, chain images                              |
+| `.github/workflows/fork-sync.yml`   | the worker: daily merge, guards, push, chain images + CLI                              |
 | `.github/workflows/fork-images.yml` | build `openship-api/dashboard/edge` → our registry (also on manual push to main) |
+| `.github/workflows/fork-cli.yml`    | build the `openship` CLI → GitHub release assets (also on manual push to main)   |
 | `scripts/fork/patch-guard.mjs`      | structural check that the five patches survived the merge (3 Podman + the sidebar fork badge + the folder-deploy endpoints) |
 
 ## One-time setup
@@ -100,6 +102,40 @@ Image tags pushed by the worker:
 - `<version>` — moving; what `openship update` lands on.
 - `<version>-<shortsha>` — immutable; use for pins and rollback.
 - `latest` — convenience, avoid pinning to it.
+
+## The fork CLI (GitHub releases, not npm)
+
+The CLI is a separate artifact from the images and embeds the same `packages/sdk`.
+The npm package `openship` publishes from **upstream**, so an npm-installed CLI
+runs the OLD sdk — `openship deploy --folder` loses the fork fixes. The worker
+therefore builds the CLI from fork main too (`fork-cli.yml`, chained after the
+daily merge like the images) and publishes it as **GitHub release assets**:
+
+- **`cli-latest`** (moving) — stable install URL, asset replaced every build:
+
+  ```sh
+  npm install -g https://github.com/liodali/openship/releases/download/cli-latest/openship-cli-fork.tgz
+  ```
+
+- **`cli-<version>-<shortsha>`** (immutable) — the versioned tarball for pins
+  and rollback, same convention as the image sha tags.
+
+Why GitHub and not the Gitea npm registry: the package name is unscoped
+`openship`, so a scoped registry override can never catch it — using the Gitea
+npm registry means switching a machine's GLOBAL npm registry. A release URL
+installs with zero npm configuration. (Gitea = images, GitHub = CLI.)
+
+Versioning: the CLI keeps a `-fork.N` suffix (`0.9.2-fork.1`). `compareSemver`
+strips prerelease suffixes, so `openship update` — which resolves UPSTREAM
+releases — sees the fork build as version-equal and never "updates" it back to
+the npm one. After an upstream merge bumps the version (and loses the suffix),
+`fork-cli.yml` re-appends `-fork.<run_number>` to both manifests before
+building. ⚠️ When upstream ships a genuinely NEW version (0.9.3 vs 0.9.2), a
+plain `openship update` on a machine WILL install the upstream npm build and
+silently drop the fork SDK — reinstall from `cli-latest` after syncing.
+
+After any CLI (re)install on the VPS, re-apply the SELinux compose-template
+patch: `~/openship-repatch.sh`.
 
 ## Day-to-day
 

@@ -1,0 +1,130 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Fork CLI — build the `openship` CLI from fork main and publish it as GitHub
+# release assets, so `openship` on our machines runs OUR SDK (folder-deploy
+# web derivation, endpoints passthrough) against the self-hosted instance.
+#
+# Why GitHub releases and not the Gitea npm registry: the package name is
+# unscoped `openship`, so a scoped registry override can never catch it —
+# pointing a box at the Gitea registry means switching npm's GLOBAL registry
+# (every `npm i -g` then hits Gitea). A release asset URL installs with zero
+# npm config: `npm install -g <url>`. Gitea stays home for the images; GitHub
+# is home for the CLI tarball, where CI already runs (docs/fork-maintenance.md).
+#
+# Published per build (mirrors the image tag contract — moving + immutable):
+#   release `cli-latest`      asset `openship-cli-fork.tgz`  — STABLE URL:
+#     https://github.com/liodali/openship/releases/download/cli-latest/openship-cli-fork.tgz
+#   release `cli-<ver>-<sha>` asset `openship-<ver>.tgz`     — immutable pin/rollback.
+#
+# The version keeps a `-fork.N` suffix so `openship update` (which resolves
+# UPSTREAM releases and compares with compareSemver — prerelease suffixes are
+# stripped there) always sees our build as version-equal and never "updates"
+# the fork CLI back to the npm one. When an upstream merge bumps the version
+# and the suffix is lost, this workflow re-appends `-fork.<run_number>` to
+# BOTH manifests before building (build.ts asserts they match).
+#
+# Triggers: push to main (hand pushes) + workflow_call (chained by
+# fork-sync.yml after the daily merge, same pattern as fork-images.yml) +
+# manual dispatch.
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Fork CLI build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  workflow_call:
+
+concurrency:
+  group: fork-cli-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write # create releases + upload assets
+
+jobs:
+  build:
+    name: Build + publish the fork CLI
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout fork main
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # the release tag names the merged commit
+
+      - name: Read pinned Bun version
+        run: echo "BUN_VERSION=$(cat .bun-version)" >> "$GITHUB_ENV"
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "${{ env.BUN_VERSION }}"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Keep the fork version suffix
+        run: |
+          set -eu
+          node - <<'EOF'
+          const fs = require("node:fs");
+          const run = process.env.GITHUB_RUN_NUMBER;
+          const paths = ["apps/cli/package.json", "packages/openship/package.json"];
+          for (const p of paths) {
+            const m = JSON.parse(fs.readFileSync(p, "utf8"));
+            if (!/-fork\.\d+$/.test(m.version)) m.version = `${m.version}-fork.${run}`;
+            fs.writeFileSync(p, JSON.stringify(m, null, 2) + "\n");
+          }
+          const [cli, pkg] = paths.map(p => JSON.parse(fs.readFileSync(p, "utf8")));
+          if (cli.version !== pkg.version) throw new Error("manifest version drift");
+          fs.appendFileSync(process.env.GITHUB_ENV, `CLI_VERSION=${pkg.version}\n`);
+          EOF
+
+      - name: Build the CLI + bundled SDK
+        run: bun run build:sdk
+
+      - name: Pack
+        working-directory: packages/openship
+        run: |
+          npm pack
+          cp ./*.tgz "$GITHUB_WORKSPACE/openship-cli.tgz"
+          # stable-named copy for the moving cli-latest release
+          cp ./*.tgz "$GITHUB_WORKSPACE/openship-cli-fork.tgz"
+
+      - name: Publish immutable release (cli-<version>-<sha>)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha="$(git rev-parse --short HEAD)"
+          ver="${CLI_VERSION:?}"
+          gh release create "cli-${ver}-${sha}" openship-cli.tgz \
+            --title "Fork CLI ${ver} (${sha})" \
+            --notes "Built from fork main ${sha}. Install: npm install -g <asset URL>. Version ${ver} is semver-equal to upstream ${ver%%-fork*} — 'openship update' will not replace it." \
+            --prerelease
+
+      - name: Publish moving cli-latest release (stable URL)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha="$(git rev-parse HEAD)"
+          # Move the tag first so the release follows the build it ships.
+          git tag -f cli-latest "$sha"
+          git push -f origin refs/tags/cli-latest
+          gh release create cli-latest openship-cli-fork.tgz \
+            --target "$sha" \
+            --title "Fork CLI (latest)" \
+            --notes "Moving pointer — asset replaced on every fork main build. Install: npm install -g https://github.com/liodali/openship/releases/download/cli-latest/openship-cli-fork.tgz" \
+            --prerelease \
+            2>/dev/null || gh release edit cli-latest --target "$sha" --latest=false
+          gh release upload cli-latest openship-cli-fork.tgz --clobber
+
+      - name: Print what machines can install
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha="$(git rev-parse --short HEAD)"
+          echo "Stable URL (tracks main):"
+          echo "  https://github.com/liodali/openship/releases/download/cli-latest/openship-cli-fork.tgz"
+          echo "Immutable pin (${CLI_VERSION} @ ${sha}):"
+          echo "  https://github.com/liodali/openship/releases/download/cli-${CLI_VERSION}-${sha}/openship-cli.tgz"

@@ -5,7 +5,8 @@ name: Fork upstream sync
 #
 #   daily (or manual):  fetch oblien/openship main → merge into fork main →
 #                       guard our patches + run their tests → push → build &
-#                       push images to our registry (fork-images.yml).
+#                       push images to our registry (fork-images.yml) and
+#                       publish the CLI as a GitHub release (fork-cli.yml).
 #
 # Conflict handling ("make fixes and keep our stuff"):
 #   • rerere is ON and its memory (.git/rr-cache) is cached across runs — the
@@ -218,4 +219,11 @@ jobs:
     needs: sync
     if: needs.sync.outputs.merged == 'true'
     uses: ./.github/workflows/fork-images.yml
+    secrets: inherit
+
+  cli:
+    name: Build + publish fork CLI
+    needs: sync
+    if: needs.sync.outputs.merged == 'true'
+    uses: ./.github/workflows/fork-cli.yml
     secrets: inherit
