@@ -316,6 +316,31 @@ export function createDeploymentRepo(db: Database, encryption: ConfigurationEncr
       })).map(codec.openDeployment);
     },
 
+    /** Deployments whose containers may still run outside the active release.
+     *
+     * The in-flight set above, plus `reconciling`, plus a cancelled deployment
+     * that kept its provisioned containers (`meta.cancellation.keepProvisioned`)
+     * even after its execution finished. Nothing retires those containers except
+     * deleting that deployment or its project. Unpaged, so the project move guard
+     * cannot miss one beyond a history page. */
+    async listUnsettledByProject(projectId: string): Promise<Deployment[]> {
+      return (
+        await db.query.deployment.findMany({
+          where: and(
+            eq(deployment.projectId, projectId),
+            or(
+              inArray(deployment.status, ["queued", "building", "deploying", "reconciling"]),
+              liveBuildExecutionCondition(),
+              and(
+                eq(deployment.status, "cancelled"),
+                sql`${deployment.meta} -> 'cancellation' ->> 'keepProvisioned' = 'true'`,
+              ),
+            ),
+          ),
+        })
+      ).map(codec.openDeployment);
+    },
+
     async hasLiveBuildExecution(deploymentId: string, projectId: string): Promise<boolean> {
       const [row] = await db
         .select({ id: buildSession.id })

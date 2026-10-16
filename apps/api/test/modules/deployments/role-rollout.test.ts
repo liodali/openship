@@ -271,6 +271,269 @@ describe("rolloutRoles: scalable and singleton together", () => {
   });
 });
 
+describe("rolloutRoles: a singleton that changes name or kind (#1253)", () => {
+  // The previous deployment's frozen roles tell a renamed scheduler apart from a worker.
+  const prevRoles = [worker(1, "queue"), scheduler("scheduler")];
+  const prevRefs = [ref("queue", 1, "old-queue"), ref("scheduler", 1, "old-sched")];
+
+  it("stops a renamed scheduler before its replacement starts, after the unchanged worker is checked", async () => {
+    const { deps, events } = harness({
+      roles: [worker(1, "queue"), scheduler("cron")],
+      previousRoles: prevRoles,
+      previous: prevRefs,
+    });
+    const rollout = await rolloutRoles(deps);
+    expect(events).toEqual([
+      "start queue 1",
+      "verify queue-1",
+      "stopPrev old-sched",
+      "start cron 1",
+      "verify cron-1",
+    ]);
+    events.length = 0;
+    await rollout.commit();
+    expect(events).toEqual(["destroyPrev old-queue", "destroyPrev old-sched"]);
+  });
+
+  it.each([
+    [
+      "keeps its name",
+      worker(2, "scheduler"),
+      ["start scheduler 1", "start scheduler 2", "verify scheduler-1,scheduler-2"],
+    ],
+    ["is renamed", worker(1, "cron"), ["start cron 1", "verify cron-1"]],
+  ] as const)(
+    "stops a scheduler that becomes a worker and %s before any replica of it starts",
+    async (_label, changed, changedEvents) => {
+      const { deps, events } = harness({
+        roles: [worker(1, "queue"), changed],
+        previousRoles: prevRoles,
+        previous: prevRefs,
+      });
+      await rolloutRoles(deps);
+      expect(events).toEqual([
+        "start queue 1",
+        "verify queue-1",
+        "stopPrev old-sched",
+        ...changedEvents,
+      ]);
+    },
+  );
+
+  it("leaves a removed scheduler running until commit when nothing could replace it", async () => {
+    const { deps, events } = harness({
+      roles: [worker(1, "queue")],
+      previousRoles: prevRoles,
+      previous: prevRefs,
+    });
+    const rollout = await rolloutRoles(deps);
+    expect(events).toEqual(["start queue 1", "verify queue-1"]);
+    events.length = 0;
+    await rollout.commit();
+    expect(events).toEqual(["destroyPrev old-queue", "destroyPrev old-sched"]);
+  });
+
+  it("keeps the same-name handover when the previous definitions are unknown", async () => {
+    const { deps, events } = harness({
+      roles: [worker(1, "queue"), scheduler("cron")],
+      previous: prevRefs,
+    });
+    await rolloutRoles(deps);
+    expect(events).toEqual(["start queue 1", "verify queue-1", "start cron 1", "verify cron-1"]);
+  });
+
+  it("sees a cancellation before it stops the renamed scheduler", async () => {
+    const controller = new AbortController();
+    const { deps, events } = harness({
+      roles: [worker(1, "queue"), scheduler("cron")],
+      previousRoles: prevRoles,
+      previous: prevRefs,
+      signal: controller.signal,
+      keepProvisionedOnCancel: true,
+      verify: async (containers) => {
+        events.push(`verify ${containers.map((c) => `${c.role}-${c.replica}`).join(",")}`);
+        controller.abort();
+        return null;
+      },
+    });
+    await expect(rolloutRoles(deps)).rejects.toBeInstanceOf(DeploymentCancelledError);
+    expect(events).toEqual(["start queue 1", "verify queue-1"]);
+  });
+
+  it.each([
+    ["is removed", null, ["startPrev old-sched"]],
+    ["cannot be removed", "new-cron-1", []],
+    ["is fine but the unchanged worker cannot be removed", "new-queue-1", ["startPrev old-sched"]],
+  ] as const)(
+    "after a failed start, restores the renamed scheduler only when its replacement %s",
+    async (_label, failedRemoval, restarts) => {
+      const { deps, events, warnings } = harness({
+        roles: [worker(1, "queue"), scheduler("cron")],
+        previousRoles: prevRoles,
+        previous: prevRefs,
+        verify: async (containers) => {
+          events.push(`verify ${containers.map((c) => `${c.role}-${c.replica}`).join(",")}`);
+          return containers.some((c) => c.role === "cron") ? "cron crashed" : null;
+        },
+        destroyStarted: async (id) => {
+          events.push(`destroyNew ${id}`);
+          if (id === failedRemoval) throw new Error("removal failed");
+        },
+      });
+      await expect(rolloutRoles(deps)).rejects.toThrow("cron crashed");
+      expect(calls(events, "destroyNew")).toEqual([
+        "destroyNew new-cron-1",
+        "destroyNew new-queue-1",
+      ]);
+      expect(calls(events, "startPrev")).toEqual(restarts);
+      expectDestroysBeforeRestarts(events);
+      const incomplete = warnings.find((w) => w.includes("Rollback incomplete"));
+      if (failedRemoval === "new-cron-1") {
+        expect(incomplete).toContain("old-sched");
+        expect(incomplete).toContain("new-cron-1");
+      } else {
+        expect(incomplete).toBeUndefined();
+      }
+    },
+  );
+
+  it("fails the rollout when the renamed scheduler cannot be stopped, and never starts its replacement", async () => {
+    const { deps, events } = harness({
+      roles: [worker(1, "queue"), scheduler("cron")],
+      previousRoles: prevRoles,
+      previous: prevRefs,
+      stopPrevious: async (id) => {
+        events.push(`stopPrev ${id}`);
+        throw new Error("stop failed");
+      },
+    });
+    await expect(rolloutRoles(deps)).rejects.toThrow(
+      'Could not stop the previous "scheduler" container, so a single instance cannot be guaranteed: stop failed',
+    );
+    expect(events).not.toContain("start cron 1");
+    expect(calls(events, "destroyNew")).toEqual(["destroyNew new-queue-1"]);
+    expect(calls(events, "startPrev")).toEqual([]);
+  });
+});
+
+describe("rolloutRoles: a role continues only when it runs the same workload (#1253)", () => {
+  /** The same role definition, now running another command. */
+  const running = (role: StackRole, command: string): StackRole => ({ ...role, command });
+
+  describe("two singletons swap their names", () => {
+    // Old a runs A and old b runs B. New a runs B and new b runs A.
+    const prevRoles = [scheduler("a"), scheduler("b")];
+    const roles = [running(scheduler("a"), "run b"), running(scheduler("b"), "run a")];
+    const previous = [ref("a", 1, "old-a"), ref("b", 1, "old-b")];
+
+    it("stops both previous singletons before either new one starts", async () => {
+      const { deps, events } = harness({ roles, previousRoles: prevRoles, previous });
+      await rolloutRoles(deps);
+      expect(events).toEqual([
+        "stopPrev old-a",
+        "stopPrev old-b",
+        "start a 1",
+        "start b 1",
+        "verify a-1,b-1",
+      ]);
+    });
+
+    it.each([
+      [null, ["startPrev old-a", "startPrev old-b"]],
+      ["new-a-1", []],
+      ["new-b-1", []],
+    ] as const)(
+      "on abort with removal of %s failing, restores the previous singletons only when both replacements are gone",
+      async (failedRemoval, restarts) => {
+        const { deps, events, warnings } = harness({
+          roles,
+          previousRoles: prevRoles,
+          previous,
+          destroyStarted: async (id) => {
+            events.push(`destroyNew ${id}`);
+            if (id === failedRemoval) throw new Error("removal failed");
+          },
+        });
+        const rollout = await rolloutRoles(deps);
+        events.length = 0;
+        await rollout.abort();
+        expect(calls(events, "destroyNew")).toEqual(["destroyNew new-a-1", "destroyNew new-b-1"]);
+        expect(calls(events, "startPrev")).toEqual(restarts);
+        expectDestroysBeforeRestarts(events);
+        if (failedRemoval) {
+          const incomplete = warnings.filter((w) => w.includes("Rollback incomplete"));
+          expect(incomplete).toHaveLength(2);
+          for (const warning of incomplete) expect(warning).toContain(failedRemoval);
+        }
+      },
+    );
+  });
+
+  describe("a scheduler's workload moves into an existing worker name", () => {
+    // Old scheduler runs A and old queue runs B. New queue runs A, with two replicas.
+    const prevRoles = [scheduler("scheduler"), worker(1, "queue")];
+    const roles = [running(worker(2, "queue"), "run scheduler")];
+    const previous = [ref("queue", 1, "old-queue"), ref("scheduler", 1, "old-sched")];
+
+    it("stops the previous scheduler before any queue replica starts", async () => {
+      const { deps, events } = harness({ roles, previousRoles: prevRoles, previous });
+      const rollout = await rolloutRoles(deps);
+      expect(events).toEqual([
+        "stopPrev old-sched",
+        "start queue 1",
+        "start queue 2",
+        "verify queue-1,queue-2",
+      ]);
+      events.length = 0;
+      await rollout.commit();
+      expect(events).toEqual(["destroyPrev old-queue", "destroyPrev old-sched"]);
+    });
+
+    it.each([
+      [null, ["startPrev old-sched"]],
+      ["new-queue-2", []],
+    ] as const)(
+      "on abort with removal of %s failing, restores the previous scheduler only when every queue replica is gone",
+      async (failedRemoval, restarts) => {
+        const { deps, events, warnings } = harness({
+          roles,
+          previousRoles: prevRoles,
+          previous,
+          destroyStarted: async (id) => {
+            events.push(`destroyNew ${id}`);
+            if (id === failedRemoval) throw new Error("removal failed");
+          },
+        });
+        const rollout = await rolloutRoles(deps);
+        events.length = 0;
+        await rollout.abort();
+        expect(calls(events, "startPrev")).toEqual(restarts);
+        expectDestroysBeforeRestarts(events);
+        const incomplete = warnings.find((w) => w.includes("Rollback incomplete"));
+        if (failedRemoval) expect(incomplete).toContain(failedRemoval);
+        else expect(incomplete).toBeUndefined();
+      },
+    );
+  });
+
+  it("treats a same-name singleton with an edited command as a replacement, not a continuation", async () => {
+    const { deps, events } = harness({
+      roles: [worker(1, "queue"), running(scheduler("scheduler"), "run scheduler --verbose")],
+      previousRoles: [worker(1, "queue"), scheduler("scheduler")],
+      previous: [ref("queue", 1, "old-queue"), ref("scheduler", 1, "old-sched")],
+    });
+    await rolloutRoles(deps);
+    // Stopped once, as an outgoing singleton, before the changed scheduler starts.
+    expect(events).toEqual([
+      "start queue 1",
+      "verify queue-1",
+      "stopPrev old-sched",
+      "start scheduler 1",
+      "verify scheduler-1",
+    ]);
+  });
+});
+
 describe("rolloutRoles: failures unwind before rethrowing", () => {
   it("scalable verify failure: destroys every started container, never stops a singleton, message has the detail", async () => {
     const { deps, events } = harness({

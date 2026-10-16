@@ -24,7 +24,12 @@ import {
   type DiscoveredService,
 } from "@repo/platform/engine/modules/migration/docker-inspect.service";
 import { adoptServerStack, reimportOpenshipProject, parseRepoCompose } from "@repo/platform/engine/modules/migration/migrate.service";
-import { assertProjectMovable, ProjectMoveRefused, type ProjectMoveIntent } from "@repo/platform/engine/modules/migration/project-move";
+import {
+  assertProjectMovable,
+  loadProjectRoleWork,
+  ProjectMoveRefused,
+  type ProjectMoveIntent,
+} from "@repo/platform/engine/modules/migration/project-move";
 import { maskEnv, maskServicesEnv } from "@repo/platform/engine/lib/secret-env";
 import { buildMigrationPreview } from "@repo/platform/engine/modules/migration/migration-preflight";
 import { migrationOrchestrator } from "@repo/platform/engine/modules/migration/migration.orchestrator";
@@ -568,6 +573,7 @@ async function assertProjectMoveAllowed(
         workspaceId: string | null;
         runtimeMode: string | null;
         roles: StackRole[] | null;
+        activeDeploymentId: string | null;
         isControlPlane: boolean;
       };
     }
@@ -597,6 +603,7 @@ async function assertProjectMoveAllowed(
       workspaceId: project.workspaceId ?? null,
       runtimeMode: project.runtimeMode ?? null,
       roles: project.roles ?? null,
+      activeDeploymentId: project.activeDeploymentId ?? null,
       isControlPlane: isControlPlaneProject(project),
     },
   };
@@ -668,6 +675,11 @@ export async function startProjectMove(c: Context) {
         roles: guard.project.roles,
       },
       targetServerId: body.targetServerId,
+      roleWork: await loadProjectRoleWork({
+        id: guard.project.id,
+        organizationId: guard.organizationId,
+        activeDeploymentId: guard.project.activeDeploymentId,
+      }),
       isControlPlane: guard.project.isControlPlane,
       intent,
       serviceNames: scopedServices,

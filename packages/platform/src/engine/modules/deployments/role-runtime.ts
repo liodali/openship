@@ -14,7 +14,7 @@ import {
 } from "@repo/adapters";
 import type { Deployment } from "@repo/db";
 import type { RoleContainerRef, RoleRolloutDeps } from "./role-rollout";
-import { verifyDeployedContainers } from "./stability-audit.service";
+import { verifyDeployedContainers, type StabilityFinding } from "./stability-audit.service";
 import { withDeploymentRuntime } from "../../lib/deployment-runtime";
 
 const ROLE_RUNTIME_SOURCE = "platform/engine/modules/deployments/role-runtime";
@@ -93,6 +93,7 @@ export function runtimeRoleRolloutDeps(input: {
 
   return {
     roles,
+    previousRoles: input.previousRoles,
     previous: input.previous,
 
     async startReplica(role, replica) {
@@ -118,8 +119,28 @@ export function runtimeRoleRolloutDeps(input: {
           onUnverified: (detail) => logger.log(`${detail}\n`, "warn"),
         },
       );
-      const failed = findings.find((finding) => !finding.verdict.ok);
-      if (failed) return failed.detail;
+      // Stricter than the shared `verdict.ok`: a role must be seen running. The
+      // watch omits a replica it could not inspect, and accepts an exit-0
+      // `completed` process, so neither may count as a started role.
+      const byContainer = new Map<string, StabilityFinding[]>();
+      for (const finding of findings) {
+        const id = finding.target.containerId;
+        byContainer.set(id, [...(byContainer.get(id) ?? []), finding]);
+      }
+      // A conclusive failure first: its detail carries the exit code and log tail.
+      for (const c of containers) {
+        const failed = byContainer.get(c.containerId)?.find((f) => f.verdict.status !== "stable");
+        if (failed?.verdict.status === "completed") {
+          return `Role "${c.role}" replica ${c.replica} exited with code 0 during the startup check. A role is a long-running process, so it must keep running.`;
+        }
+        if (failed) return failed.detail;
+      }
+      for (const c of containers) {
+        const count = byContainer.get(c.containerId)?.length ?? 0;
+        if (count !== 1) {
+          return `Could not verify that role "${c.role}" replica ${c.replica} started: the startup check returned ${count === 0 ? "no result" : `${count} results`} for container ${c.containerId.slice(0, 12)}`;
+        }
+      }
 
       for (const c of containers) {
         const health = rolesByName.get(c.role)?.health;

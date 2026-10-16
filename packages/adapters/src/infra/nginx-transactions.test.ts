@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { NginxProvider } from "./nginx";
 import { LocalExecutor } from "../system/local-executor";
 import { rootChecked } from "../system/privilege";
+import { EDGE_CONTAINER_REAL_IP_CONF_NAME } from "./edge-real-ip";
 import {
   EDGE_CHALLENGE_URL_PREFIX,
   OPENRESTY_DEFAULT_PATHS,
@@ -59,8 +60,100 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
   await rm(root, { recursive: true, force: true });
+});
+
+describe("container real-IP configuration rollback", () => {
+  const operations = ["register", "remove", "rate-limit"] as const;
+  const apply = (operation: (typeof operations)[number]) => {
+    if (operation === "remove") return nginx.removeRoute(DOTTED);
+    if (operation === "rate-limit") {
+      return nginx.applyRateLimit({ rps: 10, burst: 20, whitelist: [] });
+    }
+    return nginx.registerRoute(route(DOTTED, 3002));
+  };
+
+  it.each(
+    operations.flatMap((operation) => [true, false].map((exists) => ({ operation, exists }))),
+  )(
+    "restores the shared include and route after $operation fails (previous include: $exists)",
+    async ({ operation, exists }) => {
+      vi.stubEnv("OPENSHIP_EDGE_TRUSTED_PROXIES", "172.17.0.0/16");
+      await nginx.registerRoute(route(DOTTED));
+      await writeFile(join(root, "nginx.conf"), "events {}\nhttp {\n}\n");
+      const include = join(sites, EDGE_CONTAINER_REAL_IP_CONF_NAME);
+      const previous = exists ? await readFile(include, "utf8") : null;
+      if (!exists) await rm(include);
+      const beforeRoute = await readFile(routePath, "utf8");
+      const beforeState = await readFile(statePath, "utf8");
+      const seen: (string | null)[] = [];
+      reload.mockClear().mockImplementation(async () => {
+        seen.push(await readFile(include, "utf8").catch(() => null));
+        if (seen.length === 1) throw new Error("reload refused");
+        return "";
+      });
+
+      vi.stubEnv("OPENSHIP_EDGE_TRUSTED_PROXIES", "192.0.2.1");
+      await expect(apply(operation)).rejects.toThrow("reload refused");
+      expect(seen[0]).toContain("set_real_ip_from 192.0.2.1;");
+      expect(seen[1]).toBe(previous);
+      expect(await readFile(include, "utf8").catch(() => null)).toBe(previous);
+      expect(await readFile(routePath, "utf8")).toBe(beforeRoute);
+      expect(await readFile(statePath, "utf8")).toBe(beforeState);
+      expect((await readdir(sites)).some((name) => name.includes(".tmp-"))).toBe(false);
+
+      await nginx.registerRoute(route("next.example.com"));
+      expect(await readFile(include, "utf8")).toContain("set_real_ip_from 192.0.2.1;");
+    },
+  );
+
+  it.each([false, true])(
+    "restores a failed include publication (rename completed: %s)",
+    async (renamed) => {
+      vi.stubEnv("OPENSHIP_EDGE_TRUSTED_PROXIES", "172.17.0.0/16");
+      await nginx.registerRoute(route(DOTTED));
+      const include = join(sites, EDGE_CONTAINER_REAL_IP_CONF_NAME);
+      const previous = await readFile(include, "utf8");
+      const rename = executor.rename.bind(executor);
+      let failed = false;
+      vi.spyOn(executor, "rename").mockImplementation(async (from, to) => {
+        if (to === include && !failed) {
+          failed = true;
+          if (renamed) await rename(from, to);
+          throw new Error("include publication failed");
+        }
+        return rename(from, to);
+      });
+      vi.stubEnv("OPENSHIP_EDGE_TRUSTED_PROXIES", "192.0.2.1");
+      await expect(nginx.registerRoute(route(DOTTED, 3002))).rejects.toThrow(
+        "include publication failed",
+      );
+      expect(await readFile(include, "utf8")).toBe(previous);
+      expect(await readFile(routePath, "utf8")).toContain("127.0.0.1:3001");
+      expect((await readdir(sites)).some((name) => name.includes(".tmp-"))).toBe(false);
+    },
+  );
+
+  it.each(operations)("does not reload a partial restore after %s fails", async (operation) => {
+    vi.stubEnv("OPENSHIP_EDGE_TRUSTED_PROXIES", "172.17.0.0/16");
+    await nginx.registerRoute(route(DOTTED));
+    await writeFile(join(root, "nginx.conf"), "events {}\nhttp {\n}\n");
+    const include = join(sites, EDGE_CONTAINER_REAL_IP_CONF_NAME);
+    const rename = executor.rename.bind(executor);
+    let writes = 0;
+    vi.spyOn(executor, "rename").mockImplementation(async (from, to) => {
+      if (to === include && ++writes === 2) throw new Error("include restore denied");
+      return rename(from, to);
+    });
+    vi.stubEnv("OPENSHIP_EDGE_TRUSTED_PROXIES", "192.0.2.1");
+    reload.mockClear().mockRejectedValueOnce(new Error("reload refused"));
+    await expect(apply(operation)).rejects.toThrow(/rollback failed:.*include restore denied/);
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(await readFile(routePath, "utf8")).toContain("127.0.0.1:3001");
+    expect(JSON.parse(await readFile(statePath, "utf8"))).toEqual(route(DOTTED));
+  });
 });
 
 describe("challenge ownership", () => {

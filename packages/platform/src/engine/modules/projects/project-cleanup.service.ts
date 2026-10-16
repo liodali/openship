@@ -1475,7 +1475,11 @@ async function destroyResourceOnce(
     }
     case "network": {
       if (!resource.runtime || !(resource.runtime instanceof DockerRuntime)) return;
-      await resource.runtime.removeNetwork(resource.ref);
+      if (resource.runtime instanceof CloudDockerRuntime) {
+        await resource.runtime.removeProjectNetwork(resource.ref);
+      } else {
+        await resource.runtime.removeNetwork(resource.ref);
+      }
       return;
     }
   }

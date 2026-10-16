@@ -504,6 +504,17 @@ function parseRoles(ctx: Ctx, v: unknown, path: string): StackRole[] | undefined
     }
     const stopSignal = parseStopSignal(ctx, item.stopSignal, `${p}.stopSignal`);
     const stopGracePeriod = parseStopGracePeriod(ctx, item.stopGracePeriod, `${p}.stopGracePeriod`);
+    // Preset gating only (see StackRole): a declared role always runs. Say so,
+    // or a role copied from a preset silently loses the condition it relied on.
+    const gateKeys = (["when", "unless"] as const).filter((key) => item[key] !== undefined);
+    if (gateKeys.length > 0) {
+      const keys = gateKeys.map((key) => `\`${key}\``).join(" and ");
+      const verbs =
+        gateKeys.length === 1
+          ? "applies only to stack presets and is"
+          : "apply only to stack presets and are";
+      ctx.warnings.push(`${p} ("${name}"): ${keys} ${verbs} ignored, so this role always runs`);
+    }
     out.push({
       name,
       kind,

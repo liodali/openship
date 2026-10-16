@@ -203,7 +203,9 @@ jobs:
   e2e-docker:
     name: E2E (real Docker, ${{ matrix.scope }})
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # The ordinary suite shares one daemon and runs files serially. Allow cold
+    # pulls and the full lifecycle cases without changing individual test limits.
+    timeout-minutes: ${{ matrix.scope == 'fast' && 45 || 30 }}
     strategy:
       fail-fast: false
       matrix:

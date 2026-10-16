@@ -199,6 +199,7 @@ describe("Cloud Docker project teardown", () => {
     listProjectImages: vi.fn(async () => []), inspectNamedVolumes: vi.fn(async () => ["project-data"]),
     destroy: vi.fn(async () => {}), removeImage: vi.fn(async () => {}),
     removeVolume: vi.fn(async () => {}), removeNetwork: vi.fn(async () => {}), cleanupProject,
+    removeProjectNetwork: vi.fn(async (slug: string) => cloudDocker.removeNetwork(slug)),
   });
   Object.defineProperty(cloudDocker, "docker", { value: { ping: vi.fn(async () => {}) } });
   const routing = Object.assign(Object.create(CloudInfraProvider.prototype), {
@@ -237,6 +238,8 @@ describe("Cloud Docker project teardown", () => {
     cleanupProject.mockResolvedValue();
     hostState.mockReset().mockResolvedValue("running");
     cloudDocker.listAllVolumes.mockReset().mockResolvedValue([]);
+    cloudDocker.removeNetwork.mockReset().mockResolvedValue();
+    cloudDocker.removeProjectNetwork.mockReset().mockImplementation(async (slug: string) => cloudDocker.removeNetwork(slug));
     h.removeRoute.mockResolvedValue();
     h.resolveCloudPlatform.mockResolvedValue({ platform: { runtime: cloudDocker, routing } });
   });
@@ -286,6 +289,47 @@ describe("Cloud Docker project teardown", () => {
     expect(cloudDocker.removeVolume).toHaveBeenCalledExactlyOnceWith("project-data");
     expect(cloudDocker.removeNetwork).toHaveBeenCalledExactlyOnceWith(project.slug);
     expect(cleanupProject).toHaveBeenCalledExactlyOnceWith(project.id, { wipeVolumes: true });
+    expect(h.releaseManagedHostnames).not.toHaveBeenCalled();
+  });
+  it("finishes abandoned project cleanup while preserving another project's routes and same-named network", async () => {
+    const fixture = managedRoutes();
+    fixture.addPage("app", "active-project");
+    h.projectServices = [{ id: "svc_1", name: "web" }];
+    h.derivedServiceRoutes = [{ hostname: "app.opsh.io" }];
+    h.deployments[0]!.containerId = null;
+    h.serviceRows.dep_1 = [serviceRow({ containerId: null, imageRef: null })];
+    const network = {
+      Id: "foreign-network-id",
+      Name: `openship-${project.slug}`,
+      Labels: { "openship.project": "another-project" },
+    };
+    const removeNetwork = vi.fn(async () => {});
+    const scopedRuntime = Object.assign(Object.create(CloudDockerRuntime.prototype), {
+      projectId: project.id,
+      options: { provisionLock: { run: (work: () => Promise<unknown>) => work() } },
+    });
+    Object.defineProperty(scopedRuntime, "docker", {
+      value: {
+        getNetwork: vi.fn(() => ({ inspect: vi.fn(async () => network), remove: removeNetwork })),
+      },
+    });
+    cloudDocker.removeNetwork.mockImplementation((slug: string) =>
+      CloudDockerRuntime.prototype.removeNetwork.call(scopedRuntime, slug),
+    );
+    cloudDocker.removeProjectNetwork.mockImplementation((slug: string) =>
+      CloudDockerRuntime.prototype.removeProjectNetwork.call(scopedRuntime, slug),
+    );
+
+    const manifest = await collectProjectManifest(ownedProject as never, { wipeVolumes: false });
+    const result = await executeCleanup(manifest);
+
+    expect(result.failed).toEqual([]);
+    expect(fixture.records.has("app")).toBe(true);
+    expect(fixture.pages.delete).not.toHaveBeenCalled();
+    expect(removeNetwork).not.toHaveBeenCalled();
+    expect(cloudDocker.destroy).not.toHaveBeenCalled();
+    expect(cloudDocker.removeVolume).not.toHaveBeenCalled();
+    expect(cleanupProject).toHaveBeenCalledExactlyOnceWith(project.id, { wipeVolumes: false });
     expect(h.releaseManagedHostnames).not.toHaveBeenCalled();
   });
   it.each(["unreadable", "ambiguous"])(

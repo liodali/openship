@@ -42,7 +42,8 @@ function config(deploymentId: string): DeployConfig {
     environment: "production",
     port: 8080,
     startCommand: "exec httpd -f -p 8080 -h /tmp",
-    envVars: { E2E_DEPLOYMENT: deploymentId },
+    // PORT is set by both the project and the image (ENV below); a role must see neither.
+    envVars: { E2E_DEPLOYMENT: deploymentId, PORT: "9999" },
     resources: { cpuCores: 0, memoryMb: 0, diskMb: 0 },
     volumes: ["data:/data"],
     restartPolicy: "always",
@@ -72,7 +73,9 @@ function rollout(
   deploymentId: string,
   roles: StackRole[],
   previous?: RoleRollout,
-  overrides: Partial<Pick<RoleRolloutDeps, "destroyStarted" | "teardownTimeoutMs" | "log">> = {},
+  overrides: Partial<
+    Pick<RoleRolloutDeps, "destroyStarted" | "teardownTimeoutMs" | "log" | "previousRoles">
+  > = {},
 ) {
   return rolloutRoles({
     ...runtimeRoleRolloutDeps({
@@ -146,6 +149,7 @@ describeDockerE2E("runtime roles against Docker", () => {
         join(source, "Dockerfile"),
         [
           `FROM ${baseImage}`,
+          "ENV PORT=3000",
           "HEALTHCHECK --interval=1s --timeout=1s --retries=1 CMD wget -qO- http://127.0.0.1:8080/ > /dev/null || exit 1",
           "",
         ].join("\n"),
@@ -227,6 +231,10 @@ describeDockerE2E("runtime roles against Docker", () => {
       );
       expect(env.some((entry) => entry.startsWith("PORT="))).toBe(false);
       expect(env).toContain(`E2E_DEPLOYMENT=${dep("a")}`);
+      // What the role process itself sees, after Docker merged the image's ENV.
+      const processEnv = (await docker("exec", id, "cat", "/proc/1/environ")).split("\0");
+      expect(processEnv).toContain(`E2E_DEPLOYMENT=${dep("a")}`);
+      expect(processEnv.some((entry) => entry.startsWith("PORT="))).toBe(false);
       expect(
         JSON.parse(await docker("inspect", "--format", "{{json .Config.Healthcheck.Test}}", id)),
       ).toEqual(["NONE"]);
@@ -339,5 +347,23 @@ describeDockerE2E("runtime roles against Docker", () => {
 
     expect(await containersOf(dep("b"))).toEqual([]);
     expect(await containersOf(dep("e"))).toEqual([]);
+  });
+
+  it("stops a renamed scheduler before its replacement starts (#1253)", async () => {
+    const f = await rollout(dep("f"), [scheduler()]);
+    await f.commit();
+    const cron = { ...scheduler(), name: "cron" };
+    const g = await rollout(dep("g"), [cron], f, { previousRoles: [scheduler()] });
+
+    // Before commit the renamed predecessor is stopped and kept, not running beside cron.
+    expect(await stateOf(f.started[0]!.containerId)).toBe("exited");
+    await expectAllRunning(g);
+    await g.commit();
+    expect(await containersOf(dep("f"))).toEqual([]);
+    expect((await schedulerLog()).split(",").slice(-3)).toEqual([
+      `start-${dep("f")}`,
+      `stop-${dep("f")}`,
+      `start-${dep("g")}`,
+    ]);
   });
 });

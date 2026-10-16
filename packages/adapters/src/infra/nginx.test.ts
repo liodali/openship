@@ -1,5 +1,5 @@
 import { diagnostics as errorDiagnostics } from "@repo/core/diagnostics";
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import {
   NginxProvider,
@@ -3690,5 +3690,47 @@ describe("isAcmePortBindFailure", () => {
     expect(code).toContain("isAcmePortBindFailure(raw) && this.executor");
     // Exactly one place spells the pattern out.
     expect((code.match(/could not bind \(\?:tcp \)\?port/g) ?? []).length).toBe(1);
+  });
+});
+
+/**
+ * The containerized edge's nginx.conf is baked, so OPENSHIP_EDGE_TRUSTED_PROXIES has to
+ * reach it through sites-enabled. Behind a proxy outside Cloudflare's ranges (a tunnel
+ * connector on the same host, say) every visitor otherwise shares the connector's
+ * address: one rate-limit bucket, one ban target.
+ */
+describe("operator-trusted proxies on a container edge", () => {
+  const INCLUDE = `${SITES}/_openship-real-ip.conf`;
+  afterEach(() => {
+    delete process.env.OPENSHIP_EDGE_TRUSTED_PROXIES;
+  });
+
+  test("are written into sites-enabled before the edge reloads", async () => {
+    process.env.OPENSHIP_EDGE_TRUSTED_PROXIES = "172.17.0.0/16";
+    const { nginx, files, calls } = setup({ provider: { containerEdge: true } });
+    await nginx.registerRoute(PROXY);
+
+    expect(files.get(INCLUDE)).toContain("set_real_ip_from 172.17.0.0/16;");
+    const written = calls.findIndex((c) => c.includes("_openship-real-ip.conf"));
+    const reloaded = calls.findIndex((c) => c.includes("-s reload"));
+    expect(written).toBeGreaterThanOrEqual(0);
+    expect(written).toBeLessThan(reloaded);
+  });
+
+  test("follow the variable on the next apply, including its removal", async () => {
+    process.env.OPENSHIP_EDGE_TRUSTED_PROXIES = "172.17.0.0/16";
+    const { nginx, files } = setup({ provider: { containerEdge: true } });
+    await nginx.registerRoute(PROXY);
+
+    delete process.env.OPENSHIP_EDGE_TRUSTED_PROXIES;
+    await nginx.registerRoute({ ...PROXY, domain: "other.example.com" });
+    expect(files.get(INCLUDE)).not.toContain("set_real_ip_from");
+  });
+
+  test("are left to the bare edge's own include there", async () => {
+    process.env.OPENSHIP_EDGE_TRUSTED_PROXIES = "172.17.0.0/16";
+    const { nginx, files } = setup();
+    await nginx.registerRoute(PROXY);
+    expect(files.has(INCLUDE)).toBe(false);
   });
 });

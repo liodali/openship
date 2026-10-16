@@ -7,14 +7,13 @@ import {
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { Bell, Lightning, Mail, ScanEye, Tag, User, X, Search } from '../icons/icons';
 import { useCategorySettings, useDefaultCategoryId } from '@/hooks/use-categories';
-import { ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
+import { MailPanels } from '@/components/mail/mail-panels';
 import { useCommandPalette } from '../context/command-palette-context';
 import { useHotkeys, useHotkeysContext } from 'react-hotkeys-hook';
 import { ThreadDisplay } from '@/components/mail/thread-display';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useActiveConnection } from '@/hooks/use-connections';
 import { Check, ChevronDown, RefreshCcw } from 'lucide-react';
-import { useMediaQuery } from '../../hooks/use-media-query';
 import useSearchLabels from '@/hooks/use-labels-search';
 import * as CustomIcons from '@/components/icons/icons';
 import { MailList } from '@/components/mail/mail-list';
@@ -25,7 +24,6 @@ import { PricingDialog } from '../ui/pricing-dialog';
 import { clearBulkSelectionAtom } from './use-mail';
 import { useThreads } from '@/hooks/use-threads';
 import { useMailRefresh } from '@/hooks/use-mail-refresh';
-import { useIsMobile } from '@/hooks/use-mobile';
 import { Button } from '@/components/ui/button';
 import { useSession } from '@/lib/auth-client';
 import { m } from '@/paraglide/messages';
@@ -316,7 +314,6 @@ export function MailLayout() {
   const folder = params?.folder ?? 'inbox';
   const [mail, setMail] = useMail();
   const [, clearBulkSelection] = useAtom(clearBulkSelectionAtom);
-  const isMobile = useIsMobile();
   const navigate = useNavigate();
   const { data: session, isPending } = useSession();
   useMailRefresh(!!session?.user, folder);
@@ -340,7 +337,6 @@ export function MailLayout() {
   }, [session?.user, isPending]);
 
   const [{ isFetching, refetch: refetchThreads }] = useThreads();
-  const isDesktop = useMediaQuery('(min-width: 768px)');
 
   const [threadId] = useQueryState('threadId');
 
@@ -416,22 +412,10 @@ export function MailLayout() {
     <TooltipProvider delayDuration={0}>
       <PricingDialog />
       <div className="rounded-inherit z-5 relative flex p-0 md:mr-0.5 md:mt-1">
-        <ResizablePanelGroup
-          direction="horizontal"
-          autoSaveId="mail-panel-layout"
-          className="rounded-inherit overflow-hidden"
-        >
-          <ResizablePanel
-            defaultSize={35}
-            minSize={35}
-            maxSize={35}
-            className={cn(
-              `bg-panelLight dark:bg-panelDark mb-1 w-fit shadow-sm md:mr-[3px] md:rounded-2xl lg:flex lg:h-[calc(100dvh-8px)] lg:shadow-sm`,
-              isDesktop && threadId && 'hidden lg:block',
-            )}
-            // onMouseEnter={handleMailListMouseEnter}
-            // onMouseLeave={handleMailListMouseLeave}
-          >
+        <MailPanels
+          hasThread={!!threadId}
+          readingPane={<ThreadDisplay />}
+          mailList={
             <div className="w-full md:h-[calc(100dvh-10px)]">
               <div className="z-15 sticky top-0 p-4 pb-0">
                 <div className="flex items-center gap-2">
@@ -538,39 +522,8 @@ export function MailLayout() {
                 <MailList />
               </div>
             </div>
-          </ResizablePanel>
-
-          {/* <ResizableHandle className="mr-0.5 hidden opacity-0 md:block" /> */}
-
-          {isDesktop && (
-            <ResizablePanel
-              className={cn(
-                'bg-panelLight dark:bg-panelDark mb-1 mr-0.5 w-fit rounded-2xl shadow-sm lg:h-[calc(100dvh-8px)]',
-                // Only show on md screens and larger when there is a threadId
-                !threadId && 'hidden lg:block',
-              )}
-              defaultSize={30}
-              minSize={30}
-            >
-              <div className="relative flex-1">
-                <ThreadDisplay />
-              </div>
-            </ResizablePanel>
-          )}
-
-          {/* Mobile Thread View */}
-          {isMobile && threadId && (
-            <div className="bg-panelLight dark:bg-panelDark fixed inset-0 z-50">
-              <div className="flex h-full flex-col">
-                <div className="h-full overflow-y-auto outline-none">
-                  <ThreadDisplay />
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* AI assistant removed - self-host has no LLM backend. */}
-        </ResizablePanelGroup>
+          }
+        />
       </div>
     </TooltipProvider>
   );

@@ -504,6 +504,26 @@ describe("parseOpenshipConfig", () => {
       ]);
     });
 
+    it("warns that `when` and `unless` are ignored on an openship.json role", () => {
+      const horizon = { deps: ["laravel/horizon"] };
+      const { config, errors, warnings } = parseOpenshipConfig({
+        roles: [
+          { name: "queue", kind: "worker", command: "php artisan queue:work", unless: horizon },
+          { name: "horizon", kind: "worker", command: "php artisan horizon", when: horizon },
+          { name: "cron", kind: "scheduler", command: "bin/cron", when: {}, unless: {} },
+          { name: "jobs", kind: "worker", command: "bin/jobs" },
+        ],
+      });
+      expect(errors).toEqual([]);
+      expect(config?.roles?.map((role) => role.name)).toEqual(["queue", "horizon", "cron", "jobs"]);
+      expect(config?.roles?.some((role) => "when" in role || "unless" in role)).toBe(false);
+      expect(warnings).toEqual([
+        'roles[0] ("queue"): `unless` applies only to stack presets and is ignored, so this role always runs',
+        'roles[1] ("horizon"): `when` applies only to stack presets and is ignored, so this role always runs',
+        'roles[2] ("cron"): `when` and `unless` apply only to stack presets and are ignored, so this role always runs',
+      ]);
+    });
+
     it("an absent `roles` field parses byte-identical to a config with none declared", () => {
       const withoutRoles = parseOpenshipConfig({ framework: "rails" });
       expect(withoutRoles.config).not.toHaveProperty("roles");

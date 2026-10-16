@@ -75,7 +75,12 @@ import {
   type NginxVersion,
   type ProxySettings,
 } from "@repo/core";
-import { cloudEdgeRealIpConf, isCloudFrontedHost } from "./edge-real-ip";
+import {
+  EDGE_CONTAINER_REAL_IP_CONF_NAME,
+  cloudEdgeRealIpConf,
+  edgeContainerRealIpConf,
+  isCloudFrontedHost,
+} from "./edge-real-ip";
 import { EDGE_UPSTREAM_DOWN_HANDLER } from "./edge-upstream-down";
 import { sq } from "../system/local-shell";
 import type { RootChecked } from "../system/privilege";
@@ -1258,6 +1263,10 @@ interface FileSnapshot {
   content?: string;
 }
 
+// A shared config file could not be restored. Callers may restore their own
+// files, but must not reload a configuration whose rollback is incomplete.
+class ConfigRollbackError extends Error {}
+
 // ─── Implementation ──────────────────────────────────────────────────────────
 
 export class NginxProvider implements RoutingProvider, SslProvider {
@@ -1872,8 +1881,11 @@ export class NginxProvider implements RoutingProvider, SslProvider {
         });
       }
       // Never reload a partially restored configuration.
-      if (!failures.length) {
-        await this.reload().catch((err) => { observeCaughtError(err, "adapters/infra/nginx"); return failures.push(safeErrorMessage(err)); });
+      if (!failures.length && !(error instanceof ConfigRollbackError)) {
+        await this.reloadConfig({}).catch((err) => {
+          observeCaughtError(err, "adapters/infra/nginx");
+          failures.push(safeErrorMessage(err));
+        });
       }
       if (failures.length) {
         throw new Error(`${safeErrorMessage(error)}; rollback failed: ${failures.join("; ")}`, {
@@ -2406,8 +2418,10 @@ ${serveLocation}
       try {
         if (!opts?.signal?.aborted) await this._restoreFile(configPath, confSnapshot);
         if (!opts?.signal?.aborted) await this._restoreFile(statePath, stateSnapshot);
-        if (!opts?.signal?.aborted) {
-          await this.reload({ allowStopped: true }).catch((diagnosticFailure) => { observeCaughtError(diagnosticFailure, "adapters/infra/nginx"); return undefined; });
+        if (!opts?.signal?.aborted && !(err instanceof ConfigRollbackError)) {
+          await this.reloadConfig({ allowStopped: true }).catch((diagnosticFailure) => {
+            observeCaughtError(diagnosticFailure, "adapters/infra/nginx");
+          });
         }
       } finally {
         if (opts?.signal?.aborted) {
@@ -3174,7 +3188,34 @@ ${serveLocation}
    * in sync without requiring an API restart.
    */
   private async reload(opts: { allowStopped?: boolean } = {}): Promise<void> {
-    return this.withConfigLock(() => this.reloadConfig(opts));
+    return this.withConfigLock(async () => {
+      if (!this.containerEdge) return this.reloadConfig(opts);
+
+      // Stage operator trust with the candidate config, but retain the previous
+      // include if publishing, validation or reload fails. Recovery callers use
+      // reloadConfig directly so they never regenerate the rejected candidate.
+      const path = join(this.sitesDir, EDGE_CONTAINER_REAL_IP_CONF_NAME);
+      const previous = await this._captureFile(path);
+      const content = edgeContainerRealIpConf();
+      const changed = previous.content !== content;
+      try {
+        if (changed) await this._writeFile(path, content);
+        await this.reloadConfig(opts);
+      } catch (error) {
+        if (changed) {
+          try {
+            await this._restoreFile(path, previous);
+          } catch (restoreError) {
+            observeCaughtError(restoreError, "adapters/infra/nginx");
+            throw new ConfigRollbackError(
+              `${safeErrorMessage(error)}; rollback failed: ${safeErrorMessage(restoreError)}`,
+              { cause: error },
+            );
+          }
+        }
+        throw error;
+      }
+    });
   }
 
   private async reloadConfig(opts: { allowStopped?: boolean }): Promise<void> {
@@ -3361,7 +3402,7 @@ ${geoEntries.join("\n")}
       try {
         await this._restoreFile(confPath, snapshots.current);
         await this._restoreFile(nginxConfPath, snapshots.nginx);
-        await this.reload();
+        if (!(err instanceof ConfigRollbackError)) await this.reloadConfig({});
       } catch (restoreErr) {
         observeCaughtError(restoreErr, "adapters/infra/nginx");
         rollbackError = safeErrorMessage(restoreErr);

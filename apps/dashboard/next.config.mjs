@@ -25,6 +25,20 @@ const nextConfig = {
   turbopack: {
     root: path.resolve(__dirname, "../.."),
   },
+  async headers() {
+    // The control plane is never embedded, including login and OAuth consent.
+    // Keep this at the Next.js boundary so redirects and paths excluded from
+    // the auth proxy matcher receive the same policy in every deployment mode.
+    return [
+      {
+        source: "/:path*",
+        headers: [
+          { key: "Content-Security-Policy", value: "frame-ancestors 'none'" },
+          { key: "X-Frame-Options", value: "DENY" },
+        ],
+      },
+    ];
+  },
   async rewrites() {
     if (!API_PROXY) return [];
     return {

@@ -442,16 +442,31 @@ its first instruction.
 **Workers** start beside the previous version's workers. The old ones keep running, and
 are removed only once the new web container is live.
 
-**Singletons** (schedulers, or `singleton: true`) hand over stop-first when the role keeps
-its name: the old container is stopped and retained before its replacement starts. When
-unwinding a failed deploy, Openship attempts to remove the new containers and restore
-retained singletons. Restoration is attempted only after all started replacements for that
-role are confirmed removed.
+**Singletons** (schedulers, or `singleton: true`) hand over stop-first. A new role continues
+a previous one only when it keeps the name, effective singleton status (`kind: "scheduler"` or
+`singleton: true`) and the command. For a continued singleton, the old container is stopped
+and retained before the new one starts.
 
-This covers a normal handover where the singleton keeps its name. Runtime failures or an
-interrupted deploy can leave containers unresolved. Reconcile them, and restart the
-scheduler if needed, before redeploying. A handover does not guarantee exactly-once
-scheduled execution, so keep application-level guards such as Laravel's `onOneServer()`.
+Continuation compares saved role fields. It does not detect changes in behavior caused by a
+new deployment image, environment, inherited image settings or application code behind an
+unchanged command.
+
+A previous singleton that no new role continues is outgoing. A rename, a command change, a
+name swap or a change to a scalable worker each make a singleton outgoing. When the deploy
+also adds or changes a role, Openship stops and retains each outgoing singleton after the
+unchanged workers pass their startup check, and before any added or changed role starts.
+Otherwise an outgoing singleton keeps running until the new web container is live.
+
+When unwinding a failed deploy, Openship attempts to remove the new containers and restore
+retained singletons. A continued singleton is restored only after its replacement is
+confirmed removed. An outgoing singleton is restored only after every added or changed role
+is confirmed removed.
+
+This ordering uses the previous deployment's saved role definitions. Without them, only a
+singleton that keeps its name hands over stop-first. Runtime failures or an interrupted
+deploy can leave containers unresolved. Reconcile them, and restart the scheduler if needed,
+before redeploying. A handover does not guarantee exactly-once scheduled execution, so keep
+application-level guards such as Laravel's `onOneServer()`.
 
 ### Startup check
 

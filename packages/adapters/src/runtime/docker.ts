@@ -4160,8 +4160,11 @@ export class DockerRuntime implements RuntimeAdapter {
     const containerName =
       `openship-${config.runtimeName || config.projectId}-${config.deploymentId}-${role.name}-${replica}`;
 
-    // The web container's env, minus PORT: a role binds no port.
-    const { env, dropped } = deploymentContainerEnv({ ...config, portless: true });
+    // The web container's env, minus PORT: a role binds no port. `portless` only
+    // omits the generated value, so a project-set PORT is filtered here too, and
+    // the bare "PORT" entry tells Docker to unset one inherited from the image's ENV.
+    const { env: webEnv, dropped } = deploymentContainerEnv({ ...config, portless: true });
+    const env = [...webEnv.filter((entry) => !entry.startsWith("PORT=")), "PORT"];
     if (dropped.length > 0) {
       log({
         timestamp: new Date().toISOString(),
