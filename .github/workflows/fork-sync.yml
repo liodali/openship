@@ -44,6 +44,10 @@ concurrency:
 permissions:
   contents: write # push the merge
   issues: write # open the "needs manual resolution" issue
+  workflows: write # upstream merges can touch .github/workflows/* — without this
+  # scope GitHub refuses the push ("refusing to allow a GitHub App to create or
+  # update workflow … without workflows permission", seen live on 2026-10-17
+  # when upstream's v0.9.3 modified ci.yml).
 
 jobs:
   sync:
