@@ -17,6 +17,7 @@
  * Plus two fork-identity/UX patches:
  *   4. fork badge             — dashboard sidebar marks our build (fork-badge.tsx)
  *   5. folder-deploy routes   — SDK passes scan publicEndpoints to ensure + build/access
+ *   6. hosted-only own domain — no synthesized *.opsh.io routes on self-hosted
  *
  * WHEN UPSTREAM ADOPTS THE SAME FIX: resolve the merge by taking THEIR version
  * and delete that check here. Every merged upstream PR shrinks the fork back
@@ -117,6 +118,21 @@ check(
   "apps/edge/nginx.conf no longer defines the map — regenerate with `bun run edge:conf` in packages/adapters.",
 );
 
+// ── Patch 6: the platform's own (*.opsh.io) domain is hosted-only ────────────
+// Self-hosted boxes without HOST_DOMAIN must not have free *.opsh.io routes
+// synthesized next to the user's custom domain — the routing base falls back
+// to CLOUD_DOMAIN, an edge this box never serves. Gated by
+// managedFreeRoutingAvailable() at every synthesis site.
+const routingDomainsTs = read("packages/platform/src/engine/lib/routing-domains.ts") ?? "";
+const publicEndpointsTs = read("packages/platform/src/engine/lib/public-endpoints.ts") ?? "";
+check(
+  "patch 6 (own domain is hosted-only)",
+  routingDomainsTs.includes("export function managedFreeRoutingAvailable") &&
+    routingDomainsTs.includes("if (!usesManagedRouting || !managedFreeRoutingAvailable()) return null;") &&
+    publicEndpointsTs.includes("managedFreeRoutingAvailable"),
+  "the managed-free-routing gate vanished — synthesized *.opsh.io routes are back next to users' custom domains on self-hosted boxes (routing-domains.ts / public-endpoints.ts).",
+);
+
 // ── Patch 5: folder-deploy carries declared domains to the deploy API ────────
 // The SDK's source workflow dropped the scan's publicEndpoints, so a
 // self-hosted `openship deploy --folder` with declared domains 403'd at the
@@ -153,5 +169,5 @@ if (failures.length > 0) {
   process.exit(1);
 }
 console.log(
-  "✔ fork patch guard: all five patches intact (extrahosts JSON, builder fallback, nginx Connection map, fork badge, folder-deploy endpoints).",
+  "✔ fork patch guard: all six patches intact (extrahosts JSON, builder fallback, nginx Connection map, fork badge, folder-deploy endpoints, hosted-only own domain).",
 );

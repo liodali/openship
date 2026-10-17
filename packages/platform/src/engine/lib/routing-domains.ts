@@ -61,6 +61,28 @@ export function getRoutingBaseDomain(): string {
 }
 
 /**
+ * Can THIS box serve a SYNTHESIZED managed (free) route?
+ *
+ * True when the routing base is the operator's own `HOST_DOMAIN`
+ * (`slug.<hostdomain>` — the operator's edge serves it, the supported
+ * self-hosted configuration) or under `CLOUD_MODE` (Cloud's edge serves
+ * `*.opsh.io`). False on a self-hosted box with NO `HOST_DOMAIN`: the base
+ * falls back to `CLOUD_DOMAIN`, so every synthesized free route would be a
+ * `*.opsh.io` hostname — OUR domain — that the operator's edge can never
+ * serve and that routes through the Openship Cloud edge this box doesn't
+ * have. The platform's own domain belongs to HOSTED deployments only, so the
+ * deploy pipeline must not attach it next to the user's custom domain.
+ *
+ * This gates SYNTHESIS only (default `<project>-<service>` labels, deploy
+ * defaults, preflight projections). An endpoint a user explicitly submits is
+ * owned by the free-domain guard (assertFreeEndpointsAllowed), which already
+ * decides Cloud requirement by hostname truth.
+ */
+export function managedFreeRoutingAvailable(): boolean {
+  return Boolean(env.HOST_DOMAIN) || env.CLOUD_MODE;
+}
+
+/**
  * Self-hosted runtimes whose custom-domain routes are fronted by OpenResty
  * and need a certbot-issued cert (the NginxProvider SSL path). Both `bare`
  * and `docker` self-hosted deploys go through the SAME OpenResty + certbot
@@ -450,7 +472,11 @@ export function resolveServiceEndpointHostname(
   if (endpoint.domainType === "custom") {
     return endpoint.customDomain ? normalizeCustomHostname(endpoint.customDomain) : null;
   }
-  if (!usesManagedRouting) return null;
+  // A synthesized free route is only planned when THIS box can actually serve
+  // one (operator HOST_DOMAIN or Cloud). Without either, the composed hostname
+  // would be a dead *.opsh.io row next to the user's live custom domain — see
+  // managedFreeRoutingAvailable.
+  if (!usesManagedRouting || !managedFreeRoutingAvailable()) return null;
   const label = resolveServiceHostnameLabel(
     project.slug ?? project.name,
     service.name,
@@ -468,7 +494,12 @@ export function resolveServiceRouteEndpoints(opts: {
 }) {
   const { project, service } = opts;
   if (!service.exposed) return [];
-  const endpoints = resolveServicePublicEndpoints(service, { projectSlug: project.slug ?? project.name });
+  // projectSlug drives the DEFAULT free-label synthesis. Withhold it when this
+  // box can't serve a managed free route, so the default cannot mint a dead
+  // *.opsh.io endpoint next to the user's custom domain.
+  const endpoints = resolveServicePublicEndpoints(service, {
+    projectSlug: managedFreeRoutingAvailable() ? (project.slug ?? project.name) : undefined,
+  });
   const hostnames = new Set(endpoints.map(publicEndpointHostname));
   for (const route of project.compositeRoutes ?? []) {
     if (route.rootServiceId !== service.id || !route.isCustomDomain) continue;

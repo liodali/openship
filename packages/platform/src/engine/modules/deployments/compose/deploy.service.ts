@@ -98,6 +98,7 @@ import {
   createTrackedSslProvider,
   ensureRouteDomainRecord,
   hostTerminatesTlsLocally,
+  managedFreeRoutingAvailable,
   toRoutedDomainInputs,
   withEnsuredDomainRecord,
   type PlannedRouteDomain,
@@ -385,6 +386,9 @@ function resolveServicePublicPort(service: Service): number | undefined {
 
 function resolveServicePublicSlug(project: Project, service: Service): string | undefined {
   if (!service.exposed || service.domainType === "custom") return undefined;
+  // No synthesized free slug when this box can't serve one — the URL would
+  // advertise a dead *.opsh.io origin (managedFreeRoutingAvailable).
+  if (!managedFreeRoutingAvailable()) return undefined;
   return resolveServiceHostnameLabel(
     project.slug ?? project.name,
     service.name,

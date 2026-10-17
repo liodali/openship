@@ -8,7 +8,7 @@ import {
   normalizeCustomHostname,
   isWildcardHostname,
 } from "@repo/core";
-import { getRoutingBaseDomain } from "./routing-domains";
+import { getRoutingBaseDomain, managedFreeRoutingAvailable } from "./routing-domains";
 import { resolveServicePort, serviceKind } from "./deployable-service";
 import { env } from "../config/env";
 
@@ -869,7 +869,10 @@ export function resolveServiceEndpointUrls(
   const urls: Array<{ port: number; url: string }> = [];
   const seenPorts = new Set<number>();
   for (const endpoint of resolveServicePublicEndpoints(service, {
-    projectSlug: project.slug ?? project.name,
+    // No default free-label synthesis when this box can't serve one — the URL
+    // would advertise a *.opsh.io origin that resolves nowhere (the same rule
+    // the route builder applies via managedFreeRoutingAvailable).
+    projectSlug: managedFreeRoutingAvailable() ? (project.slug ?? project.name) : undefined,
   })) {
     if (endpoint.port === undefined || seenPorts.has(endpoint.port)) continue;
     if (endpoint.domainType === "custom") {
@@ -924,6 +927,9 @@ export function resolveServiceRouteHostname(
   if (!service.exposed) return null;
   const custom = service.customDomain?.trim();
   if (custom) return { hostname: normalizeCustomHostname(custom), isCustom: true, label: null };
+  // Mirror the route builder: no synthesized free hostname when this box can't
+  // serve one (self-hosted without HOST_DOMAIN → *.opsh.io would be dead).
+  if (!managedFreeRoutingAvailable()) return null;
   const label = resolveServiceHostnameLabel(
     projectSlug || "project",
     service.name,

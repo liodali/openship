@@ -86,6 +86,7 @@ import {
 import { assertValidCustomDomains, customHostnamesOf } from "../../lib/custom-domain-guard";
 import { assertFreeEndpointsAllowed, composeEndpointChanges } from "../../lib/free-domain-guard";
 import { resolveServicePublicEndpoints } from "../../lib/public-endpoints";
+import { managedFreeRoutingAvailable } from "../../lib/routing-domains";
 import {
   assertBuildMinutesAvailable,
   assertPlanAllowsDeployShape,
@@ -1966,7 +1967,12 @@ export async function requestBuildAccess(
     // The route layer (project-route.service) also refuses to route one, but not
     // manufacturing the endpoint here keeps a portless deploy from ever synthesizing
     // a route it can't answer.
-    deploymentWorkload(project) !== "worker"
+    deploymentWorkload(project) !== "worker" &&
+    // Only default a free subdomain when THIS box can serve one (operator
+    // HOST_DOMAIN or Cloud). Otherwise the default is a dead *.opsh.io route —
+    // the platform's own domain belongs to hosted deployments only; a
+    // self-hosted deploy names a custom domain instead.
+    managedFreeRoutingAvailable()
   ) {
     nextPublicEndpoints = [defaultFreeEndpoint(project)];
   }

@@ -11,7 +11,7 @@ the how. Created with the Option A patches (2026-10).
                 ┌────────────────────────── every day (03:23 UTC) ─────────────────────────┐
                 │                                                                          │
  upstream main ─┼─► fork-sync.yml: merge ─► patch-guard ─► tsc + tests ─► push ─► images ─┼─► Gitea registry
- (oblien/openship)   (rerere replays       (5 patches      (packages/      fork main   (api, dashboard,
+ (oblien/openship)   (rerere replays       (6 patches      (packages/      fork main   (api, dashboard,
                       memorized fixes)      intact?)         adapters)                  edge; version tags)
                 │                                                                          │
                 └─ conflict or guard failure → GitHub issue, nothing pushed ───────────────┘
@@ -27,7 +27,7 @@ Files that make this up:
 | `.github/workflows/fork-sync.yml`   | the worker: daily merge, guards, push, chain images + CLI                              |
 | `.github/workflows/fork-images.yml` | build `openship-api/dashboard/edge` → our registry (also on manual push to main) |
 | `.github/workflows/fork-cli.yml`    | build the `openship` CLI → GitHub release assets (also on manual push to main)   |
-| `scripts/fork/patch-guard.mjs`      | structural check that the five patches survived the merge (3 Podman + the sidebar fork badge + the folder-deploy endpoints) |
+| `scripts/fork/patch-guard.mjs`      | structural check that the six patches survived the merge (3 Podman + fork badge + folder-deploy endpoints + hosted-only own domain) |
 
 ## One-time setup
 
