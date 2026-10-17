@@ -51,6 +51,12 @@ cancelled builds. Their CPU/RAM limits are still applied on each recreation.
 Recovery verifies both legacy and current workers have stopped before releasing
 build capacity. Older unlabeled state is never adopted as a managed cache.
 
+Cloud builds require the managed host executor and BuildKit plugin. If either is
+unavailable, the build fails before starting a replacement worker instead of
+falling back to Docker Engine's embedded builder. Self-hosted hosts retain their
+existing builder selection. Disabling automatic package cache mounts does not
+change this isolation boundary.
+
 Cache collection and worker attachment share the physical host provisioning lock
 across API/worker processes. The worker's attached Docker volume then pins the
 state while the build runs outside that lock. Collection skips attached volumes
@@ -73,8 +79,22 @@ workers also receive cache size and free-space GC policies. Collection runs
 before and after builds and in the daily cache sweep. Project deletion handles
 deleted-project state; the daily Cloud sweep also discovers ready owned hosts
 whose last project was moved or deleted.
-The same sweep also bounds legacy Docker Engine cache records separately at
-5 GiB; current Cloud builds store their cache in the project workers instead.
+Cloud collection returns after processing owned project-worker caches. It never
+calls Docker Engine's native `/build/prune` endpoint, including when all managed
+caches are attached or protected. Engine-only cache filters are rejected rather
+than silently pruning a different cache. On fuse-overlayfs, embedded BuildKit
+cache sizing can exhaust the application daemon's memory; a request timeout
+does not guarantee that the daemon stops this work.
+
+Existing native builder state is not automatically deleted or quarantined.
+Hosts already affected by embedded BuildKit background GC need operator recovery;
+this change prevents Openship from requesting native pruning or adding new Cloud
+builds to that state. Docker's own embedded GC configuration and daemon supervision
+remain host responsibilities. Project cache retention still runs independently.
+
+Openship's build and monitoring requests do not rewrite daemon configuration or
+restart Docker. Docker's autonomous embedded GC and the project workers' GC are
+configured independently; see [Docker's GC configuration](https://docs.docker.com/build/cache/garbage-collection/).
 
 Native Docker caches use the existing 5 GiB daily retention target, with an
 additional bounded prune before Docker builds on their actual daemon. Docker
@@ -83,7 +103,9 @@ without rejecting a build; disk pressure must still be resolved before proceedin
 When a build host executor is available, free storage is measured on Docker's
 filesystem. Disk pressure triggers unused-cache cleanup; a build is refused when
 free storage remains below 10% of the filesystem, capped at a 2 GiB reserve, or
-when filesystem inodes are exhausted. Cloud state collection sizes only recognized
+when supported inode statistics confirm exhaustion. Filesystems without meaningful
+inode totals, such as Btrfs, are treated as having unknown inode availability;
+the free-space check still applies. Cloud state collection sizes only recognized
 cache volumes, avoiding scans of application/database volumes.
 Attached or command-protected caches are not walked for size while their files
 can change. They enter the reclaimable retention budget after confirmed exit;

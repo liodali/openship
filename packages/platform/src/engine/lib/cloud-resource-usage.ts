@@ -1,8 +1,9 @@
 import type { ResourceUsageSample } from "@repo/contracts";
 import { AppError, NotFoundError } from "@repo/core";
 import { repos } from "@repo/db";
-import { readCloudWorkspaceConnection } from "./cloud-workspace-host";
+import { openCloudWorkspaceExecutor, readCloudWorkspaceConnection } from "./cloud-workspace-host";
 import { cloudWorkspaceStatus } from "@repo/adapters";
+import { sampleServerUsage } from "./server-usage";
 
 const nonnegative = (value: unknown): number | null =>
   typeof value === "number" &&
@@ -24,12 +25,30 @@ export function normalizeResourceUsage(raw: unknown): ResourceUsageSample {
   if (!raw || typeof raw !== "object" || Array.isArray(raw))
     throw new Error("Invalid live resource usage sample");
   const value = raw as Record<string, unknown>;
-  const guestMemory = mb(value.guestMemoryUsed);
-  const guestTotal = mb(value.guestMemoryTotal);
-  const memoryUsedMb = guestMemory ?? nonnegative(value.memoryUsedMB);
-  const memoryTotalMb = guestMemory !== null ? guestTotal : nonnegative(value.memoryTotalMB);
-  const diskUsedMb = mb(value.guestDiskUsed);
-  const diskTotalMb = mb(value.guestDiskTotal);
+  const byteTotal = mb(value.guestMemoryTotal);
+  const kibTotal = nonnegative(value.guestMemoryTotalKiB);
+  const memoryTotalMb =
+    byteTotal !== null && byteTotal > 0
+      ? byteTotal
+      : kibTotal !== null && kibTotal > 0
+        ? kibTotal / 1024
+        : null;
+  const kibUsed = nonnegative(value.guestMemoryUsedKiB);
+  const guestUsed =
+    byteTotal !== null && byteTotal > 0
+      ? mb(value.guestMemoryUsed)
+      : kibUsed === null
+        ? null
+        : kibUsed / 1024;
+  // memoryUsedMB/memoryTotalMB describe the hypervisor process, including VM
+  // overhead. They cannot stand in for the guest's RAM consumption or capacity.
+  const memoryUsedMb =
+    memoryTotalMb !== null && guestUsed !== null && guestUsed <= memoryTotalMb ? guestUsed : null;
+  const diskTotal = mb(value.guestDiskTotal ?? value.guestDiskTotalBytes);
+  const diskUsed = mb(value.guestDiskUsed ?? value.guestDiskUsedBytes);
+  const diskTotalMb = diskTotal !== null && diskTotal > 0 ? diskTotal : null;
+  const diskUsedMb =
+    diskTotalMb !== null && diskUsed !== null && diskUsed <= diskTotalMb ? diskUsed : null;
   const cpuPercent = nonnegative(value.cpuUsage);
   if (cpuPercent === null && memoryUsedMb === null && diskUsedMb === null)
     throw new Error("Live resource usage is unavailable. Retry to reconnect.");
@@ -71,8 +90,34 @@ export async function* streamCloudResourceUsage(
       409,
       "CLOUD_WORKSPACE_NOT_RUNNING",
     );
-  for await (const raw of client.streamWorkspaceMetrics(binding.workspaceId!, signal)) {
-    signal?.throwIfAborted();
-    yield { event: "usage", data: JSON.stringify(normalizeResourceUsage(raw)) };
+  let executor: Awaited<ReturnType<typeof openCloudWorkspaceExecutor>> | undefined;
+  let memorySample: Pick<ResourceUsageSample, "memoryUsedMb" | "memoryAvailableMb"> | undefined;
+  let sampledAt = 0;
+  try {
+    for await (const raw of client.streamWorkspaceMetrics(binding.workspaceId!, signal)) {
+      signal?.throwIfAborted();
+      const sample = normalizeResourceUsage(raw);
+      if (sample.memoryUsedMb === null || sample.memoryAvailableMb === null) {
+        // Older guests do not publish memory telemetry. Use the same cheap
+        // guest sample as HTTP, at most once per ten seconds per subscription.
+        // This does not enumerate Docker storage, start the VM, or create data.
+        if (!memorySample || Date.now() - sampledAt >= 10_000) {
+          executor ??= await openCloudWorkspaceExecutor(organizationId, server.workspaceId);
+          memorySample = await executor.runWithAbortSignal(
+            signal ?? new AbortController().signal,
+            () => sampleServerUsage(executor!),
+          );
+          sampledAt = Date.now();
+        }
+        Object.assign(sample, {
+          memoryUsedMb: memorySample.memoryUsedMb,
+          memoryAvailableMb: memorySample.memoryAvailableMb,
+        });
+      }
+      signal?.throwIfAborted();
+      yield { event: "usage", data: JSON.stringify(sample) };
+    }
+  } finally {
+    await executor?.dispose();
   }
 }

@@ -12,9 +12,11 @@ import { repos } from "@repo/db";
 import { reconcileDeployment } from "@repo/platform/engine/modules/deployments/reconcile.service";
 
 export async function runReconcileSweep(): Promise<{ finalized: number; pending: number }> {
+  const { runRoleHandoverRecovery } = await import("./role-handover");
+  const roles = await runRoleHandoverRecovery();
   const deps = await repos.deployment.listByStatus("reconciling");
-  let finalized = 0;
-  let pending = 0;
+  let finalized = roles.recovered;
+  let pending = roles.pending;
   for (const dep of deps) {
     try {
       const outcome = await reconcileDeployment(dep.id);

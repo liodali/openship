@@ -47,7 +47,16 @@ export function ServerUsage({
     resourcePool && metrics && liveEnabled,
     "usage",
   );
-  const measured = live.usage ?? usage;
+  // Provider frames may omit a metric (notably guest disk). Keep each metric's
+  // last measured sample, then fall back to the host snapshot; allocation is
+  // only a denominator, never a substitute for measured consumption.
+  const samples = [live.usage, ...live.history.slice().reverse(), usage]
+    .filter((sample) => sample != null)
+    .sort((a, b) => Date.parse(b.measuredAt) - Date.parse(a.measuredAt));
+  const measured = samples[0];
+  const cpuSample = samples.find((sample) => sample?.cpuPercent != null);
+  const memorySample = samples.find((sample) => sample?.memoryUsedMb != null);
+  const diskSample = samples.find((sample) => sample?.diskUsedMb != null);
   const resourceCopy = t.servers.resources;
   useEffect(() => {
     let active = true;
@@ -74,28 +83,31 @@ export function ServerUsage({
     usage?.projects.some((project) => project.diskMb !== null) || usage?.sharedDiskMb != null;
   const gb = (value: number | null | undefined) => (value == null ? null : value / 1024);
   const measuredMemoryMb =
-    measured?.memoryUsedMb != null && measured?.memoryAvailableMb != null
-      ? measured.memoryUsedMb + measured.memoryAvailableMb
+    memorySample?.memoryUsedMb != null && memorySample?.memoryAvailableMb != null
+      ? memorySample.memoryUsedMb + memorySample.memoryAvailableMb
       : null;
   const rows = [
     {
       label: copy.cpuUsage,
-      value: measured?.cpuPercent ?? null,
+      value: cpuSample?.cpuPercent ?? null,
+      measuredAt: cpuSample?.measuredAt,
       max: 100,
       unit: "%",
       history: live.history.map((sample) => sample.cpuPercent),
     },
     {
       label: t.billing.header.ram,
-      value: gb(measured?.memoryUsedMb),
+      value: gb(memorySample?.memoryUsedMb),
+      measuredAt: memorySample?.measuredAt,
       max: gb(resources?.memoryMb ?? measuredMemoryMb),
       unit: "GB",
       history: live.history.map((sample) => gb(sample.memoryUsedMb)),
     },
     {
       label: copy.diskUsage,
-      value: gb(measured?.diskUsedMb),
-      max: gb(resources?.diskMb ?? measured?.diskTotalMb),
+      value: gb(diskSample?.diskUsedMb),
+      measuredAt: diskSample?.measuredAt,
+      max: gb(resources?.diskMb ?? diskSample?.diskTotalMb),
       unit: "GB",
       history: live.history.map((sample) => gb(sample.diskUsedMb)),
     },
@@ -192,6 +204,11 @@ export function ServerUsage({
                             ? ` / ${number(row.max)} ${row.unit}`
                             : ""}
                         </span>
+                      </p>
+                    )}
+                    {row.measuredAt && row.measuredAt !== measured?.measuredAt && (
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {copy.measuredAt} {new Date(row.measuredAt).toLocaleString(locale)}
                       </p>
                     )}
                   </div>

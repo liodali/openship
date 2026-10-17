@@ -2,9 +2,9 @@
  * Rewrite a compose service's docker port specs so an EDGE-ROUTED container port
  * is published on the loopback interface with a pinned host port
  * (`127.0.0.1:<hostPort>:<containerPort>`) — the compose-side of the loopback
- * route strategy, mirroring what single-app does. Every OTHER spec (port-only
- * bindings the user declared for direct access) is left untouched, so we only
- * de-expose the ports the edge fronts.
+ * route strategy, mirroring what single-app does. Port-only TCP specs get the
+ * same treatment (see `portOnlyTcpContainerPorts`); every other spec the user
+ * declared is left untouched.
  *
  * Pure + string-based (docker port syntax), so it's unit-testable without a
  * daemon. Handles the 1-part ("3000"), 2-part ("8080:3000"), 3-part
@@ -18,6 +18,29 @@ export function specContainerPort(spec: string): number | null {
   const containerPart = parts[parts.length - 1]!;
   const n = Number(containerPart);
   return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+/**
+ * TCP container ports published with a port-only spec ("4011", "4011/tcp"): no
+ * host port and no interface. Docker picks their host port from the kernel's
+ * ephemeral range, a new one on every start, where outbound connections can take
+ * it before a restart. A container port that also has an explicit binding or a
+ * UDP/SCTP spec is left to its specs: republishing it would drop those.
+ */
+export function portOnlyTcpContainerPorts(portSpecs: readonly string[]): number[] {
+  const portOnly = new Set<number>();
+  const keepAsDeclared = new Set<number>();
+  for (const spec of portSpecs) {
+    const containerPort = specContainerPort(spec);
+    if (containerPort === null) continue;
+    const [mapping, proto = "tcp"] = spec.trim().split("/");
+    if (mapping!.includes(":") || proto.toLowerCase() !== "tcp") {
+      keepAsDeclared.add(containerPort);
+    } else {
+      portOnly.add(containerPort);
+    }
+  }
+  return [...portOnly].filter((port) => !keepAsDeclared.has(port));
 }
 
 /**

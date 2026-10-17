@@ -3,7 +3,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const projectRepo = vi.hoisted(() => ({ findById: vi.fn() }));
 const serviceRepo = vi.hoisted(() => ({ listByProject: vi.fn() }));
-const deploymentRepo = vi.hoisted(() => ({ findById: vi.fn(), updateStatus: vi.fn() }));
+const deploymentRepo = vi.hoisted(() => ({
+  findById: vi.fn(),
+  updateStatus: vi.fn(),
+  listPendingRoleHandovers: async () => [],
+}));
 const domainRepo = vi.hoisted(() => ({ listByProject: vi.fn(), update: vi.fn() }));
 
 const edgeProxy = vi.hoisted(() => vi.fn());

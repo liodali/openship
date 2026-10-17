@@ -51,6 +51,8 @@ export interface PinnedArtifactSnapshot extends SnapshotClassInput {
   strictServiceScope?: boolean;
   refreshServiceIds?: string[];
   forcePullImages?: boolean;
+  roleConfiguration?: unknown;
+  webOwnerDeploymentId?: string;
   capacityAdjustment?: { key: string; requestHash: string };
   composeServices?: Array<{
     name: string;
@@ -128,6 +130,8 @@ export function withoutPinnedArtifacts<T extends PinnedArtifactSnapshot>(snapsho
     refreshServiceIds: _refreshServices,
     forcePullImages: _forcePull,
     capacityAdjustment: _capacityAdjustment,
+    roleConfiguration: _roleConfiguration,
+    webOwnerDeploymentId: _webOwner,
     ...rest
   } = snapshot;
   return rest as T;

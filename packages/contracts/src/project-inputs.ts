@@ -242,7 +242,7 @@ const RoleHealthSchema = Type.Object(
   { additionalProperties: false },
 );
 
-const RoleSchema = Type.Object(
+export const RoleSchema = Type.Object(
   {
     name: Type.String({ minLength: 1, maxLength: 63 }),
     kind: Type.Union([Type.Literal("worker"), Type.Literal("scheduler")]),

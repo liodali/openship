@@ -19,6 +19,30 @@ const CONFIG: MultiServiceDeployConfig = {
 };
 
 describe("Docker service replacement ordering", () => {
+  it("pulls a missing image before inspecting startup labels for a service command", async () => {
+    let acquired = false;
+    const inspectImage = vi.fn(async () => {
+      if (!acquired) throw Object.assign(new Error("No such image"), { statusCode: 404 });
+      return { Config: { Labels: {} } };
+    });
+    const stop = vi.fn(async () => undefined);
+    const remove = vi.fn(async () => undefined);
+    const docker = {
+      getImage: vi.fn(() => ({ inspect: inspectImage })),
+      getContainer: vi.fn(() => ({ stop, remove })),
+      createContainer: vi.fn().mockRejectedValue(new Error("replacement payload reached")),
+    };
+    const runtime = await DockerRuntime.create({ dockerSocketPath: "/tmp/openship-test-absent.sock" });
+    (runtime as unknown as { _docker: unknown })._docker = docker;
+    const pull = vi.spyOn(runtime, "pullImage").mockImplementation(async () => { acquired = true; });
+    await expect(runtime.deployServiceWorkload(GROUP, { ...CONFIG, command: "node server.js" }))
+      .rejects.toThrow("replacement payload reached");
+    expect(pull.mock.invocationCallOrder[0]).toBeLessThan(inspectImage.mock.invocationCallOrder[0]!);
+    expect(inspectImage.mock.invocationCallOrder[0]).toBeLessThan(stop.mock.invocationCallOrder[0]!);
+    expect(docker.createContainer).toHaveBeenCalledWith(expect.objectContaining({
+      Cmd: ["sh", "-c", "node server.js"],
+    }));
+  });
   it("does not stop the live container when an immutable prepared image disappeared", async () => {
     const stop = vi.fn();
     const remove = vi.fn();
@@ -79,7 +103,7 @@ describe("Docker service replacement ordering", () => {
     (runtime as unknown as { _docker: unknown })._docker = docker;
     vi.spyOn(runtime, "pullImage").mockRejectedValue(new Error("registry unavailable"));
 
-    await expect(runtime.deployServiceWorkload(GROUP, CONFIG)).rejects.toThrow(
+    await expect(runtime.deployServiceWorkload(GROUP, { ...CONFIG, command: "node server.js" })).rejects.toThrow(
       "registry unavailable",
     );
 

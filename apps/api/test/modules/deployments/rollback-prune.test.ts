@@ -32,6 +32,7 @@ const h = vi.hoisted(() => ({
   purgeFails: new Set<string>(),
   /** Artifact refs whose `runtime.destroy` rejects. */
   destroyFails: new Set<string>(),
+  destroyHangs: new Set<string>(),
   retainedCleared: [] as string[],
   instanceWindow: 5,
   serviceReadFails: new Set<string>(),
@@ -45,6 +46,7 @@ vi.mock("@repo/db", () => ({
       update: async () => {},
     },
     deployment: {
+      listPendingRoleHandovers: async () => [],
       listForRetention: async () => h.ready,
       listInFlightByProject: async () => [],
       findById: async (id: string) => h.ready.find((d) => d.id === id),
@@ -80,6 +82,7 @@ vi.mock("@repo/platform/engine/lib/deployment-runtime", () => ({
       },
       destroy: async (ref: string) => {
         h.destroyed.push(ref);
+        if (h.destroyHangs.has(ref)) await new Promise<void>(() => {});
         if (h.destroyFails.has(ref)) throw new Error(`still present after rm -rf: ${ref}`);
       },
       dispose: async () => {},
@@ -115,6 +118,7 @@ beforeEach(() => {
   h.destroyed = [];
   h.purgeFails = new Set();
   h.destroyFails = new Set();
+  h.destroyHangs = new Set();
   h.retainedCleared = [];
   h.serviceRows = {};
   h.instanceWindow = 5;
@@ -371,5 +375,88 @@ describe("prune — the retention column never claims a reclaim that did not hap
 
     expect(result.purged).toBe(1);
     expect(h.retainedCleared).toEqual(["d0"]);
+  });
+});
+
+describe("prune — recorded runtime roles", () => {
+  const roles = (...ids: string[]) =>
+    ids.map((containerId, index) => ({
+      role: "worker",
+      replica: index + 1,
+      containerId,
+    }));
+
+  it("protects roles referenced by active, pinned, retained and reconciling releases", async () => {
+    h.ready = [
+      dep({ id: "d5", roleContainers: roles("active-worker") }),
+      dep({ id: "d4", roleContainers: roles("retained-worker") }),
+      dep({ id: "d3" }),
+      dep({ id: "pinned", pinned: true, roleContainers: roles("pinned-worker") }),
+      dep({ id: "uncertain", status: "reconciling", roleContainers: roles("uncertain-worker") }),
+      dep({
+        id: "d1",
+        containerId: "active-worker",
+        roleContainers: roles(
+          "active-worker",
+          "retained-worker",
+          "pinned-worker",
+          "uncertain-worker",
+          "expired-worker",
+          "expired-worker",
+        ),
+      }),
+    ];
+
+    expect(await prune("p1")).toEqual({ purged: 1, failed: 0 });
+    expect(h.destroyed).toEqual(["expired-worker"]);
+    expect(h.purgedContainers).toEqual([null]);
+    expect(h.retainedCleared).toEqual(["d1"]);
+  });
+
+  it("keeps failed role cleanup retryable and still attempts its sibling roles", async () => {
+    h.ready = [
+      dep({ id: "d5" }),
+      dep({ id: "d4" }),
+      dep({ id: "d3" }),
+      dep({ id: "d1", roleContainers: roles("stuck-worker", "other-worker") }),
+    ];
+    h.destroyFails.add("stuck-worker");
+
+    expect(await prune("p1")).toEqual({ purged: 0, failed: 1 });
+    expect(h.destroyed).toEqual(["stuck-worker", "other-worker"]);
+    expect(h.retainedCleared).toEqual([]);
+
+    h.destroyFails.clear();
+    expect(await prune("p1")).toEqual({ purged: 1, failed: 0 });
+    expect(h.retainedCleared).toEqual(["d1"]);
+    expect(h.destroyed.filter((id) => id === "stuck-worker")).toHaveLength(2);
+  });
+
+  it("bounds a hanging role cleanup using its frozen stop grace without clearing the retry marker", async () => {
+    vi.useFakeTimers();
+    try {
+      h.ready = [
+        dep({ id: "d5" }),
+        dep({ id: "d4" }),
+        dep({ id: "d3" }),
+        dep({
+          id: "d1",
+          roleContainers: roles("stuck-worker", "other-worker"),
+          meta: {
+            roles: [{ name: "worker", kind: "worker", command: "run", stopGracePeriod: "90s" }],
+          },
+        }),
+      ];
+      h.destroyHangs.add("stuck-worker");
+      const result = prune("p1");
+      await vi.advanceTimersByTimeAsync(119_000);
+      expect(h.destroyed).toEqual(["stuck-worker", "other-worker"]);
+      expect(h.purged).toEqual([]);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(await result).toEqual({ purged: 0, failed: 1 });
+      expect(h.retainedCleared).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

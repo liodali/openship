@@ -221,6 +221,12 @@ describe("instance-scope FK references (servers / mail_servers)", () => {
     expect(tables.project![0]!.id).toBe("prj_1");
   });
 
+  it("does not carry preview automation or host cache receipts in a portable project export", () => {
+    const tables = { project: [{ id: "source", previewSettings: { enabled: true }, previewScannedAt: new Date(), buildCacheReceipts: { source: { deploymentId: "old-host-build" } } }] };
+    stripInstanceRefsInPlace(tables);
+    expect(tables.project[0]).toMatchObject({ id: "source", previewSettings: null, previewScannedAt: null, buildCacheReceipts: null });
+  });
+
   it("is a no-op on tables and rows that carry no instance reference", () => {
     const tables: Record<string, Array<Record<string, unknown>>> = {
       project: [{ id: "prj_1", serverId: null }],

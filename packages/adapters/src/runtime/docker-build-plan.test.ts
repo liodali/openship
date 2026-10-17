@@ -181,7 +181,7 @@ describe("generateDockerfile — non-PHP is unaffected", () => {
         buildCommand: "npm run build",
       }),
     );
-    const runLines = df.split("\n").filter((l) => l.startsWith("RUN "));
+    const runLines = df.split("\n").filter((l) => l.startsWith("RUN ") && !l.includes(".env.example") && !l.includes("eval(Buffer.from"));
     expect(runLines).toHaveLength(1);
     expect(runLines[0]).toContain("npm i --force");
     expect(runLines[0]).toContain("npm run build");
@@ -225,7 +225,7 @@ describe("generateDockerfile — node_modules/.bin on PATH (#623)", () => {
   it("covers the CMD too — a bare `next start` would otherwise crash-loop at boot", () => {
     // Single stage: the build stage IS the runtime stage, so the one ENV serves both.
     const df = generateDockerfile(bunNext());
-    expect(df).toContain('CMD ["sh", "-c", "next start"]');
+    expect(df).toContain('CMD ["sh", "-c", "exec sh .openship-start.sh"]');
     expect(df.indexOf("ENV PATH=")).toBeLessThan(df.indexOf("CMD "));
   });
 
@@ -303,7 +303,7 @@ describe("generateDockerfile — node_modules/.bin on PATH (#623)", () => {
 
   it("keeps install and build in one RUN layer — the PATH is an ENV, not a step", () => {
     const df = generateDockerfile(bunNext());
-    const runLines = df.split("\n").filter((l) => l.startsWith("RUN "));
+    const runLines = df.split("\n").filter((l) => l.startsWith("RUN ") && !l.includes(".env.example") && !l.includes("eval(Buffer.from"));
     expect(runLines).toHaveLength(1);
     expect(runLines[0]).toContain("bun install");
     expect(runLines[0]).toContain("next build");

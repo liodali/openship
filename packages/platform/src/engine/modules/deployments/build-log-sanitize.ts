@@ -1,4 +1,5 @@
 import type { LogEntry } from "@repo/adapters";
+import { DEPLOYMENT_SECRET_FIELDS } from "@repo/db/configuration-secrets";
 
 /**
  * Make captured build output STORABLE — and safe to store — before it becomes a
@@ -300,6 +301,30 @@ export function sanitizeStorableStringsExceptKeys<T>(
   preserveKeys: ReadonlySet<string>,
 ): T {
   return deepStorable(value, 0, preserveKeys, false) as T;
+}
+
+/**
+ * Keep operational configuration exact. The storage codec JSON-serializes and
+ * encrypts these fields before they reach JSONB, so even control characters are
+ * safe inside the ciphertext. Log redaction, byte repair and length caps would
+ * change the configuration a later rollback executes. Diagnostic metadata still
+ * uses the ordinary scrubber. The pure codec subpath also avoids loading a DB.
+ */
+export function sanitizeDeploymentMeta<T>(value: T): T {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return sanitizeStorableStrings(value);
+  const text = { ...value } as Record<string, unknown>;
+  const configuration: Record<string, unknown> = {};
+  for (const key of DEPLOYMENT_SECRET_FIELDS) {
+    if (!Object.hasOwn(text, key)) continue;
+    configuration[key] = text[key];
+    delete text[key];
+  }
+  return {
+    ...sanitizeStorableStrings(text),
+    ...configuration,
+    ...(Object.keys(configuration).length ? { configurationSecretsPreserved: true } : {}),
+  } as T;
 }
 
 function deepStorable(

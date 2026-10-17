@@ -5,6 +5,8 @@ import { isArtifactRef } from "../../lib/container-ref";
  */
 
 import { findActiveDeployment } from "@repo/platform/engine/lib/active-deployment";
+import type { ProjectRuntimeLogsInput } from "@repo/contracts";
+import { roleLogContainerId } from "./project-roles";
 import { repos } from "@repo/db";
 import { AppError, NotFoundError, ValidationError, safeErrorMessage } from "@repo/core";
 import { checkEdge, edgeProxy } from "@repo/adapters";
@@ -35,36 +37,11 @@ import { resolveProjectLiveDeployTarget } from "./project-deploy-target";
 
 // ─── Runtime logs ────────────────────────────────────────────────────────────
 
-export async function getRuntimeLogs(projectId: string, organizationId: string, tail?: number) {
-  const p = await repos.project.findById(projectId);
-  assertResourceInOrg(p, "Project", organizationId, projectId);
-
-  if (!p.activeDeploymentId) {
-    throw new NotFoundError("No active deployment for project", projectId);
-  }
-
-  const dep = await findActiveDeployment(p);
-  if (!dep) {
-    throw new NotFoundError("No running container for project", projectId);
-  }
-
-  // Resolved live inside the runtime, not read off `dep.containerId`: on a
-  // multi-service project that column names one service, and in dependency order
-  // that was the database (#498) — so "the project's logs" were postgres's.
-  return withDeploymentRuntime(dep, async (runtime) => {
-    const containerId = await livePrimaryContainerId(runtime, dep);
-    if (!containerId) {
-      throw new NotFoundError("No running container for project", projectId);
-    }
-    return runtime.getRuntimeLogs(containerId, tail);
-  });
-}
-
-export async function streamRuntimeLogs(
+export async function getRuntimeLogs(
   projectId: string,
   organizationId: string,
-  onLog: (entry: LogEntry) => void,
-  opts?: { tail?: number },
+  tail?: number,
+  input?: ProjectRuntimeLogsInput,
 ) {
   const p = await repos.project.findById(projectId);
   assertResourceInOrg(p, "Project", organizationId, projectId);
@@ -78,17 +55,57 @@ export async function streamRuntimeLogs(
     throw new NotFoundError("No running container for project", projectId);
   }
 
+  const roleContainerId = roleLogContainerId(dep, input);
+  // Resolved live inside the runtime, not read off `dep.containerId`: on a
+  // multi-service project that column names one service, and in dependency order
+  // that was the database (#498) — so "the project's logs" were postgres's.
+  return withDeploymentRuntime(dep, async (runtime) => {
+    const containerId = roleContainerId ?? (await livePrimaryContainerId(runtime, dep));
+    if (!containerId) {
+      throw new NotFoundError("No running container for project", projectId);
+    }
+    return runtime.getRuntimeLogs(containerId, tail);
+  });
+}
+
+export async function streamRuntimeLogs(
+  projectId: string,
+  organizationId: string,
+  onLog: (entry: LogEntry) => void,
+  opts?: ProjectRuntimeLogsInput,
+) {
+  const p = await repos.project.findById(projectId);
+  assertResourceInOrg(p, "Project", organizationId, projectId);
+
+  if (!p.activeDeploymentId) {
+    throw new NotFoundError("No active deployment for project", projectId);
+  }
+
+  const dep = await findActiveDeployment(p);
+  if (!dep) {
+    throw new NotFoundError("No running container for project", projectId);
+  }
+
+  const roleContainerId = roleLogContainerId(dep, opts);
   // NOT withDeploymentRuntime: the transport has to outlive this call, so the
   // runtime is disposed in the stream's cleanup instead — same shape as
   // streamServiceRuntimeLogs. Disposing here would kill the live stream.
   const { runtime, serverId } = await resolveDeploymentRuntimeForRead(dep);
-  const containerId = await livePrimaryContainerId(runtime, dep).catch((diagnosticFailure) => { observeCaughtError(diagnosticFailure, "platform/engine/modules/projects/project-runtime.service"); return null; });
+  const containerId =
+    roleContainerId ??
+    (await livePrimaryContainerId(runtime, dep).catch((diagnosticFailure) => {
+      observeCaughtError(
+        diagnosticFailure,
+        "platform/engine/modules/projects/project-runtime.service",
+      );
+      return null;
+    }));
   if (!containerId) {
     disposeRuntime(runtime);
     throw new NotFoundError("No running container for project", projectId);
   }
   try {
-    const stop = await runtime.streamRuntimeLogs(containerId, onLog, opts);
+    const stop = await runtime.streamRuntimeLogs(containerId, onLog, { tail: opts?.tail });
     let closed = false;
     const cleanup = () => {
       if (closed) return;

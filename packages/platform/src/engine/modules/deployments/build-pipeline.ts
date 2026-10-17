@@ -4,10 +4,28 @@ import { withErrorContext } from "@repo/core/diagnostics/node";
 import { reportError, reportCaughtError as observeCaughtError, diagnostics as errorDiagnostics } from "@repo/core/diagnostics";
 import { findActiveDeployment } from "@repo/platform/engine/lib/active-deployment";
 import { posix as pathPosix } from "node:path";
-import { repos, runOutsideAdvisoryLock, type Project, type Deployment, type Domain } from "@repo/db";
-import { CloudBuildAdmissionDeferredError, withCloudBuildActivity, withCloudBuildExecutionOwnership, releaseCloudBuildSlot, runOutsideCloudBuildActivity } from "../../lib/cloud-build-activity";
-import { withCloudWorkspaceActivity, runOutsideCloudWorkspaceActivity } from "../../lib/cloud-workspace-lock";
-import { runOutsideProjectRuntimeLock } from "../../lib/project-runtime-lock";
+import {
+  repos,
+  runOutsideAdvisoryLock,
+  type Project,
+  type Deployment,
+  type Domain,
+} from "@repo/db";
+import {
+  CloudBuildAdmissionDeferredError,
+  withCloudBuildActivity,
+  withCloudBuildExecutionOwnership,
+  releaseCloudBuildSlot,
+  runOutsideCloudBuildActivity,
+} from "../../lib/cloud-build-activity";
+import {
+  withCloudWorkspaceActivity,
+  runOutsideCloudWorkspaceActivity,
+} from "../../lib/cloud-workspace-lock";
+import {
+  runOutsideProjectRuntimeLock,
+  withProjectRuntimeTransition,
+} from "../../lib/project-runtime-lock";
 import { resolveDeploymentEnvironment } from "./deployment-environment";
 import {
   BUILD_ENV_VARS,
@@ -173,7 +191,14 @@ import {
   DeploymentCancelledError,
 } from "./deployment-cancellation";
 import { rolloutRoles, type RoleRollout } from "./role-rollout";
-import { retirePreviousRoleContainers, rolesUnsupportedReason, runtimeRoleRolloutDeps } from "./role-runtime";
+import { rolesUnsupportedReason, runtimeRoleRolloutDeps } from "./role-runtime";
+import {
+  assertRoleInventorySettled,
+  beginRoleHandover,
+  pendingRoleHandover,
+  recoverProjectRoleHandovers,
+} from "./role-handover";
+import { roleHandoverEnvironment } from "./role-handover-environment";
 
 // Build env = CI/telemetry defaults (BUILD_ENV_VARS) + the customer's own env
 // vars. NODE_ENV is deliberately NOT set or overridden here: it's the customer's
@@ -733,17 +758,6 @@ export async function finalizeComposeDeploy(opts: {
   // Failed, cancelled, and reconciling deployments leave the live release intact.
   const settled = await repos.deployment.findById(dep.id).catch((diagnosticFailure) => { observeCaughtError(diagnosticFailure, "platform/engine/modules/deployments/build-pipeline"); return null; });
   if (settled?.status === "ready" || settled?.status === "partial_failure") {
-    // A single-app predecessor's role containers are not part of this stack.
-    try {
-      const prevDep = project.activeDeploymentId ? await findActiveDeployment(project) : null;
-      await retirePreviousRoleContainers({
-        previous: prevDep,
-        currentDeploymentId: dep.id,
-        log: (m, level) => logger.log(`${m}\n`, level),
-      });
-    } catch (err) {
-      observeCaughtError(err, "platform/engine/modules/deployments/build-pipeline");
-    }
     await archivePreviousDeployment(dep, project, logger);
   }
 }
@@ -769,6 +783,7 @@ async function executeBuildAndDeploy(
   if (!snapshot) {
     throw new Error("Deployment has no config snapshot (meta is empty)");
   }
+  if (!snapshot.roleConfiguration) delete snapshot.webOwnerDeploymentId;
   const routeState = await resolveProjectRouteState(project);
 
   const logs: LogEntry[] = [...initialLogs];
@@ -1001,6 +1016,8 @@ async function executeBuildAndDeploy(
         errorDiagnostics.warn("platform/engine/modules/deployments/build-pipeline", `[build] failed to decrypt env var ${key}: ${safeErrorMessage(err)}`);
       },
     );
+    if (snapshot.roleConfiguration && failedEnvKeys.length)
+      throw new Error("The active environment could not be decrypted. Re-enter the affected variables before applying role settings.");
     // Surface dropped env in the BUILD LOG (not just the server console) so a
     // key-rotation data loss is visible to the operator instead of the build
     // silently running with missing env.
@@ -1467,6 +1484,13 @@ async function executeBuildAndDeploy(
       return;
     }
 
+    if (buildResult.managedCacheTargets?.length) await repos.project.recordBuildCacheReceipt(project.id, project.id, { targets: buildResult.managedCacheTargets, deploymentId: dep.id, completedAt: new Date().toISOString() });
+    const previousBuild = project.activeDeploymentId ? await repos.deployment.findById(project.activeDeploymentId) : null;
+    if (buildResult.durationMs && previousBuild?.buildDurationMs) {
+      const difference = (buildResult.durationMs - previousBuild.buildDurationMs) / 1000;
+      logger.log(`Build time: ${(buildResult.durationMs / 1000).toFixed(1)}s; ${Math.abs(difference).toFixed(1)}s ${difference < 0 ? "faster" : "slower"} than the previous active build.\n`);
+    }
+
     await setDeploymentStatus(dep.id, "deploying", {
       extra: { imageRef: buildResult.imageRef, buildDurationMs: buildResult.durationMs },
     });
@@ -1512,11 +1536,73 @@ async function executeBuildAndDeploy(
       throw new Error("Cannot allocate a routed host port without a physical target identity");
     }
     const deployConfig = createServerDeployConfig(phase);
-    await executeReleasePhase(phase, deployConfig);
-    throwIfDeploymentCancelled(cancellationSignal);
-    await (hostPortTargetLockHeld
-      ? withHostPortTargetLock(phase.hostPortTarget!, () => executeServerDeploy(phase, deployConfig), cancellationSignal)
-      : executeServerDeploy(phase, deployConfig));
+    if (snapshot.roleConfiguration) {
+      if (!(runtime instanceof DockerRuntime) || !runtime.supports("roles") || willRunServices)
+        throw new Error("Runtime role configuration requires a single-app Docker deployment");
+      const { runRoleConfigurationRollout } = await import("./role-configuration-rollout");
+      await runRoleConfigurationRollout({ project, dep, runtime, config: deployConfig, logger, signal: cancellationSignal,
+        beforeStart: containerId => attachLinkedNetworks(project.id, runtime, (message, level) => logger.log(`${message}\n`, level), dep.id, [containerId]),
+        publish: (containerId, warningMessage) => onSuccess(ctx, { containerId, url: dep.url ?? undefined, durationMs: 0, warningMessage }) });
+      await archivePreviousDeployment(dep, project, logger);
+      return;
+    }
+    const activate = async () => {
+      await executeReleasePhase(phase, deployConfig);
+      throwIfDeploymentCancelled(cancellationSignal);
+      return hostPortTargetLockHeld
+        ? withHostPortTargetLock(
+            phase.hostPortTarget!,
+            () => executeServerDeploy(phase, deployConfig),
+            cancellationSignal,
+          )
+        : executeServerDeploy(phase, deployConfig);
+    };
+    const previous = await findActiveDeployment(project);
+    if (
+      runtime instanceof DockerRuntime &&
+      runtime.supports("roles") &&
+      (snapshot.roles?.length || previous?.roleContainers?.length)
+    ) {
+      // Runtime/project precedes host-port ownership, matching teardown. The
+      // wait is cancellable: deletion may hold this lock while stopping workers.
+      const roleRuntime = runtime;
+      await withProjectRuntimeTransition(
+        project.id,
+        async () => {
+          throwIfDeploymentCancelled(cancellationSignal);
+          await recoverProjectRoleHandovers(project.id);
+          const liveProject = await repos.project.findById(project.id);
+          if (!liveProject || liveProject.deletionInProgress)
+            throw new Error("Project cleanup is pending");
+          Object.assign(project, liveProject);
+          logger.log("Checking earlier runtime role containers before handover...\n");
+          const active = await findActiveDeployment(project);
+          await assertRoleInventorySettled(roleRuntime, project.id, active?.roleContainers ?? []);
+          try {
+            await activate();
+          } finally {
+            const current = await repos.deployment.findById(dep.id);
+            if (
+              current &&
+              pendingRoleHandover(current) &&
+              ctx.settled !== "ready" &&
+              !deploymentCancellationKeepsProvisioned(cancellationSignal)
+            ) {
+              await recoverProjectRoleHandovers(project.id, {
+                executingDeploymentId: dep.id,
+              }).catch((error) => {
+                observeCaughtError(error, "platform/engine/modules/deployments/build-pipeline");
+                logger.log(
+                  `Role handover recovery is pending: ${safeErrorMessage(error)}\n`,
+                  "warn",
+                );
+              });
+            }
+          }
+        },
+        cancellationSignal,
+      );
+    } else await activate();
   } catch (err) {
     // Cancellation is a normal terminal outcome, not a pipeline failure. This
     // catches cancellation during setup/compose orchestration as well as the
@@ -2350,6 +2436,11 @@ async function executeServerDeploy(phase: DeployPhaseInputs, deployConfig: Deplo
     certificateManagement: ssl.certificateManagement,
     usesManagedRouting,
     isStatic: isStaticFileServe,
+    // Match live routing repair: a verified Domains-tab hostname on a single
+    // app serves that app even when no endpoint mapping was saved (#1281).
+    ...(!isStaticFileServe && !isWorker && phase.effectiveTarget !== "cloud"
+      ? { defaultTargetPort: deployConfig.port }
+      : {}),
     staticContainerPort:
       !isStaticFileServe &&
       phase.effectiveTarget === "cloud" &&
@@ -2423,7 +2514,7 @@ async function executeServerDeploy(phase: DeployPhaseInputs, deployConfig: Deplo
   }
 
   // Runtime deploy environment (preflight + activate + deactivate + resolvers).
-  const deployEnv = buildDeployEnvironment(phase, {
+  let deployEnv = buildDeployEnvironment(phase, {
     serve,
     previousRuntime,
     plannedDomains,
@@ -2482,6 +2573,17 @@ async function executeServerDeploy(phase: DeployPhaseInputs, deployConfig: Deplo
   // removed from openship.json are retired too.
   let roleRollout: RoleRollout | undefined;
   let roleFailure: DeployPipelineResult | undefined;
+  const roleHandover =
+    snapshot.roles?.length || prevDep?.roleContainers?.length
+      ? await beginRoleHandover({
+          dep,
+          previous: prevDep,
+          config: deployConfig,
+          roles: snapshot.roles,
+        })
+      : undefined;
+  if (roleHandover)
+    deployEnv = roleHandoverEnvironment(deployEnv, roleHandover, phase.cancellationSignal);
   if (snapshot.roles?.length || prevDep?.roleContainers?.length) {
     try {
       roleRollout = await rolloutRoles(
@@ -2489,6 +2591,8 @@ async function executeServerDeploy(phase: DeployPhaseInputs, deployConfig: Deplo
           roles: snapshot.roles,
           previousRoles: (prevDep?.meta as DeploymentConfigSnapshot | null)?.roles,
           previous: prevDep?.roleContainers,
+          recordCreated: roleHandover?.recordCreated,
+          recordStopIntent: roleHandover?.recordStopIntent,
           runtime,
           previousRuntime,
           config: deployConfig,
@@ -2502,15 +2606,11 @@ async function executeServerDeploy(phase: DeployPhaseInputs, deployConfig: Deplo
           keepProvisionedOnCancel: () => deploymentCancellationKeepsProvisioned(phase.cancellationSignal),
         }),
       );
-      // Durable before anything web-facing changes.
-      if (roleRollout.started.length > 0) {
-        await repos.deployment.setRoleContainers(dep.id, [...roleRollout.started]);
-      }
     } catch (err) {
       observeCaughtError(err, "platform/engine/modules/deployments/build-pipeline");
-      // Only matters when the record write failed: rolloutRoles unwinds its own failures.
-      await roleRollout?.abort();
-      const cancelled = phase.cancellationSignal?.aborted === true || err instanceof DeploymentCancelledError;
+      // rolloutRoles unwinds failures, including a failed pre-start journal write.
+      const cancelled =
+        phase.cancellationSignal?.aborted === true || err instanceof DeploymentCancelledError;
       if (cancelled) {
         logger.log("Role rollout cancelled.\n", "warn");
         roleFailure = { status: "cancelled", error: "Deployment cancelled" };
@@ -2566,6 +2666,8 @@ async function executeServerDeploy(phase: DeployPhaseInputs, deployConfig: Deplo
   });
 
   if (deployResult.status === "cancelled") {
+    if (deploymentCancellationKeepsProvisioned(phase.cancellationSignal))
+      await roleHandover?.kept();
     // A cancellation can land after preflight reserved a host port or created a
     // generated domain, but before the pipeline reaches its normal success/fail
     // convergence. Reclaim only claims this attempt newly owns; an existing
@@ -2705,6 +2807,7 @@ async function executeServerDeploy(phase: DeployPhaseInputs, deployConfig: Deplo
   // The web container is live and routed: the previous deployment's role
   // containers retire now, the same moment its web container did. A removal
   // that fails comes back as a warning for this deploy (folded in below).
+  await roleHandover?.committing();
   const roleRetirementWarning = await roleRollout?.commit();
 
   // Allocation authority is the target-scoped claim written before activation.
@@ -2924,6 +3027,13 @@ async function executeServerDeploy(phase: DeployPhaseInputs, deployConfig: Deplo
     ...(warningMessage ? { warningMessage } : {}),
     ...(Object.keys(metaPatch).length > 0 ? { metaPatch } : {}),
   });
+  if (
+    roleHandover &&
+    !roleRetirementWarning &&
+    (await repos.project.findById(project.id))?.activeDeploymentId === dep.id
+  ) {
+    await roleHandover.complete();
+  }
 
   // FINAL STEP (desktop-only, best-effort): mirror this project onto the
   // server's .openship/manifest.json so a fresh orchestrator can re-adopt it.

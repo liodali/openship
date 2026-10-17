@@ -45,6 +45,7 @@ const {
       update: vi.fn(),
     },
     deployment: {
+      listPendingRoleHandovers: vi.fn(async () => []),
       findById: vi.fn(),
       findInProgressByCommit: vi.fn(),
       listInFlightByProject: vi.fn(),

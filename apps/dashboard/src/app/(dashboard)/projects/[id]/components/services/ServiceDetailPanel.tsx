@@ -861,6 +861,7 @@ export function ServiceDetailPanel({
           <ServiceSettingsForm
             service={service}
             includeVolumes={false}
+            enableAutomationActions
             siblingServiceNames={switchableServices
               .filter((s) => s.id !== service.id)
               .map((s) => s.name)

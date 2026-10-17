@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const h = vi.hoisted(() => ({
   exec: vi.fn(),
   inventory: vi.fn(),
+  info: vi.fn(),
   dispose: vi.fn(),
   allocation: vi.fn(),
   owner: vi.fn(),
@@ -35,7 +36,7 @@ vi.mock("@repo/adapters", async (original) => ({
   CloudDockerRuntime: {
     forWorkspace: async () => ({
       executor: { exec: h.exec },
-      docker: { df: h.inventory },
+      docker: { df: h.inventory, info: h.info },
       dispose: h.dispose,
     }),
   },
@@ -63,6 +64,7 @@ const sample = {
 };
 beforeEach(() => {
   vi.resetAllMocks();
+  h.info.mockResolvedValue({ Driver: "overlay2" });
   h.owner.mockResolvedValue({
     id: "cws-test",
     organizationId: "org-test",
@@ -102,6 +104,21 @@ beforeEach(() => {
 });
 
 describe("measured subscription workspace resources", () => {
+  it("keeps monitoring on fuse-overlayfs independent of expensive Docker layer scans", async () => {
+    h.info.mockResolvedValue({ Driver: "fuse-overlayfs" });
+    const usage = await measureCloudWorkspace("org-test", "cws-test", true);
+    expect(usage).toMatchObject({
+      available: true,
+      memoryUsedMb: 2048,
+      memoryAvailableMb: 6144,
+      diskUsedMb: 2048,
+      sharedDiskMb: null,
+    });
+    expect(usage.projects.map((p) => p.diskMb)).toEqual([null, null]);
+    expect(h.inventory).not.toHaveBeenCalled();
+    expect(h.exec).toHaveBeenCalledOnce();
+    expect(h.dispose).toHaveBeenCalledOnce();
+  });
   it("checks the pinned Cloud connection before serving a cached linked-server measurement", async () => {
     await measureCloudWorkspace("org-test", "cws-test", true);
     h.owner.mockResolvedValue({ id: "cws-test", organizationId: "org-test", remote: { userId: "old-owner" }, linkedProjects: [] });

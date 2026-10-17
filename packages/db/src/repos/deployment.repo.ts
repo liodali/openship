@@ -1,10 +1,11 @@
+import type { RoleContainerRef } from "@repo/core";
 import { reportCaughtError as observeCaughtError, diagnostics as errorDiagnostics } from "@repo/core/diagnostics";
 import { ilike, type SQL, eq, and, asc, desc, gte, lte, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import { generateId, AppError, summarizeDeploymentHistory, DEPLOYMENT_HISTORY_STATUSES, type DeploymentHistoryQuery, type ResourceValues } from "@repo/core";
 import { isDeepStrictEqual } from "node:util";
 import type { Database } from "../connection";
 import { createConfigurationSecrets, type ConfigurationEncryption } from "../configuration-secrets";
-import { deployment, buildSession, project, service, cloudBuildActivity, cloudWorkspace } from "../schema";
+import { deployment, buildSession, project, service, cloudBuildActivity, cloudWorkspace, pullRequestPreview } from "../schema";
 import { actionDeployment, actionProject, actionRun, actionWorkflow } from "../schema/actions";
 import { detailOf } from "./storable-detail";
 import { reserveCloudBuildActivity, type CloudBuildResources } from "./cloud-build-activity.repo";
@@ -17,6 +18,19 @@ export type Deployment = typeof deployment.$inferSelect;
 export type NewDeployment = typeof deployment.$inferInsert;
 export type BuildSession = typeof buildSession.$inferSelect;
 export type NewBuildSession = typeof buildSession.$inferInsert;
+
+function pendingRoleHandoverCondition() {
+  return and(
+    isNotNull(deployment.roleHandover),
+    sql`coalesce(${deployment.roleHandover}->>'phase', '') <> 'complete'`,
+  );
+}
+
+export interface DeploymentRoleChanges {
+  expectedActiveDeploymentId: string;
+  expectedProjectUpdatedAt: Date;
+  roles: import("@repo/core").StackRole[];
+}
 
 export interface DeploymentResourceChanges {
   expectedActiveDeploymentId: string;
@@ -68,7 +82,7 @@ export function createDeploymentRepo(db: Database, encryption: ConfigurationEncr
       const rows = await tx
         .update(deployment)
         .set(codec.sealDeployment({ ...extra, status: "cancelled", updatedAt: now }))
-        .where(where)
+        .where(and(where, sql`coalesce(${deployment.roleHandover}->>'phase', '') <> 'committing'`))
         .returning();
       if (rows.length === 0) return false;
       await tx
@@ -417,6 +431,8 @@ export function createDeploymentRepo(db: Database, encryption: ConfigurationEncr
       data: Omit<NewDeployment, "id"> & { id?: string },
       resourceChanges?: DeploymentResourceChanges,
       actionLeaseOwner?: string,
+      roleChanges?: DeploymentRoleChanges,
+      previewAdmission?: { id: string; token: string },
     ): Promise<Deployment | undefined> {
       // `id` is normally generated; re-import (live re-attach) passes the ORIGINAL
       // deployment id so the still-running containers (labelled `openship.deployment=<id>`)
@@ -424,6 +440,29 @@ export function createDeploymentRepo(db: Database, encryption: ConfigurationEncr
       const { id: providedId, ...rest } = data;
       const id = providedId ?? generateId("dep");
       return withProjectWorkAdmission(db, rest.projectId, rest.organizationId, async (tx) => {
+        const [pending] = await tx
+          .select({ id: deployment.id })
+          .from(deployment)
+          .where(and(eq(deployment.projectId, rest.projectId), pendingRoleHandoverCondition()))
+          .limit(1);
+        if (pending)
+          throw new AppError(
+            "The previous role handover still needs recovery. Retry when the server is reachable, or review the cancelled deployment's kept containers.",
+            409,
+            "ROLE_HANDOVER_RECOVERY_PENDING",
+          );
+        if (previewAdmission) {
+          const [intent] = await tx.select().from(pullRequestPreview).where(and(
+            eq(pullRequestPreview.id, previewAdmission.id), eq(pullRequestPreview.leaseToken, previewAdmission.token),
+            eq(pullRequestPreview.projectId, rest.projectId), eq(pullRequestPreview.organizationId, rest.organizationId),
+            sql`${pullRequestPreview.leaseExpiresAt} > now()`,
+          )).for("update");
+          const [source] = intent ? await tx.select().from(project).where(and(eq(project.id, intent.sourceProjectId), eq(project.organizationId, rest.organizationId))).for("share") : [];
+          if (!source?.previewSettings?.enabled || source.deletedAt || source.deletionInProgress)
+            throw new AppError("Preview admission expired or previews were disabled", 409);
+          if (intent!.headSha === rest.commitSha && intent!.deploymentId)
+            throw new AppError("This preview commit already has a deployment", 409);
+        }
         if (rest.trigger === "webhook" && !rest.actionRequestId) {
           const [target] = await tx.select().from(project).where(eq(project.id, rest.projectId));
           const [required] = await tx.select({ id: actionProject.workflowId }).from(actionProject)
@@ -479,6 +518,11 @@ export function createDeploymentRepo(db: Database, encryption: ConfigurationEncr
           .values(codec.sealDeployment({ id, ...rest }))
           .onConflictDoNothing()
           .returning();
+        if (inserted && previewAdmission) {
+          await tx.insert(buildSession).values({ id: generateId("bs"), deploymentId: inserted.id, projectId: inserted.projectId, status: "queued" });
+          await tx.update(pullRequestPreview).set({ headSha: inserted.commitSha, deploymentId: inserted.id, status: "deploying", error: null, updatedAt: new Date() })
+            .where(eq(pullRequestPreview.id, previewAdmission.id));
+        }
         if (inserted) await queueDeploymentChecks(tx, codec.openDeployment(inserted));
         if (inserted?.actionRequestId) await tx.update(actionDeployment).set({
           // Keep the admission retryable until kickoff is acknowledged. A crash
@@ -491,6 +535,16 @@ export function createDeploymentRepo(db: Database, encryption: ConfigurationEncr
           status: "superseded", error: "A newer deployment was started for this project.", updatedAt: new Date(),
         }).where(and(eq(actionDeployment.projectId, inserted.projectId), eq(actionDeployment.organizationId, inserted.organizationId),
           isNull(actionDeployment.deploymentId), inArray(actionDeployment.status, ["waiting", "blocked", "deploying"])));
+        if (inserted && roleChanges) {
+          const [owner] = await tx.select().from(project).where(eq(project.id, rest.projectId));
+          if (owner?.activeDeploymentId !== roleChanges.expectedActiveDeploymentId ||
+              owner.updatedAt.getTime() !== roleChanges.expectedProjectUpdatedAt.getTime()) {
+            throw new AppError("The active release or project changed. Reload the role settings.", 409, "ROLE_CONFIGURATION_CHANGED");
+          }
+          await tx.update(project).set({ roles: roleChanges.roles, updatedAt: new Date() }).where(eq(project.id, rest.projectId));
+          await tx.insert(buildSession).values({ id: generateId("bld"), deploymentId: id,
+            projectId: rest.projectId, status: "queued" });
+        }
         if (inserted && resourceChanges) {
           const [owner] = await tx.select().from(project).where(eq(project.id, rest.projectId));
           if (owner?.activeDeploymentId !== resourceChanges.expectedActiveDeploymentId ||
@@ -929,7 +983,12 @@ export function createDeploymentRepo(db: Database, encryption: ConfigurationEncr
       const swept = await db
         .update(deployment)
         .set({ status: "cancelled", errorMessage: reason, updatedAt: now })
-        .where(inArray(deployment.status, ["queued", "building", "deploying"]))
+        .where(
+          and(
+            inArray(deployment.status, ["queued", "building", "deploying"]),
+            sql`coalesce(${deployment.roleHandover}->>'phase', '') <> 'committing'`,
+          ),
+        )
         .returning();
 
       if (swept.length > 0) {
@@ -968,12 +1027,63 @@ export function createDeploymentRepo(db: Database, encryption: ConfigurationEncr
 
     async setRoleContainers(
       id: string,
-      roleContainers: { role: string; replica: number; containerId: string }[] | null,
+      roleContainers: RoleContainerRef[] | null,
     ) {
       await db
         .update(deployment)
         .set({ roleContainers, updatedAt: new Date() })
         .where(eq(deployment.id, id));
+    },
+
+    /** Runtime journal updates never replace immutable config or concurrent metadata. */
+    async setRoleHandover(input: {
+      id: string;
+      projectId: string;
+      organizationId: string;
+      value: Record<string, unknown>;
+      roleContainers?: RoleContainerRef[];
+      committing?: boolean;
+      expectedRevision: number | null;
+    }) {
+      const [written] = await db
+        .update(deployment)
+        .set({
+          roleHandover: input.value,
+          ...(input.roleContainers ? { roleContainers: input.roleContainers } : {}),
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(deployment.id, input.id),
+            eq(deployment.projectId, input.projectId),
+            eq(deployment.organizationId, input.organizationId),
+            input.committing ? ne(deployment.status, "cancelled") : undefined,
+            input.expectedRevision === null
+              ? isNull(deployment.roleHandover)
+              : sql`${deployment.roleHandover}->>'revision' = ${String(input.expectedRevision)}`,
+          ),
+        )
+        .returning();
+      if (!written)
+        throw new AppError(
+          "The deployment changed before its role handover was recorded",
+          409,
+          "ROLE_HANDOVER_STATE_CHANGED",
+        );
+    },
+
+    async listPendingRoleHandovers(projectId?: string) {
+      const rows = await db
+        .select()
+        .from(deployment)
+        .where(
+          and(
+            projectId ? eq(deployment.projectId, projectId) : undefined,
+            pendingRoleHandoverCondition(),
+          ),
+        )
+        .orderBy(asc(deployment.createdAt));
+      return rows.map((row) => codec.openDeployment(row)!);
     },
 
     /**

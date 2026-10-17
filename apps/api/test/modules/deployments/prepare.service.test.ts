@@ -37,6 +37,45 @@ describe("resolveProjectInfo", () => {
     return path;
   }
 
+  it("suggests framework roles without enabling them and respects an explicit opt-out", async () => {
+    const path = await mkdtemp(join(tmpdir(), "openship-role-suggestions-"));
+    tempDirs.push(path);
+    await writeFile(
+      join(path, "composer.json"),
+      JSON.stringify({
+        require: { "laravel/framework": "^12", "laravel/horizon": "^5" },
+      }),
+    );
+    await writeFile(join(path, "artisan"), "<?php\n");
+    const detected = await resolveProjectInfo({ source: "local", path });
+    expect(detected.rolePresets?.map((role) => role.name)).toEqual(["horizon", "scheduler"]);
+    expect(detected.roles).toBeUndefined();
+    expect(detected.rolePresets?.every((role) => !role.slot && !role.when && !role.unless)).toBe(
+      true,
+    );
+
+    await writeFile(join(path, "openship.json"), JSON.stringify({ roles: [] }));
+    const optedOut = await resolveProjectInfo({ source: "local", path });
+    expect(optedOut.roles).toEqual([]);
+    expect(optedOut.rolePresets).toBeUndefined();
+  });
+
+  it("checks a preset's nested files in the selected application root", async () => {
+    const path = await mkdtemp(join(tmpdir(), "openship-rails-role-suggestions-"));
+    tempDirs.push(path);
+    const root = join(path, "backend");
+    await mkdir(join(root, "bin"), { recursive: true });
+    await writeFile(join(root, "Gemfile"), "gem 'rails'\ngem 'solid_queue'\n");
+    await writeFile(join(root, "bin", "jobs"), "#!/usr/bin/env ruby\n");
+    await writeFile(join(root, "bin", "rails"), "#!/usr/bin/env ruby\n");
+    const detected = await resolveProjectInfo({ source: "local", path, rootDirectory: "backend" });
+    expect(detected.rolePresets?.map((role) => role.name)).toEqual(["jobs"]);
+    expect(detected.roles).toBeUndefined();
+    await writeFile(join(root, "Gemfile"), "gem 'rails'\ngem 'solid_queue'\ngem 'sidekiq'\n");
+    const ambiguous = await resolveProjectInfo({ source: "local", path, rootDirectory: "backend" });
+    expect(ambiguous.rolePresets).toBeUndefined();
+  });
+
   it("reads the listed Dockerfile path on case-sensitive sources", async () => {
     const reads: string[] = [];
     const info = await resolveFromReader(

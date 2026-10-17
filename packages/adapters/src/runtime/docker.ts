@@ -68,6 +68,7 @@ import type { PortProbeExecutor } from "../system/port-listen";
 import { PassThrough, Writable, type Readable } from "node:stream";
 import { relative, sep } from "node:path";
 import { resolveDockerBuildArgs } from "./docker-build-args";
+import { imageStartCommand, nodeOutputOptions } from "./node-output";
 import { dockerContainerStatus, dockerPublishedPortInfo } from "./docker-container-info";
 import { applyDockerEnvironment, type DockerEnvironmentOptions } from "./docker-environment";
 import { DEFAULT_CONTAINER_LOG_CONFIG } from "../container-logging";
@@ -256,9 +257,9 @@ export type DockerConnectionOptions = DockerTransportOptions & {
 export interface BuildCachePruneOptions {
   /** Include reusable (not only dangling) cache records. Active builds remain protected by Docker. */
   all?: boolean;
-  /** Leave at least this many bytes of reusable cache on the daemon. Omit for a full prune. */
+  /** Retained unused-cache budget. Omit for a full prune of eligible idle state. */
   keepStorageBytes?: number;
-  /** Docker build-cache filters, for example `{ until: ["24h"] }`. */
+  /** Native Docker-only filters, for example `{ until: ["24h"] }`. Rejected on managed Cloud. */
   filters?: Record<string, string[]>;
   abortSignal?: AbortSignal;
 }
@@ -1200,6 +1201,39 @@ function deploymentContainerEnv(config: DeployConfig): { env: string[]; dropped:
 }
 
 export class DockerRuntime implements RuntimeAdapter {
+  /** Stable creation identity, also recorded before a role handover mutates Docker. */
+  static deploymentContainerName(
+    config: Pick<DeployConfig, "runtimeName" | "projectId" | "deploymentId">,
+    role?: { name: string; replica: number },
+  ): string {
+    const web = `openship-${config.runtimeName || config.projectId}-${config.deploymentId}`;
+    return role ? `${web}-${role.name}-${role.replica}` : web;
+  }
+
+  /** An exact journal reference is still subject to the daemon's ownership labels. */
+  async findOwnedDeploymentContainer(
+    reference: string,
+    owner: { projectId: string; deploymentId: string; role?: string },
+  ): Promise<string | null> {
+    let info: Dockerode.ContainerInspectInfo;
+    try {
+      info = await this.docker.getContainer(reference).inspect();
+    } catch (error) {
+      if (isDockerNotFoundError(error)) return null;
+      throw error;
+    }
+    const labels = info.Config.Labels ?? {};
+    if (
+      labels[OPENSHIP_LABEL.project] !== owner.projectId ||
+      labels[OPENSHIP_LABEL.deployment] !== owner.deploymentId ||
+      (owner.role ? labels[OPENSHIP_LABEL.role] !== owner.role : !!labels[OPENSHIP_LABEL.role])
+    ) {
+      throw new Error(
+        "The recorded deployment container belongs to a different workload; recovery was refused",
+      );
+    }
+    return info.Id;
+  }
   readonly name: string = "docker";
   /** Declared as a list so a subclass can narrow it (see CloudDockerRuntime). */
   static readonly CAPABILITIES: readonly RuntimeCapability[] = [
@@ -1669,6 +1703,12 @@ export class DockerRuntime implements RuntimeAdapter {
   private engineCacheProbe: Promise<boolean> | null = null;
 
   private async cachedBuildConfig(config: BuildConfig): Promise<BuildConfig> {
+    if (this.transport.kind === "cloud" && !this.connectionOptions?.executor)
+      throw new AppError(
+        "The managed Cloud build executor is unavailable. Recover the Cloud space before retrying.",
+        503,
+        "CLOUD_BUILD_EXECUTOR_UNAVAILABLE",
+      );
     if (config.buildCache === false || process.env.OPENSHIP_BUILD_CACHE_MOUNTS === "false" ||
         config.envVars?.OPENSHIP_BUILD_CACHE_MOUNTS === "false")
       return { ...config, buildCache: false };
@@ -1797,6 +1837,12 @@ export class DockerRuntime implements RuntimeAdapter {
     // `--force-rm` is a legacy-builder concept (BuildKit keeps no intermediate
     // containers to remove), so it goes when BuildKit is on.
     const buildKit = await this.remoteBuildKitAvailable();
+    if (this.connectionOptions?.transport === "cloud" && !buildKit)
+      throw new AppError(
+        "The managed Cloud BuildKit worker is unavailable. Recover the Cloud space before retrying; the current deployment has not been replaced.",
+        503,
+        "CLOUD_BUILDKIT_UNAVAILABLE",
+      );
     // Cloud workers remain project-owned for cancellation and crash recovery.
     // Apply only the user's explicit CPU/RAM caps; zero dimensions stay uncapped.
     const cloudLimits = this.connectionOptions?.transport === "cloud" ? dockerBuildResourceLimits(config.resources) : undefined;
@@ -1811,13 +1857,9 @@ export class DockerRuntime implements RuntimeAdapter {
     // it ever looks at the context. `--force-rm` is the mirror image — a legacy-only
     // concept (BuildKit keeps no intermediate containers to remove). So the flag set
     // follows the builder; passing either unconditionally breaks one of the two.
-    let builderFlags = buildKit
+    const builderFlags = buildKit
       ? " --progress=plain"
       : ` --force-rm --add-host ${sq(`${ownershipHost}:127.0.0.1`)}`;
-    if (!buildKit && cloudLimits) {
-      if (cloudLimits.memory) builderFlags += ` --memory ${cloudLimits.memory} --memory-swap ${cloudLimits.memory}`;
-      if (cloudLimits.cpuquota) builderFlags += ` --cpu-quota ${cloudLimits.cpuquota} --cpu-period ${cloudLimits.cpuperiod}`;
-    }
     if (buildKit) {
       log.log("Builder: BuildKit (docker buildx detected on the host)");
     } else if (opts?.requiresBuildKit) {
@@ -2818,6 +2860,26 @@ export class DockerRuntime implements RuntimeAdapter {
     }
   }
 
+  private async managedCacheReceipt(tag: string, log: BuildLogger): Promise<string[] | undefined> {
+    const summary = log.cacheSummary();
+    if (summary) log.log(`${summary}\n`);
+    try {
+      const executor = (this.transport.kind === "ssh" || this.transport.kind === "cloud") ? this.connectionOptions?.executor : null;
+      const labels = executor
+        ? JSON.parse(await executor.exec(`docker image inspect --format '{{json .Config.Labels}}' ${sq(tag)}`))
+        : (await this.docker.getImage(tag).inspect())?.Config?.Labels;
+      const value = labels?.["io.openship.build-cache-targets"];
+      const targets: unknown = value ? JSON.parse(value) : [];
+      if (!Array.isArray(targets) || !targets.every(target => typeof target === "string" && target.startsWith("/"))) return;
+      if (targets.length) log.log(`Managed build caches: ${targets.join(", ")}\n`);
+      return targets.length ? targets : undefined;
+    } catch (error) {
+      observeCaughtError(error, "adapters/runtime/docker");
+      log.log("Build cache verification is unavailable; manual cache mounts will be retained.\n", "warn");
+      return;
+    }
+  }
+
   async build(config: BuildConfig, logger?: BuildLogger): Promise<BuildResult> {
     const log = logger ?? new BuildLogger();
     const startTime = Date.now();
@@ -2888,6 +2950,7 @@ export class DockerRuntime implements RuntimeAdapter {
           status: "deploying",
           imageRef: tag,
           durationMs: Date.now() - startTime,
+          managedCacheTargets: await this.managedCacheReceipt(tag, log),
         };
       }
 
@@ -2970,7 +3033,7 @@ export class DockerRuntime implements RuntimeAdapter {
       log.log(`[build] ✓ Image ${tag} ready`);
       log.step("build", "completed", `Finalizing image ${tag}`);
       const durationMs = Date.now() - startTime;
-      return { sessionId: config.sessionId, status: "deploying", imageRef: tag, durationMs };
+      return { sessionId: config.sessionId, status: "deploying", imageRef: tag, durationMs, managedCacheTargets: await this.managedCacheReceipt(tag, log) };
     } catch (err) {
       observeCaughtError(err, "adapters/runtime/docker");
       if (abort.signal.aborted || err instanceof BuildCancelledError) return cancelled();
@@ -3169,6 +3232,7 @@ export class DockerRuntime implements RuntimeAdapter {
         sessionId: config.sessionId,
         status: "deploying",
         imageRef: hostOutDir,
+        managedCacheTargets: buildResult.managedCacheTargets,
         durationMs: elapsed(),
       };
     } catch (err) {
@@ -3910,6 +3974,7 @@ export class DockerRuntime implements RuntimeAdapter {
                   sessionId: spec.config.sessionId,
                   status: "deploying" as const,
                   imageRef: spec.config.staticOutDir,
+                  managedCacheTargets: await this.managedCacheReceipt(tag, spec.logger),
                   durationMs: Date.now() - startedAt,
                 };
             spec.onResult?.(result);
@@ -3923,6 +3988,7 @@ export class DockerRuntime implements RuntimeAdapter {
             status: "deploying",
             imageRef: tag,
             durationMs: Date.now() - startedAt,
+            managedCacheTargets: await this.managedCacheReceipt(tag, spec.logger),
           };
           spec.onResult?.(result);
           results.push({ serviceName: spec.serviceName, result });
@@ -4079,7 +4145,7 @@ export class DockerRuntime implements RuntimeAdapter {
       throw new Error("Docker deploy requires an imageRef (built image tag)");
     }
 
-    const containerName = `openship-${config.runtimeName || config.projectId}-${config.deploymentId}`;
+    const containerName = DockerRuntime.deploymentContainerName(config);
 
     // Environment variables — shared with runReleaseCommand, see deploymentContainerEnv.
     const { env, dropped } = deploymentContainerEnv(config);
@@ -4092,7 +4158,10 @@ export class DockerRuntime implements RuntimeAdapter {
     }
 
     // Start command - if provided, split into Cmd array
-    const cmd = config.startCommand ? ["sh", "-c", config.startCommand] : undefined;
+    const labels = nodeOutputOptions({ stack: config.stack ?? "" }, ".")
+      ? (await this.docker.getImage(imageRef).inspect()).Config?.Labels : undefined;
+    const startCommand = imageStartCommand(labels, config.startCommand);
+    const cmd = startCommand ? ["sh", "-c", startCommand] : undefined;
 
     const restartPolicy = resolveRestartPolicy(config.restartPolicy);
 
@@ -4255,8 +4324,10 @@ export class DockerRuntime implements RuntimeAdapter {
       throw new Error(`Role replica must be an integer >= 1, got ${replica}`);
     }
 
-    const containerName =
-      `openship-${config.runtimeName || config.projectId}-${config.deploymentId}-${role.name}-${replica}`;
+    const containerName = DockerRuntime.deploymentContainerName(config, {
+      name: role.name,
+      replica,
+    });
 
     // The web container's env, minus PORT: a role binds no port. `portless` only
     // omits the generated value, so a project-set PORT is filtered here too, and
@@ -4670,9 +4741,14 @@ export class DockerRuntime implements RuntimeAdapter {
   }
 
   /**
-   * Reclaim BuildKit/classic-builder cache through Docker Engine's native API.
+   * Reclaim owned Cloud worker state OR native Docker Engine builder cache.
    *
-   * Build cache belongs to the DAEMON, not to a project: intermediate records
+   * Cloud never prunes the daemon's embedded builder. On fuse-overlayfs that
+   * scan can exhaust dockerd memory, disrupting unrelated application management.
+   * Cloud builds use isolated project workers; their collector checks ownership,
+   * attachments and pending commands under the same lock as worker bootstrap.
+   *
+   * Native build cache belongs to the DAEMON, not to a project: intermediate records
    * do not reliably retain OpenShip's final-image labels. Callers therefore own
    * the host-wide policy (bounded automatic retention vs an explicit full
    * clear). Docker itself excludes records leased by an active build.
@@ -4682,22 +4758,32 @@ export class DockerRuntime implements RuntimeAdapter {
    */
   async pruneBuildCache(options: BuildCachePruneOptions = {}): Promise<BuildCachePruneResult> {
     options.abortSignal?.throwIfAborted();
-    let managed: BuildCachePruneResult | undefined;
-    if (this.connectionOptions?.transport === "cloud" && this.connectionOptions.executor &&
-        !Object.keys(options.filters ?? {}).length) {
-      managed = await this.withBuildCacheLock(() => {
-        options.abortSignal?.throwIfAborted();
-        return this.pruneManagedBuildState(this.connectionOptions!.executor!, {
-        keepBytes: options.keepStorageBytes ?? 0,
-        });
-      });
-    }
     const keepStorageBytes = options.keepStorageBytes;
     if (
       keepStorageBytes !== undefined &&
       (!Number.isSafeInteger(keepStorageBytes) || keepStorageBytes < 0)
     ) {
       throw new RangeError("keepStorageBytes must be a non-negative safe integer");
+    }
+
+    if (this.connectionOptions?.transport === "cloud") {
+      const executor = this.connectionOptions.executor;
+      if (!executor)
+        throw new AppError(
+          "The managed Cloud build executor is unavailable. Recover the Cloud space before retrying.",
+          503,
+          "CLOUD_BUILD_EXECUTOR_UNAVAILABLE",
+        );
+      if (Object.keys(options.filters ?? {}).length)
+        throw new AppError(
+          "Docker Engine cache filters cannot be applied to managed Cloud project caches.",
+          400,
+          "CLOUD_BUILD_CACHE_FILTER_UNSUPPORTED",
+        );
+      return this.withBuildCacheLock(() => {
+        options.abortSignal?.throwIfAborted();
+        return this.pruneManagedBuildState(executor, { keepBytes: keepStorageBytes ?? 0 });
+      });
     }
 
     const query: Record<string, boolean | number | Record<string, string[]>> = {
@@ -4735,15 +4821,15 @@ export class DockerRuntime implements RuntimeAdapter {
       SpaceReclaimed?: unknown;
     };
     return {
-      cachesDeleted: [...(managed?.cachesDeleted ?? []), ...(Array.isArray(response.CachesDeleted)
+      cachesDeleted: Array.isArray(response.CachesDeleted)
         ? response.CachesDeleted.filter((id): id is string => typeof id === "string")
-        : [])],
+        : [],
       spaceReclaimed:
-        (managed?.spaceReclaimed ?? 0) + (typeof response.SpaceReclaimed === "number" &&
+        typeof response.SpaceReclaimed === "number" &&
         Number.isFinite(response.SpaceReclaimed) &&
         response.SpaceReclaimed >= 0
           ? response.SpaceReclaimed
-          : 0),
+          : 0,
     };
   }
 
@@ -6252,7 +6338,7 @@ export class DockerRuntime implements RuntimeAdapter {
         : []),
       ...serviceEnv.entries.map(([k, v]) => `${k}=${v}`),
     ];
-    const cmd = resolveComposeCmd(config);
+    let cmd = resolveComposeCmd(config);
     const entrypoint = resolveComposeEntrypoint(config.advanced);
     const hostMappings = parseContainerHosts(config.advanced?.extraHosts);
     const extraHosts = hostMappings &&
@@ -6305,6 +6391,13 @@ export class DockerRuntime implements RuntimeAdapter {
       // availability again before stopping the old container, without pulling
       // a mutable substitute or contacting the registry during cutover.
       await this.inspectDeploymentImage(config.image);
+    }
+
+    // Labels belong to the replacement image. Resolve them after acquisition,
+    // before stopping the live service, including on a fresh deployment host.
+    if (!config.advanced?.entrypoint && cmd?.length === 3 && cmd[0] === "sh" && cmd[1] === "-c") {
+      const start = imageStartCommand((await this.inspectDeploymentImage(config.image)).Config?.Labels, cmd[2]);
+      if (start) cmd = ["sh", "-c", start];
     }
 
     // Flush the existing service before removing it, using Docker's normal

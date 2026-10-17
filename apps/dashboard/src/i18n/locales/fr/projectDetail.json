@@ -420,5 +420,42 @@
         "transport": "La connexion a été interrompue. Votre service fonctionne peut-être encore."
       }
     }
+  },
+  "runtimeRoles": {
+    "title": "Rôles d’exécution",
+    "kind": "Rôle",
+    "web": "Web",
+    "worker": "Worker",
+    "scheduler": "Planificateur",
+    "replicas": "{count} réplicas",
+    "replica": "Réplica {replica}",
+    "restarts": "{count} redémarrages",
+    "missing": "Introuvable",
+    "logs": "Voir les journaux",
+    "checking": "Vérification des rôles d’exécution…",
+    "staleTarget": "Ce réplica ne fait pas partie du déploiement actif. Sélectionnez à nouveau la source des journaux.",
+    "retry": "Réessayer",
+    "replicaOne": "{count} réplica",
+    "configuration": {
+      "configure": "Configurer les rôles",
+      "title": "Workers et planificateurs",
+      "hint": "Appliquer avec l’image active. L’application et les réplicas inchangés continuent de fonctionner.",
+      "sourceHint": "Ces réglages s’appliquent à cette version. Une liste roles explicite dans openship.json est prioritaire au prochain déploiement du code.",
+      "name": "Nom",
+      "command": "Commande",
+      "kind": "Type",
+      "replicas": "Réplicas",
+      "singleton": "Instance unique",
+      "addWorker": "Ajouter un worker",
+      "addScheduler": "Ajouter un planificateur",
+      "remove": "Supprimer le rôle",
+      "advanced": "Avancé",
+      "healthCommand": "Commande de santé (facultative)",
+      "stopGrace": "Délai d’arrêt",
+      "apply": "Appliquer",
+      "applying": "Application…",
+      "cancel": "Annuler",
+      "retry": "Réessayer"
+    }
   }
 }

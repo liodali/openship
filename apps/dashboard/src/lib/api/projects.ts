@@ -158,6 +158,7 @@ export interface ScanProjectResponse {
   startCommand: PrepareProjectResponse["startCommand"];
   releaseCommands?: PrepareProjectResponse["releaseCommands"];
   roles?: PrepareProjectResponse["roles"];
+  rolePresets?: PrepareProjectResponse["rolePresets"];
   buildImage: PrepareProjectResponse["buildImage"];
   runtimeVersion?: string | null;
   runtimeImage?: string | null;

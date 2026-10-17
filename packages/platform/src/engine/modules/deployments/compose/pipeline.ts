@@ -13,7 +13,10 @@
  */
 
 import { reportCaughtError as observeCaughtError } from "@repo/core/diagnostics";
-import { listActiveServiceDeployments } from "@repo/platform/engine/lib/active-deployment";
+import {
+  findActiveDeployment,
+  listActiveServiceDeployments,
+} from "@repo/platform/engine/lib/active-deployment";
 import { repos } from "@repo/db";
 import type { Deployment, Project } from "@repo/db";
 import type {
@@ -56,6 +59,7 @@ import {
 import { assertExactServiceTargets } from "../exact-service-targets";
 import { strictRefreshImages } from "../pinned-artifacts";
 import { cloudCapacityFailure } from "../../../lib/cloud-capacity";
+import { retirePreviousRoleContainers } from "../role-runtime";
 
 export interface ComposePipelineOpts {
   project: Project;
@@ -501,7 +505,9 @@ export async function executeComposePipeline(opts: ComposePipelineOpts): Promise
     composeResult.routeWarnings?.length || composeResult.tlsPendingDomains?.length
       ? routeIssuesWarning(composeResult.routeWarnings ?? [], composeResult.tlsPendingDomains ?? [])
       : undefined;
-  const successWarning = routingWarning ?? composeResult.warning;
+  const successWarnings = [composeResult.warning, routingWarning].filter(
+    (warning): warning is string => typeof warning === "string" && warning.length > 0,
+  );
   const decisionPending = composeResult.summary.failed > 0 && composeResult.summary.successful > 0;
   sessionManager.broadcastInstallPhase(dep.id, { id: "ready", status: "done" });
 
@@ -512,17 +518,41 @@ export async function executeComposePipeline(opts: ComposePipelineOpts): Promise
   // the live ones still serving.
   if (composeDeployMadeNoChanges(composeResult)) {
     await onNoChanges(ctx, {
-      warningMessage: successWarning,
+      warningMessage: successWarnings.join(" · ") || undefined,
       durationMs: composeBuild.durationMs,
     });
     return;
+  }
+
+  // A single-app predecessor's roles are not part of this stack. Retire them
+  // before the terminal event and log persistence, matching single-app rollout.
+  // A cleanup failure is advisory: the replacement services are already live.
+  const previous = project.activeDeploymentId
+    ? await findActiveDeployment(project).catch((err) => {
+        observeCaughtError(err, "platform/engine/modules/deployments/compose/pipeline");
+        return null;
+      })
+    : null;
+  throwIfDeploymentCancelled(opts.signal);
+  const roleWarning = await retirePreviousRoleContainers({
+    previous,
+    currentDeploymentId: dep.id,
+    log: (message, level) => logger.log(`${message}\n`, level),
+  }).catch((err) => {
+    observeCaughtError(err, "platform/engine/modules/deployments/compose/pipeline");
+    return null;
+  });
+  if (roleWarning) successWarnings.push(roleWarning);
+  const warningMessage = [...new Set(successWarnings)].join(" · ") || undefined;
+  if (warningMessage) {
+    logger.log(`Deployment completed with warnings: ${warningMessage}\n`, "warn");
   }
 
   await onSuccess(ctx, {
     containerId: composeResult.primaryContainerId ?? COMPOSE_SENTINEL,
     url: composeResult.publicUrl,
     durationMs: composeBuild.durationMs,
-    warningMessage: successWarning,
+    warningMessage,
     decisionPending,
     metaPatch: {
       composeDeployment: {
@@ -530,7 +560,7 @@ export async function executeComposePipeline(opts: ComposePipelineOpts): Promise
         successfulServices: composeResult.summary.successful,
         failedServices: composeResult.summary.failed,
         failedServiceNames: composeResult.summary.failedServices,
-        warningMessage: composeResult.warning,
+        warningMessage,
         ...(decisionPending ? { decision: "pending" } : {}),
       },
       ...(routingWarning ? { edgeUnsynced: true, deployWarning: routingWarning } : {}),

@@ -420,5 +420,42 @@
         "transport": "La conexión se interrumpió. Es posible que tu servicio siga funcionando."
       }
     }
+  },
+  "runtimeRoles": {
+    "title": "Roles de ejecución",
+    "kind": "Rol",
+    "web": "Web",
+    "worker": "Trabajador",
+    "scheduler": "Planificador",
+    "replicas": "{count} réplicas",
+    "replica": "Réplica {replica}",
+    "restarts": "{count} reinicios",
+    "missing": "No encontrada",
+    "logs": "Ver registros",
+    "checking": "Comprobando roles de ejecución…",
+    "staleTarget": "Esta réplica no pertenece al despliegue activo. Selecciona de nuevo el origen de los registros.",
+    "retry": "Reintentar",
+    "replicaOne": "{count} réplica",
+    "configuration": {
+      "configure": "Configurar roles",
+      "title": "Workers y planificadores",
+      "hint": "Aplica con la imagen activa. La app y las réplicas sin cambios siguen funcionando.",
+      "sourceHint": "Estos ajustes se aplican a esta versión. Una lista roles explícita en openship.json tiene prioridad en el próximo despliegue desde el código.",
+      "name": "Nombre",
+      "command": "Comando",
+      "kind": "Tipo",
+      "replicas": "Réplicas",
+      "singleton": "Instancia única",
+      "addWorker": "Añadir worker",
+      "addScheduler": "Añadir planificador",
+      "remove": "Eliminar rol",
+      "advanced": "Avanzado",
+      "healthCommand": "Comando de salud (opcional)",
+      "stopGrace": "Plazo de parada",
+      "apply": "Aplicar cambios",
+      "applying": "Aplicando…",
+      "cancel": "Cancelar",
+      "retry": "Reintentar"
+    }
   }
 }

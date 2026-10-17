@@ -33,8 +33,23 @@ const { moveThreadsTo } = await import('../../client/lib/thread-actions');
 let selected = '';
 let failMove = false;
 let mailboxes: Map<string, Set<number>>;
+let messageIds: Map<number, string>;
+let flags: Map<string, Set<string>>;
+let refuseMutation = false;
 const release = mock(() => {});
+const flagKey = (uid: number) => `${selected}:${uid}`;
+function message(uid: number) {
+  if (!mailboxes.get(selected)?.has(uid)) return false;
+  const messageId = messageIds.get(uid);
+  return {
+    uid,
+    envelope: { messageId, subject: messageId },
+    flags: flags.get(flagKey(uid)) ?? new Set<string>(),
+    source: Buffer.from(`Message-ID: ${messageId}\r\nSubject: ${messageId}\r\n\r\nTest body`),
+  };
+}
 const client = {
+  mailbox: { uidValidity: 1 },
   mailboxCreate: async (path: string) => {
     if (!mailboxes.has(path)) mailboxes.set(path, new Set());
   },
@@ -42,24 +57,56 @@ const client = {
     selected = mailbox;
     return { release };
   },
-  search: async () => [...mailboxes.get(selected)!],
+  // IMAP HEADER searches are case-insensitive substring matches, not equality.
+  search: async (filter: { header: { 'message-id': string } }) =>
+    [...mailboxes.get(selected)!].filter((uid) =>
+      messageIds.get(uid)?.toLowerCase().includes(filter.header['message-id'].toLowerCase()),
+    ),
+  fetch: async function* (uids: number[]) {
+    for (const uid of uids) {
+      const result = message(uid);
+      if (result) yield result;
+    }
+  },
+  fetchOne: async (uid: string) => message(Number(uid)),
   messageMove: async (uids: number[], destination: string) => {
     if (failMove) throw new Error('IMAP move rejected');
+    if (refuseMutation) return false;
     for (const uid of uids) {
       if (mailboxes.get(selected)!.delete(uid)) mailboxes.get(destination)!.add(uid);
     }
+    return { uidValidity: 1, uidMap: new Map(uids.map((uid) => [uid, uid])) };
   },
   messageDelete: async (uids: number[]) => {
+    if (refuseMutation) return false;
     for (const uid of uids) mailboxes.get(selected)!.delete(uid);
+    return true;
   },
-  messageFlagsAdd: async () => {},
-  messageFlagsRemove: async () => {},
+  messageFlagsAdd: async (uids: number[], added: string[]) => {
+    if (refuseMutation) return false;
+    for (const uid of uids) {
+      const current = flags.get(flagKey(uid)) ?? new Set<string>();
+      for (const flag of added) current.add(flag);
+      flags.set(flagKey(uid), current);
+    }
+    return true;
+  },
+  messageFlagsRemove: async (uids: number[], removed: string[]) => {
+    if (refuseMutation) return false;
+    for (const uid of uids) {
+      for (const flag of removed) flags.get(flagKey(uid))?.delete(flag);
+    }
+    return true;
+  },
 };
 const connection = spyOn(imap, 'withImap');
 
 beforeEach(() => {
   selected = '';
   failMove = false;
+  refuseMutation = false;
+  messageIds = new Map([[42, '<6044072238196767142@google.com>']]);
+  flags = new Map();
   mailboxes = new Map([
     ['INBOX', new Set([42])], ['Sent', new Set([42])], ['Trash', new Set<number>()],
     ['Junk', new Set<number>()],
@@ -102,6 +149,200 @@ describe('webmail deletion (#429)', () => {
     await moveThreadsTo({ threadIds: [], currentFolder: 'inbox', destination: 'bin' });
     expect(connection).not.toHaveBeenCalled();
   });
+
+  it('deletes a message opened through a URL-encoded deep link', async () => {
+    const url = new URL(
+      'https://mail.example.com/inbox?threadId=%3C6044072238196767142@google.com%3E',
+    );
+    await moveThreadsTo({
+      threadIds: [url.searchParams.get('threadId')!],
+      currentFolder: 'inbox',
+      destination: 'bin',
+    });
+    expect([...mailboxes.get('INBOX')!]).toEqual([]);
+    expect([...mailboxes.get('Trash')!]).toEqual([42]);
+  });
+});
+
+describe('exact Message-ID resolution (#1286)', () => {
+  function competingMessages(first: string, second: string) {
+    messageIds = new Map([
+      [42, first],
+      [43, second],
+    ]);
+    mailboxes.get('INBOX')!.add(43);
+  }
+
+  it.each([
+    ['<invoice%41@example.com>', '<invoiceA@example.com>'],
+    ['invoice%41@example.com', '<invoiceA@example.com>'],
+    ['<invoice%ZZ@example.com>', '<invoice@example.com>'],
+    ['<invoice%2541@example.com>', '<invoice%41@example.com>'],
+  ])('keeps literal Message-ID characters intact: %s', async (id, other) => {
+    competingMessages(id, other);
+    await moveThreadsTo({ threadIds: [id], currentFolder: 'inbox', destination: 'bin' });
+    expect([...mailboxes.get('INBOX')!]).toEqual([43]);
+    expect([...mailboxes.get('Trash')!]).toEqual([42]);
+  });
+
+  it('accepts a URL-decoded deep link without decoding its Message-ID again', async () => {
+    competingMessages('<invoice%41@example.com>', '<invoiceA@example.com>');
+    const url = new URL('https://mail.example.com/inbox');
+    url.searchParams.set('threadId', '<invoice%41@example.com>');
+    const id = new URL(url).searchParams.get('threadId')!;
+    await moveThreadsTo({ threadIds: [id], currentFolder: 'inbox', destination: 'bin' });
+    expect([...mailboxes.get('INBOX')!]).toEqual([43]);
+    expect([...mailboxes.get('Trash')!]).toEqual([42]);
+  });
+
+  it('decodes a deep link exactly once, preserving literal percent escapes', async () => {
+    competingMessages('<invoice%41@example.com>', '<invoiceA@example.com>');
+    const url = new URL(
+      `https://mail.example.com/inbox?threadId=${encodeURIComponent('<invoice%41@example.com>')}`,
+    );
+    await caller.bulkDelete({
+      ids: [url.searchParams.get('threadId')!],
+      folder: 'inbox',
+    });
+    expect([...mailboxes.get('INBOX')!]).toEqual([43]);
+    expect([...mailboxes.get('Trash')!]).toEqual([42]);
+  });
+
+  it('does not reinterpret an encoded-looking literal ID on a repeated action', async () => {
+    competingMessages('%3Cinvoice@example.com%3E', '<invoice@example.com>');
+    await caller.bulkDelete({ ids: ['%3Cinvoice@example.com%3E'], folder: 'inbox' });
+    expect([...mailboxes.get('INBOX')!]).toEqual([43]);
+    expect([...mailboxes.get('Trash')!]).toEqual([42]);
+    await expect(
+      caller.bulkDelete({
+        ids: ['%3Cinvoice@example.com%3E'],
+        folder: 'inbox',
+      }),
+    ).rejects.toThrow('Message not found');
+    expect([...mailboxes.get('INBOX')!]).toEqual([43]);
+  });
+
+  it.each([
+    ['<invoice@example.com>', '<otherinvoice@example.com>'],
+    ['<Invoice@example.com>', '<invoice@example.com>'],
+    ['<invoice@example.com>', '<invoice@example.com.extra>'],
+  ])('permanently deletes only the exact ID: %s versus %s', async (id, other) => {
+    competingMessages(id, other);
+    mailboxes.set('Trash', new Set([42, 43]));
+    await caller.bulkDelete({ ids: [id], folder: 'bin' });
+    expect([...mailboxes.get('Trash')!]).toEqual([43]);
+    expect([...mailboxes.get('INBOX')!]).toEqual([42, 43]);
+  });
+
+  it.each(['<invoice@example.com>', '<>', '%3C%3E', '%253Cinvoice%2540example.com%253E'])(
+    'rejects a missing or empty identity instead of deleting other messages: %s',
+    async (id) => {
+      messageIds.set(42, '<otherinvoice@example.com>');
+      mailboxes.set('Trash', new Set([42]));
+      await expect(caller.bulkDelete({ ids: [id], folder: 'bin' })).rejects.toThrow(
+        'Message not found',
+      );
+      expect([...mailboxes.get('Trash')!]).toEqual([42]);
+      expect(release).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('labels the exact ID without changing a case-only or substring match', async () => {
+    competingMessages('<Invoice@example.com>', '<otherInvoice@example.com>');
+    messageIds.set(44, '<invoice@example.com>');
+    mailboxes.get('INBOX')!.add(44);
+    await caller.modifyLabels({
+      ids: ['Invoice@example.com'],
+      addLabels: ['Work'],
+      folder: 'inbox',
+    });
+    expect(flags.get('INBOX:42')).toEqual(new Set(['Work']));
+    expect(flags.has('INBOX:43')).toBe(false);
+    expect(flags.has('INBOX:44')).toBe(false);
+  });
+
+  it('reports missing label targets instead of confirming an unchanged message', async () => {
+    messageIds.set(42, '<otherinvoice@example.com>');
+    await expect(
+      caller.modifyLabels({
+        ids: ['<invoice@example.com>'],
+        addLabels: ['Work'],
+        folder: 'inbox',
+      }),
+    ).rejects.toThrow('Message not found');
+    expect(flags.size).toBe(0);
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it('sets flags through the same exact lookup', async () => {
+    competingMessages('<Invoice@example.com>', '<invoice@example.com>');
+    await caller.markAsRead({ ids: ['<Invoice@example.com>'], folder: 'inbox' });
+    expect(flags.get('INBOX:42')).toEqual(new Set(['\\Seen']));
+    expect(flags.has('INBOX:43')).toBe(false);
+  });
+
+  it('rejects a stale UID hint and reads the exact Message-ID', async () => {
+    competingMessages('<invoice%41@example.com>', '<invoiceA@example.com>');
+    const result = await caller.get({
+      id: '<invoice%41@example.com>',
+      folder: 'inbox',
+      uidHint: { uid: 43, uidValidity: 1 },
+    });
+    expect(result.latest.subject).toBe('<invoice%41@example.com>');
+  });
+
+  it('finds the exact read result among substring matches with no UID hint', async () => {
+    competingMessages('<invoice@example.com>', '<otherinvoice@example.com>');
+    const result = await caller.get({ id: '<invoice@example.com>', folder: 'inbox' });
+    expect(result.latest.subject).toBe('<invoice@example.com>');
+  });
+
+  it('reads a deep link with an unbracketed IMAP envelope', async () => {
+    messageIds.set(42, '6044072238196767142@google.com');
+    const url = new URL(
+      'https://mail.example.com/inbox?threadId=%3C6044072238196767142@google.com%3E',
+    );
+    const result = await caller.get({
+      id: url.searchParams.get('threadId')!,
+      folder: 'inbox',
+    });
+    expect(result.latest.subject).toBe('6044072238196767142@google.com');
+  });
+
+  it('accepts a valid UID hint without starting a mailbox search', async () => {
+    const search = spyOn(client, 'search');
+    try {
+      const result = await caller.get({
+        id: '6044072238196767142@google.com',
+        folder: 'inbox',
+        uidHint: { uid: 42, uidValidity: 1 },
+      });
+      expect(result.latest.subject).toBe('<6044072238196767142@google.com>');
+      expect(search).not.toHaveBeenCalled();
+    } finally {
+      search.mockRestore();
+    }
+  });
+
+  it.each(['delete', 'move', 'label', 'unlabel'] as const)(
+    'reports an IMAP refusal instead of confirming %s',
+    async (operation) => {
+      refuseMutation = true;
+      const result =
+        operation === 'delete'
+          ? caller.bulkDelete({ ids: ['uid:42'], folder: 'bin' })
+          : operation === 'move'
+            ? caller.bulkDelete({ ids: ['uid:42'], folder: 'inbox' })
+            : caller.modifyLabels({
+                ids: ['uid:42'],
+                folder: 'inbox',
+                ...(operation === 'label' ? { addLabels: ['Work'] } : { removeLabels: ['Work'] }),
+              });
+      await expect(result).rejects.toThrow('IMAP refused');
+      expect([...mailboxes.get('INBOX')!]).toEqual([42]);
+      expect(release).toHaveBeenCalledTimes(1);
+    },
+  );
 });
 
 describe('webmail spam and archive moves (#980)', () => {

@@ -1,4 +1,5 @@
 import { AppError } from "@repo/core";
+import { z } from "zod";
 import type { IngressConnection, IngressHostname } from "@repo/db";
 import type { IngressOwnership } from "@repo/db/schema";
 import { cloudflareDnsProvider } from "../dns/providers/cloudflare.provider";
@@ -17,16 +18,40 @@ export interface AccessPolicy {
   name: string;
   decision: string;
 }
-interface AccessApp {
-  id: string;
-  name: string;
-  type: string;
-  domain: string;
-  aud: string;
-  policies?: Array<{ id: string } | string>;
-  destinations?: Array<{ type?: string; uri?: string; overrides?: unknown[] }>;
-  self_hosted_domains?: string[];
+// The account-wide list includes launcher, SaaS and private applications that
+// have no primary domain. Validate the fields we inspect without requiring the
+// hostname or audience of a self-hosted application on every application type.
+const accessAppSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().optional(),
+  type: z.string().optional(),
+  domain: z.string().optional(),
+  aud: z.string().optional(),
+  policies: z.array(z.union([z.string(), z.object({ id: z.string() })])).optional(),
+  destinations: z
+    .array(
+      z.object({
+        type: z.string().optional(),
+        uri: z.string().optional(),
+        overrides: z.array(z.unknown()).optional(),
+      }),
+    )
+    .optional(),
+  self_hosted_domains: z.array(z.string()).optional(),
+});
+type AccessApp = z.infer<typeof accessAppSchema>;
+function parseAccessApp(value: unknown): AccessApp {
+  const parsed = accessAppSchema.safeParse(value);
+  if (!parsed.success) {
+    const field = parsed.error.issues[0]?.path.join(".") || "application";
+    throw new CloudflareApiError(
+      502,
+      `The API returned invalid Access application data (${field}). Review Access applications in Cloudflare and retry.`,
+    );
+  }
+  return parsed.data;
 }
+
 export interface IngressRule {
   hostname?: string;
   service: string;
@@ -115,7 +140,7 @@ function appCovers(app: AccessApp, host: string): boolean {
     app.domain,
     ...(app.self_hosted_domains ?? []),
     ...(app.destinations ?? []).filter((d) => d.type === "public").map((d) => d.uri ?? ""),
-  ].some((name) => covers(name, host));
+  ].some((name) => name !== undefined && covers(name, host));
 }
 function policyIds(app: AccessApp) {
   return (app.policies ?? []).map((p) => (typeof p === "string" ? p : p.id)).sort();
@@ -369,7 +394,7 @@ export class CloudflareIngress {
     const policies = await this.list<{ id: string }>(
       `/access/apps/${encodeURIComponent(app.id)}/policies`,
     );
-    return { ...detail, policies: policies.map((p) => ({ id: p.id })) };
+    return parseAccessApp({ ...detail, policies: policies.map((p) => ({ id: p.id })) });
   }
   async access(
     host: IngressHostname,
@@ -392,7 +417,7 @@ export class CloudflareIngress {
         400,
         "INGRESS_ACCESS_ORGANIZATION",
       );
-    const apps = await this.list<AccessApp>("/access/apps");
+    const apps = (await this.list<unknown>("/access/apps")).map(parseAccessApp);
     const name = `Openship ${host.id}`;
     let app = apps.find(
       (a) =>
@@ -425,17 +450,19 @@ export class CloudflareIngress {
       if (!app) ownership.appIntent = true;
       ownership.appNextPolicyId = host.accessPolicyId;
       await save(ownership, "access");
-      app = await this.get<AccessApp>(`/access/apps${app ? `/${app.id}` : ""}`, {
-        method: app ? "PUT" : "POST",
-        body: JSON.stringify({
-          type: "self_hosted",
-          name,
-          domain: host.hostname,
-          destinations: [{ type: "public", uri: host.hostname }],
-          session_duration: "24h",
-          policies: [{ id: host.accessPolicyId, precedence: 1 }],
+      app = parseAccessApp(
+        await this.get<unknown>(`/access/apps${app ? `/${app.id}` : ""}`, {
+          method: app ? "PUT" : "POST",
+          body: JSON.stringify({
+            type: "self_hosted",
+            name,
+            domain: host.hostname,
+            destinations: [{ type: "public", uri: host.hostname }],
+            session_duration: "24h",
+            policies: [{ id: host.accessPolicyId, precedence: 1 }],
+          }),
         }),
-      });
+      );
     }
     if (app?.id) app = await this.hydrateApp(app);
     if (!app?.id || !app.aud || canonical(policyIds(app)) !== canonical([host.accessPolicyId]))
@@ -456,7 +483,7 @@ export class CloudflareIngress {
     save: OwnershipSave,
   ): Promise<void> {
     if (!ownership.appId && !ownership.appIntent) return;
-    const apps = await this.list<AccessApp>("/access/apps");
+    const apps = (await this.list<unknown>("/access/apps")).map(parseAccessApp);
     let app = apps.find(
       (a) =>
         a.id === ownership.appId ||

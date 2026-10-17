@@ -8,6 +8,7 @@ import { STACKS, type StackRole } from "./stacks";
 const jobs: StackRole = {
   name: "jobs",
   kind: "worker",
+  slot: "queue",
   command: "exec bin/jobs",
   stopGracePeriod: "10s",
   when: { deps: ["solid_queue"], files: ["bin/jobs"] },
@@ -15,6 +16,7 @@ const jobs: StackRole = {
 const sidekiq: StackRole = {
   name: "sidekiq",
   kind: "worker",
+  slot: "queue",
   command: "exec bundle exec sidekiq",
   stopGracePeriod: "45s",
   when: { deps: ["sidekiq"] },
@@ -112,6 +114,33 @@ describe("resolveStackRoles", () => {
         configRoles: [],
       }),
     ).toEqual([]);
+  });
+
+  it("drops only conflicting slot alternatives while keeping independent roles", () => {
+    const independent: StackRole = { name: "reports", kind: "worker", command: "exec reports" };
+    expect(
+      resolveStackRoles({
+        defaultRoles: [...defaultRoles, independent],
+        deps: ["solid_queue", "sidekiq"],
+        files: ["bin/jobs"],
+      }),
+    ).toEqual([independent]);
+  });
+
+  it("strips preset-only slots from explicit configuration and warns without calling it a gate", () => {
+    const result = parseOpenshipConfig({
+      roles: [
+        { name: "one", kind: "worker", command: "exec one", slot: "queue" },
+        { name: "two", kind: "worker", command: "exec two", slot: "queue" },
+      ],
+    });
+    expect(result.errors).toEqual([]);
+    expect(result.config?.roles?.map((role) => role.name)).toEqual(["one", "two"]);
+    expect(result.config?.roles?.every((role) => !("slot" in role))).toBe(true);
+    expect(result.warnings).toHaveLength(2);
+    expect(result.warnings.every((warning) => warning.includes("resolves alternatives"))).toBe(
+      true,
+    );
   });
 });
 
@@ -273,7 +302,7 @@ describe("STACKS.laravel.defaultRoles", () => {
     ).toEqual([]);
   });
 
-  it("multiple explicit workers are allowed - configRoles bypasses the ambiguous-kind dedup that applies to defaultRoles", () => {
+  it("multiple explicit workers bypass preset exclusivity", () => {
     const horizonWorker: StackRole = {
       name: "horizon",
       kind: "worker",
@@ -294,13 +323,7 @@ describe("STACKS.laravel.defaultRoles", () => {
     ).toEqual([horizonWorker, queueWorker]);
   });
 
-  // Pins today's kind-based dedup (#935). No Pulse preset exists: this one is
-  // hypothetical, the smallest case of two worker presets that both match
-  // without competing for one slot. The resolver reads any two matching
-  // presets of one kind as ambiguous and drops every role of that kind, so
-  // the selected queue or horizon role goes too. The scheduler is another
-  // kind and survives. These tests document current behaviour without
-  // selecting a future exclusivity design.
+  // Independent workers must not compete with the queue backend's slot (#935).
   describe("with a second, independent worker preset (hypothetical Pulse)", () => {
     const pulse: StackRole = {
       name: "pulse",
@@ -311,24 +334,24 @@ describe("STACKS.laravel.defaultRoles", () => {
     const defaultRoles = [...(STACKS.laravel.defaultRoles ?? []), pulse];
     const files = ["artisan", "composer.json"];
 
-    it("drops the selected queue role along with pulse, leaving only the scheduler", () => {
+    it("keeps the selected queue role alongside the independent worker", () => {
       expect(
         resolveStackRoles({
           defaultRoles,
           deps: ["laravel/framework", "laravel/pulse"],
           files,
         }).map((r) => r.name),
-      ).toEqual(["scheduler"]);
+      ).toEqual(["queue", "scheduler", "pulse"]);
     });
 
-    it("drops the selected horizon role the same way", () => {
+    it("keeps horizon alongside the independent worker", () => {
       expect(
         resolveStackRoles({
           defaultRoles,
           deps: ["laravel/framework", "laravel/horizon", "laravel/pulse"],
           files,
         }).map((r) => r.name),
-      ).toEqual(["scheduler"]);
+      ).toEqual(["horizon", "scheduler", "pulse"]);
     });
 
     it("leaves queue + scheduler alone while the extra preset does not match", () => {

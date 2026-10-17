@@ -8,7 +8,9 @@ import { useI18n } from "@/components/i18n-provider";
 import { encodeLocalSlug, encodeRepoSlug } from "@/utils/repoSlug";
 import { EnvVarsEditor } from "./EnvVarsEditor";
 import { StorageSettings } from "./StorageSettings";
+import { BuildCacheMigration } from "@/components/project-settings/DeploymentAutomation";
 import { ResourceSettings } from "./ResourceSettings";
+import { CommandEnvironmentNotice } from "@/components/import-project/CommandEnvironmentNotice";
 
 /**
  * Configuration cards within project Settings. Build settings link to the deploy wizard; project
@@ -85,7 +87,7 @@ function Row({
 }
 
 export const BuildSettings = () => {
-  const { buildData, projectData, servicesData, id } = useProjectSettings();
+  const { buildData, projectData, servicesData, id, updateBuild, refreshEnvironment } = useProjectSettings();
   const { t } = useI18n();
   const router = useRouter();
 
@@ -147,6 +149,7 @@ export const BuildSettings = () => {
     return (
       <div className="space-y-5">
         <ProjectEnvironmentSettings />
+      <BuildCacheMigration key={id} projectId={id} />
         <ResourceSettings />
       </div>
     );
@@ -175,6 +178,7 @@ export const BuildSettings = () => {
 
   return (
     <div className="space-y-5">
+      <CommandEnvironmentNotice commands={buildData} projectId={id} onMigrated={async commands => { updateBuild(commands); await refreshEnvironment(); }} />
       <SectionCard
         icon={"cpu"}
         iconTone="orange"
@@ -214,6 +218,7 @@ export const BuildSettings = () => {
       </SectionCard>
 
       <ProjectEnvironmentSettings />
+      <BuildCacheMigration key={id} projectId={id} />
 
       {/* Project-wide limits also apply to companion services on a static site. */}
       {(workload !== "static" || services.length > 0) && <ResourceSettings />}

@@ -14,7 +14,6 @@ import {
 } from "./project-inputs";
 import {
   DeploymentHistoryFilters,
-  DeploymentLogsSchema,
   DeploymentPageSchema,
   LogEntrySchema,
 } from "./deployment-resources";
@@ -28,6 +27,7 @@ import {
   ProjectRoutingRetrySchema,
 } from "./project-routing";
 import { ProjectLogSchemas } from "./project-logs";
+import { ProjectRuntimeLogsInputSchema, ProjectRuntimeRolesSchema, RuntimeRoleConfigurationSchema, RuntimeRoleConfigurationInputSchema } from "./project-runtime";
 import { ProjectTransferSchemas } from "./project-transfer";
 import { AppProjectSchemas } from "./apps";
 import { ProjectClusterSchemas } from "./project-cluster";
@@ -410,6 +410,59 @@ export const ProjectControlSchemas = {
       bytesReclaimed: Type.Number(),
     }),
   },
+  buildCacheMigration: {
+    action: "write",
+    input: Type.Object({
+      serviceId: Type.Optional(Type.String()),
+      remove: Type.Optional(Type.Array(Type.String({ maxLength: 500 }), { maxItems: 50 })),
+    }),
+    output: Type.Object({
+      candidates: Type.Array(Type.Object({ spec: Type.String(), target: Type.String() })),
+      canMigrate: Type.Boolean(),
+      deploymentId: nullableString,
+      removed: Type.Array(Type.String()),
+    }),
+  },
+  configurePreviews: {
+    action: "write",
+    input: Type.Object({
+      enabled: Type.Boolean(),
+      comments: Type.Boolean(),
+      baseDomain: Type.Optional(Type.String({ maxLength: 200 })),
+    }),
+    output: Type.Object({
+      settings: Type.Object({
+        enabled: Type.Boolean(),
+        comments: Type.Boolean(),
+        baseDomain: Type.Optional(Type.String()),
+      }),
+    }),
+  },
+  listPreviews: {
+    action: "read",
+    output: Type.Object({
+      settings: Type.Union([
+        Type.Object({
+          enabled: Type.Boolean(),
+          comments: Type.Boolean(),
+          baseDomain: Type.Optional(Type.String()),
+        }),
+        Type.Null(),
+      ]),
+      previews: Type.Array(
+        Type.Object({
+          id: Type.String(),
+          number: Type.Integer(),
+          projectId: nullableString,
+          status: Type.String(),
+          url: nullableString,
+          error: nullableString,
+          headSha: nullableString,
+        }),
+      ),
+    }),
+  },
+
   getRollbackCapacity: {
     action: "read",
     output: Type.Object({
@@ -480,6 +533,27 @@ export const ProjectControlSchemas = {
     }),
   },
   getResources: { action: "read", output: ProjectResourcesSchema },
+  migrateCommandEnvironment: {
+    action: "write",
+    input: Type.Object({
+      environment: Type.Union([
+        Type.Literal("production"),
+        Type.Literal("preview"),
+        Type.Literal("development"),
+      ]),
+      serviceId: Type.Optional(Type.String({ minLength: 1 })),
+      commands: Type.Object({
+        installCommand: Type.Optional(Type.String({ maxLength: 1000 })),
+        buildCommand: Type.Optional(Type.String({ maxLength: 1000 })),
+        startCommand: Type.Optional(Type.String({ maxLength: 1000 })),
+      }),
+    }),
+    output: Type.Object({
+      keys: Type.Array(Type.String()),
+      commands: Type.Record(Type.String(), Type.String()),
+    }),
+  },
+
   ...ProjectClusterSchemas,
   updateResources: { action: "write", input: UpdateResourcesBody, output: ProjectResourcesSchema },
   setSleepMode: {
@@ -505,10 +579,14 @@ export const ProjectControlSchemas = {
   },
   runtimeLogs: {
     action: "read",
-    input: DeploymentLogsSchema,
+    input: ProjectRuntimeLogsInputSchema,
     optionalInput: true,
     output: Type.Array(LogEntrySchema),
   },
+  getRuntimeRoles: { action: "read", output: ProjectRuntimeRolesSchema },
+  getRuntimeRoleConfiguration: { action: "read", output: RuntimeRoleConfigurationSchema },
+  configureRuntimeRoles: { action: "write", input: RuntimeRoleConfigurationInputSchema,
+    output: Type.Object({ deploymentId: Type.String() }) },
   getCloneToken: { action: "read", output: CloneTokenStateSchema },
   updateCloneToken: {
     action: "admin",

@@ -561,6 +561,24 @@ describe("project control-plane export and import", () => {
     expect(await db.select().from(schema.project)).toHaveLength(4);
   });
 
+  it("does not import preview automation or builder-local cache proof with a project", async () => {
+    await source();
+    await db.update(schema.project).set({
+      previewSettings: { enabled: true, comments: true },
+      previewScannedAt: new Date(),
+      buildCacheReceipts: {
+        __app__: { targets: ["/root/.npm"], deploymentId: "deploy_web", completedAt: new Date().toISOString() },
+      },
+    }).where(eq(schema.project.id, "web"));
+    const file = await exportFile({ includeEnvironments: false }, false);
+    await importInstance({ file, mode: "merge", context: sourceContext, selection: {
+      scope: "projects", conflictPolicy: "overwrite",
+    } });
+    expect(await repos.project.findById("web")).toMatchObject({
+      previewSettings: null, previewScannedAt: null, buildCacheReceipts: null,
+    });
+  });
+
   it("overwrites cleared credentials and removes stale project environment rows", async () => {
     await source();
     await db.update(schema.project).set({ cloneTokenEncrypted: null }).where(eq(schema.project.id, "web"));

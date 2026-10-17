@@ -14,7 +14,7 @@ function fixture(transport = "cloud", buildKit = true, resources = config.resour
   const executor = {
     exec: vi.fn(async (command: string): Promise<string> =>
       command.includes("buildx version") ? (buildKit ? "OPENSHIP_BUILDKIT_OK\n" : "") :
-      command.includes("df -Pk") ? "104857600 52428800\n100000\n" : "",
+      command.includes("df -Pk") ? "104857600 52428800\n200000 100000\n" : "",
     ),
     writeFile: vi.fn(async () => {}),
     streamExec: vi.fn(async (_command: string, _logger: unknown, _options: unknown) => ({
@@ -106,6 +106,39 @@ describe("Cloud Docker build execution limits", () => {
     expect(h.executor.streamExec).not.toHaveBeenCalled();
     expect(h.commands()).not.toContain("buildx create");
   });
+  it.each([
+    ["cloud", true],
+    ["ssh", true],
+    ["ssh", false],
+  ] as const)(
+    "builds with unsupported inode statistics on %s (BuildKit: %s)",
+    async (transport, buildKit) => {
+      const h = fixture(transport, buildKit);
+      const exec = h.executor.exec.getMockImplementation()!;
+      h.executor.exec.mockImplementation((command) =>
+        command.includes("df -Pk")
+          ? Promise.resolve("OPENSHIP_STORAGE 524288000 301989888\nOPENSHIP_INODES 0 0\n")
+          : exec(command),
+      );
+      await expect(h.run()).resolves.toBeUndefined();
+      expect(h.executor.streamExec).toHaveBeenCalledOnce();
+    },
+  );
+  it.each(["cloud", "ssh"])(
+    "refuses confirmed inode exhaustion before building on %s",
+    async (transport) => {
+      const h = fixture(transport);
+      const exec = h.executor.exec.getMockImplementation()!;
+      h.executor.exec.mockImplementation((command) =>
+        command.includes("df -Pk")
+          ? Promise.resolve("OPENSHIP_STORAGE 524288000 301989888\nOPENSHIP_INODES 1000 0\n")
+          : exec(command),
+      );
+      await expect(h.run()).rejects.toMatchObject({ code: "BUILD_STORAGE_LOW" });
+      expect(h.executor.streamExec).not.toHaveBeenCalled();
+      expect(h.commands()).not.toContain("buildx create");
+    },
+  );
   it.each(["cloud", "ssh"])("preserves fragmented %s terminal output without adding line breaks", async transport => {
     const h = fixture(transport);
     const original = "#5 installing dependencies\r\n#5 café ready\r\n";
@@ -178,13 +211,20 @@ describe("Cloud Docker build execution limits", () => {
     expect(h.commands()).toContain("buildx rm --force --keep-state 'openship-");
     expect(h.commands()).toContain("--keep-state");
   });
-  it("applies the same budget to the legacy Cloud Docker builder", async () => {
+  it("refuses a Cloud build without BuildKit instead of using the daemon's native builder", async () => {
     const h = fixture("cloud", false);
-    await h.run();
-    const command = h.commands();
-    expect(command).toContain("--memory 536870912 --memory-swap 536870912");
-    expect(command).toContain("--cpu-quota 25000 --cpu-period 100000");
-    expect(command).not.toContain("buildx create");
+    await expect(h.run()).rejects.toMatchObject({ code: "CLOUD_BUILDKIT_UNAVAILABLE" });
+    expect(h.executor.streamExec).not.toHaveBeenCalled();
+    expect(h.commands()).not.toContain("buildx create");
+    expect(h.runtime._docker.listVolumes).not.toHaveBeenCalled();
+  });
+  it("never falls back to the Engine API when the Cloud executor is missing, even with cache mounts disabled", async () => {
+    const h = fixture();
+    h.runtime.connectionOptions.executor = undefined;
+    await expect(
+      h.runtime.cachedBuildConfig({ ...config, buildCache: false }),
+    ).rejects.toMatchObject({ code: "CLOUD_BUILD_EXECUTOR_UNAVAILABLE" });
+    expect(h.executor.exec).not.toHaveBeenCalled();
   });
   it.each([true, false])(
     "keeps the self-hosted SSH build path unchanged (BuildKit: %s)",

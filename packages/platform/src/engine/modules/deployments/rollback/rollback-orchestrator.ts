@@ -42,7 +42,7 @@ import { reportCaughtError as observeCaughtError, diagnostics as errorDiagnostic
 import { findActiveDeployment } from "@repo/platform/engine/lib/active-deployment";
 import { repos, type Deployment, type Project } from "@repo/db";
 import { BareRuntime, DockerRuntime, sharedMountExecutor, type DeploymentRef, type ResourceConfig } from "@repo/adapters";
-import { AppError, safeErrorMessage } from "@repo/core";
+import { AppError, safeErrorMessage, withTimeout } from "@repo/core";
 import { isArtifactRef, usableRef } from "../../../lib/container-ref";
 import { resolveDeploymentRuntime } from "../../../lib/deployment-runtime";
 import { withProjectRuntimeLock } from "../../../lib/project-runtime-lock";
@@ -55,6 +55,7 @@ import { buildBackgroundContext } from "../../../lib/background-context";
 import { retainedArtifacts, effectiveServiceArtifacts } from "../retained-artifacts";
 import { withRetentionLock } from "../retention-lock";
 import { withoutPinnedArtifacts } from "../pinned-artifacts";
+import { roleTeardownTimeoutMs } from "../role-runtime";
 import {
   planRestore,
   planNeedsRepository,
@@ -545,6 +546,31 @@ async function pruneUnlocked(project: Project): Promise<{ purged: number; failed
       const serviceRows = await effectiveServiceArtifacts(dep, await repos.service.listByDeployment(dep.id));
       const { runtime } = await resolveDeploymentRuntime(dep);
       try {
+        // Roles share the release image. Remove them before purging that image,
+        // while respecting references from every release in the keep set.
+        const roleContainers = new Set(
+          (dep.roleContainers ?? [])
+            .map((role) => usableRef(role.containerId))
+            .filter((id): id is string => !!id && !keep.containers.has(id)),
+        );
+        const roleTimeoutMs = roleTeardownTimeoutMs((dep.meta as DeploymentConfigSnapshot | null)?.roles);
+        let roleFailure: unknown = null;
+        await Promise.all(
+          [...roleContainers].map(async (containerId) => {
+            try {
+              await withTimeout(
+                runtime.destroy(containerId),
+                roleTimeoutMs,
+                `Role container ${containerId} removal timed out after ${roleTimeoutMs}ms`,
+              );
+            } catch (err) {
+              observeCaughtError(err, "platform/engine/modules/deployments/rollback/rollback-orchestrator");
+              roleFailure ??= err;
+            }
+          }),
+        );
+        // Keep the release's retry marker until every unprotected role is gone.
+        if (roleFailure) throw roleFailure;
         const ref = toRef(dep);
         const container = usableRef(ref.containerId);
         const image = usableRef(ref.imageRef);

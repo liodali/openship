@@ -58,6 +58,9 @@ const PROJECT_FIELDS_NOT_CLONED = [
   "serverId",
   // Deployment state belongs to deploys that happened, and none have.
   "activeDeploymentId",
+  "buildCacheReceipts",
+  "previewSettings",
+  "previewScannedAt",
   // A copy has never participated in the source project's Cloud transfer.
   "cloudPromotion",
   // Lifecycle flags: a copy of a paused or half-deleted project starts clean and running.

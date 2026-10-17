@@ -15,6 +15,7 @@ import { ServiceSettingsForm } from "@/app/(dashboard)/projects/[id]/components/
 import { serviceCanStartWithoutBuild, type Service, type ServiceInput } from "@/lib/api/services";
 import { TopologyResourceIcon, TopologyStatus } from "./TopologyCanvas";
 import { TopologyScaling } from "./TopologyScaling";
+import { RuntimeRoleReplicas } from "@/components/services/RuntimeRoles";
 import type {
   ProjectTopologyGraph,
   TopologyProject,
@@ -240,13 +241,15 @@ export function TopologyInspector({
               <Detail
                 label="Connection type"
                 value={
-                  relation.kind === "binding"
-                    ? "Environment binding"
-                    : relation.kind === "route"
-                      ? relation.scope === "instances"
-                        ? "Instance traffic"
-                        : "Public route"
-                      : "Startup dependency"
+                  relation.scope === "roles"
+                    ? relation.label
+                    : relation.kind === "binding"
+                      ? "Environment binding"
+                      : relation.kind === "route"
+                        ? relation.scope === "instances"
+                          ? "Instance traffic"
+                          : "Public route"
+                        : "Startup dependency"
                 }
               />
               {relation.connection && (
@@ -267,7 +270,7 @@ export function TopologyInspector({
                 <Detail label="Scope" value="Only the selected service" />
               )}
             </dl>
-            {relation.scope === "instances" ? (
+            {relation.scope === "roles" ? null : relation.scope === "instances" ? (
               <p className="text-xs leading-relaxed text-muted-foreground">
                 This connection follows instance health. Change the instance count from the
                 application's Scale tab.
@@ -368,6 +371,14 @@ export function TopologyInspector({
               <Detail label="Ports" value={service?.ports?.join(", ")} copyable />
               <Detail label="Managed by" value={resource.ownerName} />
             </dl>
+            {resource.role && resource.deploymentId && (
+              <RuntimeRoleReplicas
+                projectId={project.id}
+                deploymentId={resource.deploymentId}
+                role={resource.role}
+                onNavigate={onNavigate}
+              />
+            )}
             {resource.clusterPod && (
               <>
                 {resource.clusterPod.serverId && (

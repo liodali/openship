@@ -611,6 +611,10 @@ Cloud spaces uses the read-only provider metrics stream through Openship's authe
 endpoint. Title the card Resource usage, and show Live only after a valid sample; pause hidden pages and cancel subscriptions when
 the space, account or tab changes. Retain and label the last reading on disconnect with Retry.
 Recent charts contain at most 60 samples from the open page, not billed usage or historical analytics.
+Provider usage frames can omit individual metrics. Resolve CPU, memory and storage independently
+by measurement time from recent live readings and the host snapshot; a partial frame must not
+erase measured storage. Keep each memory/storage group together, show the measurement time when a row uses an
+older sample, and leave unknown values and chart gaps unknown rather than substituting capacity or zero.
 Project storage inventory uses the existing snapshot request and is not scanned on every live tick.
 Cloud spaces and Billing reuse the shared destination picker rows, project counts and catalog plan names.
 Keep instant resource readings and project storage on Cloud spaces. Billing retains subscription,

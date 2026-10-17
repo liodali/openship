@@ -89,6 +89,13 @@ export function TopologyResourceIcon({
       />
     );
   if (resource.volume) return <UiIcon name="hard-drive" className={className} />;
+  if (resource.role)
+    return (
+      <UiIcon
+        name={resource.role.kind === "scheduler" ? "clock" : "terminal"}
+        className={className}
+      />
+    );
   if (resource.database || (resource.clusterPod && resource.tone !== "service")) {
     return <ResourceIcon kind={resource.tone} className={className} />;
   }
@@ -188,9 +195,11 @@ const Resource = memo(function Resource({ data }: NodeProps<ResourceFlowNode>) {
                 ? action.ariaLabel
                 : canInspectInstance
                   ? `View instances of ${resource.name}`
-                  : resource.clusterPod
-                    ? `Inspect ${resource.name}`
-                    : `Configure ${resource.name}`
+                  : resource.role
+                    ? `Inspect role ${resource.name}`
+                    : resource.clusterPod
+                      ? `Inspect ${resource.name}`
+                      : `Configure ${resource.name}`
             }
           >
             <span className="flex min-w-0 items-center gap-2 truncate">
@@ -201,13 +210,15 @@ const Resource = memo(function Resource({ data }: NodeProps<ResourceFlowNode>) {
                 ? action.label
                 : canInspectInstance
                   ? "Instances"
-                  : resource.clusterPod
-                    ? "Inspect instance"
-                    : resource.kind === "traffic"
-                      ? "View traffic"
-                      : resource.kind === "linked"
-                        ? "View connection"
-                        : "Configuration"}
+                  : resource.role
+                    ? "Role details"
+                    : resource.clusterPod
+                      ? "Inspect instance"
+                      : resource.kind === "traffic"
+                        ? "View traffic"
+                        : resource.kind === "linked"
+                          ? "View connection"
+                          : "Configuration"}
             </span>
             <span className="flex shrink-0 items-center gap-2">
               {applicationRelease ? (

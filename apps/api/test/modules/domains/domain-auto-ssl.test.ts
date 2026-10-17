@@ -20,6 +20,7 @@ vi.mock("@repo/db", () => ({
   repos: {
     domain: domainRepo,
     project: projectRepo,
+    deployment: { listPendingRoleHandovers: async () => [] },
   },
 }));
 

@@ -420,5 +420,42 @@
         "transport": "接続が中断されました。サービスは稼働している可能性があります。"
       }
     }
+  },
+  "runtimeRoles": {
+    "title": "実行ロール",
+    "kind": "ロール",
+    "web": "Web",
+    "worker": "ワーカー",
+    "scheduler": "スケジューラー",
+    "replicas": "レプリカ {count} 個",
+    "replica": "レプリカ {replica}",
+    "restarts": "再起動 {count} 回",
+    "missing": "見つかりません",
+    "logs": "ログを表示",
+    "checking": "実行ロールを確認中…",
+    "staleTarget": "このレプリカは現在のデプロイに含まれていません。ログの対象を選び直してください。",
+    "retry": "再試行",
+    "replicaOne": "レプリカ {count} 個",
+    "configuration": {
+      "configure": "ロールを設定",
+      "title": "ワーカーとスケジューラー",
+      "hint": "稼働中のイメージを使用します。アプリと変更のないレプリカは稼働を続けます。",
+      "sourceHint": "この設定は現在のリリースに適用されます。次回のソースデプロイでは、openship.jsonの明示的なroles配列が優先されます。",
+      "name": "名前",
+      "command": "コマンド",
+      "kind": "種類",
+      "replicas": "レプリカ数",
+      "singleton": "単一インスタンス",
+      "addWorker": "ワーカーを追加",
+      "addScheduler": "スケジューラーを追加",
+      "remove": "ロールを削除",
+      "advanced": "詳細設定",
+      "healthCommand": "ヘルスチェックコマンド（任意）",
+      "stopGrace": "停止猶予期間",
+      "apply": "変更を適用",
+      "applying": "適用中…",
+      "cancel": "キャンセル",
+      "retry": "再試行"
+    }
   }
 }

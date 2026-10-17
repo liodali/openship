@@ -34,6 +34,7 @@ openship project|projects [options] [command]
 | [`cluster`](/docs/cli/reference/project#openship-project-cluster) | Configure cluster placement and scale a deployed workload |
 | [`database`](/docs/cli/reference/project/database#openship-project-database) | Manage project databases, replicas, backups and application connections |
 | [`volume`](/docs/cli/reference/project/volume#openship-project-volume) | Manage replicated project volumes and recoverable backups |
+| [`configure-roles [options] <id> [file]`](/docs/cli/reference/project#openship-project-configure-roles) | Apply runtime roles using the active image, preserving web and unchanged replicas |
 | [`options [options] <id> [file]`](/docs/cli/reference/project#openship-project-options) | Change supported project options using the shared input schema |
 | [`clear-build-cache [options] <id>`](/docs/cli/reference/project#openship-project-clear-build-cache) | Clear the host build cache used by this project; other projects on that host share it |
 | [`deployments [options] <id>`](/docs/cli/reference/project#openship-project-deployments) | Read full project deployment records with pagination |
@@ -47,6 +48,8 @@ openship project|projects [options] [command]
 | [`connections`](/docs/cli/reference/project/connections#openship-project-connections) | Wire app outputs into a project's environment through the engine |
 | [`pending <id>`](/docs/cli/reference/project#openship-project-pending) | Show pending deployment, routing and certificate actions |
 | [`incidents <id>`](/docs/cli/reference/project#openship-project-incidents) | Show this project's monitoring incidents |
+| [`role-config <id>`](/docs/cli/reference/project#openship-project-role-config) | Read editable runtime role settings from the active Docker release |
+| [`roles <id>`](/docs/cli/reference/project#openship-project-roles) | Show active runtime roles, replicas, status and restart counts |
 | [`drift <id>`](/docs/cli/reference/project#openship-project-drift) | Compare source and deployment configuration |
 | [`rollback-capacity <id>`](/docs/cli/reference/project#openship-project-rollback-capacity) | Inspect retained rollback capacity |
 | [`info <id>`](/docs/cli/reference/project#openship-project-info) | Read project details and deployment configuration |
@@ -208,6 +211,23 @@ openship project cluster set [options] <id> [file]
 | --- | --- |
 | `--schema` | Print the accepted JSON schema without making a request |
 | `-y, --yes` | Confirm this operation |
+
+## openship project configure-roles
+
+Apply runtime roles using the active image, preserving web and unchanged replicas
+
+```text
+openship project configure-roles [options] <id> [file]
+```
+
+| Argument | Meaning |
+| --- | --- |
+| `id` | Resource ID |
+| `file` | JSON input file, or - for stdin |
+
+| Option | Meaning |
+| --- | --- |
+| `--schema` | Print the accepted JSON schema without making a request |
 
 ## openship project connect
 
@@ -551,6 +571,9 @@ openship project logs [options] <id>
 | Option | Meaning |
 | --- | --- |
 | `--tail <n>` | Number of recent lines |
+| `--role <name>` | Read one active runtime role instead of the web application |
+| `--replica <n>` | Role replica number (defaults to 1) |
+| `--deployment-id <id>` | Reject logs if this deployment is no longer active |
 | `-f, --follow` | Stream logs until interrupted |
 
 ## openship project options
@@ -651,6 +674,30 @@ openship project resources set [options] <id> <file>
 | --- | --- |
 | `id` | Project ID |
 | `file` | JSON patch with production/build resource selections, sleepMode or port |
+
+## openship project role-config
+
+Read editable runtime role settings from the active Docker release
+
+```text
+openship project role-config [options] <id>
+```
+
+| Argument | Meaning |
+| --- | --- |
+| `id` | Project ID |
+
+## openship project roles
+
+Show active runtime roles, replicas, status and restart counts
+
+```text
+openship project roles [options] <id>
+```
+
+| Argument | Meaning |
+| --- | --- |
+| `id` | Project ID |
 
 ## openship project rollback-capacity
 

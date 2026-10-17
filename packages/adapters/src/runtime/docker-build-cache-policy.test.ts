@@ -1,6 +1,11 @@
+import { execFileSync } from "node:child_process";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   assertBuildStorage,
+  DOCKER_BUILD_STORAGE_COMMAND,
   ensureProjectBuildCache,
   managedBuildCaches,
   parseBuildStorage,
@@ -34,7 +39,7 @@ function fixture(volumes = [volume("a"), volume("b")]) {
     createVolume: vi.fn(async () => ({})),
   };
   const exec = vi.fn(async (command: string) => {
-    if (command.includes("df -Pk")) return "104857600 52428800\n100000\n";
+    if (command.includes("df -Pk")) return "104857600 52428800\n200000 100000\n";
     if (command.startsWith("du ")) {
       const v = volumes.find((v) => command.includes(v.Mountpoint))!;
       return `${v.UsageData.Size / 1024}\t${v.Mountpoint}\n`;
@@ -48,14 +53,14 @@ function fixture(volumes = [volume("a"), volume("b")]) {
 
 describe("bounded project build cache", () => {
   it("validates free bytes and refuses an exhausted filesystem", () => {
-    expect(parseBuildStorage("102400 51200\n100")).toEqual({
+    expect(parseBuildStorage("102400 51200\n1000 100")).toEqual({
       totalBytes: 104857600,
       freeBytes: 52428800,
       freeInodes: 100,
     });
     expect(() => parseBuildStorage("bad")).toThrow(/measure/);
     expect(
-      parseBuildStorage("login banner\nOPENSHIP_STORAGE 102400 51200\nOPENSHIP_INODES 100\n"),
+      parseBuildStorage("login banner\nOPENSHIP_STORAGE 102400 51200\nOPENSHIP_INODES 1000 100\n"),
     ).toEqual({ totalBytes: 104857600, freeBytes: 52428800, freeInodes: 100 });
     expect(() => parseBuildStorage("1024 2048")).toThrow(/measure/);
     expect(() =>
@@ -65,6 +70,65 @@ describe("bounded project build cache", () => {
       assertBuildStorage({ totalBytes: 100 * GIB, freeBytes: 10 * GIB, freeInodes: 0 }),
     ).toThrow(/too little/);
   });
+
+  it.skipIf(process.platform === "win32").each([
+    { inodes: "0 0 0 -", freeInodes: null, exhausted: false },
+    { inodes: "- - - -", freeInodes: null, exhausted: false },
+    { inodes: "1000 900 100 90%", freeInodes: 100, exhausted: false },
+    { inodes: "1000 1000 0 100%", freeInodes: 0, exhausted: true },
+  ])("measures df inode statistics correctly: $inodes", ({ inodes, freeInodes, exhausted }) => {
+    const root = mkdtempSync(join(tmpdir(), "openship-storage-probe-"));
+    try {
+      writeFileSync(
+        join(root, "docker"),
+        '#!/bin/sh\nprintf "%s\\n" "$OPENSHIP_TEST_STORAGE_ROOT"\n',
+      );
+      writeFileSync(
+        join(root, "df"),
+        `#!/bin/sh
+if [ "$1" = "-Pk" ]; then
+  printf '%s\\n' 'Filesystem 1024-blocks Used Available Capacity Mounted on' 'fixture 524288000 222298112 301989888 43% /fixture'
+else
+  printf '%s\\n' 'Filesystem Inodes IUsed IFree IUse% Mounted on' 'fixture ${inodes} /fixture'
+fi
+`,
+      );
+      chmodSync(join(root, "docker"), 0o755);
+      chmodSync(join(root, "df"), 0o755);
+      const output = execFileSync("/bin/sh", ["-c", DOCKER_BUILD_STORAGE_COMMAND], {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: `${root}:${process.env.PATH}`,
+          OPENSHIP_TEST_STORAGE_ROOT: root,
+        },
+      });
+      const storage = parseBuildStorage(output);
+      expect(storage).toEqual({ totalBytes: 500 * GIB, freeBytes: 288 * GIB, freeInodes });
+      if (exhausted) {
+        expect(() => assertBuildStorage(storage)).toThrow(
+          expect.objectContaining({ code: "BUILD_STORAGE_LOW" }),
+        );
+      } else {
+        expect(() => assertBuildStorage(storage)).not.toThrow();
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["", "0 0", "- -", "1000 -1", "1000 1001"])(
+    "keeps disk-space admission checks when inode statistics are unknown: %s",
+    (inodes) => {
+      const storage = parseBuildStorage(
+        `OPENSHIP_STORAGE 104857600 1048576\nOPENSHIP_INODES ${inodes}\n`,
+      );
+      expect(storage.freeInodes).toBeNull();
+      expect(() => assertBuildStorage(storage)).toThrow(
+        expect.objectContaining({ code: "BUILD_STORAGE_LOW" }),
+      );
+    },
+  );
 
   it("does not accept foreign, unlabeled, malformed, or unknown-usage volumes", () => {
     expect(
@@ -95,6 +159,22 @@ describe("bounded project build cache", () => {
     });
     expect(h.removed).toEqual([projectBuildCacheVolume("a")]);
     expect(result.spaceReclaimed).toBe(GIB);
+  });
+
+  it("keeps healthy under-budget caches when df reports unsupported inode counts", async () => {
+    const h = fixture();
+    const exec = h.exec.getMockImplementation()!;
+    h.exec.mockImplementation((command) =>
+      command.includes("df -Pk")
+        ? Promise.resolve("OPENSHIP_STORAGE 524288000 301989888\nOPENSHIP_INODES 0 0\n")
+        : exec(command),
+    );
+    const result = await pruneManagedBuildCaches(h.docker as never, h.executor, {
+      keepBytes: 2 * GIB,
+      now: 2000000200000,
+    });
+    expect(result).toEqual({ cachesDeleted: [], spaceReclaimed: 0 });
+    expect(h.removed).toEqual([]);
   });
 
   it("protects attached state even when the host is over budget", async () => {

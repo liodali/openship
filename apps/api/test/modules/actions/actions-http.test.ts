@@ -25,6 +25,12 @@ const traffic = vi.hoisted(() => ({
   docker: false,
   emulated: false,
 }));
+vi.mock("@repo/platform/engine/modules/github/github.http", async (original) => ({
+  ...(await original<typeof import("@repo/platform/engine/modules/github/github.http")>()),
+  ghFetchPublic: async () => {
+    throw new Error("Unexpected public GitHub request in Actions HTTP fixtures");
+  },
+}));
 vi.mock("@repo/platform/engine/modules/github/github.service", async (original) => ({
   ...(await original<typeof import("@repo/platform/engine/modules/github/github.service")>()),
   resolveWebhookStrategy: async () => "app",
@@ -87,7 +93,21 @@ vi.mock("@repo/platform/engine/modules/github/github.auth", async (original) => 
     const { url, method } = input;
     traffic.requests.push(input);
     if (url === "https://api.github.com/users/contributor") return { id: 77, login: "contributor" };
-    if (url.endsWith("/actions/runners/downloads")) return [];
+    if (url.endsWith("/actions/runners/downloads")) {
+      const version = "2.0.0";
+      return ["linux", "osx"].flatMap((os) =>
+        ["x64", "arm64"].map((architecture) => {
+          const filename = `actions-runner-${os}-${architecture}-${version}.tar.gz`;
+          return {
+            os,
+            architecture,
+            filename,
+            download_url: `https://github.com/actions/runner/releases/download/v${version}/${filename}`,
+            sha256_checksum: "a".repeat(64),
+          };
+        }),
+      );
+    }
     if (url.endsWith("/actions/permissions")) return { enabled: true };
     if (url.endsWith("/actions/runners")) return { total_count: 0, runners: [] };
     if (url.includes("/actions/workflows/"))

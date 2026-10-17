@@ -830,8 +830,15 @@ export async function buildComposeImages(opts: {
       return { service, buildConfig, serviceLogger };
     };
 
+    const cacheReceipts: Array<{ serviceId: string; result: BuildResult }> = [];
     // Record a per-service build result: image refs / failures + status broadcast.
     const applyBuildResult = (service: Service, buildResult: BuildResult) => {
+      if (buildResult.status === "deploying" && buildResult.managedCacheTargets?.length) cacheReceipts.push({ serviceId: service.id, result: buildResult });
+      const previousDuration = opts.project.buildCacheReceipts?.[service.id]?.durationMs;
+      if (buildResult.status === "deploying" && buildResult.durationMs && previousDuration) {
+        const difference = (buildResult.durationMs - previousDuration) / 1000;
+        opts.logger.log(`Build time for ${service.name}: ${(buildResult.durationMs / 1000).toFixed(1)}s; ${Math.abs(difference).toFixed(1)}s ${difference < 0 ? "faster" : "slower"} than its previous successful managed build.\n`, "info", { serviceId: service.id, serviceName: service.name });
+      }
       const dnsDiagnostics = buildDnsDiagnostics.get(service.id);
       buildDnsDiagnostics.delete(service.id);
       // Cancelled ≠ failed: tracked separately so the pipeline can stop without
@@ -933,6 +940,8 @@ export async function buildComposeImages(opts: {
         }),
       );
     }
+
+    for (const { serviceId, result } of cacheReceipts) await repos.project.recordBuildCacheReceipt(opts.project.id, serviceId, { targets: result.managedCacheTargets!, deploymentId: opts.dep.id, completedAt: new Date().toISOString(), durationMs: result.durationMs });
 
     // Non-empty only for services derived from `buildable`, so it implies there was
     // something to build.

@@ -75,6 +75,17 @@ describe("runPreflightChecks", () => {
     expect(result.checks.find(check => check.id === "config")).toMatchObject({ status: "pass" });
   });
 
+  it("recognizes duplicate cache mounts across app-relative and explicit volume syntax", async () => {
+    const result = await runPreflightChecks({
+      deployTarget: "cloud", organizationId: "org-1", framework: "nextjs", packageManager: "bun",
+      buildImage: "node:22", hasServer: true, port: 3000,
+      volumes: [".next/cache", "cache:/app/.next/cache/:ro", "data:/app/data"],
+    } as any, { multiService: true });
+    expect(result.checks.find(check => check.id === "duplicate-mount-0")).toMatchObject({
+      status: "warn", message: expect.stringContaining("/app/.next/cache"),
+    });
+  });
+
   it("checks free-domain availability for every public endpoint", async () => {
     const result = await runPreflightChecks(
       {

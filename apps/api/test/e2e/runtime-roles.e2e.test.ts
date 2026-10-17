@@ -3,7 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { afterAll, beforeAll, expect, it, vi } from "vitest";
+import { eq } from "drizzle-orm";
+import { db, repos, schema } from "@repo/db";
+import { seedDeployment, seedOrg, seedProject, setActive } from "../helpers/seed";
 import { BuildLogger, DockerRuntime, type DeployConfig } from "@repo/adapters";
 import type { StackRole } from "@repo/core";
 import {
@@ -23,6 +26,17 @@ const volume = `openship-${slug}-data`;
 const baseImage = "busybox:1.37";
 const image = `openship-roles-e2e:${process.pid}`;
 let runtime: DockerRuntime;
+
+vi.mock("@repo/platform/engine/lib/deployment-runtime", async (original) => ({
+  ...(await original<typeof import("@repo/platform/engine/lib/deployment-runtime")>()),
+  withDeploymentRuntime: async (_dep: unknown, run: (runtime: DockerRuntime) => Promise<unknown>) =>
+    run(runtime),
+}));
+// No domains exist in this fixture; the test exercises Docker and durable role
+// recovery without provisioning a host edge or issuing certificates.
+vi.mock("@repo/platform/engine/modules/projects/project-runtime.service", () => ({
+  retryProjectRouting: async () => ({ ok: true }),
+}));
 
 async function docker(...args: string[]): Promise<string> {
   return (
@@ -365,5 +379,146 @@ describeDockerE2E("runtime roles against Docker", () => {
       `stop-${dep("f")}`,
       `start-${dep("g")}`,
     ]);
+  });
+
+  it("scales runtime roles with the active image while preserving web and unchanged replicas (#1283)", async () => {
+    const { runRoleConfigurationRollout } = await import("@repo/platform/engine/modules/deployments/role-configuration-rollout");
+    const org = await seedOrg();
+    const ownedProjectId = `role-configuration-${process.pid}`;
+    const project = await seedProject(org.organizationId, { id: ownedProjectId, readiness: { stabilizationSeconds: 1 } });
+    const queue = worker({ replicas: 1, command: "trap 'exit 0' TERM; while :; do sleep 1 & wait $!; done" });
+    const cron = scheduler("trap 'exit 0' TERM; while :; do sleep 1 & wait $!; done");
+    const original = await seedDeployment(project, { meta: { runtimeMode: "docker", roles: [queue, cron] } });
+    const cfg = (id: string): DeployConfig => ({ ...config(id), projectId: project.id, slug: ownedProjectId,
+      runtimeName: ownedProjectId, networkAlias: undefined, envVars: { E2E_DEPLOYMENT: original.id }, volumes: [] });
+    try {
+      const web = await runtime.deploy(cfg(original.id));
+      await repos.deployment.setContainerId(original.id, web.containerId);
+      const first = await rolloutRoles(runtimeRoleRolloutDeps({ roles: [queue, cron], previous: [], runtime, previousRuntime: runtime,
+        config: cfg(original.id), logger: new BuildLogger(() => {}), beforeStart: async () => {}, stabilizationWindowMs: 1000,
+        keepProvisionedOnCancel: () => false }));
+      await repos.deployment.setRoleContainers(original.id, [...first.started]);
+      await setActive(project.id, original.id);
+      const imageId = (await runtime.inspectContainer(web.containerId))!.imageId;
+      const webStarted = await docker("inspect", "--format", "{{.State.StartedAt}}", web.containerId);
+      const apply = async (roles: StackRole[]) => {
+        const live = (await repos.project.findById(project.id))!;
+        const active = (await repos.deployment.findById(live.activeDeploymentId!))!;
+        const meta = { runtimeMode: "docker", roles, webOwnerDeploymentId: original.id,
+          roleConfiguration: { sourceDeploymentId: active.id, webContainerId: web.containerId, webOwnerDeploymentId: original.id, imageId } };
+        const next = await seedDeployment(live, { status: "deploying", meta });
+        const messages: string[] = [];
+        try { await runRoleConfigurationRollout({ project: live, dep: next, runtime, config: { ...cfg(next.id), imageRef: imageId },
+          logger: new BuildLogger(entry => messages.push(entry.message)), beforeStart: async () => {}, publish: async containerId => {
+            await repos.deployment.setContainerId(next.id, containerId);
+            await repos.deployment.updateStatus(next.id, "ready");
+            await setActive(project.id, next.id);
+          } });
+        } catch (error) {
+          // The normal worker's lifecycle hook records this outcome; this fixture calls the rollout directly.
+          await repos.deployment.updateStatus(next.id, "failed");
+          throw error;
+        }
+        expect(messages.some(message => message.includes("(1s stabilization window)"))).toBe(true);
+        return (await repos.deployment.findById(next.id))!;
+      };
+      const up = await apply([{ ...queue, replicas: 3 }, cron]);
+      expect(up.roleContainers).toHaveLength(4);
+      for (const ref of first.started) expect(up.roleContainers!.some(next => next.containerId === ref.containerId)).toBe(true);
+      const down = await apply([queue, cron]);
+      expect(down.roleContainers!.map(ref => ref.containerId).sort()).toEqual(first.started.map(ref => ref.containerId).sort());
+      await expect(apply([{ ...queue, command: "exit 9" }, cron])).rejects.toThrow(/Role startup check failed/);
+      expect((await repos.project.findById(project.id))!.activeDeploymentId).toBe(down.id);
+      await expectAllRunning(first);
+      // Returning to the earlier frozen count also requires no build or web restart.
+      const restored = await apply((up.meta as { roles: StackRole[] }).roles);
+      expect(restored.roleContainers).toHaveLength(4);
+      expect(restored.containerId).toBe(web.containerId);
+      expect(await stateOf(web.containerId)).toBe("running");
+      expect(await docker("inspect", "--format", "{{.State.StartedAt}}", web.containerId)).toBe(webStarted);
+      const running = await docker("ps", "--filter", `label=openship.project=${project.id}`, "--filter", "label=openship.role=scheduler", "--format", "{{.ID}}");
+      expect(running.split("\n").filter(Boolean)).toHaveLength(1);
+    } finally {
+      for (const container of (await runtime.listAllContainers()).filter(row => row.labels?.["openship.project"] === project.id)) await runtime.destroy(container.id);
+      await docker("network", "rm", `openship-${ownedProjectId}`).catch(() => {});
+      await db.delete(schema.project).where(eq(schema.project.id, project.id));
+    }
+  });
+
+  it("recovers an abandoned handover and keeps one scheduler on the next rollout (#1254)", async () => {
+    const { beginRoleHandover, recoverProjectRoleHandovers } =
+      await import("@repo/platform/engine/modules/deployments/role-handover");
+    const org = await seedOrg();
+    const ownedProjectId = `role-recovery-${process.pid}`;
+    const project = await seedProject(org.organizationId, { id: ownedProjectId });
+    const role = scheduler("trap 'exit 0' TERM; while :; do sleep 1 & wait $!; done");
+    const frozen = { runtimeMode: "docker", roles: [role] };
+    const h = await seedDeployment(project, { meta: frozen });
+    const i = await seedDeployment(project, { status: "deploying", meta: frozen });
+    const cfg = (id: string): DeployConfig => ({
+      ...config(id),
+      projectId: project.id,
+      slug: ownedProjectId,
+      runtimeName: ownedProjectId,
+      networkAlias: undefined,
+      volumes: [],
+    });
+    const deps = (id: string, previous?: RoleRollout) =>
+      runtimeRoleRolloutDeps({
+        roles: [role],
+        previousRoles: [role],
+        previous: previous?.started,
+        runtime,
+        previousRuntime: runtime,
+        config: cfg(id),
+        logger: new BuildLogger(() => {}),
+        beforeStart: async () => {},
+        stabilizationWindowMs: 1000,
+        keepProvisionedOnCancel: () => false,
+      });
+    try {
+      const live = await rolloutRoles(deps(h.id));
+      await repos.deployment.setRoleContainers(h.id, [...live.started]);
+      h.roleContainers = [...live.started];
+      await setActive(project.id, h.id);
+      const journal = await beginRoleHandover({
+        dep: i,
+        previous: h,
+        roles: [role],
+        config: cfg(i.id),
+      });
+      const abandoned = await rolloutRoles({
+        ...deps(i.id, live),
+        recordCreated: journal.recordCreated,
+        recordStopIntent: journal.recordStopIntent,
+      });
+      // Lose the controller's in-memory handle without commit/abort, exactly
+      // where the old restart sweep lost ownership of the running replacement.
+      expect(await stateOf(live.started[0]!.containerId)).toBe("exited");
+      expect(await stateOf(abandoned.started[0]!.containerId)).toBe("running");
+      await repos.deployment.sweepStaleInFlight("controller restarted");
+      await recoverProjectRoleHandovers(project.id);
+      expect(await stateOf(live.started[0]!.containerId)).toBe("running");
+      expect(await containersOf(i.id)).toEqual([]);
+
+      const j = await seedDeployment(project, { meta: frozen });
+      const next = await rolloutRoles(deps(j.id, live));
+      await next.commit();
+      const running = await docker(
+        "ps",
+        "-q",
+        "--filter",
+        `label=openship.project=${project.id}`,
+        "--filter",
+        "label=openship.role=scheduler",
+      );
+      expect(running.split("\n").filter(Boolean)).toHaveLength(1);
+      expect(await stateOf(next.started[0]!.containerId)).toBe("running");
+      expect(await repos.deployment.listPendingRoleHandovers(project.id)).toEqual([]);
+    } finally {
+      const ids = await docker("ps", "-aq", "--filter", `label=openship.project=${project.id}`);
+      if (ids) await docker("rm", "-f", ...ids.split("\n"));
+      await db.delete(schema.project).where(eq(schema.project.id, project.id));
+    }
   });
 });

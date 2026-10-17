@@ -514,6 +514,14 @@ const TABLES: ReadonlyArray<TableSpec> = [
     hasOrganizationId: true,
   },
   {
+    // The source and child projects, GitHub comment ownership and pending cleanup
+    // must move together. Portable project exports cannot carry this authority.
+    sqlName: "pull_request_preview",
+    table: schema.pullRequestPreview,
+    scopes: [{ in: "instance", via: "all-rows" }],
+    hasOrganizationId: true,
+  },
+  {
     sqlName: "cloud_workspace",
     table: schema.cloudWorkspace,
     scopes: [{ in: "instance", via: "all-rows" }],
@@ -1328,6 +1336,9 @@ export function stripInstanceRefsInPlace(tables: DatabaseDump["tables"]): void {
   // handles and source paths that are meaningful only on the original instance.
   for (const row of tables.project ?? []) {
     row.activeDeploymentId = null;
+    row.previewSettings = null;
+    row.previewScannedAt = null;
+    row.buildCacheReceipts = null;
     row.hostPort = null;
     row.localPath = null;
   }

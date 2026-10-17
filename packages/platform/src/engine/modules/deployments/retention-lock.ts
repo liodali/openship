@@ -10,6 +10,7 @@ export function withRetentionLock<T>(
   return withLiveProjectRuntimeMutation(projectId, async (project) => {
     const inFlight = await repos.deployment.listInFlightByProject(projectId);
     if (inFlight.length > 0) return undefined;
+    if ((await repos.deployment.listPendingRoleHandovers(projectId)).length > 0) return undefined;
     return action(project);
   });
 }

@@ -72,7 +72,7 @@ async function collectDeliverySecrets(
   const event = headers["x-github-event"];
   // installation / ping events aren't repo-scoped on the deploy side — they hit
   // api.openship.io's App webhook, verified with the env secret (no project).
-  if (event !== "push" && event !== "check_run") return [];
+  if (event !== "push" && event !== "check_run" && event !== "pull_request") return [];
 
   let parsed: unknown;
   try {
@@ -241,7 +241,8 @@ export const githubWebhookProvider: WebhookProvider = {
           result = await handleCheckRun(payload as GitHubCheckRunPayload);
           break;
         case "pull_request":
-          result = { success: true, event, message: verification?.githubApp ? "Actions pull request delivery queued" : "Event 'pull_request' not handled" };
+          await (await import("@repo/platform/engine/modules/projects/pull-request-previews")).enqueuePullRequestPreviews(payload);
+          result = { success: true, event, message: "Pull request automation queued" };
           break;
         case "ping":
           result = { success: true, event, message: "Pong" };

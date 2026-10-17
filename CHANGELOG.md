@@ -3,6 +3,119 @@
 All notable changes to Openship. Versions follow [semver](https://semver.org);
 the in-app updater surfaces critical advisories from `release-advisories.json`.
 
+## 0.9.3
+
+This release improves Cloud monitoring and build-cache reliability, adds deployment
+automation and isolated pull-request previews, and makes workers and schedulers
+easier to configure, observe and recover. These notes cover all merged changes
+since 0.9.2.
+
+### Deployment automation and previews
+
+- **Move command variables into Environment** — review literal environment
+  assignments in install, build and start commands, then migrate them into
+  encrypted project or service settings. Conflicts and concurrent edits stop the
+  migration before partial changes are saved. Import and saved settings share the
+  same parser and guidance.
+- **Prepare framework output automatically** — Next.js standalone monorepos and
+  Nuxt builds retain their required workspace dependencies, public/static assets
+  and selected Node or Bun runtime. Managed direct-server defaults start from the
+  configured app directory; explicit custom commands retain their working directory.
+- **Review older manual cache mounts** — detect duplicate package/framework cache
+  mounts and offer configuration migration only after a successful build proves
+  managed cache support for those paths. Existing volume data is retained. Build
+  logs report observed cache reuse and build-time comparisons.
+- **Catch setup problems earlier** — pre-install checks identify missing app roots
+  and environment examples; command-variable, standalone startup and duplicate-mount
+  guidance explains what needs attention without exposing variable values.
+- **Opt into GitHub pull-request previews** — same-repository, non-draft pull
+  requests can deploy their exact commit into a separate preview environment with
+  preview-only variables, isolated volumes and per-service URLs. Production
+  variables are not copied. Forks and unsafe shared-storage configurations are
+  excluded.
+- **Recover preview lifecycle operations** — durable coordination handles repeated
+  webhooks, controller restarts and retryable close/merge cleanup. Optional GitHub
+  comments update one existing comment, alongside the existing deployment Checks.
+  Whole-instance transfers preserve preview ownership; individual project imports
+  clear preview automation that cannot safely transfer.
+- **Use automation from the SDK** — configure and list previews, inspect or migrate
+  manual cache mounts, and move command variables through the shared validated
+  project operations.
+
+### Workers, schedulers and rollback
+
+- **Configure roles without rebuilding the web app** — Apps & Services → Configure
+  roles can add or change workers and singleton schedulers on active single-app
+  self-hosted Docker deployments. The normal deployment engine reuses the verified
+  image and frozen environment while preserving the web container and unchanged
+  replicas. The API, SDK and CLI expose the same operation. Cloud, bare, static,
+  cluster and multi-service targets are outside this editor's scope.
+- **See and inspect background processes** — runtime roles appear in project
+  service views and topology, with role/replica log selection and retry states.
+  Health monitoring includes worker and scheduler failures instead of observing
+  only the foreground container.
+- **Keep independent role suggestions** — framework scans expose matching presets
+  at the selected app root. Only presets competing for the same declared slot
+  exclude one another; explicit roles, including an empty list, retain precedence.
+  Suggestions do not automatically enable background processes.
+- **Recover interrupted role handovers** — persist exact container identities and
+  ownership before replacement, predecessor shutdown and publication. Startup and
+  deployment reconciliation either finish a published handover or safely restore
+  its predecessor; uncertain cleanup remains pending before conflicting work.
+- **Protect active and rollback images** — retained role replicas keep their
+  required image artifacts protected during configuration changes and release cleanup.
+- **Restore frozen Compose environment accurately** — rollback preserves encrypted
+  deployment snapshots without confusing literal redaction-like values with missing
+  secrets. Incomplete legacy snapshots fail clearly rather than borrowing mutable
+  current service settings.
+
+### Cloud monitoring, caches and storage
+
+- **Avoid expensive monitoring scans** — Cloud hosts using fuse-overlayfs skip
+  Docker's full storage inventory, which can exhaust daemon memory. Host totals
+  remain measured; unavailable detailed project storage stays unknown.
+- **Show guest RAM usage** — use verified guest counters instead of hypervisor
+  process memory and overhead. Older guests receive a bounded, read-only memory
+  sample; stream teardown releases the executor.
+- **Keep partial metrics useful** — missing disk or memory fields in a live frame
+  retain the latest measured value for that metric, with its measurement time.
+  Purchased capacity is never substituted for measured consumption.
+- **Keep Cloud cache cleanup scoped** — collect only owned, idle project-worker
+  caches and stop before Docker Engine's global builder prune. Cache reuse, worker
+  GC, existing build concurrency and user-configured resource limits are unchanged.
+  Cloud builds require their isolated BuildKit executor instead of silently falling
+  back to the embedded builder. Existing legacy daemon state and autonomous Docker
+  GC remain separate host-maintenance concerns.
+- **Accept filesystems without fixed inode totals** — unsupported or zero inode
+  totals mean unknown availability rather than confirmed exhaustion. Real free-space
+  and supported inode-exhaustion checks still protect deployment admission.
+
+### Domains and ingress
+
+- **Route verified custom domains on first deployment** — single-app domains
+  without a saved destination use the verified serving port through the shared
+  route planner. Explicit endpoints and service-group destinations retain their
+  ownership instead of selecting a sibling service.
+- **Avoid ephemeral secondary host ports** — secondary loopback publications use
+  the existing allocator and the target host's ephemeral-range checks.
+- **Handle varied Cloudflare Access applications** — accounts containing launcher
+  or other domain-less applications no longer crash managed ingress setup.
+  Inventory and write receipts are validated while overlap and foreign-resource
+  ownership protection remain enforced.
+- **Clarify edge availability** — documentation explains edge failure behavior and
+  recovery responsibilities for deployed applications.
+
+### Webmail
+
+- **Resolve exact Message-IDs for actions** — thread reads, deletion, labels and
+  flags validate exact IMAP envelope identities instead of trusting substring
+  search matches. Literal percent sequences remain unchanged, stale UID hints are
+  rejected, and missing or refused operations no longer report success.
+- **Cache application assets correctly** — fingerprinted assets receive immutable
+  caching while application HTML is revalidated.
+- **Serve precompressed assets** — negotiate available Brotli or gzip files with
+  appropriate content types, encoding and cache headers.
+
 ## 0.9.2
 
 This patch adds worker and scheduler execution, personal appearance customization,

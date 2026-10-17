@@ -72,6 +72,10 @@ export async function retainedArtifacts(project: RetentionProject, loaders: Rete
   const images = new Set<string>();
   const containers = new Set<string>();
   for (const dep of retained) {
+    for (const role of dep.roleContainers ?? []) {
+      const container = usableRef(role.containerId);
+      if (container) containers.add(container);
+    }
     const artifacts = [dep, ...await effectiveServiceArtifacts(dep, await listServices(dep.id))];
     for (const artifact of artifacts) {
       const image = usableRef(artifact.imageRef);

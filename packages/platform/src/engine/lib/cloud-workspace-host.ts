@@ -154,7 +154,21 @@ export async function measureCloudWorkspace(
   try {
     const [sample, storage, localProjects] = await Promise.all([
       sampleServerUsage(runtime.executor),
-      withTimeout(runtime.docker.df(), 15_000, "Storage inventory timed out").catch((diagnosticFailure) => { observeCaughtError(diagnosticFailure, "platform/engine/lib/cloud-workspace-host"); return null; }),
+      (async () => {
+        const info = await withTimeout(
+          runtime.docker.info(),
+          5_000,
+          "Storage driver inspection timed out",
+        );
+        // fuse-overlayfs sizes writable layers by walking both full directory
+        // trees in daemon memory. A caller timeout does not stop that work.
+        // Keep host totals available; detailed attribution stays unknown.
+        if (info.Driver === "fuse-overlayfs") return null;
+        return withTimeout(runtime.docker.df(), 15_000, "Storage inventory timed out");
+      })().catch((diagnosticFailure) => {
+        observeCaughtError(diagnosticFailure, "platform/engine/lib/cloud-workspace-host");
+        return null;
+      }),
       repos.project.listByWorkspace(id, organizationId),
     ]);
     const projects = [...new Map([
@@ -162,7 +176,7 @@ export async function measureCloudWorkspace(
       ...localProjects,
     ].map(project => [project.id, project])).values()];
     const disk = storage ? dockerProjectStorage(storage, projects) : [];
-    const paths = projects.map((project) => cloudDockerProjectPaths(project.id).mounts);
+    const paths = storage ? projects.map((project) => cloudDockerProjectPaths(project.id).mounts) : [];
     const bindSizes = paths.length
       ? await runtime.executor
           .exec(

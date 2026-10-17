@@ -426,6 +426,8 @@ export interface BuildResult {
    * Cloud workspace created from that image returns `true`.
    */
   artifactOwned?: boolean;
+  /** Cache mounts proven by the successfully built generated image. */
+  managedCacheTargets?: string[];
   durationMs?: number;
   /** Human-readable error description when status is "failed" */
   errorMessage?: string;

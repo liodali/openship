@@ -22,6 +22,17 @@ function reader(databaseProjectId: string): TransferRowReader {
 }
 
 describe("project transfer runtime ownership", () => {
+  it("rejects exporting a managed preview without its source and cleanup ownership", async () => {
+    const rows: Record<string, Record<string, unknown>[]> = {
+      project: [{ id: "project-a", groupId: "group-a", organizationId: "org-a" }],
+      pull_request_preview: [{ id: "preview", projectId: "project-a", sourceProjectId: "source" }],
+    };
+    const read: TransferRowReader = async (table, column, values) =>
+      (rows[table] ?? []).filter(row => values.includes(row[column]));
+    await expect(selectProjectTransfer(read, selection, ["pull_request_preview"]))
+      .rejects.toMatchObject({ code: "CLUSTER_TRANSFER_UNSUPPORTED" });
+  });
+
   it("follows the server identity without collecting unrelated hosts through composite owner keys", async () => {
     const project = {
       id: "project-a",

@@ -204,7 +204,7 @@ describe("workspace GitHub source service", () => {
       contents: "write",
       workflows: "write",
       metadata: "read",
-      pull_requests: "read",
+      pull_requests: "write",
       statuses: "write",
     });
     expect(h.stateCreate).toHaveBeenCalledWith(

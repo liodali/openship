@@ -8,6 +8,7 @@ import type { Service, ServiceContainer } from "@/lib/api/services";
 import type { ProjectConnection } from "@/lib/api/connections";
 import type { ClusterDatabase } from "@repo/contracts";
 import { hasSeparateApplication } from "@/lib/project-application";
+import { runtimeRoleState, type RuntimeRole, type ProjectRuntimeRoles } from "@/lib/runtime-roles";
 export { hasSeparateApplication } from "@/lib/project-application";
 
 /** A projection of saved project data. Canvas positions never define infrastructure. */
@@ -54,6 +55,7 @@ export interface TopologyResource {
   id: string;
   kind:
     | "application"
+    | "role"
     | "service"
     | "edge"
     | "environment"
@@ -64,6 +66,8 @@ export interface TopologyResource {
     | "volume"
     | "workflow-job"
     | "workflow-step";
+  role?: RuntimeRole;
+  deploymentId?: string;
   name: string;
   description: string;
   tone: TopologyTone;
@@ -106,7 +110,7 @@ export interface TopologyRelation {
   targetGutter?: number;
   readOnly?: boolean;
   /** A runtime service route is not an editable public domain. */
-  scope?: "instances" | "database" | "storage";
+  scope?: "instances" | "database" | "storage" | "roles";
   databaseId?: string;
   volumeName?: string;
   label: string;
@@ -367,6 +371,7 @@ export function buildProjectTopology({
   containers,
   connections,
   cluster,
+  roles,
 }: {
   project: TopologyProject;
   services: readonly Service[];
@@ -374,6 +379,7 @@ export function buildProjectTopology({
   containers: readonly ServiceContainer[] | null;
   connections: readonly ProjectConnection[];
   cluster?: ClusterWorkloadStatus | null;
+  roles?: ProjectRuntimeRoles | null;
 }): ProjectTopologyGraph {
   const nodes: TopologyResource[] = [];
   const edges: TopologyRelation[] = [];
@@ -412,6 +418,38 @@ export function buildProjectTopology({
               ? "unknown"
               : "configured",
     });
+  }
+
+  if (roles?.deploymentId && roles.deploymentId === project.activeDeploymentId) {
+    for (const role of roles.roles) {
+      const state = runtimeRoleState(role);
+      const id = `role:${project.id}:${role.name}`;
+      nodes.push({
+        id,
+        kind: "role",
+        projectId: project.id,
+        name: role.name,
+        role,
+        deploymentId: roles.deploymentId,
+        tone: "service",
+        description: `${role.kind ? role.kind[0].toUpperCase() + role.kind.slice(1) : "Role"} · ${role.replicas} replica${role.replicas === 1 ? "" : "s"}`,
+        state: state === "missing" ? "failed" : state,
+        instances: role.containers.some((replica) => replica.status === "unknown")
+          ? undefined
+          : role.containers.filter((replica) => replica.status === "running").length,
+      });
+      if (hasPrimaryApplication)
+        edges.push({
+          id: `role-release:${project.id}:${role.name}`,
+          source: applicationNodeId(project.id),
+          target: id,
+          kind: "binding",
+          scope: "roles",
+          readOnly: true,
+          label: "Runtime role",
+          description: "Shares the application's deployment image and environment.",
+        });
+    }
   }
 
   for (const service of services) {

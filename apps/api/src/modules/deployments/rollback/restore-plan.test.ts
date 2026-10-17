@@ -368,3 +368,35 @@ describe("planNeedsRepository — what gates the clone + GitHub access", () => {
     ).toBe(false);
   });
 });
+
+describe("legacy configuration and retained runtime units", () => {
+  it("does not block an in-place unit restore that replays no saved configuration", () => {
+    expect(
+      planRestore(
+        input({
+          unitRestore: true,
+          target: {
+            meta: {
+              composeServices: [{ name: "app", environment: { URL: "postgresql://***@db/app" } }],
+            },
+          } as never,
+        }),
+      ),
+    ).toEqual({ mode: "unit-swap" });
+  });
+});
+
+it("does not block monorepo snapshots that are not replayed through Compose sync", () => {
+  const plan = planRestore(
+    input({
+      target: {
+        meta: {
+          composeServices: [
+            { name: "web", kind: "monorepo", environment: { URL: "postgresql://***@db/app" } },
+          ],
+        },
+      } as never,
+    }),
+  );
+  expect(plan.mode).toBe("redeploy-pinned");
+});

@@ -6,6 +6,35 @@ import { alice, authorizationFixture } from "../../platform/test/fixtures";
 import { projectFixture } from "../../contracts/test/fixtures";
 
 describe("project log facades", () => {
+  it("keeps role, replica, and release selectors on both recent and streaming logs", async () => {
+    const fetch = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      expect(url.searchParams.get("role")).toBe("queue");
+      expect(url.searchParams.get("replica")).toBe("2");
+      expect(url.searchParams.get("deploymentId")).toBe("dep_active");
+      expect(url.searchParams.get("tail")).toBe("5");
+      return url.pathname.endsWith("/stream")
+        ? new Response('event: log\ndata: {"message":"queue output"}\n\n', {
+            headers: { "content-type": "text/event-stream" },
+          })
+        : Response.json({ data: [] });
+    });
+    const client = new OpenshipClient({ baseUrl: "https://ship.test", fetch });
+    const selector = { role: "queue", replica: 2, deploymentId: "dep_active", tail: 5 };
+    expect(await client.projects.runtimeLogs("project-a", selector)).toEqual([]);
+    const events = [];
+    for await (const event of client.projects.streamRuntimeLogs("project-a", selector))
+      events.push(event);
+    expect(events).toEqual([{ event: "log", data: '{"message":"queue output"}' }]);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    await expect(
+      client.projects
+        .streamRuntimeLogs("project-a", { role: "queue", replica: 0 })
+        [Symbol.asyncIterator]()
+        .next(),
+    ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
   it("validates home and encodes request-log selectors without changing unavailable cloud results", async () => {
     const home = { success: true, projects: [projectFixture()], numbers: { total_projects: 1, total_active_projects: 1, total_deployments: 0, total_success_deployments: 0 }, otherOrgs: [] };
     const fetch = vi.fn(async (url: string | URL | Request) => {

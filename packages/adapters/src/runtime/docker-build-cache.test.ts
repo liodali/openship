@@ -73,7 +73,7 @@ describe("DockerRuntime.pruneBuildCache", () => {
   });
 });
 
-describe("project cache teardown", () => {
+describe("managed project cache cleanup", () => {
   function cacheRuntime() {
     const runtime = Object.create(DockerRuntime.prototype) as DockerRuntime & {
       clearManagedProjectBuildCache(projectId: string): Promise<void>;
@@ -105,6 +105,12 @@ describe("project cache teardown", () => {
     const remove = vi.fn(async () => {
       calls.push("remove-volume");
     });
+    const dial = vi.fn((_options, callback) =>
+      callback(null, {
+        CachesDeleted: ["native-cache"],
+        SpaceReclaimed: 4096,
+      }),
+    );
     const volume = {
       Name: projectBuildCacheVolume("p1"),
       Mountpoint: "/cache/state",
@@ -112,6 +118,7 @@ describe("project cache teardown", () => {
     };
     Object.assign(runtime, {
       connectionOptions: {
+        transport: "cloud",
         executor: { exec },
         buildCacheProtection: async () => ({ projectIds: protectedIds, all: pending > 0 }),
       },
@@ -126,6 +133,7 @@ describe("project cache teardown", () => {
         },
       },
       _docker: {
+        modem: { dial },
         listVolumes: async () => ({ Volumes: [volume] }),
         listContainers: async () => (attached ? [{ Mounts: [{ Name: volume.Name }] }] : []),
         getVolume: () => ({ inspect: async () => volume, remove }),
@@ -136,6 +144,10 @@ describe("project cache teardown", () => {
       calls,
       remove,
       exec,
+      dial,
+      idle: () => {
+        attached = false;
+      },
       deferAcks: () => {
         deferAcks = true;
       },
@@ -144,6 +156,49 @@ describe("project cache teardown", () => {
       },
     };
   }
+
+  it("collects idle project state without touching the daemon's native BuildKit cache", async () => {
+    const h = cacheRuntime();
+    h.idle();
+    await expect(h.runtime.pruneBuildCache({ all: true, keepStorageBytes: 0 })).resolves.toEqual({
+      cachesDeleted: [projectBuildCacheVolume("p1")],
+      spaceReclaimed: 1024 * 1024,
+    });
+    expect(h.remove).toHaveBeenCalledOnce();
+    expect(h.dial).not.toHaveBeenCalled();
+    expect(h.calls[0]).toBe("lock");
+    expect(h.calls.at(-1)).toBe("unlock");
+  });
+
+  it("preserves attached project state without falling through to native pruning", async () => {
+    const h = cacheRuntime();
+    await expect(h.runtime.pruneBuildCache({ all: true, keepStorageBytes: 0 })).resolves.toEqual({
+      cachesDeleted: [],
+      spaceReclaimed: 0,
+    });
+    expect(h.remove).not.toHaveBeenCalled();
+    expect(h.dial).not.toHaveBeenCalled();
+  });
+
+  it("rejects Engine-only filters before any Cloud cache mutation", async () => {
+    const h = cacheRuntime();
+    h.idle();
+    await expect(h.runtime.pruneBuildCache({ filters: { until: ["24h"] } })).rejects.toMatchObject({
+      code: "CLOUD_BUILD_CACHE_FILTER_UNSUPPORTED",
+    });
+    expect(h.calls).toEqual([]);
+    expect(h.remove).not.toHaveBeenCalled();
+    expect(h.dial).not.toHaveBeenCalled();
+  });
+
+  it("refuses Cloud cleanup without the managed executor instead of pruning the daemon", async () => {
+    const h = cacheRuntime();
+    Object.assign(h.runtime.connectionOptions!, { executor: undefined });
+    await expect(h.runtime.pruneBuildCache()).rejects.toMatchObject({
+      code: "CLOUD_BUILD_EXECUTOR_UNAVAILABLE",
+    });
+    expect(h.dial).not.toHaveBeenCalled();
+  });
 
   it("detaches an idle managed worker before removing its retained cache under the host lock", async () => {
     const h = cacheRuntime();

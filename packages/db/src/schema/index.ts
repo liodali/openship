@@ -121,3 +121,5 @@ export { cloudBuildActivity, type CloudBuildActivity } from "./cloud-build-activ
 
 export * from "./ingress-connection";
 export * from "./ingress-hostname";
+
+export * from "./pull-request-preview";

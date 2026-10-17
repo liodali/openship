@@ -631,6 +631,102 @@ beforeEach(() => {
   h.disconnectOnList = false;
 });
 
+describe("runtime role monitoring", () => {
+  function addRole(depId: string, containerId: string, role = "queue", replica = 1) {
+    const dep = h.deployments.find((row) => row.id === depId)!;
+    const refs = (dep.roleContainers ?? []) as Array<Record<string, unknown>>;
+    dep.roleContainers = [...refs, { role, replica, containerId }];
+    h.containers.set(containerId, {
+      id: containerId,
+      state: "running",
+      status: "Up 3 hours",
+      labels: {},
+    });
+    h.containerBox.set(containerId, "srv1");
+  }
+
+  it("opens one incident for a failed replica, tracks events, and resolves after recovery", async () => {
+    const app = seedApp();
+    addRole(app.depId, "queue-1");
+    addRole(app.depId, "queue-2", "queue", 2);
+    setState("queue-2", "exited", { exitCode: 1 });
+
+    expect((await confirm()).workloads).toBe(3);
+    for (let i = 0; i < 3; i++) await tick();
+    expect(openFor(app.projectId)).toMatchObject([
+      { serviceId: null, serviceName: "queue · 2", containerId: "queue-2", kind: "down" },
+    ]);
+    expect(emitted("service.down")).toHaveLength(1);
+    const { isTrackedHealthContainer } =
+      await import("@repo/platform/engine/modules/monitoring/health-watch");
+    expect(isTrackedHealthContainer(await groupKey("srv1"), "queue-2")).toBe(true);
+
+    setState("queue-2", "running");
+    await tick();
+    expect(openFor(app.projectId)).toHaveLength(0);
+    expect(emitted("service.recovered")).toHaveLength(1);
+  });
+
+  it("keeps replica identity across redeploys and silently retires a removed role", async () => {
+    const app = seedApp();
+    addRole(app.depId, "old-queue");
+    setState("old-queue", "exited", { exitCode: 1 });
+    await confirm();
+    const incidentId = openFor(app.projectId)[0]?.id;
+    expect(incidentId).toBeDefined();
+
+    const dep = h.deployments.find((row) => row.id === app.depId)!;
+    dep.roleContainers = [];
+    addRole(app.depId, "new-queue");
+    setState("new-queue", "exited", { exitCode: 1 });
+    await confirm();
+    expect(openFor(app.projectId).map((row) => row.id)).toEqual([incidentId]);
+    expect(emitted("service.down")).toHaveLength(1);
+
+    dep.roleContainers = [];
+    expect((await tick()).stale).toBe(1);
+    expect(openFor(app.projectId)).toHaveLength(0);
+    expect(emitted("service.recovered")).toHaveLength(0);
+  });
+
+  it("suppresses role alerts during deploys, intentional project stops and observer network loss", async () => {
+    const app = seedApp({ status: "deploying" });
+    addRole(app.depId, "scheduler");
+    setState("scheduler", "exited", { exitCode: 1 });
+    await confirm();
+    expect(openFor(app.projectId)).toHaveLength(0);
+    h.deployments[0]!.status = "ready";
+    h.projects[0]!.disabledAt = new Date();
+    await confirm();
+    expect(openFor(app.projectId)).toHaveLength(0);
+    h.projects[0]!.disabledAt = null;
+    h.platformTarget = "desktop";
+    h.disconnected = true;
+    h.listThrows = "connect ENETUNREACH";
+    await confirm();
+    expect(h.incidents).toHaveLength(0);
+    expect(h.emit).not.toHaveBeenCalled();
+  });
+
+  it("includes roles in on-demand health scans without creating incidents", async () => {
+    const app = seedApp();
+    addRole(app.depId, "queue");
+    setState("queue", "exited", { exitCode: 1 });
+    const result = await checkCurrent();
+    const { listWorkloadHealthSnapshots } =
+      await import("@repo/platform/engine/modules/monitoring/health-watch");
+    expect(result.summary.workloads).toBe(2);
+    expect(listWorkloadHealthSnapshots("org1")).toContainEqual(
+      expect.objectContaining({
+        projectId: app.projectId,
+        containerId: "queue",
+        state: "down",
+      }),
+    );
+    expect(h.incidents).toHaveLength(0);
+  });
+});
+
 describe("automatic monitoring coverage and lifecycle", () => {
   it("records and recovers a desktop-managed workload through the existing incident path", async () => {
     h.platformTarget = "desktop";
@@ -1216,6 +1312,18 @@ describe("control-plane restart", () => {
 // ─── Gate 1: a deploy in flight ──────────────────────────────────────────────
 
 describe("deploy suppression", () => {
+  it("keeps an interrupted role handover unknown until recovery finishes", async () => {
+    const app = seedApp({ status: "failed" });
+    const deployment = h.deployments.find((row) => row.id === app.depId)!;
+    deployment.roleHandover = { phase: "preparing" };
+    setState(app.containerId, "exited", { exitCode: 1 });
+    await confirm();
+    expect(openFor(app.projectId)).toHaveLength(0);
+    deployment.roleHandover = { phase: "complete" };
+    await confirm();
+    expect(openFor(app.projectId)).toHaveLength(1);
+  });
+
   it("skips a project whose deploy is still running", async () => {
     const { projectId, containerId } = seedApp({ status: "deploying" });
     setState(containerId, "gone");

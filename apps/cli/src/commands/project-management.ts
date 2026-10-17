@@ -100,6 +100,8 @@ projectConnectionsCommand.command("remove").alias("rm")
 export const projectInspectionCommands = ([
   ["pending", "getPendingActions", "Show pending deployment, routing and certificate actions"],
   ["incidents", "getIncidents", "Show this project's monitoring incidents"],
+  ["role-config", "getRuntimeRoleConfiguration", "Read editable runtime role settings from the active Docker release"],
+  ["roles", "getRuntimeRoles", "Show active runtime roles, replicas, status and restart counts"],
   ["drift", "getCommitStatus", "Compare source and deployment configuration"],
   ["rollback-capacity", "getRollbackCapacity", "Inspect retained rollback capacity"],
   ["info", "getInfo", "Read project details and deployment configuration"],
@@ -172,3 +174,6 @@ projectRoutingCommand.command("retry").argument("<id>", "Project ID")
       return result;
     });
   });
+
+export const projectRoleConfigurationCommand = jsonResourceCommand(new Command("configure-roles").description("Apply runtime roles using the active image, preserving web and unchanged replicas"),
+  ProjectControlSchemas.configureRuntimeRoles.input, (id, input) => getShipClient().projects.configureRuntimeRoles(id, input));

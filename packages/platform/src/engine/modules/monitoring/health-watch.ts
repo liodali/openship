@@ -698,7 +698,12 @@ async function sweepOnce(opts?: HealthSweepOptions): Promise<HealthWatchSummary>
     // containers. Skipped WITHOUT retiring — an open incident stays open, because
     // we genuinely don't know anything about this project right now.
     const newest = latestDeps.get(project.id) ?? dep;
-    if (deploymentIsInFlight(newest) || now - newest.updatedAt.getTime() < DEPLOY_GRACE_MS) {
+    const handoverPending = newest.roleHandover && newest.roleHandover.phase !== "complete";
+    if (
+      deploymentIsInFlight(newest) ||
+      handoverPending ||
+      now - newest.updatedAt.getTime() < DEPLOY_GRACE_MS
+    ) {
       unknownCandidates.push({ project, dep, meta, serverId: target.serverId });
       continue;
     }
@@ -1402,7 +1407,7 @@ function inspectRank(container: ListedContainer | null): number {
  * Which containers on this host does this project expect to be up?
  *
  * Compose/monorepo projects: one workload per service the ACTIVE release
- * deployed. Single-app projects: the deployment's own container.
+ * deployed. Single-app projects: the deployment's web and recorded role containers.
  */
 async function resolveWorkloads(
   candidate: Candidate,
@@ -1415,15 +1420,28 @@ async function resolveWorkloads(
     // Single-app. `runsAsContainer` is load-bearing: a bare deploy writes its
     // systemd handle into `containerId`, and inspecting that id would report a
     // missing container and page about a perfectly healthy service.
-    if (!dep.containerId || !runsAsContainer(meta)) return [];
+    if (!runsAsContainer(meta)) return [];
     return [
-      {
+      ...(dep.containerId
+        ? [
+            {
+              serviceId: null,
+              serviceKey: SINGLE_APP_KEY,
+              serviceName: project.name,
+              containerId: dep.containerId,
+              expectRunning: true,
+            },
+          ]
+        : []),
+      ...(dep.roleContainers ?? []).map((ref) => ({
         serviceId: null,
-        serviceKey: SINGLE_APP_KEY,
-        serviceName: project.name,
-        containerId: dep.containerId,
+        // Stable across releases, like __app__: a new container must not open
+        // another incident for the same broken replica. Service IDs use svc_.
+        serviceKey: `__role__:${ref.role}:${ref.replica}`,
+        serviceName: `${ref.role} · ${ref.replica}`,
+        containerId: ref.containerId,
         expectRunning: true,
-      },
+      })),
     ];
   }
 

@@ -111,6 +111,11 @@ export function renderCliReference(catalog) {
     const guidePath = posix.join("/docs/cli", guides[family] ?? "");
     body += `See the [${guides[family] ? "workflow guide" : "CLI overview"}](${guidePath}) for examples. `;
     body += `Global flags such as \`--json\` go before the command; see [global options](/docs/cli/reference#global-options).\n\n`;
+    if (command === "openship edge rules") {
+      body +=
+        "For deployment-specific feature availability, see " +
+        "[Self-hosted vs Cloud](/docs/guides/the-edge#self-hosted-vs-cloud).\n\n";
+    }
     for (const entry of catalog.filter((entry) => owner(entry.command) === command)) {
       body += `## ${entry.command}\n\n${prose(entry.description) || "Use this command with the arguments below."}\n\n\`\`\`text\n${entry.usage}\n\`\`\`\n\n`;
       if (entry.children.length) {

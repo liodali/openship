@@ -420,5 +420,42 @@
         "transport": "Bağlantı kesildi. Servisiniz hâlâ çalışıyor olabilir."
       }
     }
+  },
+  "runtimeRoles": {
+    "title": "Çalışma zamanı rolleri",
+    "kind": "Rol",
+    "web": "Web",
+    "worker": "İşçi",
+    "scheduler": "Zamanlayıcı",
+    "replicas": "{count} kopya",
+    "replica": "Kopya {replica}",
+    "restarts": "{count} yeniden başlatma",
+    "missing": "Bulunamadı",
+    "logs": "Günlükleri görüntüle",
+    "checking": "Çalışma zamanı rolleri denetleniyor…",
+    "staleTarget": "Bu kopya etkin dağıtımda bulunmuyor. Günlük kaynağını yeniden seçin.",
+    "retry": "Yeniden dene",
+    "replicaOne": "{count} kopya",
+    "configuration": {
+      "configure": "Rolleri yapılandır",
+      "title": "İşçiler ve zamanlayıcılar",
+      "hint": "Etkin imajı kullanarak uygula. Uygulama ve değişmeyen kopyalar çalışmaya devam eder.",
+      "sourceHint": "Bu ayarlar bu sürüme uygulanır. Sonraki kaynak dağıtımında openship.json içindeki açık roles dizisi önceliklidir.",
+      "name": "Ad",
+      "command": "Komut",
+      "kind": "Tür",
+      "replicas": "Kopyalar",
+      "singleton": "Tek örnek",
+      "addWorker": "İşçi ekle",
+      "addScheduler": "Zamanlayıcı ekle",
+      "remove": "Rolü kaldır",
+      "advanced": "Gelişmiş",
+      "healthCommand": "Sağlık komutu (isteğe bağlı)",
+      "stopGrace": "Durdurma süresi",
+      "apply": "Değişiklikleri uygula",
+      "applying": "Uygulanıyor…",
+      "cancel": "İptal",
+      "retry": "Tekrar dene"
+    }
   }
 }

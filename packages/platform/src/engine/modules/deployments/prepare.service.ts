@@ -49,9 +49,13 @@ import {
   type OpenshipReadiness,
   type OpenshipMonorepoApp,
   type StackRole,
+  type StackDefinition,
   type ComposeAdvanced,
   type WorkloadType,
   resolveTierResources,
+  STACKS,
+  resolveStackRoles,
+  runtimeRoleDefinition,
 } from "@repo/core";
 import { env } from "../../config/index";
 import { createGitHubReader, type ProjectReader } from "./project-reader";
@@ -301,6 +305,8 @@ export interface ProjectInfo {
    * explicitly no roles, which is why the overlay tests for presence.
    */
   roles?: StackRole[];
+  /** Matching framework suggestions. Enabling a role always requires an explicit selection. */
+  rolePresets?: StackRole[];
   /**
    * What the selected `openship.json` parse REFUSED, when it refused anything (#641).
    * Advisory only: an invalid config has never failed a scan or a deploy, it just
@@ -721,6 +727,9 @@ export function projectInfoToScanResponse(result: ProjectInfo, options: SourceSc
     ...(publicInfo.roles && {
       roles: publicInfo.roles as (StackRole & { kind: "worker" | "scheduler" })[],
     }),
+    ...(publicInfo.rolePresets && {
+      rolePresets: publicInfo.rolePresets as (StackRole & { kind: "worker" | "scheduler" })[],
+    }),
     ...(publicInfo.configDiagnostics && { configDiagnostics: publicInfo.configDiagnostics }),
     ...(publicInfo.rootEnv &&
       Object.keys(publicInfo.rootEnv).length > 0 && {
@@ -745,6 +754,51 @@ async function readProjectSnapshot(
 ): Promise<ProjectRootSnapshotInput> {
   const normalizedRootDirectory = normalizeProjectRootDirectory(rootDirectory);
   const files = await reader.listDirectory(normalizedRootDirectory);
+  // Detectors can declare nested markers (for example bin/rails). Read their
+  // names beside an existing root marker, without walking or exposing contents.
+  // The same listing provides file gates for that stack's role suggestions.
+  const names = new Set(files.map((file) => file.name.toLowerCase()));
+  const nested = [
+    ...new Set(
+      Object.values(STACKS).flatMap((stack: StackDefinition) => {
+        if (
+          !stack.detection?.rootMarkers?.some(
+            (marker) => !marker.includes("/") && names.has(marker.toLowerCase()),
+          )
+        )
+          return [];
+        return [
+          ...stack.detection.rootMarkers,
+          ...(stack.defaultRoles ?? []).flatMap((role) => [
+            ...(role.when?.files ?? []),
+            ...(role.unless?.files ?? []),
+          ]),
+        ].filter((name) => name.includes("/") && names.has(name.split("/")[0].toLowerCase()));
+      }),
+    ),
+  ];
+  const parents = [...new Set(nested.map((name) => name.slice(0, name.lastIndexOf("/"))))];
+  const children = new Map(
+    await Promise.all(
+      parents.map(
+        async (parent) =>
+          [
+            parent,
+            await reader.listDirectory(joinProjectPath(normalizedRootDirectory, parent)),
+          ] as const,
+      ),
+    ),
+  );
+  for (const name of nested) {
+    const slash = name.lastIndexOf("/");
+    if (
+      children
+        .get(name.slice(0, slash))
+        ?.some((file) => file.name === name.slice(slash + 1) && file.type !== "dir")
+    ) {
+      files.push({ name, type: "file" });
+    }
+  }
   const packageJson = await reader.readJson(
     joinProjectPath(normalizedRootDirectory, "package.json"),
   );
@@ -1100,6 +1154,22 @@ export async function resolveFromReader(
     }
   }
   const overlaid = applyOpenshipOverlay(info, openship.config);
+  // A scan suggests roles; it must not start a queue or scheduler implicitly,
+  // including when the destination cannot run roles. Explicit [] is an opt-out.
+  const presets = (STACKS[overlaid.stack] as StackDefinition).defaultRoles;
+  if (
+    overlaid.roles === undefined &&
+    presets?.length &&
+    !overlaid.services?.length &&
+    !root.monorepo
+  ) {
+    const roles = resolveStackRoles({
+      defaultRoles: presets,
+      deps: Object.keys(root.selected.stack.dependencies),
+      files: root.selected.files.map((file) => file.name),
+    });
+    if (roles.length) overlaid.rolePresets = roles.map(runtimeRoleDefinition);
+  }
   // Log both syntax diagnostics and overrides rejected by workspace discovery.
   // Scans expose the same diagnostics to SDK, CLI and dashboard callers.
   if (overlaid.configDiagnostics) {

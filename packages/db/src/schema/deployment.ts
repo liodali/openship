@@ -1,3 +1,4 @@
+import type { RoleContainerRef } from "@repo/core";
 import {
   pgTable,
   text,
@@ -123,8 +124,10 @@ export const deployment = pgTable(
      * teardown and pause/resume; `containerId` above stays the web container.
      */
     roleContainers: jsonb("role_containers").$type<
-      { role: string; replica: number; containerId: string }[] | null
+      RoleContainerRef[] | null
     >(),
+    /** Durable runtime handover journal, separate from immutable config metadata. */
+    roleHandover: jsonb("role_handover").$type<Record<string, unknown> | null>(),
     /** External URL where deployment is reachable */
     url: text("url"),
 
@@ -234,6 +237,11 @@ export const deployment = pgTable(
     // Org scoping for the build-minute sum (which joins build_session → deployment
     // and filters here) and for org-wide deployment listings. See migration 0107.
     index("idx_deployment_org").on(t.organizationId),
+    index("idx_deployment_role_handover_pending")
+      .on(t.projectId)
+      .where(
+        sql`${t.roleHandover} IS NOT NULL AND coalesce(${t.roleHandover}->>'phase', '') <> 'complete'`,
+      ),
   ],
 );
 

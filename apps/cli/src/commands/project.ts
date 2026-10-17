@@ -20,7 +20,7 @@ import { projectClusterCommand, projectDatabaseCommand, projectVolumeCommand } f
 import {
   projectUpdateCommand, projectEnvironmentCommand, projectResourcesCommand,
   projectStorageCommand, projectConnectionsCommand, projectInspectionCommands,
-  projectOptionsCommand, projectCacheCommand, projectDeploymentsCommand, projectCloneCommand, projectLocalCommand, projectRoutingCommand,
+  projectRoleConfigurationCommand, projectOptionsCommand, projectCacheCommand, projectDeploymentsCommand, projectCloneCommand, projectLocalCommand, projectRoutingCommand,
 } from "./project-management";
 import {
   renderReleaseImage,
@@ -544,11 +544,20 @@ const logsCmd = new Command("logs")
   .description("Show or stream runtime (container) logs")
   .argument("<id>", "Project ID")
   .option("--tail <n>", "Number of recent lines", positiveInteger)
+  .option("--role <name>", "Read one active runtime role instead of the web application")
+  .option("--replica <n>", "Role replica number (defaults to 1)", positiveInteger)
+  .option("--deployment-id <id>", "Reject logs if this deployment is no longer active")
   .option("-f, --follow", "Stream logs until interrupted")
   .action(
     action(async (id: string, opts) => {
+      const target = {
+        tail: opts.tail,
+        role: opts.role,
+        replica: opts.replica,
+        deploymentId: opts.deploymentId,
+      };
       if (!opts.follow) {
-        const data = await getShipClient().projects.runtimeLogs(id, { tail: opts.tail });
+        const data = await getShipClient().projects.runtimeLogs(id, target);
         if (isJsonMode()) {
           printJson(data);
           return;
@@ -557,7 +566,7 @@ const logsCmd = new Command("logs")
         return;
       }
 
-      for await (const ev of getShipClient().projects.streamRuntimeLogs(id, { tail: opts.tail })) {
+      for await (const ev of getShipClient().projects.streamRuntimeLogs(id, target)) {
         if (ev.event === "error") {
           const parsed = safeParse(ev.data);
           err(`  ${(parsed?.error as string) ?? ev.data}`);
@@ -646,6 +655,6 @@ projectCommand.addCommand(serverLogsCmd);
 projectCommand.addCommand(projectClusterCommand);
 projectCommand.addCommand(projectDatabaseCommand);
 projectCommand.addCommand(projectVolumeCommand);
-for (const command of [projectOptionsCommand, projectCacheCommand, projectDeploymentsCommand, projectCloneCommand, projectLocalCommand, projectRoutingCommand]) projectCommand.addCommand(command);
+for (const command of [projectRoleConfigurationCommand, projectOptionsCommand, projectCacheCommand, projectDeploymentsCommand, projectCloneCommand, projectLocalCommand, projectRoutingCommand]) projectCommand.addCommand(command);
 for (const command of [projectUpdateCommand, projectEnvironmentCommand, projectResourcesCommand,
   projectStorageCommand, projectConnectionsCommand, ...projectInspectionCommands]) projectCommand.addCommand(command);

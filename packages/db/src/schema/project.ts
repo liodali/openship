@@ -153,6 +153,11 @@ export const project = pgTable(
     installationId: integer("installation_id"),
     /** Null uses the shared default: deployment and per-service GitHub Checks. */
     githubChecks: jsonb("github_checks").$type<GitHubDeploymentChecks | null>(),
+    /** Opt-in pull request environments. A custom base domain uses the server's wildcard DNS/TLS. */
+    previewSettings: jsonb("preview_settings").$type<{ enabled: boolean; baseDomain?: string; comments: boolean } | null>(),
+    previewScannedAt: timestamp("preview_scanned_at"),
+    /** Internal successful build receipts, keyed by project or service id. */
+    buildCacheReceipts: jsonb("build_cache_receipts").$type<Record<string, { targets: string[]; deploymentId: string; completedAt: string; durationMs?: number }> | null>(),
     /**
      * Per-project clone-token override (encrypted via lib/encryption).
      * When set, this is the first credential `resolveCloneToken` returns -

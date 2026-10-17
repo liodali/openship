@@ -19,6 +19,7 @@ import { onDeploymentReady, setPin, reconcileProjectRetention } from "@repo/plat
 import { reconcileDeployment } from "@repo/platform/engine/modules/deployments/reconcile.service";
 import { runImageGcSweep } from "@repo/platform/engine/modules/deployments/image-gc";
 import { updateProject } from "@repo/platform/engine/modules/projects/project-crud.service";
+import { retirePreviousRoleContainers } from "@repo/platform/engine/modules/deployments/role-runtime";
 
 describeDockerE2E("rollback retention matches rows and real artifacts", () => {
   let runtime: DockerRuntime;
@@ -177,6 +178,49 @@ describeDockerE2E("rollback retention matches rows and real artifacts", () => {
     expect((await runImageGcSweep()).errors).toBe(0);
     expect((await repos.deployment.findById(f.rows[1]!.id))!.artifactRetainedAt).toBeNull();
     expect(await runtime.imageExistsLocally(f.tags[1]!)).toBe(false);
+  });
+
+  it("retries failed role retirement before removing its image and keeps the active roles running", async () => {
+    const f = await fixture({ count: 2 });
+    const oldWorker = await container(f.project.id, f.tags[0]!);
+    const activeWorker = await container(f.project.id, f.tags[1]!);
+    const previous = {
+      ...f.rows[0]!,
+      roleContainers: [{ role: "queue", replica: 1, containerId: oldWorker }],
+    };
+    await repos.deployment.setRoleContainers(previous.id, previous.roleContainers);
+    await repos.deployment.setRoleContainers(f.rows[1]!.id, [
+      { role: "queue", replica: 1, containerId: activeWorker },
+    ]);
+    let refuseRemoval = true;
+    const destroy = runtime.destroy.bind(runtime);
+    vi.spyOn(runtime, "destroy").mockImplementation(async (id) => {
+      if (id === oldWorker && refuseRemoval) throw new Error("temporary role removal failure");
+      await destroy(id);
+    });
+    const warning = await retirePreviousRoleContainers({
+      previous,
+      currentDeploymentId: f.rows[1]!.id,
+      log: () => {},
+      withRuntime: async (_dep, work) => work(runtime),
+    });
+    expect(warning).toContain(`queue replica 1 (${oldWorker.slice(0, 12)})`);
+    expect((await runtime.docker.getContainer(oldWorker).inspect()).State.Running).toBe(true);
+
+    await updateProject(f.project.id, { rollbackWindow: 0 }, f.project.organizationId);
+    expect((await reconcileProjectRetention(f.project.id)).errors).toBe(1);
+    expect((await repos.deployment.findById(previous.id))!.artifactRetainedAt).not.toBeNull();
+    expect(await runtime.imageExistsLocally(f.tags[0]!)).toBe(true);
+
+    refuseRemoval = false;
+    expect((await runImageGcSweep()).errors).toBe(0);
+    await expect(runtime.docker.getContainer(oldWorker).inspect()).rejects.toMatchObject({
+      statusCode: 404,
+    });
+    expect((await repos.deployment.findById(previous.id))!.artifactRetainedAt).toBeNull();
+    expect(await runtime.imageExistsLocally(f.tags[0]!)).toBe(false);
+    expect((await runtime.docker.getContainer(activeWorker).inspect()).State.Running).toBe(true);
+    expect((await runtime.docker.getContainer(f.activeContainer).inspect()).State.Running).toBe(true);
   });
 
   it("defers cleanup until a cancelled worker has actually finished", async () => {

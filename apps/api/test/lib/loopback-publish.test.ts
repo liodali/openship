@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  portOnlyTcpContainerPorts,
   specContainerPort,
   withLoopbackPublish,
   withLoopbackPublishAll,
@@ -107,5 +108,23 @@ describe("withLoopbackPublish", () => {
 
   it("replaces a differently-mapped host port for the routed container port", () => {
     expect(withLoopbackPublish(["8080:3000"], 3000, 21001)).toEqual(["127.0.0.1:21001:3000"]);
+  });
+});
+
+describe("port-only publishes are pinned, other declared bindings are kept", () => {
+  it("selects only TCP container ports with no explicit host binding", () => {
+    // "53" also has a UDP spec and 8080 an explicit host port: republishing either
+    // on a pinned loopback port would drop the binding the user declared.
+    expect(
+      portOnlyTcpContainerPorts([
+        "4011",
+        "8801/tcp",
+        "53",
+        "53/udp",
+        "9000:8080",
+        "8080",
+        " 6379 ",
+      ]),
+    ).toEqual([4011, 8801, 6379]);
   });
 });

@@ -21,7 +21,7 @@ function recordingEnv(commands: string[], over: Partial<BuildEnvironment> = {}):
   return {
     projectDir: PROJECT_DIR,
     exec: async (command) => {
-      commands.push(command);
+      if (!command.includes(".env.example") && !command.startsWith("test -d ")) commands.push(command);
     },
     ...over,
   };
@@ -159,7 +159,7 @@ describe("runBuildPipeline pinned clone failure boundaries", () => {
   it("does not misclassify a failed clone as a shallow-history miss", async () => {
     const commands: string[] = [];
     const exec = vi.fn(async (command: string) => {
-      commands.push(command);
+      if (!command.includes(".env.example") && !command.startsWith("test -d ")) commands.push(command);
       throw new Error("GitHub temporarily limiting unauthenticated downloads");
     });
 
@@ -178,7 +178,7 @@ describe("runBuildPipeline pinned clone failure boundaries", () => {
   it("unshallows only after clone succeeds and the pinned commit is absent", async () => {
     const commands: string[] = [];
     const exec = vi.fn(async (command: string) => {
-      commands.push(command);
+      if (!command.includes(".env.example") && !command.startsWith("test -d ")) commands.push(command);
       if (command.includes(" cat-file ")) throw new Error("unknown commit");
     });
 

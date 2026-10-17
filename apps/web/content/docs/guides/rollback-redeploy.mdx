@@ -87,6 +87,15 @@ If the build has been cleaned up, Openship rebuilds that version's commit instea
 — but it lands you in the same place, so rollback is never a dead end.
 </Callout>
 
+<Callout title="An older release contains redacted configuration" type="warn">
+Older Openship versions could replace credentials in saved Compose configuration with `***`.
+Openship refuses to replay an affected snapshot before starting a deployment; your active release
+stays in place. Today's service settings are not a reliable copy of that older release and are
+never substituted silently. Choose an intact release, or redeploy the original source with the
+required credentials to create a new restore point. New deployment snapshots preserve encrypted
+configuration exactly while build logs continue to redact credentials.
+</Callout>
+
 <Callout title="The rollback option is greyed out" type="warn">
 Only two things disable it: the version is already **Active** (you're on it), or it never finished healthy.
 A cleaned-up build no longer disables rollback — Openship rebuilds the commit instead.

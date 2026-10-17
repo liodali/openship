@@ -148,6 +148,7 @@ function harness(
     previousRuntime?: Record<string, unknown>;
     keepProvisionedOnCancel?: () => boolean;
     stabilizationWindowMs?: number;
+    beforeStart?: () => Promise<void>;
   } = {},
 ): Harness {
   const logs: { message: string; level: string | undefined }[] = [];
@@ -172,7 +173,7 @@ function harness(
     ...over.previousRuntime,
   };
   const verifyStability = vi.fn(async () => over.findings ?? []);
-  const beforeStart = async () => {};
+  const beforeStart = over.beforeStart ?? (async () => {});
   const config = { deploymentId: "dep-1" } as unknown as DeployConfig;
   const deps = runtimeRoleRolloutDeps({
     roles: over.roles ?? [worker()],
@@ -206,19 +207,31 @@ const stable = (...refs: { containerId: string }[]) =>
   refs.map((ref) => finding(ref.containerId, "stable"));
 
 describe("runtimeRoleRolloutDeps: startReplica", () => {
-  it("passes config, role, replica, logger.callback and the same beforeStart to deployRole", async () => {
-    const h = harness();
+  it("records the container before joining networks and starting its process", async () => {
+    const events: string[] = [];
+    const h = harness({
+      beforeStart: async () => {
+        events.push("networks");
+      },
+    });
     const role = worker("emails");
-    const id = await h.deps.startReplica(role, 2);
-    expect(id).toBe("new-id");
     const deployRole = h.runtime.deployRole as ReturnType<typeof vi.fn>;
+    deployRole.mockImplementation(async (...args: unknown[]) => {
+      await (args[4] as { beforeStart: (id: string) => Promise<void> }).beforeStart("new-id");
+      events.push("start");
+      return { containerId: "new-id" };
+    });
+    const id = await h.deps.startReplica(role, 2, async () => {
+      events.push("persist");
+    });
+    expect(id).toBe("new-id");
     expect(deployRole).toHaveBeenCalledTimes(1);
     const args = deployRole.mock.calls[0] as unknown[];
     expect(args[0]).toBe(h.config);
     expect(args[1]).toBe(role);
     expect(args[2]).toBe(2);
     expect(typeof args[3]).toBe("function");
-    expect((args[4] as { beforeStart: unknown }).beforeStart).toBe(h.beforeStart);
+    expect(events).toEqual(["persist", "networks", "start"]);
   });
 });
 
@@ -617,7 +630,7 @@ describe("retirePreviousRoleContainers", () => {
     expect(t.withRuntime).not.toHaveBeenCalled();
   });
 
-  it("a failing destroy only warns and the rest still run", async () => {
+  it("a failing destroy names only the failed role in the deploy warning and the rest still run", async () => {
     const t = setup(async (id) => {
       if (id === "old-w1") throw new Error("rm failed");
     });
@@ -628,7 +641,10 @@ describe("retirePreviousRoleContainers", () => {
         log: t.log,
         withRuntime: t.withRuntime as never,
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe(
+      "Previous role container worker replica 1 (old-w1) could not be removed. " +
+        "It may still be running the previous release's code. Remove it manually.",
+    );
     expect(t.destroyed.sort()).toEqual(["old-sched", "old-w1", "old-w2"]);
     const warns = t.logs.filter((l) => l.level === "warn");
     expect(warns).toHaveLength(1);
@@ -646,7 +662,7 @@ describe("retirePreviousRoleContainers", () => {
         withRuntime: t.withRuntime as never,
       });
       await vi.advanceTimersByTimeAsync(40_000);
-      await expect(done).resolves.toBeUndefined();
+      await expect(done).resolves.toContain("worker replica 2 (old-w2)");
       const warns = t.logs.filter((l) => l.level === "warn");
       expect(warns).toHaveLength(1);
       expect(warns[0]!.message).toContain("timed out after 40000ms");
@@ -667,7 +683,11 @@ describe("retirePreviousRoleContainers", () => {
         log: t.log,
         withRuntime: withRuntime as never,
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe(
+      "3 previous role containers could not be removed: worker replica 1 (old-w1), " +
+        "worker replica 2 (old-w2), sched replica 1 (old-sched). " +
+        "They may still be running the previous release's code. Remove them manually.",
+    );
     const warns = t.logs.filter((l) => l.level === "warn");
     expect(warns).toHaveLength(1);
     expect(warns[0]!.message).toContain("host unreachable");

@@ -11,6 +11,7 @@
  * instance flows from build.service.ts → adapter → pipeline → deploy.
  */
 
+import { buildEnvironmentPreflight } from "./build-env-preflight";
 import { reportCaughtError as observeCaughtError } from "@repo/core/diagnostics";
 import type { BuildConfig, BuildStep, LogEntry, LogCallback } from "../types";
 import { safeErrorMessage, packageManagerEnsureCommand, nodeBinPathExport } from "@repo/core";
@@ -44,6 +45,10 @@ export {
  * instead of constructing raw LogEntry objects.
  */
 export class BuildLogger {
+  private cacheLines = new Map<string, string>();
+  private cacheSteps = new Set<string>();
+  private cacheHits = new Set<string>();
+  private cacheFinished = new Set<string>();
   constructor(
     private readonly onLog?: LogCallback,
     private readonly onBuildOutput?: (data: string, streamId: string) => void,
@@ -51,7 +56,24 @@ export class BuildLogger {
 
   /** Observe command output before rendering, without emitting another log entry. */
   observeBuildOutput(data: string, streamId = "default"): void {
+    const lines = ((this.cacheLines.get(streamId) ?? "") + data).split(/\r?\n/);
+    this.cacheLines.set(streamId, (lines.pop() ?? "").slice(-8192));
+    for (const line of lines) {
+      const step = line.match(/^#(\d+)\s/);
+      if (!step) continue;
+      const id = `${streamId}:${step[1]}`;
+      if (/\]\s+(RUN|COPY|ADD)\s/.test(line)) this.cacheSteps.add(id);
+      if (/^#\d+ CACHED/.test(line)) this.cacheHits.add(id);
+      if (/^#\d+ DONE/.test(line)) this.cacheFinished.add(id);
+    }
     this.onBuildOutput?.(data, streamId);
+  }
+
+  cacheSummary(): string | undefined {
+    const steps = [...this.cacheSteps].filter(id => this.cacheHits.has(id) || this.cacheFinished.has(id));
+    if (!steps.length) return;
+    const hits = steps.filter(id => this.cacheHits.has(id)).length;
+    return `Docker layer cache: ${hits} hit(s), ${steps.length - hits} miss(es).`;
   }
 
   /** Emit a plain log line. */
@@ -371,6 +393,8 @@ export async function runBuildPipeline(
       );
     }
 
+    if (config.rootDirectory) await exec(`test -d ${sq(buildDir)} || { echo 'Configured root directory does not exist in this revision. Select the application directory and retry.' >&2; exit 1; }`);
+
     // Env prefix for install & build commands - skip when env vars are set natively
     const envPrefix = env.hasNativeEnv
       ? ""
@@ -393,6 +417,8 @@ export async function runBuildPipeline(
       const prefix = [envPrefix, binPathExport].filter(Boolean).join(" && ");
       return prefix ? `${prefix} && ${full}` : full;
     };
+
+    await exec(inDir(buildEnvironmentPreflight(config.envVars)));
 
     // Ensure the detected package manager is on PATH before the first pnpm/yarn
     // invocation (corepack for pnpm/yarn; no-op for npm/bun/non-node) — fixes

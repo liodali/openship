@@ -5,7 +5,7 @@ import {
   UpdateProjectBody,
   ListProjectsSchema,
   ResourceIdSchema,
-  RuntimeLogsInputSchema,
+  ProjectRuntimeLogsInputSchema,
   ServerLogsInputSchema,
   parseInput,
   isProject,
@@ -27,6 +27,7 @@ import {
   type ProjectRoutingStreams,
   type ProjectRoutingStreamOptions,
   type ServerLogsInput,
+  type ProjectRuntimeLogsInput,
 } from "@repo/contracts";
 import type { Authorization } from "./authorization";
 import type { ExecutionContext } from "./context";
@@ -77,7 +78,11 @@ export interface ProjectDependencies {
   ): ReturnType<ProjectLogStreams["streamClusterDatabaseEvents"]>;
   controls?: ResourceServices<typeof ProjectControlSchemas>;
   home?(ctx: ExecutionContext): Promise<unknown>;
-  subscribeLogs?(ctx: ExecutionContext, id: string, input: { tail?: number }): EventSubscription;
+  subscribeLogs?(
+    ctx: ExecutionContext,
+    id: string,
+    input: ProjectRuntimeLogsInput,
+  ): EventSubscription;
   subscribeRoutingRetry?(
     ctx: ExecutionContext,
     id: string,
@@ -244,7 +249,7 @@ export function createProjectOperations(
     },
     async *streamRuntimeLogs(ctx, value, command = {}, options = {}) {
       const id = parseInput(ResourceIdSchema, value);
-      const input = parseInput(RuntimeLogsInputSchema, command);
+      const input = parseInput(ProjectRuntimeLogsInputSchema, command);
       const context = await authorize(ctx, id, "read");
       const subscribe = resources().subscribeLogs;
       if (!subscribe)

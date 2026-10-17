@@ -151,7 +151,8 @@ beforeEach(async () => {
           apps.push(app);
           return response(app);
         }
-        return response(apps);
+        // An unrelated launcher has no hostname but must not block publication.
+        return response([...apps, { id: "launcher", type: "app_launcher", name: "Team" }]);
       }
       if (path.endsWith("/access/apps/application/policies"))
         return response(apps[0]?.policies ?? []);

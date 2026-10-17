@@ -1,5 +1,5 @@
 import { eq, and, or, isNull, isNotNull, inArray, desc, sql, type SQL } from "drizzle-orm";
-import { generateId, ForbiddenError, UnauthorizedError } from "@repo/core";
+import { generateId, ForbiddenError, UnauthorizedError, ConflictError, ValidationError, inspectCommandEnvironment, manualBuildCaches } from "@repo/core";
 import type { Database, DatabaseTransaction } from "../connection";
 import { createConfigurationSecrets, type ConfigurationEncryption } from "../configuration-secrets";
 import { project, projectGroup, envVar, deployment, service } from "../schema";
@@ -905,6 +905,189 @@ export function createProjectRepo(db: Database, encryption: ConfigurationEncrypt
             })),
           );
         }
+      });
+    },
+
+    /** Commands and encrypted variables move together, under the configuration lock. */
+    async migrateCommandEnvironment(
+      projectId: string,
+      organizationId: string,
+      input: {
+        environment: string;
+        serviceId?: string;
+        commands: Partial<Record<"installCommand" | "buildCommand" | "startCommand", string>>;
+      },
+    ) {
+      return db.transaction(async (tx) => {
+        await assertProjectConfigurationWritable(
+          tx,
+          and(eq(project.id, projectId), eq(project.organizationId, organizationId))!,
+        );
+        const [owner] = await tx
+          .select({ id: project.id })
+          .from(project)
+          .where(and(eq(project.id, projectId), eq(project.organizationId, organizationId)));
+        if (!owner) throw new ForbiddenError("Project is unavailable");
+        const row = input.serviceId
+          ? (
+              await tx
+                .select()
+                .from(service)
+                .where(and(eq(service.id, input.serviceId), eq(service.projectId, projectId)))
+                .for("update")
+            )[0]
+          : (
+              await tx
+                .select()
+                .from(project)
+                .where(and(eq(project.id, projectId), eq(project.organizationId, organizationId)))
+                .for("update")
+            )[0];
+        if (!row) throw new ForbiddenError("Configuration is unavailable");
+        const update: Partial<Record<"installCommand" | "buildCommand" | "startCommand", string>> =
+          {};
+        const variables: Record<string, string> = {};
+        for (const field of ["installCommand", "buildCommand", "startCommand"] as const) {
+          if (input.commands[field] === undefined) continue;
+          if (row[field] !== input.commands[field])
+            throw new ConflictError("Commands changed. Reload before migrating variables.");
+          const parsed = inspectCommandEnvironment(row[field] ?? "");
+          if (!parsed.migratable)
+            throw new ValidationError(
+              `${field} contains shell expressions or has no literal variables to migrate`,
+            );
+          for (const [key, value] of Object.entries(parsed.variables)) {
+            if (Object.hasOwn(variables, key) && variables[key] !== value)
+              throw new ConflictError(
+                `Commands use different values for ${key}. Resolve the difference before migrating.`,
+              );
+            variables[key] = value;
+          }
+          update[field] = parsed.command;
+        }
+        if (!Object.keys(update).length) throw new ValidationError("Select a command to migrate");
+        const existing = await tx
+          .select()
+          .from(envVar)
+          .where(and(...envVarScope(projectId, input.environment, input.serviceId ?? null)));
+        const inherited = input.serviceId
+          ? await tx
+              .select()
+              .from(envVar)
+              .where(and(...envVarScope(projectId, input.environment, null)))
+          : [];
+        for (const [key, value] of Object.entries(variables)) {
+          const stored = existing.find((v) => v.key === key) ?? inherited.find((v) => v.key === key);
+          if (stored) {
+            if (encryption.decrypt(stored.value) !== value)
+              throw new ConflictError(
+                `Environment already has a different value for ${key}. Resolve the difference before migrating.`,
+              );
+            continue;
+          }
+          await tx
+            .insert(envVar)
+            .values({
+              id: generateId("env"),
+              projectId,
+              serviceId: input.serviceId ?? null,
+              environment: input.environment,
+              key,
+              value: encryption.encrypt(value),
+              isSecret: true,
+            });
+        }
+        if (input.serviceId)
+          await tx
+            .update(service)
+            .set({ ...update, updatedAt: new Date() })
+            .where(and(eq(service.id, input.serviceId), eq(service.projectId, projectId)));
+        else
+          await tx
+            .update(project)
+            .set({ ...update, updatedAt: new Date() })
+            .where(eq(project.id, projectId));
+        return { keys: Object.keys(variables), commands: update };
+      });
+    },
+
+    async buildCacheMigration(
+      projectId: string,
+      organizationId: string,
+      serviceId?: string,
+      remove?: string[],
+    ) {
+      return db.transaction(async (tx) => {
+        await assertProjectConfigurationWritable(tx, eq(project.id, projectId));
+        const [owner] = await tx
+          .select()
+          .from(project)
+          .where(and(eq(project.id, projectId), eq(project.organizationId, organizationId)));
+        if (!owner) throw new ForbiddenError("Project is unavailable");
+        const row = serviceId
+          ? (
+              await tx
+                .select()
+                .from(service)
+                .where(and(eq(service.id, serviceId), eq(service.projectId, projectId)))
+            )[0]
+          : owner;
+        if (!row) throw new ForbiddenError("Service is unavailable");
+        const candidates = manualBuildCaches(row);
+        const receipt = owner.buildCacheReceipts?.[serviceId ?? projectId];
+        const built = receipt
+          ? (
+              await tx
+                .select()
+                .from(deployment)
+                .where(
+                  and(eq(deployment.id, receipt.deploymentId), eq(deployment.projectId, projectId)),
+                )
+            )[0]
+          : null;
+        const canMigrate =
+          owner.runtimeMode !== "bare" &&
+          built?.status === "ready" &&
+          candidates.length > 0 &&
+          candidates.every((item) => receipt?.targets.includes(item.target));
+        if (remove?.length) {
+          if (!canMigrate || remove.some((spec) => !candidates.some((item) => item.spec === spec)))
+            throw new ConflictError(
+              "Deploy successfully with managed caches before removing these manual mounts. Reload if the configuration changed.",
+            );
+          const volumes = (row.volumes ?? []).filter((spec) => !remove.includes(spec));
+          if (serviceId)
+            await tx
+              .update(service)
+              .set({ volumes, updatedAt: new Date() })
+              .where(eq(service.id, serviceId));
+          else
+            await tx
+              .update(project)
+              .set({ volumes, updatedAt: new Date() })
+              .where(eq(project.id, projectId));
+        }
+        return {
+          candidates,
+          canMigrate: Boolean(canMigrate),
+          deploymentId: receipt?.deploymentId ?? null,
+          removed: remove ?? [],
+        };
+      });
+    },
+
+    async recordBuildCacheReceipt(
+      projectId: string,
+      scope: string,
+      receipt: { targets: string[]; deploymentId: string; completedAt: string; durationMs?: number },
+    ) {
+      await withProjectConfigurationWrite(db, eq(project.id, projectId), async (tx) => {
+        const [row] = await tx.select().from(project).where(eq(project.id, projectId));
+        if (row)
+          await tx
+            .update(project)
+            .set({ buildCacheReceipts: { ...row.buildCacheReceipts, [scope]: receipt } })
+            .where(eq(project.id, projectId));
       });
     },
 

@@ -198,6 +198,27 @@ export async function mergeEnvVars(c: Context) {
   return c.json(result.data);
 }
 
+export async function migrateCommandEnvironment(c: Context) {
+  const result = await getPlatformKernel().projects.migrateCommandEnvironment(operationContext(c), param(c, "id"), await c.req.json());
+  applyOperationContext(c, result.context);
+  return c.json({ success: true, data: result.data });
+}
+export async function buildCacheMigration(c: Context) {
+  const result = await getPlatformKernel().projects.buildCacheMigration(operationContext(c), param(c, "id"), await c.req.json());
+  applyOperationContext(c, result.context);
+  return c.json({ success: true, data: result.data });
+}
+export async function configurePreviews(c: Context) {
+  const result = await getPlatformKernel().projects.configurePreviews(operationContext(c), param(c, "id"), await c.req.json());
+  applyOperationContext(c, result.context);
+  return c.json({ success: true, data: result.data });
+}
+export async function listPreviews(c: Context) {
+  const result = await getPlatformKernel().projects.listPreviews(operationContext(c), param(c, "id"));
+  applyOperationContext(c, result.context);
+  return c.json({ success: true, data: result.data });
+}
+
 // ─── Resources ───────────────────────────────────────────────────────────────
 
 export async function getResources(c: Context) {
@@ -455,7 +476,35 @@ export async function runtimeLogs(c: Context) {
   const result = await getPlatformKernel().projects.runtimeLogs(
     operationContext(c),
     param(c, "id"),
-    { tail: c.req.query("tail") === undefined ? undefined : Number(c.req.query("tail")) },
+    runtimeLogInput(c),
+  );
+  applyOperationContext(c, result.context);
+  return c.json({ data: result.data });
+}
+
+function runtimeLogInput(c: Context) {
+  return {
+    tail: c.req.query("tail") === undefined ? undefined : Number(c.req.query("tail")),
+    role: c.req.query("role"),
+    replica: c.req.query("replica") === undefined ? undefined : Number(c.req.query("replica")),
+    deploymentId: c.req.query("deploymentId"),
+  };
+}
+
+export async function runtimeRoleConfiguration(c: Context) {
+  const result = await getPlatformKernel().projects.getRuntimeRoleConfiguration(operationContext(c), param(c, "id"));
+  applyOperationContext(c, result.context);
+  return c.json({ data: result.data });
+}
+export async function configureRuntimeRoles(c: Context) {
+  const result = await getPlatformKernel().projects.configureRuntimeRoles(operationContext(c), param(c, "id"), await c.req.json());
+  applyOperationContext(c, result.context);
+  return c.json({ data: result.data });
+}
+export async function runtimeRoles(c: Context) {
+  const result = await getPlatformKernel().projects.getRuntimeRoles(
+    operationContext(c),
+    param(c, "id"),
   );
   applyOperationContext(c, result.context);
   return c.json({ data: result.data });
@@ -467,7 +516,7 @@ export async function runtimeLogs(c: Context) {
 export async function runtimeLogStream(c: Context) {
   const ctx = operationContext(c);
   const id = param(c, "id");
-  const input = { tail: c.req.query("tail") ? Number(c.req.query("tail")) : undefined };
+  const input = runtimeLogInput(c);
   return streamSSE(c, async (stream) => {
     const abort = new AbortController();
     stream.onAbort(() => abort.abort());

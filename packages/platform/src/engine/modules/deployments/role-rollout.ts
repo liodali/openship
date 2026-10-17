@@ -47,7 +47,7 @@
  */
 
 import { reportCaughtError as observeCaughtError } from "@repo/core/diagnostics";
-import { safeErrorMessage, withTimeout, type StackRole } from "@repo/core";
+import { safeErrorMessage, withTimeout, type StackRole, type RoleContainerRef } from "@repo/core";
 import { DeploymentCancelledError, throwIfDeploymentCancelled } from "./deployment-cancellation";
 
 const ROLE_ROLLOUT_SOURCE = "platform/engine/modules/deployments/role-rollout";
@@ -55,11 +55,7 @@ const ROLE_ROLLOUT_SOURCE = "platform/engine/modules/deployments/role-rollout";
 /** Same ceiling as the web pipeline's teardown, for the same reason (#629). */
 const DEFAULT_TEARDOWN_TIMEOUT_MS = 30_000;
 
-export interface RoleContainerRef {
-  role: string;
-  replica: number;
-  containerId: string;
-}
+export type { RoleContainerRef } from "@repo/core";
 
 /** True for kind "scheduler" or `singleton: true`. */
 export function isSingletonRole(role: Pick<StackRole, "kind" | "singleton">): boolean {
@@ -143,10 +139,20 @@ export interface RoleRolloutDeps {
    * singleton apart from a worker. Without them, only same-name handover applies.
    */
   previousRoles?: readonly StackRole[] | null;
+  /** Verified unchanged replicas carried into a configuration revision. */
+  reuse?: readonly RoleContainerRef[];
   /** The previous deployment's recorded role containers. */
   previous: readonly RoleContainerRef[] | null | undefined;
   /** Start one replica for the NEW deployment and resolve to its container id. */
-  startReplica(role: StackRole, replica: number): Promise<string>;
+  startReplica(
+    role: StackRole,
+    replica: number,
+    created?: (containerId: string) => Promise<void>,
+  ): Promise<string>;
+  /** Record the created container before its process can start. */
+  recordCreated?(ref: RoleContainerRef): Promise<void>;
+  /** Durable stop intent must precede the remote stop request. */
+  recordStopIntent?(ref: RoleContainerRef): Promise<void>;
   /** Startup check across the given containers: null when every one stayed up, else a failure detail. */
   verify(containers: readonly RoleContainerRef[]): Promise<string | null>;
   /** Stop must confirm shutdown (or absence), not just a non-running UI status. */
@@ -183,7 +189,7 @@ const NOOP_ROLLOUT: RoleRollout = {
  * The deploy warning for previous containers that commit could not remove. A
  * failed removal does not prove the container still runs, so it says "may".
  */
-function retirementWarning(failed: readonly RoleContainerRef[]): string | null {
+export function roleRetirementWarning(failed: readonly RoleContainerRef[]): string | null {
   if (failed.length === 0) return null;
   const names = failed
     .map((ref) => `${ref.role} replica ${ref.replica} (${ref.containerId.slice(0, 12)})`)
@@ -205,7 +211,11 @@ export async function rolloutRoles(deps: RoleRolloutDeps): Promise<RoleRollout> 
   const { signal, log } = deps;
   const teardownTimeoutMs = deps.teardownTimeoutMs ?? DEFAULT_TEARDOWN_TIMEOUT_MS;
   const plan = planRoleReplicas(deps.roles);
-  const previous = deps.previous ?? [];
+  const reuse = deps.reuse ?? [];
+  const reusedIds = new Set(reuse.map(ref => ref.containerId));
+  plan.scalable = plan.scalable.filter(entry => !reuse.some(ref => ref.role === entry.role.name && ref.replica === entry.replica));
+  plan.singletons = plan.singletons.filter(entry => !reuse.some(ref => ref.role === entry.role.name && ref.replica === entry.replica));
+  const previous = (deps.previous ?? []).filter(ref => !reusedIds.has(ref.containerId));
   const handover = planSingletonHandover(deps.roles, deps.previousRoles, previous);
   // With an outgoing singleton, changed workers start only after it stops.
   const handingOver = handover.outgoing.length > 0;
@@ -216,7 +226,7 @@ export async function rolloutRoles(deps: RoleRolloutDeps): Promise<RoleRollout> 
     (r) => handingOver && handover.changed.has(r.role.name),
   );
 
-  if (plan.scalable.length === 0 && plan.singletons.length === 0 && previous.length === 0) {
+  if (plan.scalable.length === 0 && plan.singletons.length === 0 && previous.length === 0 && reuse.length === 0) {
     return NOOP_ROLLOUT;
   }
 
@@ -303,6 +313,7 @@ export async function rolloutRoles(deps: RoleRolloutDeps): Promise<RoleRollout> 
     // A cancellation must be seen before the old scheduler is stopped, or
     // keepProvisionedOnCancel would leave no scheduler running at all.
     throwIfDeploymentCancelled(signal);
+    await deps.recordStopIntent?.(old);
     log(`Stopping previous ${old.role} (kept restorable until this deploy is healthy)...`);
     try {
       await withTimeout(
@@ -322,13 +333,30 @@ export async function rolloutRoles(deps: RoleRolloutDeps): Promise<RoleRollout> 
   const startOne = async (role: StackRole, replica: number): Promise<RoleContainerRef> => {
     throwIfDeploymentCancelled(signal);
     log(`Starting role ${role.name} replica ${replica}...`);
-    const containerId = await deps.startReplica(role, replica);
-    const ref: RoleContainerRef = { role: role.name, replica, containerId };
-    started.push(ref);
+    let ref: RoleContainerRef | undefined;
+    const created = async (containerId: string) => {
+      if (ref) {
+        if (ref.containerId !== containerId)
+          throw new Error("A role replica created multiple containers");
+        return;
+      }
+      ref = { role: role.name, replica, containerId };
+      // Register in memory before awaiting persistence: a failed write still
+      // has to unwind the container, even if the adapter's removal also fails.
+      started.push(ref);
+      await deps.recordCreated?.(ref);
+    };
+    const containerId = await deps.startReplica(role, replica, created);
+    await created(containerId);
+    if (!ref) throw new Error("Role creation returned no container");
     return ref;
   };
 
   try {
+    if (reuse.length) {
+      await verifyContainers(reuse);
+      throwIfDeploymentCancelled(signal);
+    }
     // Scalable phase: beside the previous containers, checked before any singleton moves.
     const scalableRefs: RoleContainerRef[] = [];
     for (const { role, replica } of firstScalable) {
@@ -389,7 +417,7 @@ export async function rolloutRoles(deps: RoleRolloutDeps): Promise<RoleRollout> 
           ),
         ),
       );
-      return retirementWarning(previous.filter((_, index) => !removed[index]));
+      return roleRetirementWarning(previous.filter((_, index) => !removed[index]));
     },
     async abort() {
       if (settled) return;

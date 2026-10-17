@@ -34,7 +34,7 @@ import { env } from "../../config/env";
 import { resolveApiPublicUrl, sharedWebhookUrl, domainWebhookUrl } from "../../lib/public-url";
 import { hasActiveGitHubSource } from "./github-source.service";
 
-export const GITHUB_DEPLOY_WEBHOOK_EVENTS = ["push"] as const;
+export const GITHUB_DEPLOY_WEBHOOK_EVENTS = ["push", "pull_request"] as const;
 const MAX_FALLBACK_TREE_ENTRIES = 5000;
 const MAX_COMPARE_FILES_PER_RESPONSE = 300;
 const COMPARE_CACHE_TTL_SECONDS = 6 * 60 * 60;

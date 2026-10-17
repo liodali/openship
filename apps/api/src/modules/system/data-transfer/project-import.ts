@@ -700,6 +700,13 @@ export async function planProjectImport(
       // A transferred hook must be explicitly delegated by a user in this
       // installation. Imported JSON must never forge an execution identity.
       if (name === "incoming_webhook") next.executionAuthority = null;
+      // Project archives omit preview ownership and builder-local cache proof.
+      // Re-enable automation explicitly after import on the destination.
+      if (name === "project") {
+        next.previewSettings = null;
+        next.previewScannedAt = null;
+        next.buildCacheReceipts = null;
+      }
       for (const [key, value] of Object.entries(next)) {
         if (typeof value === "string" && SOFT_REFS[key])
           next[key] = maps.get(SOFT_REFS[key]!)?.get(value) ?? value;

@@ -1,3 +1,4 @@
+import { BuildLogger, type LogEntry } from "@repo/adapters";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
@@ -23,6 +24,8 @@ const h = vi.hoisted(() => ({
   audits: [] as string[],
   destroyed: [] as string[],
   deployResult: null as unknown,
+  previous: null as Record<string, unknown> | null,
+  savedLogs: [] as LogEntry[],
 }));
 
 vi.mock("@repo/db", () => ({
@@ -37,7 +40,15 @@ vi.mock("@repo/db", () => ({
       findReadyVersionByCommit: async () => 7,
       getNextReadyVersion: async () => 7,
       supersedePendingDecisions: async () => {},
-      finishBuildSession: async () => {},
+      findById: async () => h.previous,
+      finishBuildSession: async (
+        _id: string,
+        _status: string,
+        _duration: number,
+        logs: typeof h.savedLogs,
+      ) => {
+        h.savedLogs = [...logs];
+      },
     },
     project: {
       setActiveDeployment: async (projectId: string, depId: string) => {
@@ -48,6 +59,17 @@ vi.mock("@repo/db", () => ({
     },
     service: { listByDeployment: async () => [] },
   },
+}));
+
+vi.mock("@repo/platform/engine/lib/deployment-runtime", async (original) => ({
+  ...(await original<typeof import("@repo/platform/engine/lib/deployment-runtime")>()),
+  withDeploymentRuntime: async (_dep: unknown, work: (runtime: unknown) => Promise<unknown>) =>
+    work({
+      destroy: async (id: string) => {
+        h.destroyed.push(id);
+        throw new Error("role removal failed");
+      },
+    }),
 }));
 
 vi.mock("@repo/platform/engine/modules/deployments/session-manager", () => ({
@@ -141,6 +163,8 @@ beforeEach(() => {
   h.audits = [];
   h.destroyed = [];
   h.deployResult = null;
+  h.previous = null;
+  h.savedLogs = [];
 });
 
 describe("executeComposePipeline — an all-carried redeploy must not take over", () => {
@@ -161,7 +185,17 @@ describe("executeComposePipeline — an all-carried redeploy must not take over"
       portChecks: [],
     };
 
-    await executeComposePipeline(optsFor());
+    h.previous = {
+      id: "previous",
+      projectId: "prj_1",
+      organizationId: "org_1",
+      meta: null,
+      roleContainers: [{ role: "queue", replica: 1, containerId: "old-worker" }],
+    };
+    const opts = optsFor();
+    opts.project = { ...opts.project, organizationId: "org_1", activeDeploymentId: "previous" };
+    opts.ctx.project = opts.project;
+    await executeComposePipeline(opts);
 
     // THE bug: an empty release must not become the live pointer.
     expect(h.activePointer).toEqual([]);
@@ -257,6 +291,80 @@ describe("executeComposePipeline — an all-carried redeploy must not take over"
       meta: { composeDeployment: { decision: "pending" } },
     });
   });
+});
+
+describe("Compose role retirement reaches the first completion and saved result", () => {
+  it.each([
+    { partial: false, routing: false },
+    { partial: false, routing: true },
+    { partial: true, routing: true },
+  ])(
+    "preserves role, routing and service warnings (partial=$partial, routing=$routing)",
+    async ({ partial, routing }) => {
+      h.previous = {
+        id: "previous",
+        projectId: "prj_1",
+        organizationId: "org_1",
+        meta: null,
+        roleContainers: [{ role: "queue", replica: 1, containerId: "old-worker-123456" }],
+      };
+      h.deployResult = {
+        status: "ready",
+        summary: {
+          total: 2,
+          successful: partial ? 1 : 2,
+          deployed: 1,
+          failed: partial ? 1 : 0,
+          indeterminate: 0,
+          mutated: true,
+          failedServices: partial ? ["db"] : [],
+        },
+        services: [
+          partial
+            ? { serviceId: "db", serviceName: "db", status: "failed", error: "database failed" }
+            : { serviceId: "db", serviceName: "db", status: "running", containerId: "cid-db" },
+          { serviceId: "app", serviceName: "app", status: "running", containerId: "cid-app" },
+        ],
+        primaryContainerId: "cid-app",
+        portChecks: [],
+        warning: partial ? "Database service failed." : undefined,
+        routeWarnings: routing ? ["example.test route failed"] : [],
+      };
+      const opts = optsFor();
+      opts.project = { ...opts.project, organizationId: "org_1", activeDeploymentId: "previous" };
+      opts.ctx.project = opts.project;
+      const logs: typeof h.savedLogs = [];
+      opts.logger = new BuildLogger((entry) => logs.push(entry));
+      opts.ctx.logger = opts.logger;
+      opts.ctx.persistLogs = () => logs;
+
+      await executeComposePipeline(opts);
+
+      const terminals = h.sessionStatuses.filter((entry) => entry.status === "ready");
+      expect(terminals).toHaveLength(1);
+      expect(terminals[0]?.detail).toMatchObject({
+        warningMessage: expect.stringContaining("queue replica 1 (old-worker-1)"),
+        decisionPending: partial,
+      });
+      const warning = terminals[0]!.detail!.warningMessage as string;
+      if (routing) expect(warning).toContain("example.test route failed");
+      if (partial) expect(warning).toContain("Database service failed.");
+      const meta = h.statusWrites.find((write) => write.status === "ready")!.extra!.meta as Record<
+        string,
+        unknown
+      >;
+      expect(meta.composeDeployment).toMatchObject({ warningMessage: warning });
+      if (routing) expect(meta.deployWarning).not.toContain("old-worker");
+      else {
+        expect(meta).not.toHaveProperty("deployWarning");
+        expect(meta).not.toHaveProperty("edgeUnsynced");
+      }
+      expect(
+        h.savedLogs.some((entry) => entry.level === "warn" && entry.message.includes(warning)),
+      ).toBe(true);
+      expect(h.destroyed).toEqual(["old-worker-123456"]);
+    },
+  );
 });
 
 // The application seams moved with the shared engine.

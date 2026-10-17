@@ -124,3 +124,6 @@ export * from "./compose-shared-memory";
 export * from "./apps/gpu";
 
 export * from "./appearance";
+export * from "./command-environment";
+
+export * from "./build-caches";

@@ -1,3 +1,4 @@
+import { createPullRequestPreviewRepo } from "./pull-request-preview.repo";
 import { createIngressRepo } from "./ingress.repo";
 export { createIngressRepo, type IngressConnection, type IngressHostname } from "./ingress.repo";
 import { createCloudBuildActivityRepo } from "./cloud-build-activity.repo";
@@ -78,6 +79,7 @@ export {
   type BuildSession,
   type NewBuildSession,
   type DeploymentResourceChanges,
+  type DeploymentRoleChanges,
 } from "./deployment.repo";
 export { createDomainRepo, type Domain, type NewDomain } from "./domain.repo";
 export { createDomainDnsChallengeRepo, type DomainDnsChallenge } from "./domain-dns-challenge.repo";
@@ -418,6 +420,7 @@ export function createRepositories(db: Database, encryption: ConfigurationEncryp
     project: createProjectRepo(db, encryption),
     deployment: createDeploymentRepo(db, encryption),
     deploymentCheck: createDeploymentCheckRepo(db),
+    pullRequestPreview: createPullRequestPreviewRepo(db, encryption),
     domain: createDomainRepo(db),
     domainDnsChallenge: createDomainDnsChallengeRepo(db),
     dnsCredential: createDnsCredentialRepo(db),

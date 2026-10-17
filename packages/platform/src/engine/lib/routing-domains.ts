@@ -270,6 +270,9 @@ export function buildProjectRouteDomains(opts: {
   isStatic?: boolean;
   /** Serving port for a static workload hosted in a container, not a file root. */
   staticContainerPort?: number;
+  /** Single-app serving port for verified custom domains added without a mapped
+   * destination. Never supply this for a service group: its ports have owners. */
+  defaultTargetPort?: number;
 }): PlannedRouteDomain[] {
   const {
     projectDomains,
@@ -413,28 +416,33 @@ export function buildProjectRouteDomains(opts: {
       }
     }
 
-    // #345: a static deploy has no port, so its endpoints above may all be
-    // destination-less — and Domains-tab custom rows never appear in
-    // `publicEndpoints` at all. Fall through to the project's own domain rows
-    // below (the `seen` set dedups anything already routed) so those still get
-    // a root route instead of leaving `sites-enabled` empty → default 404.
-    if (!isStatic) return planned;
+    // Domains-tab rows may be absent from the endpoint snapshot. Include them
+    // for static roots (#345) and single apps with an authoritative port (#1281).
+    // Service groups must retain explicit destinations to avoid picking a sibling.
+    if (!isStatic && opts.defaultTargetPort === undefined) return planned;
   }
 
-  // Route the project's own domain rows directly. A domain only routes if its
-  // row carries a destination (port or path) — add() ignores the rest — EXCEPT
-  // for a static deploy, where a destination-less row defaults to serving the
-  // release root ("/"). Pending custom domains still get an HTTP-only route so
-  // certbot --webroot can answer the ACME challenge; add() gates SSL on
-  // domain.verified.
+  // Static rows default to the release root. A verified custom row with no
+  // destination may use the single app's serving port, matching live routing
+  // repair. ensureRouteDomainRecord persists that mapping before registration.
   for (const domain of projectDomains) {
     if (domain.serviceId) continue;
     if (domain.domainType === "free" && !domain.verified) continue;
+    // Explicit endpoints own the generated/free route set. Custom domain rows
+    // remain durable configuration, including ones verified during this build.
+    if (publicEndpoints?.length && !isStatic && domain.domainType !== "custom") continue;
     add(domain.hostname, {
       domainType: domain.domainType === "free" ? "free" : "custom",
       skipSsl: domain.domainType === "free",
       destination: resolveRouteDestination(
-        { targetPath: domain.targetPath, targetPort: domain.targetPort },
+        {
+          targetPath: domain.targetPath,
+          targetPort: domain.targetPort ?? (
+            domain.domainType === "custom" && domain.verified && !domain.targetPath
+              ? opts.defaultTargetPort
+              : undefined
+          ),
+        },
         isStatic,
         staticContainerPort,
       ),

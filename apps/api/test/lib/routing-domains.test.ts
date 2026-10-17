@@ -165,6 +165,59 @@ const customSvc = {
 } as any;
 
 describe("buildProjectRouteDomains", () => {
+  it.each([
+    { publicEndpoints: [] },
+    { publicEndpoints: [{ port: 3000, domainType: "custom", customDomain: "other.example.com" }] },
+  ])(
+    "routes a verified Domains-tab hostname through the single app when endpoints are %j (#1281)",
+    ({ publicEndpoints }) => {
+      const planned = buildProjectRouteDomains({
+        project: { slug: "laravel" } as any,
+        projectDomains: [{
+          hostname: "app.example.com", domainType: "custom", verified: true,
+          targetPort: null, targetPath: null, sslStatus: "active",
+        }] as any,
+        publicEndpoints: publicEndpoints as any,
+        defaultTargetPort: 8080,
+        runtimeName: "docker",
+        usesManagedRouting: false,
+      });
+      expect(planned).toContainEqual(expect.objectContaining({
+        hostname: "app.example.com", targetPort: 8080, tls: true, verified: true,
+      }));
+    },
+  );
+
+  it.each([
+    { verified: false },
+    { verified: true, serviceId: "database" },
+    { verified: true, targetPath: "/docs" },
+  ])("does not infer a single-app destination for %j", (extra) => {
+    expect(buildProjectRouteDomains({
+      project: { slug: "laravel" } as any,
+      projectDomains: [{
+        hostname: "app.example.com", domainType: "custom", targetPort: null,
+        targetPath: null, ...extra,
+      }] as any,
+      defaultTargetPort: 8080,
+      runtimeName: "docker",
+      usesManagedRouting: false,
+    })).toEqual([]);
+  });
+
+  it("preserves an explicitly mapped port instead of the single-app default", () => {
+    expect(buildProjectRouteDomains({
+      project: { slug: "laravel" } as any,
+      projectDomains: [{
+        hostname: "app.example.com", domainType: "custom", verified: true,
+        targetPort: 9000, sslStatus: "active",
+      }] as any,
+      defaultTargetPort: 8080,
+      runtimeName: "docker",
+      usesManagedRouting: false,
+    })).toEqual([expect.objectContaining({ targetPort: 9000 })]);
+  });
+
   it("routes a CLI custom domain only after its public endpoint is attached", () => {
     const input = {
       project: { slug: "cli-app" } as any,

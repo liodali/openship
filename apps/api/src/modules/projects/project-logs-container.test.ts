@@ -28,6 +28,7 @@ const h = vi.hoisted(() => ({
   listByProjectCalls: 0,
   listByDeploymentCalls: 0,
   stream: vi.fn(), dispose: vi.fn(), stop: vi.fn(),
+  roleContainers: [] as Array<{ role: string; replica: number; containerId: string }>,
 }));
 
 vi.mock("@repo/db", async (original) => ({
@@ -47,6 +48,7 @@ vi.mock("@repo/db", async (original) => ({
         ...h.deploymentOwner,
         containerId: h.containerId,
         status: "ready",
+        roleContainers: h.roleContainers,
         meta: { deployTarget: "server", serverId: "srv_1" },
       }),
       findBuildSessionByDeploymentId: async () => null,
@@ -114,6 +116,49 @@ const container = (serviceName: string, id: string) => ({
   labels: { "openship.project": "proj_1", "openship.service": serviceName },
 });
 
+describe("project role logs (#1282)", () => {
+  it("reads the selected replica without resolving the application or another service", async () => {
+    h.roleContainers = [
+      { role: "queue", replica: 1, containerId: "cid-queue-1" },
+      { role: "queue", replica: 2, containerId: "cid-queue-2" },
+    ];
+    await getRuntimeLogs("proj_1", "org_1", 50, {
+      role: "queue",
+      replica: 2,
+      deploymentId: "dep_1",
+    });
+    expect(h.logTargets).toEqual(["cid-queue-2"]);
+    expect(h.listByProjectCalls).toBe(0);
+    expect(h.listByDeploymentCalls).toBe(0);
+  });
+
+  it("streams the same replica and disposes its runtime exactly once on close", async () => {
+    h.roleContainers = [{ role: "scheduler", replica: 1, containerId: "cid-scheduler" }];
+    const stream = await streamRuntimeLogs("proj_1", "org_1", () => {}, {
+      role: "scheduler",
+      replica: 1,
+      deploymentId: "dep_1",
+      tail: 5,
+    });
+    expect(h.stream).toHaveBeenCalledWith("cid-scheduler", expect.any(Function), { tail: 5 });
+    stream.cleanup();
+    stream.cleanup();
+    expect(h.stop).toHaveBeenCalledTimes(1);
+    expect(h.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { role: "queue", replica: 99, deploymentId: "dep_1" },
+    { role: "queue", replica: 1, deploymentId: "dep_retired" },
+  ])("refuses stale or unknown replicas before opening a log source: %j", async (input) => {
+    h.roleContainers = [{ role: "queue", replica: 1, containerId: "cid-queue" }];
+    await expect(getRuntimeLogs("proj_1", "org_1", 5, input)).rejects.toThrow();
+    await expect(streamRuntimeLogs("proj_1", "org_1", () => {}, input)).rejects.toThrow();
+    expect(h.logTargets).toEqual([]);
+    expect(h.stream).not.toHaveBeenCalled();
+  });
+});
+
 beforeEach(() => {
   h.containerId = "cid-db";
   h.activeDeploymentId = "dep_1";
@@ -123,6 +168,7 @@ beforeEach(() => {
   h.live = [];
   h.logTargets = [];
   h.healed = [];
+  h.roleContainers = [];
   h.listByProjectCalls = 0;
   h.listByDeploymentCalls = 0;
   h.stream.mockReset().mockResolvedValue(h.stop);

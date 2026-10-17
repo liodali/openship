@@ -565,7 +565,8 @@ IDs.
 | --- | --- | --- |
 | Repair project routing and verify pending domains and HTTPS. | `projects.retryRouting(id)` | `POST /api/projects/:id/routing/retry`<br />`project:write` |
 | Repair routing with live logs and a terminal success or failure event. | `projects.retryRoutingStream(id, options?)` | `POST /api/projects/:id/routing/retry/stream`<br />`project:write` |
-| Read recent runtime log entries. | `projects.runtimeLogs(id, input?)` | `GET /api/projects/:id/logs`<br />`project:read` |
+| Read active runtime roles, replica status, and restart counts. | `projects.getRuntimeRoles(id)` | `GET /api/projects/:id/roles`<br />`project:read` |
+| Read recent runtime logs; optionally select a role, replica, and active deployment. | `projects.runtimeLogs(id, input?)` | `GET /api/projects/:id/logs`<br />`project:read` |
 | List the project’s edge route rules. | `projects.listRouteRules(id)` | `GET /api/projects/:id/route-rules`<br />`project:read` · Self-hosted |
 | Add an edge route rule. | `projects.createRouteRule(id, input)` | `POST /api/projects/:id/route-rules`<br />`project:write` · Self-hosted |
 | Update an edge route rule using its typed input. | `projects.updateRouteRule(id, input)` | `PATCH /api/projects/:id/route-rules/:ruleId`<br />`project:write` · Self-hosted |
@@ -577,6 +578,8 @@ IDs.
 | Read recent request/server logs. | `projects.recentServerLogs(id, input?)` | `GET /api/projects/:id/server-logs/recent`<br />`project:read` |
 | Stream project runtime log events. | `projects.streamRuntimeLogs(id, input?, options?)` | `GET /api/projects/:id/logs/stream`<br />`project:read` |
 | Stream project request/server log events. | `projects.streamServerLogs(id, input?, options?)` | `GET /api/projects/:id/server-logs/stream`<br />`project:read` |
+| Read active role definitions and the revision required to configure them. | `projects.getRuntimeRoleConfiguration(id)` | `GET /api/projects/:id/roles/configuration`<br />`project:read` |
+| Apply a role configuration revision from the active image while preserving web and unchanged replicas. | `projects.configureRuntimeRoles(id, input)` | `POST /api/projects/:id/roles/configuration`<br />`project:write` |
 
 ### Connections, storage, and apps
 
@@ -598,6 +601,15 @@ IDs.
 | --- | --- | --- |
 | Request a Cloud transfer; fixed scopes currently require unavailable tenant mapping. | `projects.transferToCloud(id)` | `POST /api/projects/:id/transfer/to-cloud`<br />`project:admin` · Self-hosted |
 | Request a transfer from Cloud; fixed-scope Cloud mapping limits apply. | `projects.transferToSelfHosted(id)` | `POST /api/projects/:id/transfer/to-self-hosted`<br />`project:admin` · Self-hosted |
+
+### Resource methods
+
+| Operation | SDK | REST API |
+| --- | --- | --- |
+| Inspect manual cache mounts or remove selected mounts after a successful managed-cache deployment. | `projects.buildCacheMigration(id, input)` | `POST /api/projects/:id/build-cache/migration`<br />`project:write` |
+| Enable or disable automatic same-repository pull request environments. | `projects.configurePreviews(id, input)` | `POST /api/projects/:id/previews`<br />`project:write` |
+| Read preview configuration, deployment URLs and reconciliation errors. | `projects.listPreviews(id)` | `GET /api/projects/:id/previews`<br />`project:read` |
+| Atomically move literal command variables into the selected environment without overwriting conflicting values. | `projects.migrateCommandEnvironment(id, input)` | `POST /api/projects/:id/env/migrate-commands`<br />`project:write` |
 
 ### HTTP endpoints
 

@@ -7,6 +7,7 @@ import { servicesApi, type ServiceContainer } from "@/lib/api/services";
 import { CONNECTIONS_CHANGED, connectionsApi, type ProjectConnection } from "@/lib/api/connections";
 import type { ProjectCluster } from "@repo/contracts";
 import { projectClusterApi } from "@/lib/api/project-cluster";
+import { useRuntimeRoles } from "@/hooks/useRuntimeRoles";
 
 /** Status and bindings are refreshed separately from the shared service definitions. */
 export function useTopologyData(
@@ -16,6 +17,7 @@ export function useTopologyData(
   clusterTarget = false,
   activeDeploymentId?: string | null,
 ) {
+  const roles = useRuntimeRoles(projectId, activeDeploymentId, deployed && !clusterTarget);
   const [containers, setContainers] = useState<ServiceContainer[] | null>(null);
   const [connections, setConnections] = useState<ProjectConnection[]>([]);
   const [errors, setErrors] = useState<string[]>([]);
@@ -87,5 +89,19 @@ export function useTopologyData(
       window.removeEventListener(CONNECTIONS_CHANGED, changed);
     };
   }, [refresh, clusterTarget]);
-  return { containers, connections, errors, loading, ready, refresh, cluster, setCluster };
+  const refreshAll = useCallback(
+    () => Promise.all([refresh(), roles.refresh()]),
+    [refresh, roles.refresh],
+  );
+  return {
+    containers,
+    connections,
+    errors: [...errors, ...(roles.error ? [roles.error] : [])],
+    loading: loading || roles.loading,
+    ready,
+    refresh: refreshAll,
+    cluster,
+    setCluster,
+    roles: roles.data,
+  };
 }

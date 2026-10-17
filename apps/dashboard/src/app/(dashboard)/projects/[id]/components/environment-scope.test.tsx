@@ -14,11 +14,17 @@ const api = vi.hoisted(() => ({
   services: vi.fn(),
   toast: vi.fn(),
   trigger: vi.fn(),
+  inspectCaches: vi.fn(),
 }));
 vi.mock("@/lib/api", () => ({
   projectsApi: { getEnv: api.getEnv, mergeEnv: api.mergeEnv, getCommitStatus: async () => ({ data: { supported: false } }) },
   servicesApi: { list: api.services },
   deployApi: { trigger: api.trigger },
+  getApiErrorMessage: (_error: unknown, fallback: string) => fallback,
+}));
+vi.mock("@/lib/api/client", () => ({
+  api: { post: api.inspectCaches },
+  getApiRequestScopeVersion: () => 0,
 }));
 vi.mock("@/lib/api/projects", () => ({ projectsApi: { getEnv: api.getEnv } }));
 vi.mock("@/lib/api/connections", () => ({ connectionsApi: { list: async () => ({ data: [] }) } }));
@@ -48,6 +54,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   api.services.mockResolvedValue({ success: true, services: [] });
+  api.inspectCaches.mockResolvedValue({ data: { candidates: [], canMigrate: false } });
   api.getEnv.mockResolvedValue({
     data: [
       { id: "build", key: "BUILD_VALUE", value: "old", environment: "production", isSecret: false },

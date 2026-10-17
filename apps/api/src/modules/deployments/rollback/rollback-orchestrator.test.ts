@@ -30,6 +30,7 @@ const h = vi.hoisted(() => ({
   runtimeDisposed: false,
   pathExists: vi.fn(),
   serviceImages: [] as Array<{ serviceId: string; serviceName: string; imageRef: string }>,
+  liveServices: vi.fn(),
 }));
 
 vi.mock("@repo/db", () => ({
@@ -39,7 +40,7 @@ vi.mock("@repo/db", () => ({
         id === h.target?.id ? h.target : id === h.active?.id ? h.active : null,
     },
     project: { findById: async () => h.project },
-    service: { listByDeployment: async () => h.serviceImages },
+    service: { listByDeployment: async () => h.serviceImages, listByProject: h.liveServices },
     serviceDeployment: { effectiveImagesAsOf: async () => new Map() },
     member: { listByOrganization: async () => [{ userId: "org-owner" }] },
   },
@@ -99,6 +100,7 @@ beforeEach(() => {
   h.pathExists.mockReset();
   h.pathExists.mockResolvedValue(false);
   h.serviceImages = [];
+  h.liveServices.mockReset();
   h.imagePresent = false;
   h.inspectedImages = [];
   h.triggerDeployment.mockReset();
@@ -272,4 +274,47 @@ describe("rollback — reacquire a frozen release image", () => {
     expect(request.reuseSnapshot.meta.handoverAppImage).toBeUndefined();
     expect(JSON.stringify(request.reuseSnapshot.meta)).not.toContain("changed-{tag}");
   });
+});
+
+describe("legacy Compose configuration integrity (#985)", () => {
+  it.each([true, false])(
+    "refuses damaged frozen credentials before starting a rollback (current service exists=%s)",
+    async (hasLiveService) => {
+      const frozen = {
+        composeServices: [
+          { name: "app", environment: { DATABASE_URL: "postgresql://***@db:5432/app" } },
+          { name: "db", environment: { POSTGRES_PASSWORD: "release-password" } },
+        ],
+      };
+      h.target!.meta = frozen;
+      h.target!.commitSha = "a".repeat(40);
+      h.target!.imageRef = "compose";
+      h.serviceImages = [{ serviceId: "app", serviceName: "app", imageRef: "app:old" }];
+      h.imagePresent = true;
+      h.liveServices.mockResolvedValue(
+        hasLiveService
+          ? [
+              {
+                name: "app",
+                kind: "compose",
+                environment: {
+                  DATABASE_URL:
+                    "postgresql://app:current-password@different-db:5432/other-database",
+                },
+              },
+            ]
+          : [],
+      );
+      const { plan } = await resolveRestorePlan("dep-target");
+      expect(plan).toMatchObject({ mode: "ineligible", code: "ROLLBACK_CONFIGURATION_REDACTED" });
+      expect(JSON.stringify(plan)).not.toContain("release-password");
+      await expect(rollback("dep-target")).rejects.toMatchObject({
+        code: "ROLLBACK_CONFIGURATION_REDACTED",
+      });
+      expect(h.triggerDeployment).not.toHaveBeenCalled();
+      expect(h.liveServices).not.toHaveBeenCalled();
+      expect(h.target!.meta).toEqual(frozen);
+      expect(h.project!.activeDeploymentId).toBe("dep-active");
+    },
+  );
 });

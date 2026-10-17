@@ -6,7 +6,10 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/db", () => ({
-  repos: { project: { findById: h.findProject } },
+  repos: {
+    project: { findById: h.findProject },
+    deployment: { listPendingRoleHandovers: async () => [] },
+  },
   withAdvisoryLock: async (_key: string, run: () => Promise<unknown>) => run(),
 }));
 

@@ -142,9 +142,9 @@ export async function deleteDeployment(deploymentId: string, organizationId: str
 }
 
 async function deleteDeploymentLocked(deploymentId: string, organizationId: string) {
-  const dep = await getDeployment(deploymentId, organizationId);
+  let dep = await getDeployment(deploymentId, organizationId);
 
-  const project = await repos.project.findById(dep.projectId);
+  let project = await repos.project.findById(dep.projectId);
   assertNotControlPlane(project);
 
   if (
@@ -152,6 +152,14 @@ async function deleteDeploymentLocked(deploymentId: string, organizationId: stri
     (await repos.deployment.hasLiveBuildExecution(dep.id, dep.projectId))
   ) {
     throw new ForbiddenError("Cannot delete a deployment that is in progress. Cancel it first.");
+  }
+  if (dep.roleHandover && dep.roleHandover.phase !== "complete") {
+    const { recoverProjectRoleHandovers } = await import("./role-handover");
+    // Explicit deletion also discards a kept candidate. Restore its predecessor
+    // safely before dropping the only record of the interrupted handover.
+    await recoverProjectRoleHandovers(dep.projectId, { discardDeploymentId: dep.id });
+    dep = await getDeployment(deploymentId, organizationId);
+    project = await repos.project.findById(dep.projectId);
   }
 
   // protectRetained: a compose service that didn't change carries its container

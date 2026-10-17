@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { findByGitRepo, getRepository, triggerDeployment } = vi.hoisted(() => ({
+const { findByGitRepo, getRepository, triggerDeployment, enqueue } = vi.hoisted(() => ({
   findByGitRepo: vi.fn(),
   getRepository: vi.fn(),
   triggerDeployment: vi.fn(),
+  enqueue: vi.fn(),
 }));
 
 vi.mock("@repo/db", async (importOriginal) => {
@@ -13,6 +14,7 @@ vi.mock("@repo/db", async (importOriginal) => {
   return {
     ...actual,
     repos: {
+      pullRequestPreview: { enqueue },
       project: {
         findByGitRepo,
       },
@@ -45,14 +47,35 @@ describe("githubWebhookProvider", () => {
     findByGitRepo.mockReset();
     getRepository.mockReset();
     triggerDeployment.mockReset();
+    enqueue.mockReset();
   });
 
-  it("does not deploy pull request events", async () => {
+  it("ignores malformed pull request payloads without deploying", async () => {
     const result = await githubWebhookProvider.handle({}, { "x-github-event": "pull_request" });
 
     expect(result.success).toBe(true);
-    expect(result.message).toBe("Event 'pull_request' not handled");
+    expect(result.message).toBe("Pull request automation queued");
     expect(findByGitRepo).not.toHaveBeenCalled();
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(triggerDeployment).not.toHaveBeenCalled();
+  });
+
+  it("queues eligible source projects for reconciliation without deploying in the webhook", async () => {
+    findByGitRepo.mockResolvedValue([
+      { id: "source", organizationId: "org", previewSettings: { enabled: true } },
+      { id: "disabled", previewSettings: { enabled: false } },
+      { id: "deleted", previewSettings: { enabled: true }, deletedAt: new Date() },
+      { id: "child", previewSettings: { enabled: true }, environmentType: "preview" },
+    ]);
+    const result = await githubWebhookProvider.handle(
+      { number: 42, repository: { full_name: "owner/repo" } },
+      { "x-github-event": "pull_request" },
+    );
+    expect(result.success).toBe(true);
+    expect(findByGitRepo).toHaveBeenCalledExactlyOnceWith("owner", "repo");
+    expect(enqueue).toHaveBeenCalledExactlyOnceWith({
+      organizationId: "org", sourceProjectId: "source", owner: "owner", repo: "repo", number: 42,
+    });
     expect(triggerDeployment).not.toHaveBeenCalled();
   });
 

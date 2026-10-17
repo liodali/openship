@@ -492,10 +492,16 @@
       "description": "Repair routing with live logs and a terminal success or failure event.",
       "route": "POST /api/projects/:id/routing/retry/stream"
     },
+    "projects.getRuntimeRoles": {
+      "page": "projects",
+      "section": "Routing and monitoring",
+      "description": "Read active runtime roles, replica status, and restart counts.",
+      "route": "GET /api/projects/:id/roles"
+    },
     "projects.runtimeLogs": {
       "page": "projects",
       "section": "Routing and monitoring",
-      "description": "Read recent runtime log entries.",
+      "description": "Read recent runtime logs; optionally select a role, replica, and active deployment.",
       "route": "GET /api/projects/:id/logs"
     },
     "projects.getCloneToken": {
@@ -3667,6 +3673,42 @@
       "section": "Cloudflare Tunnel ingress",
       "description": "Connect a custom domain to its deployment server tunnel, change its Access policy or request disconnection.",
       "route": "PUT /api/dns/ingress/domains/:id"
+    },
+    "projects.getRuntimeRoleConfiguration": {
+      "page": "projects",
+      "section": "Routing and monitoring",
+      "description": "Read active role definitions and the revision required to configure them.",
+      "route": "GET /api/projects/:id/roles/configuration"
+    },
+    "projects.configureRuntimeRoles": {
+      "page": "projects",
+      "section": "Routing and monitoring",
+      "description": "Apply a role configuration revision from the active image while preserving web and unchanged replicas.",
+      "route": "POST /api/projects/:id/roles/configuration"
+    },
+    "projects.buildCacheMigration": {
+      "page": "projects",
+      "section": "Operations",
+      "description": "Inspect manual cache mounts or remove selected mounts after a successful managed-cache deployment.",
+      "route": "POST /api/projects/:id/build-cache/migration"
+    },
+    "projects.configurePreviews": {
+      "page": "projects",
+      "section": "Operations",
+      "description": "Enable or disable automatic same-repository pull request environments.",
+      "route": "POST /api/projects/:id/previews"
+    },
+    "projects.listPreviews": {
+      "page": "projects",
+      "section": "Operations",
+      "description": "Read preview configuration, deployment URLs and reconciliation errors.",
+      "route": "GET /api/projects/:id/previews"
+    },
+    "projects.migrateCommandEnvironment": {
+      "page": "projects",
+      "section": "Operations",
+      "description": "Atomically move literal command variables into the selected environment without overwriting conflicting values.",
+      "route": "POST /api/projects/:id/env/migrate-commands"
     }
   },
   "http": {

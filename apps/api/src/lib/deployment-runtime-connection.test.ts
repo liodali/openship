@@ -94,7 +94,7 @@ vi.mock("@repo/db", () => {
       recordSslFailure: vi.fn(),
     },
     project: { findById: async () => ({ id: "project", organizationId: "org", activeDeploymentId: "deployment" }) },
-    deployment: { findById: async () => ({
+    deployment: { listPendingRoleHandovers: async () => [], findById: async () => ({
       id: "deployment", projectId: "project", organizationId: "org",
       meta: { deployTarget: "server", serverId: "remote", runtimeMode: "docker" },
     }), listByProject: async () => ({ rows: [{ organizationId: "org", meta: { deployTarget: "server", serverId: "remote" } }] }) },

@@ -72,6 +72,7 @@ interface ProjectOptions {
 }
 
 interface BasicProjectData {
+  environmentType?: "production" | "preview" | "development";
   id: string;
   slug: string;
   name: string;

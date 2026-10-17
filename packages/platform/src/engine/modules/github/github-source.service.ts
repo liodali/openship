@@ -420,7 +420,7 @@ export async function beginGitHubManifestFlow(
         contents: "write",
         workflows: "write",
         metadata: "read",
-        pull_requests: "read",
+        pull_requests: "write",
         statuses: "write",
       },
       default_events: ["check_run", "pull_request", "push", "workflow_job", "workflow_run"],

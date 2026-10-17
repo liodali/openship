@@ -44,6 +44,7 @@
 
 import { validateImageReference } from "@repo/core";
 import { COMPOSE_SENTINEL, usableRef } from "../../../lib/container-ref";
+import { hasRedactedFrozenConfiguration } from "../compose/redacted-frozen-env";
 
 export { usableRef };
 
@@ -52,6 +53,7 @@ export const ROLLBACK_ERROR_CODES = {
   ALREADY_ACTIVE: "ROLLBACK_ALREADY_ACTIVE",
   ARTIFACT_GONE: "ROLLBACK_ARTIFACT_GONE",
   UNSUPPORTED_RUNTIME: "ROLLBACK_UNSUPPORTED_RUNTIME",
+  CONFIGURATION_REDACTED: "ROLLBACK_CONFIGURATION_REDACTED",
 } as const;
 
 export type RollbackErrorCode = (typeof ROLLBACK_ERROR_CODES)[keyof typeof ROLLBACK_ERROR_CODES];
@@ -198,6 +200,17 @@ export function planRestore(input: RestorePlanInput): RestorePlan {
   // Bare / cloud: the unit is still there, stopped. Restart it.
   if (unitRestore && target.containerId && target.artifactRetainedAt) {
     return { mode: "unit-swap" };
+  }
+
+  if (hasRedactedFrozenConfiguration(target.meta)) {
+    return {
+      mode: "ineligible",
+      code: ROLLBACK_ERROR_CODES.CONFIGURATION_REDACTED,
+      message:
+        "This release's saved configuration may contain credentials removed by an older Openship version. " +
+        "Rollback was not started and the active release was left unchanged. " +
+        "Choose an intact release, or redeploy the original source with the required credentials to create a new restore point.",
+    };
   }
 
   // Kubernetes releases live in the registry, including images built from Git.

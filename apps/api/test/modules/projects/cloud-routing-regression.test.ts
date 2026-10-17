@@ -21,7 +21,11 @@ vi.mock("@repo/db", async (original) => ({
   withAdvisoryLock: async (_key: string, work: () => Promise<unknown>) => work(),
   repos: {
     project: { findById: vi.fn(async () => h.project) },
-    deployment: { findById: vi.fn(async () => h.deployment), updateStatus: h.updateDeployment },
+    deployment: {
+      findById: vi.fn(async () => h.deployment),
+      updateStatus: h.updateDeployment,
+      listPendingRoleHandovers: async () => [],
+    },
     domain: {
       listByProject: vi.fn(async () => h.domains),
       findByHostname: vi.fn(async (hostname: string) => h.domains.find(row => row.hostname === hostname)),

@@ -2,6 +2,7 @@ import Link from "next/link";
 import { reportCaughtError as observeCaughtError } from "@repo/core/diagnostics";
 import { Icon as UiIcon, type IconName } from "@repo/ui/icons";
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { PullRequestPreviews } from "@/components/project-settings/DeploymentAutomation";
 import { useProjectSettings } from "@/context/ProjectSettingsContext";
 import { useGitHub } from "@/context/GitHubContext";
 import type { GitHubRepo } from "@/context/GitHubContext";
@@ -104,6 +105,7 @@ function GitProjectSettings({
         </div>
       )}
       <GitProjectSettingsBody onUseReleaseImage={onUseReleaseImage} />
+      <ProjectPreviewSettings />
     </div>
   );
 }
@@ -759,4 +761,9 @@ function ReleaseImageEntryButton({ onClick }: { onClick: () => void }) {
       <p className="mt-1.5 text-xs text-muted-foreground">{copy.description}</p>
     </div>
   );
+}
+
+function ProjectPreviewSettings() {
+  const { id, projectData } = useProjectSettings();
+  return projectData.environmentType !== "preview" && projectData.gitOwner && projectData.gitRepo ? <PullRequestPreviews key={id} projectId={id} /> : null;
 }

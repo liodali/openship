@@ -2,6 +2,16 @@
 
 import type { StackDefinition, StackRole } from "./stacks";
 
+/** Preset matching metadata must never reach an enabled runtime role. */
+export function runtimeRoleDefinition({
+  when: _when,
+  unless: _unless,
+  slot: _slot,
+  ...role
+}: StackRole): StackRole {
+  return role;
+}
+
 /**
  * Apply a stack's optional startup optimization to its resolved web command.
  *
@@ -45,7 +55,7 @@ function matchesGates(role: StackRole, deps: ReadonlySet<string>, files: Readonl
   return true;
 }
 
-/** Explicit config roles win; otherwise matching presets, minus ambiguous kinds. */
+/** Explicit config roles win. Only presets competing for a declared slot are ambiguous. */
 export function resolveStackRoles(input: ResolveStackRolesInput): StackRole[] {
   if (input.configRoles !== undefined) return [...input.configRoles];
 
@@ -53,9 +63,9 @@ export function resolveStackRoles(input: ResolveStackRolesInput): StackRole[] {
   const files = new Set(input.files ?? []);
   const matched = (input.defaultRoles ?? []).filter((role) => matchesGates(role, deps, files));
 
-  const countByKind = new Map<string, number>();
+  const countBySlot = new Map<string, number>();
   for (const role of matched) {
-    countByKind.set(role.kind, (countByKind.get(role.kind) ?? 0) + 1);
+    if (role.slot) countBySlot.set(role.slot, (countBySlot.get(role.slot) ?? 0) + 1);
   }
-  return matched.filter((role) => countByKind.get(role.kind) === 1);
+  return matched.filter((role) => !role.slot || countBySlot.get(role.slot) === 1);
 }

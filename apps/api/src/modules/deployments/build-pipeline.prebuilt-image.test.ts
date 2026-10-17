@@ -63,6 +63,8 @@ vi.mock("@repo/db", () => ({
     cloudBuildActivity: { cancelReservation: mocks.cancelReservation },
     cloudDockerWorkspace: { find: (...args: unknown[]) => mocks.findCloudDockerBinding(...args) },
     deployment: {
+      listPendingRoleHandovers: async () => [],
+      setRoleHandover: async () => {},
       findBuildSessionByDeploymentId: (...args: unknown[]) =>
         mocks.findBuildSessionByDeploymentId(...args),
       claimBuildExecution: (...args: unknown[]) => mocks.claimBuildExecution(...args),
@@ -133,7 +135,12 @@ vi.mock("@repo/adapters", () => {
     BuildLogger,
     LocalExecutor: class LocalExecutor {},
     BareRuntime: class BareRuntime {},
-    DockerRuntime: class DockerRuntime {},
+    DockerRuntime: class DockerRuntime {
+      // This suite observes artifact/retirement behavior, not Docker identities.
+      static deploymentContainerName() {
+        return "mock-container";
+      }
+    },
     CloudRuntime: class CloudRuntime {},
     CloudDockerRuntime: class CloudDockerRuntime {},
     STATIC_RELEASE_BASE: "/opt/openship/static/releases",
@@ -341,6 +348,11 @@ import { env } from "@repo/platform/engine/config/index";
 import { platform } from "@repo/platform/engine/lib/platform-config";
 import { resolveDeploymentPlatform, resolveDeploymentRuntime } from "@repo/platform/engine/lib/deployment-runtime";
 import { runDeployPipeline as runRealDeployPipeline } from "../../../../../packages/adapters/src/runtime/deploy-pipeline";
+import {
+  buildProjectRouteDomains,
+  ensureRouteDomainRecord,
+  toRoutedDomainInputs,
+} from "@repo/platform/engine/lib/routing-domains";
 import {
   kickoffBuild,
   resolveServicePipelineMode,
@@ -552,6 +564,49 @@ describe("single-app prebuilt release-image pipeline", () => {
       usesManagedRouting: true,
     } as never;
     vi.mocked(resolveDeploymentPlatform).mockResolvedValue(resolvedPlatform);
+  });
+
+  it.each([false, true])("routes a hostname verified during the first build and surfaces edge failures (write fails: %s, #1281)", async (writeFails) => {
+    const actual = await vi.importActual<typeof import("@repo/platform/engine/lib/routing-domains")>(
+      "@repo/platform/engine/lib/routing-domains",
+    );
+    const domain = {
+      id: "custom-domain", projectId: "project-1", hostname: "app.example.com",
+      domainType: "custom", serviceId: null, targetPort: null, targetPath: null,
+      verified: false, sslStatus: "none",
+    };
+    mocks.prepareImage.mockImplementationOnce(async () => {
+      // Verification finishes while the image is being prepared, before routing
+      // reads the fresh domain rows. No active deployment exists to reapply yet.
+      domain.verified = true;
+      domain.sslStatus = "active";
+      return { status: "deploying", imageRef: RESOLVED_IMAGE, durationMs: 12 };
+    });
+    vi.mocked(repos.domain.listByProject).mockResolvedValueOnce([domain] as never);
+    vi.mocked(buildProjectRouteDomains).mockImplementationOnce(actual.buildProjectRouteDomains);
+    vi.mocked(toRoutedDomainInputs).mockImplementationOnce(actual.toRoutedDomainInputs);
+    vi.mocked(ensureRouteDomainRecord).mockResolvedValueOnce({ domain, created: false } as never);
+    const registerRoute = vi.fn().mockResolvedValue(undefined);
+    if (writeFails) registerRoute.mockRejectedValue(new Error("Edge reload failed"));
+    vi.mocked(resolveDeploymentPlatform).mockResolvedValue({
+      ...resolvedPlatform,
+      platform: { ...resolvedPlatform.platform, routing: { registerRoute } as never },
+    });
+    mocks.runDeployPipeline.mockImplementationOnce(runRealDeployPipeline);
+
+    await run();
+    await drainDeploymentExecutions();
+
+    expect(registerRoute).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      domain: "app.example.com", targetUrl: "http://172.18.0.2:8080", tls: true,
+    }));
+    expect(mocks.onSuccess).toHaveBeenCalledOnce();
+    const meta = mocks.onSuccess.mock.calls[0]![1].metaPatch ?? {};
+    if (writeFails) {
+      expect(meta).toMatchObject({ edgeUnsynced: true, deployWarning: "routing warning" });
+    } else {
+      expect(meta).not.toHaveProperty("edgeUnsynced");
+    }
   });
 
   it.each([null, "workspace-1"])(

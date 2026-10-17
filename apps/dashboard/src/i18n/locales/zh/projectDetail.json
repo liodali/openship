@@ -420,5 +420,42 @@
         "transport": "连接已中断。您的服务可能仍在运行。"
       }
     }
+  },
+  "runtimeRoles": {
+    "title": "运行角色",
+    "kind": "角色",
+    "web": "Web",
+    "worker": "工作进程",
+    "scheduler": "调度器",
+    "replicas": "{count} 个副本",
+    "replica": "副本 {replica}",
+    "restarts": "重启 {count} 次",
+    "missing": "未找到",
+    "logs": "查看日志",
+    "checking": "正在检查运行角色…",
+    "staleTarget": "此角色副本不属于当前部署。请重新选择日志来源。",
+    "retry": "重试",
+    "replicaOne": "{count} 个副本",
+    "configuration": {
+      "configure": "配置角色",
+      "title": "工作进程与调度器",
+      "hint": "使用当前镜像应用更改。应用和未变更的副本继续运行。",
+      "sourceHint": "这些设置应用于当前版本。下次从源码部署时，openship.json 中显式的 roles 数组优先。",
+      "name": "名称",
+      "command": "命令",
+      "kind": "类型",
+      "replicas": "副本数",
+      "singleton": "单实例",
+      "addWorker": "添加工作进程",
+      "addScheduler": "添加调度器",
+      "remove": "移除角色",
+      "advanced": "高级",
+      "healthCommand": "健康检查命令（可选）",
+      "stopGrace": "停止宽限期",
+      "apply": "应用更改",
+      "applying": "正在应用…",
+      "cancel": "取消",
+      "retry": "重试"
+    }
   }
 }

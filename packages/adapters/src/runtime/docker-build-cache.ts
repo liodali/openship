@@ -21,7 +21,7 @@ export const DOCKER_BUILD_STORAGE_COMMAND =
   'root="$(docker info --format "{{.DockerRootDir}}")"; ' +
   '[ -d "$root" ] || exit 1; ' +
   'df -Pk "$root" | awk \'NR==2{print "OPENSHIP_STORAGE",$2,$4}\'; ' +
-  'df -Pi "$root" 2>/dev/null | awk \'NR==2{print "OPENSHIP_INODES",$4}\'';
+  'df -Pi "$root" 2>/dev/null | awk \'NR==2{print "OPENSHIP_INODES",$2,$4}\'';
 
 export function parseBuildStorage(raw: string): BuildStorage {
   const lines = raw.trim().split(/\r?\n/);
@@ -29,7 +29,7 @@ export function parseBuildStorage(raw: string): BuildStorage {
   const values = marked
     ? `${marked.slice("OPENSHIP_STORAGE ".length)} ${lines.find((line) => line.startsWith("OPENSHIP_INODES "))?.slice("OPENSHIP_INODES ".length) ?? ""}`
     : raw.trim();
-  const [totalKb, freeKb, freeInodes] = values.trim().split(/\s+/).map(Number);
+  const [totalKb, freeKb, totalInodes, freeInodes] = values.trim().split(/\s+/).map(Number);
   if (
     !Number.isSafeInteger(totalKb) ||
     totalKb! <= 0 ||
@@ -45,7 +45,16 @@ export function parseBuildStorage(raw: string): BuildStorage {
   return {
     totalBytes: totalKb! * 1024,
     freeBytes: freeKb! * 1024,
-    freeInodes: Number.isSafeInteger(freeInodes) && freeInodes! >= 0 ? freeInodes! : null,
+    // Filesystems without a fixed inode pool (such as Btrfs) can report all
+    // zeros. Only a meaningful total can establish actual inode exhaustion.
+    freeInodes:
+      Number.isSafeInteger(totalInodes) &&
+      totalInodes! > 0 &&
+      Number.isSafeInteger(freeInodes) &&
+      freeInodes! >= 0 &&
+      freeInodes! <= totalInodes!
+        ? freeInodes!
+        : null,
   };
 }
 

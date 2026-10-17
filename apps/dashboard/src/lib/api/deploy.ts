@@ -229,6 +229,8 @@ export interface PrepareProjectResponse extends PrepareAppConfig {
   releaseCommands?: string[] | null;
   /** Declared runtime roles; absent means web only, a declared [] means none. */
   roles?: StackRole[] | null;
+  /** Source-scan suggestions; enabling roles requires an explicit selection. */
+  rolePresets?: StackRole[] | null;
   /**
    * What the repo's openship.json parse refused (#641). Advisory — the deploy
    * runs either way, on the fields that did parse. Reaches the wizard without a

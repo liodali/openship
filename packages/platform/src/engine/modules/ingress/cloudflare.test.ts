@@ -227,6 +227,106 @@ describe("DNS and Access ownership", () => {
       access: { required: true, teamName: "myteam", audTag: ["audience"] },
     });
   });
+  it("publishes a protected hostname alongside unrelated applications without a domain", async () => {
+    const foreign = [
+      { id: "launcher", type: "app_launcher", name: "Team launcher" },
+      {
+        id: "private",
+        type: "self_hosted",
+        destinations: [{ type: "private", cidr: "10.0.0.0/8" }],
+      },
+      { id: "public", type: "self_hosted", destinations: [{ type: "public", uri: "other.test" }] },
+    ];
+    apps = structuredClone(foreign);
+    const host = { ...h, accessPolicyId: "policy" },
+      state = ledger(),
+      api = new CloudflareIngress("secret", "account");
+
+    await api.access(host, state.value, state.save);
+    await api.rule(host, c, state.value, state.save);
+    await api.dns(host, c, state.value, state.save);
+
+    expect(apps.slice(0, foreign.length)).toEqual(foreign);
+    expect(apps).toHaveLength(foreign.length + 1);
+    expect(state.value).toMatchObject({ appId: "app-3", appAud: "audience", dnsId: "dns-0" });
+    expect(
+      config.ingress.find((rule) => rule.hostname === host.hostname)?.originRequest,
+    ).toMatchObject({
+      access: { required: true, audTag: ["audience"] },
+    });
+    expect(records[0]).toMatchObject({ name: host.hostname, type: "CNAME", proxied: true });
+  });
+
+  it.each([
+    { domain: "*.EXAMPLE.TEST/private" },
+    { self_hosted_domains: [h.hostname] },
+    { self_hosted_domains: ["*.example.test/private"] },
+    { destinations: [{ type: "public", uri: `${h.hostname}/private` }] },
+    { destinations: [{ type: "public", uri: "*.EXAMPLE.TEST" }] },
+  ])("still refuses foreign Access overlap through %j", async (addresses) => {
+    apps = [{ id: "foreign", type: "self_hosted", name: "Manual", ...addresses }];
+    const state = ledger();
+    await expect(
+      new CloudflareIngress("secret", "account").access(
+        { ...h, accessPolicyId: "policy" },
+        state.value,
+        state.save,
+      ),
+    ).rejects.toMatchObject({ statusCode: 409, code: "INGRESS_PROVIDER_CONFLICT" });
+    expect(calls.some((call) => call.method !== "GET")).toBe(false);
+    expect(state.value.appIntent).toBeUndefined();
+    expect(apps).toHaveLength(1);
+  });
+
+  it.each([
+    { domain: 42 },
+    { domain: null },
+    { self_hosted_domains: h.hostname },
+    { self_hosted_domains: [null] },
+    { destinations: { type: "public", uri: h.hostname } },
+    { destinations: [null] },
+    { destinations: [{ type: "public", uri: 42 }] },
+  ])(
+    "blocks publication with a useful provider error for malformed addresses %j",
+    async (addresses) => {
+      apps = [{ id: "foreign", type: "self_hosted", name: "Manual", ...addresses }];
+      const state = ledger();
+      await expect(
+        new CloudflareIngress("secret", "account").access(
+          { ...h, accessPolicyId: "policy" },
+          state.value,
+          state.save,
+        ),
+      ).rejects.toMatchObject({
+        statusCode: 502,
+        code: "CLOUDFLARE_API_ERROR",
+        message: expect.stringMatching(/invalid Access application.*(?:domain|destinations)/),
+      });
+      expect(calls.some((call) => call.method !== "GET")).toBe(false);
+      expect(state.value).toEqual({});
+    },
+  );
+
+  it.each(["access", "removeAccess"] as const)(
+    "does not %s an owned application whose domain was removed",
+    async (operation) => {
+      const host = { ...h, accessPolicyId: "policy" },
+        state = ledger(),
+        api = new CloudflareIngress("secret", "account");
+      await api.access(host, state.value, state.save);
+      delete apps[0].domain;
+      calls = [];
+
+      await expect(api[operation](host, state.value, state.save)).rejects.toMatchObject({
+        statusCode: 409,
+        code: "INGRESS_PROVIDER_CONFLICT",
+      });
+      expect(calls.some((call) => call.method !== "GET")).toBe(false);
+      expect(apps).toHaveLength(1);
+      expect(state.value.appId).toBe(apps[0].id);
+    },
+  );
+
   it("does not create a second Access application after a lost response", async () => {
     const host = { ...h, accessPolicyId: "policy" },
       state = ledger(),

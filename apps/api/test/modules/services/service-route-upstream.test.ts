@@ -19,7 +19,10 @@ const serviceRepo = vi.hoisted(() => ({
   listByDeployment: vi.fn(),
   update: vi.fn(),
 }));
-const deploymentRepo = vi.hoisted(() => ({ findById: vi.fn() }));
+const deploymentRepo = vi.hoisted(() => ({
+  findById: vi.fn(),
+  listPendingRoleHandovers: async () => [],
+}));
 const domainRepo = vi.hoisted(() => ({ listByProject: vi.fn() }));
 
 vi.mock("@repo/db", async (importOriginal) => {

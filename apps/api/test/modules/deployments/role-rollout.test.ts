@@ -101,6 +101,36 @@ function gate() {
 /** Let every queued microtask run. */
 const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
+describe("durable role registration", () => {
+  it("removes a created container even when its durable reference write fails", async () => {
+    const { deps, events } = harness({
+      roles: [worker()],
+      startReplica: async (_role, _replica, created) => {
+        await created!("created-before-write");
+        events.push("process started");
+        return "created-before-write";
+      },
+      recordCreated: async () => {
+        throw new Error("storage unavailable");
+      },
+    });
+    await expect(rolloutRoles(deps)).rejects.toThrow("storage unavailable");
+    expect(events).toEqual(["destroyNew created-before-write"]);
+  });
+
+  it("does not stop a previous singleton if stop intent cannot be persisted", async () => {
+    const { deps, events } = harness({
+      roles: [scheduler()],
+      previous: [ref("sched", 1, "previous")],
+      recordStopIntent: async () => {
+        throw new Error("storage unavailable");
+      },
+    });
+    await expect(rolloutRoles(deps)).rejects.toThrow("storage unavailable");
+    expect(events).toEqual([]);
+  });
+});
+
 describe("isSingletonRole", () => {
   it("is true for a scheduler or an explicit singleton, false otherwise", () => {
     expect(isSingletonRole({ kind: "scheduler" })).toBe(true);

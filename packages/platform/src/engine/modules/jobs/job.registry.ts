@@ -71,6 +71,8 @@ const ANALYTICS_ROLLUP_RETENTION_DAYS = 400;
 const RESOURCE_USAGE_RETENTION_DAYS = 30;
 
 export const SYSTEM_JOB_DEFS: SystemJobDef[] = [
+  { key: "github:pr-previews", label: "Pull request preview environments", defaultCron: "*/30 * * * * *",
+    run: async () => { await (await import("../projects/pull-request-previews")).runPullRequestPreviewsSweep(); return { checked: true }; } },
   {
     key: "github:deployment-checks",
     label: "GitHub deployment Checks",

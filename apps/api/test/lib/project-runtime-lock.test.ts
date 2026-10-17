@@ -60,4 +60,23 @@ describe("project runtime lock ownership", () => {
       "acquired",
     );
   });
+
+  it("cancels a waiting activation without running it after teardown releases the lock", async () => {
+    const entered = deferred();
+    const release = deferred();
+    const owner = withProjectRuntimeLock("deleting-project", async () => {
+      entered.resolve();
+      await release.promise;
+    });
+    await entered.promise;
+    const signal = new AbortController();
+    const mutate = vi.fn(async () => {});
+    const waiter = withProjectRuntimeLock("deleting-project", mutate, signal.signal);
+    signal.abort(new Error("cancelled"));
+    await expect(waiter).rejects.toThrow("cancelled");
+    release.resolve();
+    await owner;
+    await withProjectRuntimeLock("deleting-project", async () => {});
+    expect(mutate).not.toHaveBeenCalled();
+  });
 });

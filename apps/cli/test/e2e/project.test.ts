@@ -321,3 +321,65 @@ describe("openship project auth errors (#1023)", () => {
     expect(err).not.toContain("openship login");
   });
 });
+
+describe("openship project runtime roles (#1282)", () => {
+  it("lists the active deployment's roles through the project API", async () => {
+    fetchStub = stubFetch(() => ({
+      json: {
+        data: {
+          deploymentId: "dep_1",
+          roles: [{ name: "queue", kind: "worker", replicas: 2, containers: [] }],
+          error: null,
+        },
+      },
+    }));
+    const { out, code } = await runCommand(projectCommand, ["roles", "p1"]);
+    expect(code).toBe(0);
+    expect(fetchStub.calls[0].url).toBe("http://api.test/api/projects/p1/roles");
+    expect(out).toContain("queue");
+  });
+
+  it.each([false, true])(
+    "reads only the selected release and replica (follow=%s)",
+    async (follow) => {
+      fetchStub = stubFetch(() =>
+        follow
+          ? new Response(
+              'event: log\ndata: {"message":"queue replica 2","level":"info","timestamp":"2026-10-16T12:00:00Z"}\n\n',
+              { headers: { "Content-Type": "text/event-stream" } },
+            )
+          : {
+              json: {
+                data: [
+                  { message: "queue replica 2", level: "info", timestamp: "2026-10-16T12:00:00Z" },
+                ],
+              },
+            },
+      );
+      const { out, code } = await runCommand(projectCommand, [
+        "logs",
+        "p1",
+        "--role",
+        "queue",
+        "--replica",
+        "2",
+        "--deployment-id",
+        "dep_1",
+        "--tail",
+        "40",
+        ...(follow ? ["--follow"] : []),
+      ]);
+      expect(code).toBe(0);
+      expect(fetchStub.calls).toHaveLength(1);
+      const url = new URL(fetchStub.calls[0].url);
+      expect(url.pathname).toBe(follow ? "/api/projects/p1/logs/stream" : "/api/projects/p1/logs");
+      expect(Object.fromEntries(url.searchParams)).toEqual({
+        role: "queue",
+        replica: "2",
+        deploymentId: "dep_1",
+        tail: "40",
+      });
+      expect(out).toContain("queue replica 2");
+    },
+  );
+});

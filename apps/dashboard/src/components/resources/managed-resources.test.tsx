@@ -267,3 +267,79 @@ it("keeps billing links on the selected subscription and new purchases separate"
   expect(host.querySelector('a[href="/billing/plans?newServer=1"]')).not.toBeNull();
   expect(host.querySelector('a[href*="workspace-a"]')).toBeNull();
 });
+
+const partialLiveSample = {
+  measuredAt: "2026-10-01T00:00:05Z",
+  cpuPercent: 35,
+  memoryUsedMb: 2048,
+  memoryAvailableMb: 6144,
+  diskUsedMb: null,
+  diskAvailableMb: null,
+  diskTotalMb: null,
+};
+it.each([
+  {
+    name: "keeps the host snapshot when live metrics omit storage",
+    live: partialLiveSample,
+    history: [],
+    snapshot: usage(),
+    expected: "4 GB / 32 GB",
+    older: true,
+  },
+  {
+    name: "accepts measured zero storage instead of replacing it with the snapshot",
+    live: { ...partialLiveSample, diskUsedMb: 0, diskAvailableMb: 32768, diskTotalMb: 32768 },
+    history: [],
+    snapshot: usage(),
+    expected: "0 GB / 32 GB",
+    older: false,
+  },
+  {
+    name: "keeps the recent live storage reading ahead of the older snapshot after a partial frame",
+    live: partialLiveSample,
+    history: [{ ...partialLiveSample, measuredAt: "2026-10-01T00:00:04Z", diskUsedMb: 5120 }],
+    snapshot: usage(),
+    expected: "5 GB / 32 GB",
+    older: true,
+  },
+  {
+    name: "prefers a refreshed snapshot to an older live storage reading",
+    live: partialLiveSample,
+    history: [{ ...partialLiveSample, measuredAt: "2026-10-01T00:00:04Z", diskUsedMb: 5120 }],
+    snapshot: {
+      ...usage(),
+      measuredAt: "2026-10-01T00:00:06Z",
+      diskUsedMb: 8192,
+      memoryUsedMb: 2048,
+      memoryAvailableMb: 6144,
+    },
+    expected: "8 GB / 32 GB",
+    older: false,
+  },
+  {
+    name: "leaves storage unknown when neither source measured it despite known allocation",
+    live: partialLiveSample,
+    history: [],
+    snapshot: { ...usage(), diskUsedMb: null, diskAvailableMb: null, diskTotalMb: null },
+    expected: "— GB / 32 GB",
+    older: false,
+  },
+])("$name", async ({ live, history, snapshot, expected, older }) => {
+  h.usage.mockResolvedValue(snapshot);
+  h.monitor.mockReturnValue({
+    usage: live,
+    history: [...history, live],
+    error: null,
+    isConnected: true,
+    paused: false,
+    reconnect: vi.fn(),
+  });
+  await render();
+  const storage = [...host.querySelectorAll("p")].find(
+    (node) => node.textContent === baseDictionary.billing.workspaces.diskUsage,
+  )!.parentElement!;
+  expect(storage.textContent).toContain(expected);
+  if (older) expect(storage.textContent).toContain(baseDictionary.billing.workspaces.measuredAt);
+  else expect(storage.textContent).not.toContain(baseDictionary.billing.workspaces.measuredAt);
+  expect(host.textContent).toContain("2 GB / 8 GB");
+});

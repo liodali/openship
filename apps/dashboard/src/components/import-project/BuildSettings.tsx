@@ -14,6 +14,7 @@ import { getPublicEndpointHosts, getRecommendedSingleAppBuildImage, workloadOf, 
 import { getRuntimeVersionPolicy, runtimeProjectUpdate, runtimeNeedsInstall, getRuntimeImage, STACKS, type StackId, type WorkloadType } from "@repo/core";
 import { CustomSelect } from "@/components/ui/CustomSelect";
 import { useI18n, interpolate } from "@/components/i18n-provider";
+import { CommandEnvironmentNotice } from "./CommandEnvironmentNotice";
 
 interface InputField {
   key: string;
@@ -481,6 +482,14 @@ const BuildSettings: React.FC<BuildSettingsProps> = ({
   if (mode === 'simple') {
     return (
       <div className="@container/build-settings bg-card rounded-2xl">
+        <CommandEnvironmentNotice commands={buildData ?? {}} migrateDraft={(commands, variables) => {
+          const existing = config.envVars ?? [];
+          for (const [key, value] of Object.entries(variables)) {
+            const row = existing.find((item: { key: string }) => item.key === key);
+            if (row && row.value !== value) throw new Error(`Environment already has a different or masked value for ${key}. Resolve it before migrating.`);
+          }
+          updateConfig({ options: { ...config.options, ...commands }, envVars: [...existing, ...Object.entries(variables).filter(([key]) => !existing.some((row: { key: string }) => row.key === key)).map(([key, value]) => ({ key, value, isSecret: true }))] });
+        }} />
         <button
           type="button"
           aria-expanded={expanded}

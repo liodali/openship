@@ -47,6 +47,7 @@ export const PROJECT_TRANSFER_TABLES = new Set([
 
 /** These project children require their instance's runtime ownership to travel with them. */
 export const PROJECT_TRANSFER_UNSUPPORTED_TABLES: Readonly<Record<string, string>> = {
+  pull_request_preview: "Managed PR previews require a whole-instance export to preserve source, environment and cleanup ownership. Disable previews and wait for cleanup before transferring projects individually.",
   ingress_hostname: "Disconnect managed Cloudflare hostnames before transferring this project individually. Use a whole-instance export to preserve its server, credentials and provider ownership.",
   action_project:
     "Projects linked to Actions require a whole-instance export to preserve workflow secrets, runners and execution authority.",

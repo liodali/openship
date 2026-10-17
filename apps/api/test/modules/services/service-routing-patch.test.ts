@@ -10,7 +10,10 @@ const serviceRepo = vi.hoisted(() => ({
   create: vi.fn(),
   update: vi.fn(),
 }));
-const deploymentRepo = vi.hoisted(() => ({ findById: vi.fn() }));
+const deploymentRepo = vi.hoisted(() => ({
+  findById: vi.fn(),
+  listPendingRoleHandovers: async () => [],
+}));
 const domainRepo = vi.hoisted(() => ({ listByProject: vi.fn() }));
 const freeGate = vi.hoisted(() => ({ assertFreeEndpointsAllowed: vi.fn() }));
 

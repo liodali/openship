@@ -278,16 +278,22 @@ describe("migration chain applies to an existing, populated database", () => {
       await client.exec("SET session_replication_role = replica;");
       await seedRow(client, "project", SEED_ID);
       await seedRow(client, "deployment", SEED_ID);
-      const projects = (await client.query("SELECT * FROM project")).rows;
-      const deployments = (await client.query("SELECT * FROM deployment")).rows;
-      const applied = (await client.query("SELECT * FROM drizzle.__drizzle_migrations ORDER BY id")).rows;
+      const projects = (await client.query<Record<string, unknown>>("SELECT * FROM project")).rows;
+      const deployments = (await client.query<Record<string, unknown>>("SELECT * FROM deployment"))
+        .rows;
+      const applied = (await client.query("SELECT * FROM drizzle.__drizzle_migrations ORDER BY id"))
+        .rows;
 
       await migrate(db, { migrationsFolder: MIGRATIONS_DIR });
       expect((await client.query("SELECT * FROM project")).rows).toEqual(
-        projects.map((project) => ({ ...project, roles: null })),
+        projects.map((project) => ({ ...project, roles: null, preview_settings: null, preview_scanned_at: null, build_cache_receipts: null })),
       );
       expect((await client.query("SELECT * FROM deployment")).rows).toEqual(
-        deployments.map((deployment) => ({ ...deployment, role_containers: null })),
+        deployments.map((deployment) => ({
+          ...deployment,
+          role_containers: null,
+          role_handover: null,
+        })),
       );
       expect((await client.query("SELECT * FROM drizzle.__drizzle_migrations ORDER BY id")).rows.slice(0, applied.length))
         .toEqual(applied);
@@ -326,7 +332,7 @@ describe("migration chain applies to an existing, populated database", () => {
       expect(await db.select().from(schema.instanceController)).toEqual([]);
       expect(await db.select().from(schema.instanceHandoff)).toEqual([]);
       expect((await client.query("SELECT * FROM project")).rows).toEqual(
-        projects.map((project) => ({ ...project, github_checks: null, runtime_version: null, runtime_image: null, lifecycle_operation: null, roles: null })),
+        projects.map((project) => ({ ...project, github_checks: null, runtime_version: null, runtime_image: null, lifecycle_operation: null, roles: null, preview_settings: null, preview_scanned_at: null, build_cache_receipts: null })),
       );
       expect(
         (await client.query("SELECT * FROM drizzle.__drizzle_migrations ORDER BY id")).rows.slice(
@@ -527,7 +533,7 @@ describe("migration chain applies to an existing, populated database", () => {
         const { cloud_workspace_id: _native, cloud_archive_strategy: _archive, ...previous } = old as typeof old & Record<string, unknown>;
         expect(row).toEqual({
           ...previous,
-          runtime_version: null, runtime_image: null, roles: null,
+          runtime_version: null, runtime_image: null, roles: null, preview_settings: null, preview_scanned_at: null, build_cache_receipts: null,
           cloud_promotion: null,
           lifecycle_operation: null,
           cloud_static_hosting: "pages",

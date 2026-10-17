@@ -55,6 +55,80 @@ const graph = (extra: Partial<Parameters<typeof buildProjectTopology>[0]> = {}) 
   buildProjectTopology({ project, services, containers, connections: [], ...extra });
 
 describe("production project topology", () => {
+  it("shows active runtime roles alongside the application and their live replica state", () => {
+    const result = graph({
+      project: { ...project, framework: "laravel" },
+      services: [db],
+      roles: {
+        deploymentId: "d1",
+        error: null,
+        roles: [
+          {
+            name: "queue",
+            kind: "worker",
+            replicas: 2,
+            containers: [
+              { replica: 1, containerId: "queue-1", status: "running", restartCount: 0 },
+              { replica: 2, containerId: "queue-2", status: "restarting", restartCount: 4 },
+            ],
+          },
+        ],
+      },
+    });
+    const role = result.nodes.find((node) => node.kind === "role")!;
+    expect(role.name).toBe("queue");
+    expect(role.state).toBe("restarting");
+    expect(role.instances).toBe(1);
+    expect(role.role?.containers[1].restartCount).toBe(4);
+    expect(result.edges.find((edge) => edge.target === role.id)).toMatchObject({
+      scope: "roles",
+      readOnly: true,
+    });
+    expect(result.nodes.filter((node) => node.kind === "service")).toHaveLength(1);
+  });
+
+  it.each([
+    ["running", "stopped", "failed", 1],
+    ["running", "starting", "starting", 1],
+    ["running", "unknown", "unknown", undefined],
+    ["stopped", "stopped", "stopped", 0],
+  ] as const)(
+    "summarizes observed role replicas %s/%s as %s",
+    (first, second, state, instances) => {
+      const result = graph({
+        roles: {
+          deploymentId: "d1",
+          error: null,
+          roles: [
+            {
+              name: "queue",
+              kind: "worker",
+              replicas: 2,
+              containers: [
+                { replica: 1, containerId: "queue-1", status: first, restartCount: 0 },
+                { replica: 2, containerId: "queue-2", status: second, restartCount: 0 },
+              ],
+            },
+          ],
+        },
+      });
+      const role = result.nodes.find((node) => node.kind === "role")!;
+      expect(role.state).toBe(state);
+      expect(role.instances).toBe(instances);
+    },
+  );
+
+  it("never projects a retired deployment's roles onto the current graph", () => {
+    expect(
+      graph({
+        roles: {
+          deploymentId: "retired",
+          error: null,
+          roles: [{ name: "old-worker", kind: "worker", replicas: 1, containers: [] }],
+        },
+      }).nodes.some((node) => node.kind === "role"),
+    ).toBe(false);
+  });
   it("shows only observed cluster replicas and excludes unready pods from active service edges", () => {
     const application = {
       ...project,

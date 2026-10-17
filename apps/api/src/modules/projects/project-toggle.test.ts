@@ -70,6 +70,7 @@ vi.mock("@repo/db", () => ({
       },
     },
     deployment: {
+      listPendingRoleHandovers: async () => [],
       findById: async () => ({
         id: "dep_1",
         projectId: "proj_1",

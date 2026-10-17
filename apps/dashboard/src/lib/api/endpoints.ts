@@ -61,6 +61,7 @@ export const endpoints = {
     sleepMode: (id: string | number) => `projects/${id}/sleep-mode`,
     deployments: (id: string | number) => `projects/${id}/deployments`,
     logs: (id: string | number) => `projects/${id}/logs`,
+    roles: (id: string | number) => `projects/${id}/roles`,
     logsStream: (id: string | number) => `projects/${id}/logs/stream`,
     serverLogsRecent: (id: string | number) => `projects/${id}/server-logs/recent`,
     serverLogsStreamToken: (id: string | number) => `projects/${id}/server-logs/stream-token`,

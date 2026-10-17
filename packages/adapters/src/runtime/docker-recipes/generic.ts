@@ -2,6 +2,7 @@ import { builderCompatibilityLines, runtimeCompatibilityLines } from "./compatib
 import type { BuildConfig } from "../../types";
 import { normalizeDockerRootDirectory } from "../docker-paths";
 import { managedNodeDockerLines } from "../cloud/node-listener";
+import { prepareNodeOutputCommand, AUTOMATIC_START, START_SOURCE_LABEL, START_COMMAND_LABEL, startCommandDigest } from "../node-output";
 import {
   builderSourceDir,
   needsMultiStage,
@@ -52,12 +53,15 @@ export function generateGenericDockerfile(config: BuildConfig): string {
   if (stepsLine) {
     lines.push(stepsLine);
   }
+  const prepareOutput = prepareNodeOutputCommand(config);
+  if (prepareOutput) lines.push(`RUN ${prepareOutput.replace(/\n/g, " ")}`);
 
   if (multiStage) {
     lines.push(...builderCompatibilityLines(config));
     lines.push(`FROM ${config.runtimeImage} AS runtime`);
     lines.push(...runtimeCompatibilityLines(config));
     lines.push(...runtimeCopyDirectives(config, sourceDir));
+    if (prepareOutput && config.productionPaths?.length) lines.push(`COPY --from=builder ${sourceDir}/.openship-start.sh /app/.openship-start.sh`);
     lines.push(`WORKDIR /app`);
     // The copy retargets `sourceDir` → /app, so the runtime stage needs its own
     // ENV (ENV does not cross a FROM) pointing at the new location.
@@ -65,9 +69,10 @@ export function generateGenericDockerfile(config: BuildConfig): string {
     if (runtimeBinPath) lines.push(runtimeBinPath);
   }
   lines.push(...managedNodeDockerLines(config));
+  if (prepareOutput) lines.push(`LABEL ${START_SOURCE_LABEL}=${JSON.stringify(startCommandDigest(config.startCommand))} ${START_COMMAND_LABEL}=${JSON.stringify(AUTOMATIC_START)}`);
   lines.push(`EXPOSE ${config.port}`);
-  if (config.startCommand) {
-    lines.push(`CMD ["sh", "-c", ${JSON.stringify(config.startCommand)}]`);
+  if (config.startCommand || prepareOutput) {
+    lines.push(`CMD ["sh", "-c", ${JSON.stringify(prepareOutput ? AUTOMATIC_START : config.startCommand)}]`);
   }
 
   return lines.join("\n");

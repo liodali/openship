@@ -420,5 +420,42 @@
         "transport": "A ligação foi interrompida. O seu serviço pode continuar em execução."
       }
     }
+  },
+  "runtimeRoles": {
+    "title": "Papéis de execução",
+    "kind": "Papel",
+    "web": "Web",
+    "worker": "Worker",
+    "scheduler": "Agendador",
+    "replicas": "{count} réplicas",
+    "replica": "Réplica {replica}",
+    "restarts": "{count} reinicializações",
+    "missing": "Não encontrada",
+    "logs": "Ver logs",
+    "checking": "Verificando papéis de execução…",
+    "staleTarget": "Esta réplica não pertence à implantação ativa. Selecione novamente a origem dos logs.",
+    "retry": "Tentar novamente",
+    "replicaOne": "{count} réplica",
+    "configuration": {
+      "configure": "Configurar funções",
+      "title": "Workers e agendadores",
+      "hint": "Aplicar com a imagem ativa. O app e as réplicas sem alterações continuam funcionando.",
+      "sourceHint": "Estas configurações se aplicam a esta versão. Uma lista roles explícita em openship.json tem prioridade no próximo deploy do código.",
+      "name": "Nome",
+      "command": "Comando",
+      "kind": "Tipo",
+      "replicas": "Réplicas",
+      "singleton": "Instância única",
+      "addWorker": "Adicionar worker",
+      "addScheduler": "Adicionar agendador",
+      "remove": "Remover função",
+      "advanced": "Avançado",
+      "healthCommand": "Comando de integridade (opcional)",
+      "stopGrace": "Prazo para parar",
+      "apply": "Aplicar alterações",
+      "applying": "Aplicando…",
+      "cancel": "Cancelar",
+      "retry": "Tentar novamente"
+    }
   }
 }

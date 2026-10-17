@@ -515,6 +515,11 @@ function parseRoles(ctx: Ctx, v: unknown, path: string): StackRole[] | undefined
           : "apply only to stack presets and are";
       ctx.warnings.push(`${p} ("${name}"): ${keys} ${verbs} ignored, so this role always runs`);
     }
+    if (item.slot !== undefined) {
+      ctx.warnings.push(
+        `${p} ("${name}"): \`slot\` resolves alternatives only in stack presets; ignored for an explicit role. Declare only the roles you intend to run.`,
+      );
+    }
     out.push({
       name,
       kind,

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { STACKS, type StackDefinition } from "@repo/core";
+import { STACKS, type StackDefinition, PACKAGE_BUILD_CACHES } from "@repo/core";
 import type { BuildConfig } from "../../types";
 import { normalizeDockerRootDirectory } from "../docker-paths";
 
@@ -7,23 +7,6 @@ import { normalizeDockerRootDirectory } from "../docker-paths";
  * Mounting node_modules, target/, .nuxt, etc. would hide required build outputs.
  * Yarn is omitted: Classic and modern PnP loaders can reference global package
  * archives at runtime, so those dependencies must stay in image layers. */
-const PACKAGE_CACHES: Readonly<Record<string, readonly string[]>> = {
-  npm: ["/root/.npm"],
-  bun: ["/root/.bun/install/cache"],
-  pnpm: ["/root/.local/share/pnpm/store"],
-  pip: ["/root/.cache/pip"],
-  pipenv: ["/root/.cache/pip"],
-  poetry: ["/root/.cache/pypoetry/cache", "/root/.cache/pypoetry/artifacts"],
-  uv: ["/root/.cache/uv"],
-  composer: ["/root/.cache/composer"],
-  bundler: ["/usr/local/bundle/cache"],
-  cargo: ["/usr/local/cargo/registry", "/usr/local/cargo/git"],
-  go: ["/go/pkg/mod", "/root/.cache/go-build"],
-  maven: ["/root/.m2/repository"],
-  gradle: ["/root/.gradle/caches", "/root/.gradle/wrapper"],
-  dotnet: ["/root/.nuget/packages"],
-  mix: ["/root/.hex/packages"],
-};
 const NODE_MANAGERS = new Set(["npm", "bun", "pnpm", "yarn"]);
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
@@ -51,7 +34,7 @@ export function cachedRunPrefix(
   const root = normalizeDockerRootDirectory(config.rootDirectory, config.localPath);
   const source = root ? `/workspace/${root}` : "/workspace";
   const stack = (STACKS as Record<string, StackDefinition>)[config.stack];
-  const packagePaths = [...(PACKAGE_CACHES[packageManager] ?? [])];
+  const packagePaths = [...(PACKAGE_BUILD_CACHES[packageManager] ?? [])];
   const outputPaths = [...(stack?.buildCacheDirs ?? [])].map((path) => `${source}/${path}`);
   if (NODE_MANAGERS.has(packageManager)) {
     outputPaths.push("/workspace/.turbo/cache", `${source}/.turbo/cache`);

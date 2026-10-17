@@ -236,6 +236,12 @@ Unknown fields stay null. Actual guest bytes are converted to MB; allocation,
 credits, CPU time and memory reservation are not treated as live consumption.
 See the [provider metrics contract](https://oblien.com/docs/api/metrics).
 
+Guest byte counters and guest KiB counters are accepted. Zero-total placeholders
+are unavailable measurements. Hypervisor process memory includes VM overhead and
+is never substituted for guest RAM. When a guest does not publish memory metrics,
+the stream uses the existing read-only guest sampler, at most once per ten seconds
+per subscription; it closes that connection on cancellation or failure.
+
 Openship verifies server-read access and the existing organization/workspace binding,
 then opens the stream with that workspace's namespace credentials. It never exposes
 provider credentials to the browser or provisions/resumes a machine to observe usage.
@@ -249,6 +255,13 @@ Retry and a last-reading label. Project membership and disk breakdown keep their
 permission-filtered snapshot request; the live stream does not repeat Docker storage scans.
 Deploy the API and dashboard together for live usage; older APIs retain snapshot usage
 with an explicit unavailable-live-updates notice.
+
+On `fuse-overlayfs`, the snapshot request skips Docker's full disk-usage inventory.
+Its writable-layer sizing walks directory trees in daemon memory, and a caller
+timeout does not reliably stop that scan. Host CPU, memory, total disk usage and
+project membership remain available; detailed project/shared disk attribution is
+null rather than zero on these hosts. Other storage drivers keep their existing
+disk breakdown. This read never prunes caches or changes application resources.
 
 Cloud spaces owns instant resource readings and project storage; Billing shows the
 subscription, payments, usage over the billing period and entitlement counters.

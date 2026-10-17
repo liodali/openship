@@ -43,6 +43,7 @@ import {
   looksLikeSecretKey,
   mergeAdvanced,
   resolveProjectVolumes,
+  runtimeRoleDefinition,
   resolveTierResources,
   type StackId,
   type DeployTarget,
@@ -213,6 +214,8 @@ export async function runDeploymentPreflight(
 
 /** Config snapshot stored in deployment.meta - self-contained build+deploy config. */
 export interface DeploymentConfigSnapshot {
+  /** Set by lifecycle persistence after encrypted configuration bypasses log redaction. */
+  configurationSecretsPreserved?: boolean;
   /** Idempotency for an explicit capacity adjustment; never accepted over HTTP. */
   capacityAdjustment?: { key: string; requestHash: string };
   /** Internal Cloud service-slot reservation, derived at queue creation. */
@@ -334,6 +337,15 @@ export interface DeploymentConfigSnapshot {
   /** Env-only refresh of a single app. Reuse this active deployment's retained
    * artifact and fail closed if it is unavailable — never fall into a rebuild. */
   refreshAppDeploymentId?: string;
+  /** Internal configuration rollout: preserve web and reuse equivalent roles. */
+  roleConfiguration?: {
+    sourceDeploymentId: string;
+    webContainerId: string;
+    webOwnerDeploymentId: string;
+    imageId: string;
+  };
+  /** Creation owner of a web container carried across configuration revisions. */
+  webOwnerDeploymentId?: string;
   /** STATIC twin: a retained release DIRECTORY on the host to promote again
    *  (static releases have no image). Set by a rollback restore. */
   handoverStaticDir?: string;
@@ -494,9 +506,9 @@ export function buildConfigSnapshot(project: Project, branch?: string): Deployme
       ? { releaseCommands: project.releaseCommands as string[] }
       : {}),
     // Same rule: only a non-empty list, so a project without roles snapshots
-    // byte-identical to before. when/unless are preset-only and never frozen.
+    // byte-identical to before. when/unless/slot are preset-only and never frozen.
     ...(Array.isArray(project.roles) && project.roles.length > 0
-      ? { roles: project.roles.map(({ when: _when, unless: _unless, ...role }) => role) }
+      ? { roles: project.roles.map(runtimeRoleDefinition) }
       : {}),
     resources: (project.resources as ResourceConfig) || null,
     buildResources: (project.buildResources as ResourceConfig) || null,
@@ -1336,7 +1348,9 @@ export async function createQueuedDeployment(opts: Parameters<typeof createQueue
 async function createQueuedDeploymentUnlocked(opts: {
   actionRequestId?: string;
   actionLeaseOwner?: string;
+  previewAdmission?: { id: string; token: string };
   /** Internal, reviewed resource edit committed with deployment admission. */
+  roleChanges?: import("@repo/db").DeploymentRoleChanges;
   resourceChanges?: DeploymentResourceChanges;
   /** Attribution only; ownership/authorization still comes from organizationId. */
   analyticsActor?: Pick<RequestContext, "userId" | "source">;
@@ -1350,6 +1364,8 @@ async function createQueuedDeploymentUnlocked(opts: {
   framework: string;
   meta: DeploymentConfigSnapshot;
   envVars: Record<string, string> | null;
+  /** Existing app URL when a configuration revision keeps its primary container. */
+  preservedUrl?: string | null;
   commitSha?: string;
   commitMessage?: string;
   trigger?: string;
@@ -1483,6 +1499,7 @@ async function createQueuedDeploymentUnlocked(opts: {
       trigger: opts.trigger ?? "manual",
       actionRequestId: opts.actionRequestId,
       environment: opts.environment,
+      ...(opts.preservedUrl !== undefined ? { url: opts.preservedUrl } : {}),
       framework: opts.framework,
       status: "queued",
       // Release/dist deploy identity, from the resolved snapshot. Like commit_sha
@@ -1503,6 +1520,8 @@ async function createQueuedDeploymentUnlocked(opts: {
     }];
     if (opts.resourceChanges || opts.actionLeaseOwner) admission[1] = opts.resourceChanges;
     if (opts.actionLeaseOwner) admission[2] = opts.actionLeaseOwner;
+    if (opts.roleChanges) admission[3] = opts.roleChanges;
+    if (opts.previewAdmission) admission[4] = opts.previewAdmission;
     return repos.deployment.create(...admission);
   };
   const dep = env.CLOUD_MODE
@@ -1516,7 +1535,7 @@ async function createQueuedDeploymentUnlocked(opts: {
   }
 
   try {
-    if (!opts.resourceChanges) await repos.deployment.createBuildSession({
+    if (!opts.resourceChanges && !opts.roleChanges && !opts.previewAdmission) await repos.deployment.createBuildSession({
       deploymentId: dep.id,
       projectId: opts.projectId,
       status: "queued",
@@ -2694,6 +2713,7 @@ export interface DeploymentTriggerInput {
   /** Internal Actions admission receipt; public deployment inputs cannot set it. */
   actionRequestId?: string;
   actionLeaseOwner?: string;
+  previewAdmission?: { id: string; token: string };
   actionEvent?: Record<string, unknown>;
 }
 
@@ -2703,6 +2723,13 @@ export async function triggerDeployment(ctx: RequestContext, data: DeploymentTri
   // have moved since application authorization resolved its organization.
   if (!project || project.organizationId !== ctx.organizationId) {
     throw new NotFoundError("Project", data.projectId);
+  }
+  if (data.previewAdmission && data.commitSha) {
+    const existing = await repos.pullRequestPreview.admittedDeployment(data.previewAdmission.id, data.previewAdmission.token, data.commitSha);
+    if (existing && existing.projectId === project.id) {
+      if (existing.status === "queued") await kickoffBuild(project, existing);
+      return { deployment: existing, skipped: true as const };
+    }
   }
   if (data.actionRequestId) {
     const existing = await repos.actions.deploymentForActionRequest(ctx.organizationId, data.actionRequestId);
@@ -2820,7 +2847,7 @@ export async function triggerDeployment(ctx: RequestContext, data: DeploymentTri
   if (!data.reuseSnapshot && data.trigger !== "rollback") {
     // Required checks approve the entire source tree at this commit, including
     // Compose and lifecycle configuration. Do not re-read those files at HEAD.
-    const sourceRef = data.actionRequestId ? requestedCommitSha! : branch;
+    const sourceRef = (data.actionRequestId || data.previewAdmission) ? requestedCommitSha! : branch;
     let sourceInfo: SourceEnvInfo | undefined = await reconcileComposeSource(ctx, project, sourceRef, {
       changedPaths: data.changedPaths,
       interpolationEnv: decryptEnvMap(encryptedEnvVars ?? {}),
@@ -2831,6 +2858,10 @@ export async function triggerDeployment(ctx: RequestContext, data: DeploymentTri
     if (sourceEnv.additions.length > 0) {
       await repos.project.mergeEnvVars(project.id, environment, sourceEnv.additions, []);
     }
+  }
+
+  if (data.previewAdmission) {
+    await (await import("../projects/pull-request-previews")).preparePreviewDeployment(ctx, project, data.previewAdmission);
   }
 
   // Scoped internal callers (incoming deploy hooks) require an exact target
@@ -3071,6 +3102,7 @@ export async function triggerDeployment(ctx: RequestContext, data: DeploymentTri
     trigger: data.trigger ?? "manual",
     actionRequestId: data.actionRequestId,
     actionLeaseOwner: data.actionLeaseOwner,
+    previewAdmission: data.previewAdmission,
     environment,
     framework: snapshot.framework,
     meta: await metaWithPrevious(snapshot, project),

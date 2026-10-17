@@ -180,6 +180,62 @@ const cases: Array<{
     },
   },
   {
+    name: "buildCacheMigration",
+    method: "POST",
+    path: "/build-cache/migration",
+    input: { serviceId: "service-a", remove: ["cache:/root/.cache"] },
+    envelope: "data",
+    output: {
+      candidates: [{ spec: "cache:/root/.cache", target: "/root/.cache" }],
+      canMigrate: true,
+      deploymentId: "deployment-a",
+      removed: ["cache:/root/.cache"],
+    },
+  },
+  {
+    name: "configurePreviews",
+    method: "POST",
+    path: "/previews",
+    input: { enabled: true, comments: true, baseDomain: "preview.example.com" },
+    envelope: "data",
+    output: { settings: { enabled: true, comments: true, baseDomain: "preview.example.com" } },
+  },
+  {
+    name: "listPreviews",
+    method: "GET",
+    path: "/previews",
+    envelope: "data",
+    output: {
+      settings: { enabled: true, comments: false },
+      previews: [
+        {
+          id: "preview-a",
+          number: 7,
+          projectId: "project-preview",
+          status: "ready",
+          url: "https://preview.example.com",
+          error: null,
+          headSha: "a".repeat(40),
+        },
+      ],
+    },
+  },
+  {
+    name: "migrateCommandEnvironment",
+    method: "POST",
+    path: "/env/migrate-commands",
+    input: {
+      environment: "preview",
+      serviceId: "service-a",
+      commands: { installCommand: "NODE_ENV=production npm ci", buildCommand: "npm run build" },
+    },
+    envelope: "data",
+    output: {
+      keys: ["NODE_ENV"],
+      commands: { installCommand: "npm ci", buildCommand: "npm run build" },
+    },
+  },
+  {
     name: "getRollbackCapacity",
     method: "GET",
     path: "/rollback-capacity",
@@ -312,6 +368,13 @@ const cases: Array<{
     path: "/logs?tail=20",
     input: { tail: 20 },
     output: [{ timestamp: date, message: "Ready", level: "info" }],
+    envelope: "data",
+  },
+  {
+    name: "getRuntimeRoles",
+    method: "GET",
+    path: "/roles",
+    output: { deploymentId: "dep_1", roles: [], error: null },
     envelope: "data",
   },
   {

@@ -39,6 +39,45 @@ Each environment is a full, independent copy: its own address, its own variables
 they share is the build recipe — when you create one, Openship copies the original project's framework, build
 commands, and settings so you don't set them up again.
 
+## Automatic pull request previews
+
+Open the source environment's **Git → Pull request previews**, then enable previews.
+This applies to every supported Git-backed stack, including monorepos and Compose services.
+Open, non-draft pull requests from the same repository targeting this environment's branch
+get an isolated environment. Fork pull requests are excluded. Existing open pull requests
+are discovered when you enable the setting.
+
+Set project and service variables in **Environment → Preview** before enabling automation.
+Only those values are copied into the new environment's own production variable set;
+production variables and inline service secrets are not copied. Preview values are refreshed
+on each new commit. Move variables out of install, build, start and lifecycle commands first.
+
+Each environment inherits its source's build configuration when created, uses fresh named
+volumes, and gets a distinct URL for each public service port. Workers do not get a public URL.
+On a server, supply a **Preview base domain** such as `preview.example.com` and point its
+wildcard DNS record at that server. HTTPS verification must succeed before deployment.
+Leave the field empty to use managed domains when the deployment target supports them.
+
+New commits deploy their exact SHA. Openship publishes deployment checks through the existing
+GitHub Checks integration and can maintain one comment with the preview URL and deployment
+link. The GitHub identity needs permission to read pull requests; comments also need write
+access. Existing GitHub App installations may need to accept updated permissions.
+
+Closing or merging a pull request, converting it to a draft, changing its base away from the
+source branch, or disabling previews removes its environment and owned volumes. Cleanup retries
+when the server is unavailable. Reopening an eligible pull request creates a fresh environment.
+Delivery deduplication, leases, and periodic reconciliation recover missed webhooks and restarts.
+Failures and pending cleanup are visible in the source environment's preview list.
+
+Whole-instance transfers preserve preview ownership and pending cleanup. Disable previews and wait
+for cleanup before transferring their environments individually. Portable configuration exports
+clear preview automation and host-specific cache receipts; configure them on the destination.
+
+Automation currently supports Docker, direct-server and managed Cloud targets. Cluster targets,
+host bind mounts, shared host/container namespaces, and generated service files or inline Dockerfiles
+require a separate preview template and are rejected during setup. They cannot silently reuse
+production infrastructure. Standard repository Dockerfiles and Compose files are supported.
+
 ## Create an environment from a branch
 
 You do this from the project's page, using the **environment switcher** — the little pill at the top that shows
