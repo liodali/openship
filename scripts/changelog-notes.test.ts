@@ -172,12 +172,18 @@ describe("the real CHANGELOG.md", () => {
   test("the current package version yields a valid body either way", () => {
     // Not every release has a section (0.5.0, 0.5.5, 0.6.0 and 0.6.5 shipped
     // without one), so the honest contract is: a real section when one exists,
-    // the changelog-link fallback when it doesn't, never an empty body.
+    // the changelog-link fallback when it doesn't, never an empty body. A
+    // prerelease version (0.9.3-fork.7, 0.6.1-rc.2) additionally borrows its
+    // BASE version's section, labelled — that is a valid body too, not the
+    // link fallback.
     const root = dirname(dirname(fileURLToPath(import.meta.url)));
     const version = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version as string;
     const notes = buildReleaseNotes(changelog, `v${version}`);
-    const hasSection = extractChangelogSection(changelog, version) !== "";
-    if (hasSection) expect(notes).not.toContain("No changelog entry");
+    const base = version.match(/^(\d+\.\d+\.\d+)-/)?.[1] ?? version;
+    const hasOwnSection = extractChangelogSection(changelog, version) !== "";
+    const hasBaseSection = base !== version && extractChangelogSection(changelog, base) !== "";
+    if (hasOwnSection) expect(notes).not.toContain("No changelog entry");
+    else if (hasBaseSection) expect(notes).toStartWith(`_Prerelease of ${base}`);
     else expect(notes).toContain("CHANGELOG.md");
     expect(notes.length).toBeGreaterThan(0);
     expect(notes.length).toBeLessThanOrEqual(MAX_BODY_LENGTH);
