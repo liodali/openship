@@ -10,7 +10,8 @@
 # npm config: `npm install -g <url>`. Gitea stays home for the images; GitHub
 # is home for the CLI tarball, where CI already runs (docs/fork-maintenance.md).
 #
-# Published per build (mirrors the image tag contract — moving + immutable):
+# Published per build (mirrors the image tag contract — moving + immutable),
+# but ONLY when the version changed vs the previous commit (dispatch overrides):
 #   release `cli-latest`      asset `openship-cli-fork.tgz`  — STABLE URL:
 #     https://github.com/liodali/openship/releases/download/cli-latest/openship-cli-fork.tgz
 #   release `cli-<ver>-<sha>` asset `openship-<ver>.tgz`     — immutable pin/rollback.
@@ -42,9 +43,44 @@ concurrency:
 permissions:
   contents: write # create releases + upload assets
 
+# Publish only when the version changed vs the previous commit (upstream bump
+# merged in, or our own bump push) — re-publishing an unchanged version just
+# collides with the release a push-triggered run already made. workflow_dispatch
+# is the explicit manual override and always publishes.
 jobs:
+  gate:
+    name: Version changed?
+    runs-on: ubuntu-latest
+    outputs:
+      publish: ${{ steps.check.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+          ref: main
+      - name: Compare the version across the tip
+        id: check
+        run: |
+          set -eu
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "manual dispatch — publishing"
+            exit 0
+          fi
+          before="$(git show 'HEAD^:package.json' 2>/dev/null | sed -n 's/^  "version": "\(.*\)",$/\1/p' | head -n1)"
+          after="$(sed -n 's/^  "version": "\(.*\)",$/\1/p' package.json | head -n1)"
+          echo "before=$before after=$after"
+          if [ -n "$after" ] && [ "$before" != "$after" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "version unchanged — nothing to publish"
+          fi
+
   build:
     name: Build + publish the fork CLI
+    needs: gate
+    if: needs.gate.outputs.publish == 'true'
     # The Openship self-hosted runner (rootless podman VPS). Safe: this
     # workflow triggers only on our pushes, dispatch and the sync chain —
     # never pull_request, so no untrusted code reaches the box.
@@ -100,6 +136,28 @@ jobs:
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
+
+      # The CLI tgz embeds the Go-built runner binary (build:sdk → prepare.mjs
+      # → go mod download + go build); builder-base has no Go toolchain, same
+      # as it has no gh. Version comes from go.mod's toolchain line. Fetched
+      # per run — the session directory is ephemeral by design; preinstalling
+      # Go in builder-base would drop this download if the size ever matters.
+      - name: Install Go toolchain
+        run: |
+          set -eu
+          command -v go >/dev/null 2>&1 && { go version; exit 0; }
+          version="$(sed -n 's/^toolchain //p' packages/actions-runner/go.mod)"
+          [ -n "$version" ] || version="go$(sed -n 's/^go //p' packages/actions-runner/go.mod)"
+          dir="$RUNNER_TEMP"
+          GO_DIR="$dir" GO_VERSION="$version" bun -e '
+            const res = await fetch(`https://go.dev/dl/${process.env.GO_VERSION}.linux-amd64.tar.gz`);
+            if (!res.ok) throw new Error(`go download HTTP ${res.status}`);
+            await Bun.write(`${process.env.GO_DIR}/go.tgz`, res);
+            console.log(`fetched ${process.env.GO_VERSION}`);
+          '
+          rm -rf "$dir/go"
+          tar -C "$dir" -xzf "$dir/go.tgz"
+          echo "$dir/go/bin" >> "$GITHUB_PATH"
 
       - name: Keep the fork version suffix
         run: |

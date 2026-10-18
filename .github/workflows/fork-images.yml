@@ -11,13 +11,16 @@ name: Fork images
 #                            OPENSHIP_VERSION to the version of the CLI it just
 #                            installed, so the plain-version tag MUST exist in
 #                            our registry for the pull to resolve. This tag
-#                            MOVES with every sync (that is the point).
+#                            moves when the VERSION changes — an upstream bump
+#                            merged by the sync, or our own bump push. Merges
+#                            that don't change the version don't republish
+#                            (same content, nothing to hand to update).
 #   <version>-<shortsha>     immutable, for rollback pins
 #   latest                   convenience
 #
-# Triggers:
-#   • workflow_dispatch  — manual
-#   • push to main       — a hand-pushed commit (patch fixes, guard updates)
+# Triggers (all gated on the version actually changing; dispatch overrides):
+#   • workflow_dispatch  — manual, always publishes
+#   • push to main       — publishes only if the version changed vs HEAD^
 #   • workflow_call      — chained from fork-sync.yml after an upstream merge
 #
 # Needs repo VARIABLES (non-secret, GitHub's ".env" for workflows — the real
@@ -43,9 +46,46 @@ concurrency:
 permissions:
   contents: read
 
+# Publish only when it means something: the version must have CHANGED vs the
+# previous commit (an upstream version bump merged in, or our own bump push).
+# Re-publishing an unchanged version just re-tags the same content and races
+# itself (seen live: a chained sync run collided with a push-triggered run of
+# the same tip on the cli-<version>-<sha> release). workflow_dispatch is the
+# explicit manual override and always publishes.
 jobs:
+  gate:
+    name: Version changed?
+    runs-on: ubuntu-latest
+    outputs:
+      publish: ${{ steps.check.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+          ref: main
+      - name: Compare the version across the tip
+        id: check
+        run: |
+          set -eu
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "manual dispatch — publishing"
+            exit 0
+          fi
+          before="$(git show 'HEAD^:package.json' 2>/dev/null | sed -n 's/^  "version": "\(.*\)",$/\1/p' | head -n1)"
+          after="$(sed -n 's/^  "version": "\(.*\)",$/\1/p' package.json | head -n1)"
+          echo "before=$before after=$after"
+          if [ -n "$after" ] && [ "$before" != "$after" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "version unchanged — nothing to publish"
+          fi
+
   build:
     name: Build + push ${{ matrix.image }}
+    needs: gate
+    if: needs.gate.outputs.publish == 'true'
     # The Openship self-hosted runner (rootless podman VPS) — the same
     # destination the fsvger pipeline already builds on. Safe because this
     # workflow only ever runs OUR code: push to main, manual dispatch, or
