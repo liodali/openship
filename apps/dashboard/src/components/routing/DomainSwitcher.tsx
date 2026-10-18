@@ -52,7 +52,7 @@ export function DomainSwitcher({
     // One domain makes "all" and "that domain" the same set, so there is nothing to pick
     // between either way.
     return (
-      <span className={`truncate text-sm font-medium text-foreground ${className}`}>
+      <span title={unique[0] || undefined} className={`min-w-0 truncate text-sm font-medium text-foreground ${className}`}>
         {unique[0] || w.notConfigured}
       </span>
     );
@@ -81,11 +81,11 @@ export function DomainSwitcher({
     <DropdownMenu
       actions={actions}
       align={align}
-      className={className}
-      triggerClassName="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-border/50 bg-muted/30 px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted/50"
+      className={`min-w-0 max-w-full ${className}`}
+      triggerClassName="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-lg border border-border/50 bg-muted/30 px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted/50"
       trigger={
         <>
-          <span className="truncate">
+          <span className="truncate" title={current || undefined}>
             {current || (allowAll ? w.allDomains : w.selectDomain)}
           </span>
           <UiIcon name="chevron-down" className="size-3.5 shrink-0 text-muted-foreground" />

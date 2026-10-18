@@ -97,9 +97,8 @@ export const ProjectSidebar = () => {
   }
 
   return (
-    <div className="space-y-4 lg:sticky lg:top-6 lg:self-start">
-      {/* min-w-0: as a grid item the card must never force its 340px track
-          (and the page) wider than the column — long content truncates instead. */}
+    <div className="min-w-0 space-y-4 lg:sticky lg:top-6 lg:self-start">
+      {/* Keep the card and its contents within the sidebar's grid track. */}
       <div className="bg-card min-w-0 rounded-2xl border border-border/50 p-5">
         <div className="flex items-start justify-between gap-3">
           <div className="flex min-w-0 items-start gap-3">
@@ -155,7 +154,7 @@ export const ProjectSidebar = () => {
                     align="left"
                   />
                 ) : (
-                  <span className="truncate text-sm font-medium text-foreground">{displayUrl}</span>
+                  <span title={displayUrl} className="min-w-0 truncate text-sm font-medium text-foreground">{displayUrl}</span>
                 )}
                 {domainPending && (
                   <span className="shrink-0 text-xs text-warning">{t.projectSettings.domains.status.pending}</span>
