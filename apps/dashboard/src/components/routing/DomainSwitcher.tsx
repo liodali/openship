@@ -13,6 +13,8 @@ interface DomainSwitcherProps {
   value: string;
   onChange: (hostname: string) => void;
   className?: string;
+  /** Panel alignment for the dropdown. "left" suits narrow containers like the project sidebar. */
+  align?: "left" | "right";
   /**
    * Offer an "All domains" entry, selected when `value` is empty.
    *
@@ -36,6 +38,7 @@ export function DomainSwitcher({
   value,
   onChange,
   className = "",
+  align = "right",
   allowAll = false,
 }: DomainSwitcherProps) {
   const { t } = useI18n();
@@ -77,7 +80,7 @@ export function DomainSwitcher({
   return (
     <DropdownMenu
       actions={actions}
-      align="right"
+      align={align}
       className={className}
       triggerClassName="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-border/50 bg-muted/30 px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted/50"
       trigger={

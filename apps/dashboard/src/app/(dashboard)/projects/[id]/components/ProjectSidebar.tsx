@@ -98,7 +98,9 @@ export const ProjectSidebar = () => {
 
   return (
     <div className="space-y-4 lg:sticky lg:top-6 lg:self-start">
-      <div className="bg-card rounded-2xl border border-border/50 p-5">
+      {/* min-w-0: as a grid item the card must never force its 340px track
+          (and the page) wider than the column — long content truncates instead. */}
+      <div className="bg-card min-w-0 rounded-2xl border border-border/50 p-5">
         <div className="flex items-start justify-between gap-3">
           <div className="flex min-w-0 items-start gap-3">
             {projectData.isApp && projectData.appTemplateId && (
@@ -137,23 +139,26 @@ export const ProjectSidebar = () => {
         </div>
 
         <div className="mt-4 space-y-3">
-          <div className="flex items-center justify-between gap-4">
+          {/* Label above, value below: a long domain gets the full card width
+              instead of squeezing the label row (which forced horizontal scroll). */}
+          <div>
             <span className="text-sm text-muted-foreground">
               {isLocal ? t.projects.sidebar.local : t.projects.sidebar.production}
             </span>
             {canOpen ? (
-              <div className="flex min-w-0 items-center gap-1.5">
+              <div className="mt-1 flex min-w-0 items-center gap-1.5">
                 {domains.length > 1 ? (
                   <DomainSwitcher
                     domains={domains}
                     value={activeDomain}
                     onChange={setSelectedDomain}
+                    align="left"
                   />
                 ) : (
                   <span className="truncate text-sm font-medium text-foreground">{displayUrl}</span>
                 )}
                 {domainPending && (
-                  <span className="text-xs text-warning">{t.projectSettings.domains.status.pending}</span>
+                  <span className="shrink-0 text-xs text-warning">{t.projectSettings.domains.status.pending}</span>
                 )}
                 <a
                   href={siteHref}
@@ -170,7 +175,7 @@ export const ProjectSidebar = () => {
               // to add one (never synthesize a fake slug domain). On a desktop
               // dashboard managing a remote server, also offer "Open" to reach
               // the app now via the SSH tunnel.
-              <div className="flex items-center gap-2">
+              <div className="mt-1 flex items-center gap-2">
                 {canOpenLocal ? (
                   <button
                     type="button"
