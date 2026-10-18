@@ -78,6 +78,23 @@ pipeline to GitHub-hosted runners immediately.
 | `FORK_NAMESPACE`      | variable (optional) | namespace under the registry; default `medali`                                                                                                                     |
 | `FORK_REGISTRY_USER`  | **secret**          | registry username with push rights                                                                                                                                 |
 | `FORK_REGISTRY_TOKEN` | **secret**          | registry token (push auth can never be public)                                                                                                                     |
+| `FORK_S3_ENDPOINT`    | variable (optional) | Garage S3 endpoint, e.g. `https://s3.example.com` — enables the builder-layer cache below; unset = cache steps skip                                                   |
+| `FORK_S3_BUCKET`      | variable (optional) | cache bucket; default `openship-builds`                                                                                                                            |
+| `FORK_S3_KEY`         | **secret**          | Garage access key with write access to that bucket                                                                                                                 |
+| `FORK_S3_SECRET`      | **secret**          | Garage secret key                                                                                                                                                    |
+
+### Builder-layer cache (Garage S3)
+
+`fork-images.yml` caches the `builder` stage of the api/dashboard images
+(`bun install`'s node_modules dominates cold build time) as a gzipped
+`docker save` tarball in the Garage bucket, keyed by a hash of everything the
+install layer COPYs (package.json, bun.lock, tsconfig, patches/, the
+Dockerfile). Restore runs `docker load` before the build; after a successful
+build on a miss, `--target builder` (a no-op rebuild — layers are all local)
+is saved back. Path-style addressing, `@aws-sdk/client-s3` fetched per run via
+bun. The build NEVER depends on the cache: any error shape degrades to a
+normal cold build, and the whole block is skipped until `FORK_S3_ENDPOINT`
+is set. The edge image has no node_modules and skips it entirely.
 
 Or with the `gh` CLI:
 
