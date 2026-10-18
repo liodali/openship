@@ -503,6 +503,13 @@ Cancel stops the remote execution and then cleans its resources. A runner remain
 busy until cleanup succeeds. Cloud workers also have a provider TTL as a fallback;
 an unreachable controller does not leave a VM running indefinitely.
 
+Temporary provider outages, network failures and GitHub rate limits keep the
+existing runner and capacity reservation intact while Openship retries observation.
+They do not cancel or restart the job. Confirmed worker loss still requires an
+explicit rerun, so workflow side effects are never replayed automatically. A terminal
+runner error remains attached to its assigned job even when GitHub has no log archive;
+delayed runner deregistration does not replace the original failure reason.
+
 Independent workflows support up to 256 concrete jobs after matrix expansion. A job defaults
 to a 60-minute timeout and can request up to 360 minutes. Logs are bounded at
 8 MiB per job. Settled run history is retained for 30 days, with runs referenced

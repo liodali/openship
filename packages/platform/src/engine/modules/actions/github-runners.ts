@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { isRetryableRemoteConnectionError } from "@repo/adapters";
 import {
   AppError,
   ACTIONS_MAX_JOB_SECONDS,
@@ -10,7 +11,7 @@ import {
   type ActionGitHubAdmissionRequest,
 } from "@repo/core";
 import { repos, type ActionRunnerSession, type ActionRunner, type ActionWorkflow } from "@repo/db";
-import { diagnostics } from "@repo/core/diagnostics";
+import { diagnostics, errorReporter } from "@repo/core/diagnostics";
 import { encrypt, decrypt } from "../../lib/encryption";
 import { resolveExecutionAuthority } from "../../lib/execution-authority";
 import { authorizeActionWorkflow } from "./access";
@@ -286,15 +287,63 @@ async function admitAssignment(
 
 type RunnerRegistrations = Map<string, Promise<Awaited<ReturnType<GitHubActionsApi["runners"]>>>>;
 
+/** An unavailable observation is not evidence that the destination worker died.
+ * Retry the same session; never replay its workflow or release its capacity. */
+function observationUnavailable(error: unknown): boolean {
+  for (let cause = error, depth = 0; cause && typeof cause === "object" && depth < 4; depth++) {
+    const value = cause as {
+      status?: number;
+      statusCode?: number;
+      code?: string;
+      name?: string;
+      credentialRejected?: boolean;
+      cause?: unknown;
+    };
+    if (
+      ["ACTIONS_WORKER_IDENTITY_MISMATCH", "ACTIONS_GITHUB_IDENTITY_MISMATCH"].includes(
+        value.code ?? "",
+      )
+    )
+      return false;
+    const status = Number(value.status ?? value.statusCode);
+    if (
+      status === 408 ||
+      status === 429 ||
+      (status >= 500 && status < 600) ||
+      (status === 403 && value.credentialRejected === false) ||
+      ["AbortError", "TimeoutError"].includes(value.name ?? "") ||
+      [
+        "ECONNRESET",
+        "ECONNREFUSED",
+        "ETIMEDOUT",
+        "EHOSTUNREACH",
+        "ENETUNREACH",
+        "EAI_AGAIN",
+        "UND_ERR_CONNECT_TIMEOUT",
+        "UND_ERR_SOCKET",
+      ].includes(value.code ?? "") ||
+      isRetryableRemoteConnectionError(cause)
+    )
+      return true;
+    cause = value.cause;
+  }
+  return false;
+}
+
 async function removeRegistration(api: GitHubActionsApi, id: string) {
   try {
     await api.removeRunner(id);
+    return true;
   } catch (error) {
     const status = Number(
       (error as { status?: number; statusCode?: number })?.status ??
         (error as { statusCode?: number })?.statusCode,
     );
-    if (status !== 404) throw error;
+    if (status === 404) return true;
+    // GitHub can still be publishing the job result after the supervised
+    // process exits. Keep cleanup pending without replacing its actual result.
+    if (status === 422) return false;
+    throw error;
   }
 }
 
@@ -347,6 +396,7 @@ async function reconcileSession(
     try {
       await authorizeActionWorkflow(ctx, workflow, true);
     } catch (error) {
+      if (observationUnavailable(error)) throw error;
       diagnostics.warn(
         "actions/github-runners",
         "GitHub runner authority is no longer valid",
@@ -381,6 +431,21 @@ async function reconcileSession(
     const registered = (await registrations.get(key)!).find(
       (row) => row.name === session!.runnerName,
     );
+    const cleanup = async () => {
+      if (!(await removeActionWorker(session!, runner!, owner, update))) return;
+      if (
+        registered &&
+        (registered.busy || !(await removeRegistration(api, String(registered.id))))
+      )
+        return;
+      await update({
+        state: "finished",
+        finishedAt: session!.finishedAt ?? new Date(),
+        cleanedAt: new Date(),
+        registration: null,
+      });
+      await repos.actions.requestGitHubSync(org, workflow!.id);
+    };
     if (registered) {
       if (session.githubRunnerId && session.githubRunnerId !== String(registered.id))
         throw new Error("GitHub runner identity changed");
@@ -412,15 +477,7 @@ async function reconcileSession(
     // Cleanup is a durable phase. Once the supervisor has exited, a retry must
     // not try to open a VM whose asynchronous deletion is already in progress.
     if (session.state === "stopping" && (session.finishedAt || !session.workerStartedAt)) {
-      if (!(await removeActionWorker(session, runner, owner, update))) return;
-      if (registered) await removeRegistration(api, String(registered.id));
-      await update({
-        state: "finished",
-        finishedAt: session.finishedAt ?? new Date(),
-        cleanedAt: new Date(),
-        registration: null,
-      });
-      await repos.actions.requestGitHubSync(org, workflow.id);
+      await cleanup();
       return;
     }
     const execution = await openActionWorker(session, runner, owner, update);
@@ -503,11 +560,6 @@ async function reconcileSession(
         ["finished", "interrupted"].includes(snapshot.state) ||
         (snapshot.state === "idle" && session.state === "stopping")
       ) {
-        if (registered) {
-          // GitHub may still be publishing its result. Deregister only after the
-          // supervised process has exited; results are read from GitHub itself.
-          await removeRegistration(api, String(registered.id));
-        }
         const unexpectedResult =
           snapshot.result &&
           snapshot.result.conclusion !== "success" &&
@@ -525,17 +577,33 @@ async function reconcileSession(
           registration: null,
           error: error ?? null,
         });
-        if (await removeActionWorker(session, runner, owner, update))
-          await update({ state: "finished", cleanedAt: new Date() });
-        await repos.actions.requestGitHubSync(org, workflow.id);
         if (error) await repos.actions.workflowError(org, workflow.id, error);
+        await cleanup();
       }
     } finally {
       await execution.release();
     }
   } catch (error) {
+    const retryable = observationUnavailable(error);
+    if (!lost && retryable && session.state !== "stopping") {
+      errorReporter.capture(error, {
+        component: "actions/github-runners",
+        summary: "Runner observation unavailable; retrying without stopping the worker",
+        organizationId: org,
+        resourceType: "action_runner_session",
+        resourceId: candidate.id,
+        retryable: true,
+        severity: "warn",
+        handled: true,
+      });
+      return;
+    }
     if (!lost) {
-      await update({ state: "stopping", error: safeErrorMessage(error) });
+      const failed = !session.finishedAt && !retryable;
+      await update({
+        state: "stopping",
+        error: failed ? (session.error ?? safeErrorMessage(error)) : session.error,
+      });
       // Even revoked GitHub credentials must not leave a paid VM running. Only
       // endpoint-owned resources are removed; stale registration is retried later.
       if (runner && session) {
@@ -561,7 +629,12 @@ async function reconcileSession(
           );
         }
       }
-      if (workflow) await repos.actions.workflowError(org, workflow.id, safeErrorMessage(error));
+      if (workflow && failed)
+        await repos.actions.workflowError(
+          org,
+          workflow.id,
+          session.error ?? safeErrorMessage(error),
+        );
     }
     diagnostics.warn("actions/github-runners", "GitHub runner reconciliation failed", error, {
       sessionId: candidate.id,

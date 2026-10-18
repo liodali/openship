@@ -348,8 +348,11 @@ export function createActionGitHubRepo(db: Database) {
           ? await tx
               .select({
                 demandJobId: actionRunnerSession.demandJobId,
+                admittedJobId: actionRunnerSession.admittedJobId,
                 runnerName: actionRunnerSession.runnerName,
                 cleanedAt: actionRunnerSession.cleanedAt,
+                finishedAt: actionRunnerSession.finishedAt,
+                error: actionRunnerSession.error,
               })
               .from(actionRunnerSession)
               .where(
@@ -367,8 +370,14 @@ export function createActionGitHubRepo(db: Database) {
           : [];
         const demandCleanup = new Map<string, Date | null>();
         const runnerCleanup = new Map<string, Date | null>();
+        const runnerErrors = new Map<string, { jobId: string; error: string }>();
         for (const session of sessions) {
           runnerCleanup.set(session.runnerName, session.cleanedAt);
+          if (session.finishedAt && session.error && session.admittedJobId)
+            runnerErrors.set(session.runnerName, {
+              jobId: session.admittedJobId,
+              error: session.error,
+            });
           const priorCleanup = demandCleanup.get(session.demandJobId);
           demandCleanup.set(
             session.demandJobId,
@@ -398,12 +407,17 @@ export function createActionGitHubRepo(db: Database) {
                   ),
                 );
           const { id, createdAt, ...jobChanges } = job;
+          // GitHub owns the outcome, but cannot report why our infrastructure
+          // stopped. Preserve that terminal diagnostic only for its verified
+          // assignment, never for the different job that requested this runner.
+          const runnerError = runnerErrors.get(job.github.runnerName ?? "");
+          const error = job.error ?? (runnerError?.jobId === job.id ? runnerError.error : null);
           await tx
             .insert(actionJob)
-            .values({ ...job, cleanedAt })
+            .values({ ...job, cleanedAt, error })
             .onConflictDoUpdate({
               target: actionJob.id,
-              set: { ...jobChanges, cleanedAt, updatedAt: new Date() },
+              set: { ...jobChanges, cleanedAt, error, updatedAt: new Date() },
               setWhere: and(
                 eq(actionJob.organizationId, workflow.organizationId),
                 eq(actionJob.runId, saved.id),

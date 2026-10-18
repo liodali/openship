@@ -6,7 +6,7 @@ import {
   eq,
   type DatabaseConnection,
 } from "@repo/db/factory";
-import { generateId, actionRunnerAdmissionKey } from "@repo/core";
+import { AppError, generateId, actionRunnerAdmissionKey } from "@repo/core";
 
 const state = vi.hoisted(() => ({
   repo: null as any,
@@ -17,6 +17,7 @@ const state = vi.hoisted(() => ({
   deregister: vi.fn(),
   run: vi.fn(),
   synchronize: vi.fn(),
+  authorize: vi.fn(),
 }));
 vi.mock("@repo/db", () => ({
   repos: {
@@ -28,7 +29,7 @@ vi.mock("@repo/db", () => ({
 vi.mock("../../lib/execution-authority", () => ({
   resolveExecutionAuthority: async (value: unknown) => value,
 }));
-vi.mock("./access", () => ({ authorizeActionWorkflow: async () => {} }));
+vi.mock("./access", () => ({ authorizeActionWorkflow: state.authorize }));
 vi.mock("../../lib/encryption", () => ({
   encrypt: (value: string) => value,
   decrypt: (value: string) => value,
@@ -74,6 +75,7 @@ beforeEach(() => {
   state.registrations.mockResolvedValue([]);
   state.remove.mockResolvedValue(true);
   state.deregister.mockResolvedValue({ success: true });
+  state.authorize.mockResolvedValue(undefined);
 });
 async function fixture(finished = true) {
   const org = (state.organizationId = generateId("org"));
@@ -291,6 +293,136 @@ async function assignmentFixture() {
   return { ...f, request, remote, admit, release };
 }
 describe("official GitHub runner reconciliation", () => {
+  it.each([true, false])(
+    "continues an authorized stop through a GitHub outage without replacing the result (completed: %s)",
+    async (completed) => {
+      const f = await fixture(completed);
+      if (!completed) {
+        await repo.claimRunnerSession(f.org, f.id, "fixture");
+        await repo.updateRunnerSession(f.org, f.id, "fixture", { cancelRequestedAt: new Date() });
+        await repo.releaseRunnerSession(f.org, f.id, "fixture");
+      }
+      state.registrations.mockRejectedValueOnce(
+        Object.assign(new Error("GitHub unavailable"), { status: 503 }),
+      );
+      await reconcileGitHubRunners();
+      expect(state.remove).toHaveBeenCalledOnce();
+      expect(await f.get()).toMatchObject({ state: "stopping", error: null });
+      await reconcileGitHubRunners();
+      expect((await f.get())?.cleanedAt).toBeTruthy();
+      expect((await f.get())?.error).toBeNull();
+      expect(state.open).not.toHaveBeenCalled();
+    },
+  );
+  it.each([true, false])(
+    "retains a terminal infrastructure error during GitHub sync only for the actual assigned runner (%s)",
+    async (matchingRunner) => {
+      const f = await assignmentFixture();
+      await reconcileGitHubRunners();
+      await repo.claimRunnerSession(f.org, f.id, "fixture");
+      await repo.updateRunnerSession(f.org, f.id, "fixture", {
+        state: "stopping",
+        finishedAt: new Date(),
+        error: "The worker stopped before confirming completion",
+      });
+      await repo.releaseRunnerSession(f.org, f.id, "fixture");
+      const run = (await repo.run(f.org, f.runId))!;
+      const job = (await repo.job(f.org, f.jobId))!;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await repo.upsertGitHubRun(f.workflow, run, [
+          {
+            ...job,
+            status: "failure",
+            finishedAt: new Date(),
+            error: null,
+            github: {
+              ...job.github!,
+              runnerName: matchingRunner ? `openship-${f.id}` : "another-runner",
+            },
+          },
+        ]);
+        expect((await repo.job(f.org, f.jobId))?.error).toBe(
+          matchingRunner ? "The worker stopped before confirming completion" : null,
+        );
+      }
+    },
+  );
+
+  it.each(["provider", "inspect", "github", "authorization"])(
+    "keeps a running worker and its capacity through a temporary %s observation failure",
+    async (stage) => {
+      const f = await assignmentFixture();
+      await reconcileGitHubRunners();
+      const inspect = vi.fn().mockResolvedValue({ state: "running", events: [], hasMore: false });
+      const release = vi.fn();
+      state.open.mockResolvedValue({
+        binary: "/worker",
+        directory: "/jobs/owned",
+        release,
+        worker: { inspect },
+      });
+      const unavailable = Object.assign(new Error("Provider temporarily unavailable"), {
+        status: 503,
+      });
+      if (stage === "provider") state.open.mockRejectedValueOnce(unavailable);
+      if (stage === "inspect")
+        inspect.mockRejectedValueOnce(
+          new TypeError("fetch failed", {
+            cause: Object.assign(new Error("socket closed"), { code: "ECONNRESET" }),
+          }),
+        );
+      if (stage === "github")
+        state.registrations.mockRejectedValueOnce(
+          Object.assign(new Error("rate limited"), { status: 403, credentialRejected: false }),
+        );
+      if (stage === "authorization") state.authorize.mockRejectedValueOnce(unavailable);
+      await reconcileGitHubRunners();
+      expect(await f.get()).toMatchObject({
+        state: "running",
+        finishedAt: null,
+        cleanedAt: null,
+        error: null,
+        admittedJobId: f.jobId,
+      });
+      expect(state.remove).not.toHaveBeenCalled();
+      expect(state.deregister).not.toHaveBeenCalled();
+      expect(await repo.runnerBusy(f.org, f.runner.id)).toBe(true);
+      await reconcileGitHubRunners();
+      expect(inspect).toHaveBeenCalled();
+      expect((await f.get())?.state).toBe("running");
+      expect(state.remove).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([null, "Worker exited before confirming the job result"])(
+    "persists the worker result before busy registration cleanup without replacing its error (%s)",
+    async (error) => {
+      const f = await fixture(false);
+      state.registrations.mockResolvedValue([{ id: 10, name: `openship-${f.id}`, busy: false }]);
+      state.deregister.mockRejectedValueOnce({ status: 422 });
+      state.open.mockResolvedValue({
+        binary: "/worker",
+        directory: "/jobs/owned",
+        release: async () => {},
+        worker: {
+          inspect: async () => ({
+            state: "finished",
+            events: [],
+            hasMore: false,
+            result: { conclusion: error ? "failure" : "success", error },
+          }),
+        },
+      });
+      await reconcileGitHubRunners();
+      expect(await f.get()).toMatchObject({ state: "stopping", error, cleanedAt: null });
+      expect((await f.get())?.finishedAt).toBeTruthy();
+      await reconcileGitHubRunners();
+      expect(await f.get()).toMatchObject({ state: "finished", error });
+      expect((await f.get())?.cleanedAt).toBeTruthy();
+      expect(state.open).toHaveBeenCalledOnce();
+    },
+  );
+
   it("waits for GitHub's assigned runner metadata and durably admits only that assignment", async () => {
     const f = await assignmentFixture();
     const job = (await repo.job(f.org, f.jobId))!;
@@ -477,9 +609,27 @@ describe("official GitHub runner reconciliation", () => {
     expect((await f.get())?.cleanedAt).toBeTruthy();
     expect((await f.get())?.error).toBeNull();
   });
+  it("does not retry a confirmed worker identity mismatch as an ordinary provider outage", async () => {
+    const f = await fixture(false);
+    state.open.mockRejectedValueOnce(
+      new AppError("Cloud returned a different worker", 502, "ACTIONS_WORKER_IDENTITY_MISMATCH"),
+    );
+    await reconcileGitHubRunners();
+    expect(state.remove).toHaveBeenCalledOnce();
+    expect(await f.get()).toMatchObject({
+      state: "stopping",
+      error: "Cloud returned a different worker",
+    });
+    expect((await f.get())?.finishedAt).toBeTruthy();
+  });
   it("removes paid runtime even after credentials are revoked, then reconciles registration", async () => {
     const f = await fixture(false);
-    state.registrations.mockRejectedValueOnce(new Error("GitHub credential revoked"));
+    state.registrations.mockRejectedValueOnce(
+      Object.assign(new Error("GitHub credential revoked"), {
+        status: 401,
+        credentialRejected: true,
+      }),
+    );
     await reconcileGitHubRunners();
     expect(state.remove).toHaveBeenCalledOnce();
     expect(state.open).not.toHaveBeenCalled();

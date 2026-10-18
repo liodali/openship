@@ -8,6 +8,7 @@ import { CustomSelect } from "@/components/ui/CustomSelect";
 import { Switch } from "@/components/ui/Switch";
 import { Modal } from "@/components/ui/Modal";
 import { ConnectionNotice } from "@/components/shared/ConnectionNotice";
+import DropdownMenu, { type MenuAction } from "@/components/ui/DropdownMenu";
 import { ingressApi } from "@/lib/api/ingress";
 import {
   useResourceScope,
@@ -15,16 +16,20 @@ import {
   useScopedMutation,
 } from "@/hooks/use-scoped-resource";
 import { useDialogFocus } from "@/hooks/useDialogFocus";
-export function DomainIngressSettings({
+export function DomainIngressMenu({
   domainId,
   serverId,
   hostname,
   onChanged,
+  actions,
+  triggerLabel,
 }: {
   domainId: string;
   serverId: string;
   hostname: string;
   onChanged?: () => void;
+  actions: MenuAction[];
+  triggerLabel: string;
 }) {
   const scope = useResourceScope();
   return (
@@ -34,6 +39,8 @@ export function DomainIngressSettings({
       serverId={serverId}
       hostname={hostname}
       onChanged={onChanged}
+      actions={actions}
+      triggerLabel={triggerLabel}
     />
   );
 }
@@ -42,11 +49,15 @@ function ScopedDomainIngress({
   serverId,
   hostname,
   onChanged,
+  actions,
+  triggerLabel,
 }: {
   domainId: string;
   serverId: string;
   hostname: string;
   onChanged?: () => void;
+  actions: MenuAction[];
+  triggerLabel: string;
 }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
@@ -71,29 +82,21 @@ function ScopedDomainIngress({
     if (previous.current && previous.current !== "ready" && status === "ready") changed.current?.();
     previous.current = status;
   }, [resource.data?.status]);
-  const host = resource.data;
   return (
     <>
-      <div className="flex flex-wrap items-center justify-end gap-2">
-        {host && (
-          <span
-            role="status"
-            className={`text-xs ${host.status === "error" ? "text-warning" : "text-muted-foreground"}`}
-          >
-            {t.ingress.status[host.status as keyof typeof t.ingress.status] ??
-              t.ingress.status.pending}
-          </span>
-        )}
-        {resource.error && (
-          <span className="text-xs text-warning" title={resource.error}>
-            {t.ingress.unavailable}
-          </span>
-        )}
-        <Button variant="ghost" size="sm" onClick={() => setOpen(true)}>
-          <Icon name="cloud" />
-          {t.projectDetail.services.detail.networking.manage}
-        </Button>
-      </div>
+      <DropdownMenu
+        actions={[
+          ...actions,
+          {
+            id: "cloudflare-tunnel",
+            label: t.ingress.title,
+            icon: <Icon name="cloud" className="size-4" />,
+            onClick: () => setOpen(true),
+          },
+        ]}
+        align="right"
+        triggerLabel={triggerLabel}
+      />
       <Modal
         isOpen={open}
         closable={!busy}

@@ -6,7 +6,7 @@ import { getCredentialProvider } from "@repo/core";
 import { I18nProvider } from "@/components/i18n-provider";
 import { IngressConnectForm } from "./IngressConnectForm";
 import { ServerIngressCard } from "./ServerIngressCard";
-import { DomainIngressSettings } from "./DomainIngressSettings";
+import { DomainIngressMenu } from "./DomainIngressSettings";
 const h = vi.hoisted(() => ({
   org: "org",
   list: vi.fn(),
@@ -160,6 +160,7 @@ describe("Cloudflare setup UI", () => {
     expect(host.textContent).toContain("Connect a named tunnel");
   });
   it("does not re-enable Access on an explicitly unprotected hostname", async () => {
+    const editRoute = vi.fn();
     h.list.mockResolvedValue([connection]);
     h.domain.mockResolvedValue({
       id: "host",
@@ -172,11 +173,38 @@ describe("Cloudflare setup UI", () => {
       error: "DNS already points elsewhere",
     });
     await render(
-      <DomainIngressSettings domainId="domain" serverId="server" hostname="app.example.test" />,
+      <DomainIngressMenu
+        domainId="domain"
+        serverId="server"
+        hostname="app.example.test"
+        actions={[{ id: "edit", label: "Edit route", onClick: editRoute }]}
+        triggerLabel="Manage app.example.test"
+      />,
     );
-    expect(host.textContent).toContain("Needs attention");
-    await click("Manage");
+    expect(host.textContent).not.toContain("Cloudflare Tunnel");
+    expect(
+      [...host.querySelectorAll("button")].some(
+        (item) => item.textContent?.trim() === "Manage",
+      ),
+    ).toBe(false);
+    const openMenu = async () => {
+      await act(async () =>
+        host
+          .querySelector<HTMLButtonElement>(
+            '[aria-label="Manage app.example.test"]',
+          )!
+          .click(),
+      );
+      await flush();
+    };
+    await openMenu();
+    await click("Edit route");
+    expect(editRoute).toHaveBeenCalledOnce();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    await openMenu();
+    await click("Cloudflare Tunnel");
     const modal = document.querySelector('[role="dialog"]')!;
+    expect(modal.textContent).toContain("app.example.test");
     expect(modal.textContent).toContain("DNS already points elsewhere");
     expect(modal.querySelector('[role="switch"]')?.getAttribute("aria-checked")).toBe("false");
     await click("Retry setup", modal);

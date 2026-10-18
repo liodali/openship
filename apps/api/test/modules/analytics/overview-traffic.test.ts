@@ -2,8 +2,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const h = vi.hoisted(() => ({
   sources: [] as Array<{ kind: string; domain: string; serverId?: string }>,
-  rows: [] as Array<{ domain: string; minute: number; requests: number }>,
-  live: [] as Array<{ domain: string; minute: number; requests: number }>,
+  rows: [] as Array<{
+    domain: string;
+    minute: number;
+    requests: number;
+    responseTimeSeconds?: number;
+  }>,
+  live: [] as Array<{
+    domain: string;
+    minute: number;
+    requests: number;
+    responseTimeSeconds?: number;
+  }>,
   readLive: vi.fn(),
   query: vi.fn(),
   scrape: vi.fn(async () => {}),
@@ -40,20 +50,89 @@ beforeEach(() => {
   h.live = [];
   h.scrape.mockClear();
   h.cloud.mockReset();
-  h.query.mockReset().mockImplementation(async ({ domain, fromMinute, toMinute }) =>
-    h.rows.filter((row) => row.domain === domain && row.minute >= fromMinute && row.minute <= toMinute)
-      .map((row) => ({ ...row, uniqueRequests: row.requests, bandwidthIn: 0, bandwidthOut: 0, responseTime: 0 })),
-  );
+  h.query
+    .mockReset()
+    .mockImplementation(async ({ domain, fromMinute, toMinute }) =>
+      h.rows
+        .filter(
+          (row) => row.domain === domain && row.minute >= fromMinute && row.minute <= toMinute,
+        )
+        .map((row) => ({
+          ...row,
+          uniqueRequests: row.requests,
+          bandwidthIn: 0,
+          bandwidthOut: 0,
+          responseTime: row.responseTimeSeconds ?? 0,
+        })),
+    );
   h.readLive.mockReset().mockImplementation(async (_server: string, path: string) => {
     const params = new URL(path, "http://edge.test").searchParams;
-    return { buckets: h.live.filter((row) => row.domain === params.get("domain") &&
-      row.minute >= Number(params.get("from")) && row.minute <= Number(params.get("to")))
-      .map((row) => ({ ...row, unique_requests: row.requests, bandwidth_in: 0, bandwidth_out: 0, response_time: 0 })) };
+    return {
+      buckets: h.live
+        .filter(
+          (row) =>
+            row.domain === params.get("domain") &&
+            row.minute >= Number(params.get("from")) &&
+            row.minute <= Number(params.get("to")),
+        )
+        .map((row) => ({
+          ...row,
+          unique_requests: row.requests,
+          bandwidth_in: 0,
+          bandwidth_out: 0,
+          response_time: row.responseTimeSeconds ?? 0,
+        })),
+    };
   });
 });
 afterEach(() => vi.useRealTimers());
 
 describe("project traffic snapshot", () => {
+  it("keeps the response-time average stable when live counters are archived", async () => {
+    const traffic = { ...row(-1, 88), responseTimeSeconds: 44 };
+    h.live = [traffic];
+    const live = await getAnalyticsOverview(ctx, "p1");
+    h.rows = [traffic];
+    h.live = [];
+    const archived = await getAnalyticsOverview(ctx, "p1");
+    for (const snapshot of [live, archived]) {
+      expect(snapshot.summary.avgResponseTimeMs).toBe(500);
+      expect(snapshot.periods.find((period) => period.requests > 0)?.avgResponseTimeMs).toBe(500);
+    }
+  });
+
+  it("averages all domains and hours from total durations and request counts", async () => {
+    h.rows = [{ ...row(-90, 1), responseTimeSeconds: 1 }];
+    h.live = [{ ...row(-1, 99, "api.example.com"), responseTimeSeconds: 9.9 }];
+    const result = await getAnalyticsOverview(ctx, "p1");
+    expect(result.summary.avgResponseTimeMs).toBeCloseTo(109);
+    expect(
+      result.periods
+        .filter((period) => period.requests > 0)
+        .map((period) => period.avgResponseTimeMs),
+    ).toEqual([1000, 100]);
+  });
+
+  it("converts Cloud duration sums from seconds to milliseconds once", async () => {
+    h.sources = h.sources.map((source) => ({ kind: "cloud", domain: source.domain }));
+    const currentHour = Math.floor(now / 3_600_000) * 3600;
+    h.cloud.mockImplementation(async (domain: string) => ({
+      data: [
+        {
+          timestamp: currentHour,
+          requests: domain === "web.example.com" ? 1 : 99,
+          response_time_sum: domain === "web.example.com" ? 1 : 9.9,
+          bandwidth_in: 0,
+          bandwidth_out: 0,
+          unique_visitors: 1,
+        },
+      ],
+    }));
+    const result = await getAnalyticsOverview(ctx, "p1");
+    expect(result.summary.avgResponseTimeMs).toBeCloseTo(109);
+    expect(result.periods.at(-1)?.avgResponseTimeMs).toBeCloseTo(109);
+  });
+
   it("includes retained history before the latest DB row and all project domains", async () => {
     h.rows = [row(-30, 90)];
     h.live = [row(-180, 110), row(-30, 0), row(0, 5), row(0, 1000, "api.example.com")];
