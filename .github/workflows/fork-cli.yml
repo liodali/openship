@@ -51,7 +51,11 @@ jobs:
       - name: Checkout fork main
         uses: actions/checkout@v7
         with:
-          fetch-depth: 0 # the release tag names the merged commit
+          fetch-depth: 0 # the release tag names the built commit
+          # `main`, not the event sha: chained from fork-sync via workflow_call,
+          # github.sha is the PRE-merge tip that triggered the sync — the CLI
+          # must be built from the merge the sync just pushed.
+          ref: main
 
       - name: Read pinned Bun version
         run: echo "BUN_VERSION=$(cat .bun-version)" >> "$GITHUB_ENV"
@@ -98,10 +102,13 @@ jobs:
         run: |
           sha="$(git rev-parse --short HEAD)"
           ver="${CLI_VERSION:?}"
+          # Idempotent: a push-triggered run of the same tip may have published
+          # this exact release seconds before a chained sync run reaches here.
           gh release create "cli-${ver}-${sha}" openship-cli.tgz \
             --title "Fork CLI ${ver} (${sha})" \
             --notes "Built from fork main ${sha}. Install: npm install -g <asset URL>. Version ${ver} is semver-equal to upstream ${ver%%-fork*} — 'openship update' will not replace it." \
-            --prerelease
+            --prerelease \
+          || gh release upload "cli-${ver}-${sha}" openship-cli.tgz --clobber
 
       - name: Publish moving cli-latest release (stable URL)
         env:

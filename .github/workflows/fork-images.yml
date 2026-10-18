@@ -57,8 +57,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
-          # The rollback tag names the merged commit — needs the real SHA.
+          # The rollback tag names the built commit — needs the real SHA.
           fetch-depth: 0
+          # `main`, not the event sha: when chained from fork-sync via
+          # workflow_call, github.sha is the PRE-merge tip that triggered the
+          # sync — without this, every daily merge publishes images of the
+          # previous commit and the merge itself is never built.
+          ref: main
 
       - name: Resolve image tags
         id: tags
