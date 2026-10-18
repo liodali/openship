@@ -41,6 +41,9 @@ r.post(
 // Side-effect-free DNS probe — POST is used to carry hostname in body.
 // readOnly opts out of the scanner's "POST must be write/admin" rule.
 r.post("/preview", { tag: "domain:read", cloudResource: "server", readOnly: true, body: PreviewDomainBody, mcp: { description: "Preview the DNS records a domain will need, before adding it." } }, ctrl.preview);
+// Org-wide edge inventory. Registered BEFORE /:id or "inventory" would parse
+// as a domain id.
+r.get("/inventory", { tag: "domain:list", collection: true, mcp: { description: "List every domain in this workspace with its project and destination server — the routing state the edge serves." } }, ctrl.listAll);
 // Per-domain routes carry the shared Cloud resource gateway (after the permission middleware):
 // a domain belonging to a cloud project is proxied to the SaaS; a local domain
 // falls through to the local handler.

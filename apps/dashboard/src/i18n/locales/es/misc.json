@@ -413,5 +413,25 @@
     "testConnection": "Probar conexión",
     "testing": "Probando conexión…",
     "testOk": "Conectado: el bucket es accesible y tiene permisos de escritura."
+  },
+  "domains": {
+    "title": "Dominios",
+    "subtitle": "Cada hostname que sirve tu edge, en todos los proyectos.",
+    "refresh": "Actualizar",
+    "retry": "Reintentar",
+    "loadFailed": "No se pudo cargar el inventario de dominios",
+    "emptyTitle": "Aún no hay dominios",
+    "emptyDescription": "Los dominios añadidos a proyectos aparecen aquí con su estado.",
+    "unassigned": "Sin servidor",
+    "primary": "Principal",
+    "verified": "Verificado",
+    "pending": "DNS pendiente",
+    "redirectsTo": "→ redirige a",
+    "sslActive": "TLS activo",
+    "sslProvisioning": "TLS en emisión",
+    "sslExpired": "TLS caducado",
+    "sslError": "Error de TLS",
+    "sslNone": "Sin TLS",
+    "expires": "Caduca"
   }
 }

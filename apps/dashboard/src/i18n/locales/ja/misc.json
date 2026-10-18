@@ -413,5 +413,25 @@
     "testConnection": "接続をテスト",
     "testing": "接続をテスト中…",
     "testOk": "接続完了 — バケットへのアクセスと書き込みが可能です。"
+  },
+  "domains": {
+    "title": "ドメイン",
+    "subtitle": "すべてのプロジェクトで edge が配信するホスト名。",
+    "refresh": "更新",
+    "retry": "再試行",
+    "loadFailed": "ドメイン一覧を読み込めませんでした",
+    "emptyTitle": "ドメインはまだありません",
+    "emptyDescription": "プロジェクトに追加されたドメインがここに表示されます。",
+    "unassigned": "サーバーなし",
+    "primary": "プライマリ",
+    "verified": "検証済み",
+    "pending": "DNS 待ち",
+    "redirectsTo": "→ リダイレクト",
+    "sslActive": "TLS 有効",
+    "sslProvisioning": "TLS 発行中",
+    "sslExpired": "TLS 期限切れ",
+    "sslError": "TLS エラー",
+    "sslNone": "TLS なし",
+    "expires": "有効期限"
   }
 }

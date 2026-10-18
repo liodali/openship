@@ -413,5 +413,25 @@
     "incremental": "Incremental",
     "moreContents": "+{count} more",
     "destinationDetails": "Destination details"
+  },
+  "domains": {
+    "title": "Domains",
+    "subtitle": "Every hostname your edge serves, across all projects.",
+    "refresh": "Refresh",
+    "retry": "Try again",
+    "loadFailed": "Could not load the domain inventory",
+    "emptyTitle": "No domains yet",
+    "emptyDescription": "Domains added to projects appear here with their serving state.",
+    "unassigned": "No server",
+    "primary": "Primary",
+    "verified": "Verified",
+    "pending": "Pending DNS",
+    "redirectsTo": "→ redirects to",
+    "sslActive": "TLS active",
+    "sslProvisioning": "TLS provisioning",
+    "sslExpired": "TLS expired",
+    "sslError": "TLS error",
+    "sslNone": "No TLS",
+    "expires": "Expires"
   }
 }

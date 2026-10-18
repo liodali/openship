@@ -17,7 +17,7 @@ import {
 } from "drizzle-orm";
 import { ConflictError, generateId, DOMAIN_RETRY_DELAYS_MS } from "@repo/core";
 import type { Database } from "../client";
-import { domain, orphanedResource, project, service, ingressConnection, ingressHostname } from "../schema";
+import { domain, orphanedResource, project, service, ingressConnection, ingressHostname, servers } from "../schema";
 import { assertProjectConfigurationWritable, withProjectConfigurationWrite } from "./project-work-admission";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -263,6 +263,42 @@ export function createDomainRepo(db: Database) {
     async listAllHostnames(): Promise<string[]> {
       const rows = await db.query.domain.findMany({ columns: { hostname: true } });
       return rows.map((r) => r.hostname);
+    },
+
+    /**
+     * The org-wide edge inventory: every app-owned domain with its project and
+     * destination server, hostname-ordered. Joined through `project` (domain
+     * has no organizationId), which also excludes webhook/mail-owned rows —
+     * those have no project and live in their own consoles.
+     */
+    async listInventoryByOrganization(organizationId: string) {
+      return db
+        .select({
+          id: domain.id,
+          hostname: domain.hostname,
+          projectId: domain.projectId,
+          projectName: project.name,
+          serviceId: domain.serviceId,
+          targetPort: domain.targetPort,
+          targetPath: domain.targetPath,
+          domainType: domain.domainType,
+          isPrimary: domain.isPrimary,
+          redirectTo: domain.redirectTo,
+          status: domain.status,
+          verified: domain.verified,
+          sslStatus: domain.sslStatus,
+          sslIssuer: domain.sslIssuer,
+          sslExpiresAt: domain.sslExpiresAt,
+          ownerType: domain.ownerType,
+          createdAt: domain.createdAt,
+          serverId: project.serverId,
+          serverName: servers.name,
+        })
+        .from(domain)
+        .innerJoin(project, eq(domain.projectId, project.id))
+        .leftJoin(servers, eq(project.serverId, servers.id))
+        .where(eq(project.organizationId, organizationId))
+        .orderBy(domain.hostname);
     },
 
     /**

@@ -215,6 +215,9 @@ export const domainDependencies: DomainDependencies = {
     },
   },
   scoped: {
+    async listAll(ctx) {
+      return service.listAllDomains(ctx);
+    },
     async preview(ctx, input) {
       const hostname = input.hostname.trim().toLowerCase();
       if (!hostname) throw new ValidationError("hostname is required");

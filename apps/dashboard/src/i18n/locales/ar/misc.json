@@ -413,5 +413,25 @@
     "testConnection": "اختبار الاتصال",
     "testing": "جارٍ اختبار الاتصال…",
     "testOk": "متصل — المجموعة قابلة للوصول وقابلة للكتابة."
+  },
+  "domains": {
+    "title": "النطاقات",
+    "subtitle": "كل اسم مضيف يقدّمه الـ edge عبر جميع المشاريع.",
+    "refresh": "تحديث",
+    "retry": "إعادة المحاولة",
+    "loadFailed": "تعذّر تحميل قائمة النطاقات",
+    "emptyTitle": "لا توجد نطاقات بعد",
+    "emptyDescription": "تظهر النطاقات المضافة إلى المشاريع هنا مع حالتها.",
+    "unassigned": "بلا خادم",
+    "primary": "أساسي",
+    "verified": "مُتحقَّق",
+    "pending": "بانتظار DNS",
+    "redirectsTo": "→ يعيد التوجيه إلى",
+    "sslActive": "TLS مفعّل",
+    "sslProvisioning": "جارٍ إصدار TLS",
+    "sslExpired": "انتهت TLS",
+    "sslError": "خطأ TLS",
+    "sslNone": "بلا TLS",
+    "expires": "ينتهي"
   }
 }

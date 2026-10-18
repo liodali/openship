@@ -413,5 +413,25 @@
     "testConnection": "测试连接",
     "testing": "正在测试连接…",
     "testOk": "已连接 — 存储桶可访问且可写入。"
+  },
+  "domains": {
+    "title": "域名",
+    "subtitle": "你的 edge 在所有项目中服务的每个主机名。",
+    "refresh": "刷新",
+    "retry": "重试",
+    "loadFailed": "无法加载域名清单",
+    "emptyTitle": "还没有域名",
+    "emptyDescription": "添加到项目的域名会连同其状态显示在这里。",
+    "unassigned": "无服务器",
+    "primary": "主域名",
+    "verified": "已验证",
+    "pending": "等待 DNS",
+    "redirectsTo": "→ 重定向到",
+    "sslActive": "TLS 已启用",
+    "sslProvisioning": "TLS 签发中",
+    "sslExpired": "TLS 已过期",
+    "sslError": "TLS 错误",
+    "sslNone": "无 TLS",
+    "expires": "到期"
   }
 }

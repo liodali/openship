@@ -49,6 +49,29 @@ export interface DomainState {
   redirectStatus?: number | null;
 }
 
+/** One row of the org-wide edge inventory (`/domains`). */
+export interface DomainInventory {
+  id: string;
+  hostname: string;
+  projectId: string | null;
+  projectName: string | null;
+  serviceId: string | null;
+  targetPort: number | null;
+  targetPath: string | null;
+  domainType: string | null;
+  isPrimary: boolean;
+  redirectTo: string | null;
+  status: string;
+  verified: boolean;
+  sslStatus: string;
+  sslIssuer: string | null;
+  sslExpiresAt: string | null;
+  ownerType: string;
+  serverId: string | null;
+  serverName: string | null;
+  createdAt: string;
+}
+
 export const domainsApi = {
   dnsChallenge: (domainId: string) =>
     api.get<{ data: DomainDnsChallenge | null }>(`${endpoints.domains.byId(domainId)}/dns/challenge`),
@@ -59,6 +82,8 @@ export const domainsApi = {
   cancelDnsChallenge: (domainId: string, attemptId: string) =>
     api.post<{ data: DomainDnsChallenge }>(`${endpoints.domains.byId(domainId)}/dns/challenge/cancel`, { attemptId }),
   list: (projectId: string) => api.get<{ data: Domain[] }>("domains", { params: { projectId } }),
+  /** The org-wide edge inventory: every domain with its project and server. */
+  listAll: () => api.get<{ data: DomainInventory[] }>("domains/inventory"),
   /**
    * Read one domain's current verify/SSL state. The recovery read for a flow
    * whose live stream dropped before reporting: the operation itself finished

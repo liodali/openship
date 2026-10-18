@@ -413,5 +413,25 @@
     "testConnection": "Verbindung testen",
     "testing": "Verbindung wird getestet…",
     "testOk": "Verbunden — der Bucket ist erreichbar und beschreibbar."
+  },
+  "domains": {
+    "title": "Domains",
+    "subtitle": "Alle Hostnamen deiner Edge, über alle Projekte.",
+    "refresh": "Aktualisieren",
+    "retry": "Erneut versuchen",
+    "loadFailed": "Domänen-Inventar konnte nicht geladen werden",
+    "emptyTitle": "Noch keine Domains",
+    "emptyDescription": "Zu Projekten hinzugefügte Domains erscheinen hier mit ihrem Status.",
+    "unassigned": "Kein Server",
+    "primary": "Primär",
+    "verified": "Verifiziert",
+    "pending": "DNS ausstehend",
+    "redirectsTo": "→ leitet um auf",
+    "sslActive": "TLS aktiv",
+    "sslProvisioning": "TLS wird ausgestellt",
+    "sslExpired": "TLS abgelaufen",
+    "sslError": "TLS-Fehler",
+    "sslNone": "Kein TLS",
+    "expires": "Läuft ab"
   }
 }

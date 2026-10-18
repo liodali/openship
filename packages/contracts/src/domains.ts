@@ -91,6 +91,32 @@ export const DomainDnsTargetSchema = Type.Object({
   serverId: Type.Optional(ResourceIdSchema),
 }, { additionalProperties: false });
 
+/** One row of the org-wide edge inventory (/domains): what the routing state
+ * says each hostname serves, and where it lives. Project join supplies names;
+ * rows without a project (webhook/mail-owned) are not part of this view. */
+export const DomainInventorySchema = Type.Object({
+  id: Type.String(),
+  hostname: Type.String(),
+  projectId: nullableString,
+  projectName: nullableString,
+  serviceId: nullableString,
+  targetPort: nullableNumber,
+  targetPath: nullableString,
+  domainType: nullableString,
+  isPrimary: Type.Boolean(),
+  redirectTo: nullableString,
+  status: Type.String(),
+  verified: Type.Boolean(),
+  sslStatus: Type.String(),
+  sslIssuer: nullableString,
+  sslExpiresAt: nullableString,
+  ownerType: Type.String(),
+  serverId: nullableString,
+  serverName: nullableString,
+  createdAt: Type.String(),
+});
+export type DomainInventory = Static<typeof DomainInventorySchema>;
+
 const recordAction = Type.Union([
   Type.Literal("create"), Type.Literal("update"), Type.Literal("adopt"),
   Type.Literal("in-sync"), Type.Literal("conflict"),
@@ -174,6 +200,7 @@ export const DomainResourceSchemas = {
   uploadCert: { action: "write", input: UploadCertBody, output: DomainSslSchema },
 } as const satisfies Record<string, ResourceOperationSchema>;
 export const DomainScopedSchemas = {
+  listAll: { action: "read", output: Type.Array(DomainInventorySchema) },
   preview: { action: "read", input: PreviewDomainBody, output: DomainRecordsSchema },
   renewAllSsl: { action: "write", output: Type.Object({
     renewed: Type.Integer(), results: Type.Array(Type.Object({

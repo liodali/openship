@@ -413,5 +413,25 @@
     "incremental": "Artımlı",
     "moreContents": "+{count} daha",
     "destinationDetails": "Hedef ayrıntıları"
+  },
+  "domains": {
+    "title": "Alan Adları",
+    "subtitle": "Edge'inizin tüm projelerde sunduğu her hostname.",
+    "refresh": "Yenile",
+    "retry": "Tekrar dene",
+    "loadFailed": "Alan adı envanteri yüklenemedi",
+    "emptyTitle": "Henüz alan adı yok",
+    "emptyDescription": "Projelere eklenen alan adları durumlarıyla burada görünür.",
+    "unassigned": "Sunucu yok",
+    "primary": "Birincil",
+    "verified": "Doğrulandı",
+    "pending": "DNS bekliyor",
+    "redirectsTo": "→ yönlendirir",
+    "sslActive": "TLS etkin",
+    "sslProvisioning": "TLS alınıyor",
+    "sslExpired": "TLS süresi doldu",
+    "sslError": "TLS hatası",
+    "sslNone": "TLS yok",
+    "expires": "Bitiş"
   }
 }

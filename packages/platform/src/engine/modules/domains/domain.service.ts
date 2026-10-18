@@ -31,6 +31,7 @@ import {
   DOMAIN_VERIFY_GRACE_MS,
 } from "@repo/core";
 import { assertResourceInOrg } from "../../lib/resource-access";
+import { authorization } from "../../lib/authorization";
 import { platform } from "../../lib/platform-config";
 import { buildBackgroundContext } from "../../lib/background-context";
 import { trackBackgroundWork } from "../../lib/background-work";
@@ -91,6 +92,29 @@ export async function listDomains(ctx: RequestContext, projectId: string) {
   const project = await repos.project.findById(projectId);
   assertResourceInOrg(project, "Project", ctx.organizationId, projectId);
   return withDomainDiagnostics(project, await repos.domain.listByProject(projectId));
+}
+
+/**
+ * The org-wide edge inventory for /domains. Rows come from the same routing
+ * state the edge's vhosts are generated from. Restricted tokens and restricted
+ * roles see only domains of projects they can read — the same rule the
+ * projects list applies, enforced per project here.
+ */
+export async function listAllDomains(ctx: RequestContext) {
+  const rows = await repos.domain.listInventoryByOrganization(ctx.organizationId);
+  if (!ctx.tokenScope && ctx.role !== "restricted") return rows;
+  const allowed = new Set<string>();
+  for (const row of rows) {
+    if (row.projectId && !allowed.has(row.projectId)) {
+      const permitted = await authorization.checkPermissionOnResource(ctx, {
+        resourceType: "project",
+        resourceId: row.projectId,
+        action: "read",
+      });
+      if (permitted) allowed.add(row.projectId);
+    }
+  }
+  return rows.filter((row) => row.projectId && allowed.has(row.projectId));
 }
 
 /**

@@ -101,6 +101,9 @@ export async function uploadCert(c: Context) {
 export async function renewAllSsl(c: Context) {
   return c.json({ data: await operationData(c, operations().renewAllSsl(operationContext(c))) });
 }
+export async function listAll(c: Context) {
+  return c.json({ data: await operationData(c, operations().listAll(operationContext(c))) });
+}
 export async function verifyPending(c: Context) {
   return c.json({ data: await operationData(c, operations().verifyPending(operationContext(c), await c.req.json().catch((diagnosticFailure) => { observeCaughtError(diagnosticFailure, "api/modules/domains/domain.controller"); return ({}); }))) });
 }
