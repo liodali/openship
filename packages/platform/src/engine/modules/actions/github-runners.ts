@@ -22,6 +22,27 @@ import { synchronizeGitHubRun } from "./github-sync";
 const owner = `github-runners-${randomUUID()}`;
 const idleMs = 10 * 60_000;
 
+/** Last dispatcher skip reason per job. The sweep ticks every few seconds, so a
+ * persistent condition is named once per CHANGE, not once per tick — these are
+ * rare, and `diagnostics.warn` prints unconditionally (console even when the
+ * remote reporter is off), which is exactly the visibility the incident lacked:
+ * jobs sat undispatched for hours because every skip was a silent `continue`. */
+const dispatchSkips = new Map<string, string>();
+
+function noteDispatchSkip(jobId: string, workflowId: string, reason: string) {
+  if (dispatchSkips.get(jobId) === reason) return;
+  dispatchSkips.set(jobId, reason);
+  diagnostics.warn(
+    "actions/github-runners",
+    `GitHub job is not dispatching (${reason})`,
+    `job=${jobId} workflow=${workflowId}`,
+  );
+}
+
+function clearDispatchSkip(jobId: string) {
+  dispatchSkips.delete(jobId);
+}
+
 export function requestsOpenshipRunner(labels: string[]) {
   const normalized = labels.map((label) => label.toLowerCase());
   // Plain ubuntu-latest/macOS labels belong to GitHub-hosted runners. Only an
@@ -30,9 +51,11 @@ export function requestsOpenshipRunner(labels: string[]) {
 }
 
 async function reserveDemand(signal?: AbortSignal) {
+  const considered = new Set<string>();
   for (const { job, run, workflow } of await repos.actions.queuedGitHubJobs()) {
     if (signal?.aborted) return;
     if (!job.spec || !requestsOpenshipRunner(job.spec.labels)) continue;
+    considered.add(job.id);
     try {
       const ctx = await resolveExecutionAuthority(
         workflow.authority,
@@ -44,8 +67,19 @@ async function reserveDemand(signal?: AbortSignal) {
         admitted?.admission?.state !== "allowed" ||
         admitted.cancelRequestedAt ||
         admitted.finishedAt
-      )
+      ) {
+        // A cancelled or finished run drains naturally; a parked admission is
+        // the state an operator has to act on.
+        if (admitted?.admission && !admitted.cancelRequestedAt && !admitted.finishedAt)
+          noteDispatchSkip(
+            job.id,
+            workflow.id,
+            `run admission is ${admitted.admission.state}`,
+          );
         continue;
+      }
+      let reserved = false;
+      let eligible = 0;
       for (const runnerId of workflow.runnerIds) {
         const runner = await repos.actions.runner(workflow.organizationId, runnerId);
         if (
@@ -54,6 +88,7 @@ async function reserveDemand(signal?: AbortSignal) {
           actionRunnerMismatch(runner.capabilities, runner.config, job.spec)
         )
           continue;
+        eligible += 1;
         const id = generateId("ags");
         if (
           await repos.actions.reserveRunnerSession({
@@ -67,9 +102,22 @@ async function reserveDemand(signal?: AbortSignal) {
             runnerName: `openship-${id}`,
             spec: { ...job.spec, timeoutSeconds: ACTIONS_MAX_JOB_SECONDS },
           })
-        )
+        ) {
+          reserved = true;
           break;
+        }
       }
+      if (reserved) clearDispatchSkip(job.id);
+      else if (!eligible)
+        // Every destination was filtered out (disabled, untrusted-without-cloud,
+        // or a capability/label mismatch) — the job can never start as things
+        // stand, which is precisely the frozen-dispatch shape of the incident.
+        noteDispatchSkip(
+          job.id,
+          workflow.id,
+          `no enabled runner matches labels [${job.spec.labels.join(",")}]`,
+        );
+      else clearDispatchSkip(job.id); // At capacity: normal queueing, not a fault.
     } catch (error) {
       await repos.actions.workflowError(
         workflow.organizationId,
@@ -84,6 +132,9 @@ async function reserveDemand(signal?: AbortSignal) {
       );
     }
   }
+  // Notes are per-queued-job: once the job dispatches or leaves the queue its
+  // reason is stale, and a future identical condition should be named again.
+  for (const jobId of [...dispatchSkips.keys()]) if (!considered.has(jobId)) dispatchSkips.delete(jobId);
 }
 
 function requestFor(

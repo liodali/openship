@@ -31,6 +31,9 @@ vi.mock("./triggers", () => ({
   actionWebhookInbox: { tick: async () => {} },
 }));
 vi.mock("./storage", () => ({ actionStorageProtocol: () => ({ sweep: async () => {} }) }));
+vi.mock("./runner.service", () => ({
+  probeActionRunnerSweep: async () => ({ probed: 0, failed: 0 }),
+}));
 
 beforeEach(async () => {
   vi.resetModules();

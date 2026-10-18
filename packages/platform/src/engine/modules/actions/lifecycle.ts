@@ -12,6 +12,11 @@ let stopped = true;
 let schedulesAt = 0;
 let poolsReady = false;
 let retentionAt = 0;
+let runnerProbeAt = 0;
+/** Runner heartbeat cadence — long enough that an idle estate pays one SSH
+ * connect per destination per pass, short enough that `checkedAt` answers
+ * "is this runner alive" between config edits. */
+const RUNNER_PROBE_MS = 5 * 60_000;
 
 export async function assertActionsTransferReady(): Promise<void> {
   if (
@@ -48,6 +53,16 @@ export function startActionController(): void {
           }
           await (await import("./triggers")).dispatchActionSchedules();
           await (await import("./storage")).actionStorageProtocol().sweep();
+          if (Date.now() - runnerProbeAt > RUNNER_PROBE_MS) {
+            runnerProbeAt = Date.now();
+            // Refreshes `checkedAt` so it stays a liveness signal; per-runner
+            // failures land on the runner row instead of failing this sweep.
+            await (await import("./runner.service"))
+              .probeActionRunnerSweep()
+              .catch((error) =>
+                diagnostics.warn("actions/controller", "Runner heartbeat sweep failed", error),
+              );
+          }
           if (Date.now() - retentionAt > 3_600_000) {
             const cutoff = new Date(Date.now() - 30 * 86_400_000);
             await repos.actions.pruneDeliveries(cutoff);

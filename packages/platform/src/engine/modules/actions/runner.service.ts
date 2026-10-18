@@ -6,6 +6,7 @@ import {
   incompatibleActionLabels,
   safeErrorMessage,
 } from "@repo/core";
+import { diagnostics } from "@repo/core/diagnostics";
 import { ensureDockerEmulation, probeActionCapabilities } from "@repo/adapters";
 import { repos } from "@repo/db";
 import type { Static } from "@sinclair/typebox";
@@ -124,4 +125,53 @@ export async function probeActionRunner(ctx: ExecutionContext, id: string) {
     });
     throw error;
   }
+}
+
+/**
+ * `checkedAt` is a heartbeat, not a save-time stamp: this sweep re-probes every
+ * enabled server runner so a stale value means the destination stopped
+ * answering, not merely that nobody edited it. (A frozen value once read as an
+ * outage precisely because nothing refreshed it between config saves.)
+ *
+ * Serial on purpose — one SSH connect per destination per pass, the same shape
+ * and reasoning as the analytics scrape sweep. A per-runner failure is recorded
+ * on its row (the same contract as an explicit probe) and never fails the pass.
+ */
+export async function probeActionRunnerSweep(): Promise<{ probed: number; failed: number }> {
+  const targets = await repos.actions.listServerRunnerDestinations();
+  let failed = 0;
+  for (const target of targets) {
+    try {
+      const capabilities = await withServerExecution(
+        target.organizationId,
+        target.serverId!,
+        probeActionCapabilities,
+      );
+      await repos.actions.recordRunnerProbe(target.organizationId, target.id, {
+        capabilities,
+        error: null,
+        checkedAt: new Date(),
+      });
+    } catch (error) {
+      failed += 1;
+      await repos.actions
+        .recordRunnerProbe(target.organizationId, target.id, {
+          capabilities: null,
+          error: safeErrorMessage(error),
+          checkedAt: new Date(),
+        })
+        .catch((recordError) =>
+          diagnostics.warn(
+            "actions/runner-probe",
+            "Failed runner heartbeat could not be recorded",
+            recordError,
+            { runnerId: target.id },
+          ),
+        );
+      diagnostics.warn("actions/runner-probe", "Actions runner heartbeat failed", error, {
+        runnerId: target.id,
+      });
+    }
+  }
+  return { probed: targets.length, failed };
 }
