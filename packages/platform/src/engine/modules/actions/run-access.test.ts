@@ -8,8 +8,11 @@ const mock = vi.hoisted(() => ({
   status: vi.fn(),
   user: vi.fn(),
   collaborator: vi.fn(),
+  command: vi.fn(),
 }));
-vi.mock("@repo/db", () => ({ repos: { actions: { runner: mock.runner } } }));
+vi.mock("@repo/db", () => ({
+  repos: { actions: { runner: mock.runner, gitHubRunCommand: mock.command } },
+}));
 vi.mock("../github/github.auth", () => ({ getUserStatus: mock.status }));
 vi.mock("./github-api", () => ({
   GitHubActionsApi: class {
@@ -57,12 +60,13 @@ function fixture() {
     approvedAt: null,
     approvalKey: null,
     configuration: { runnerIds: ["mac", "cloud"] },
-    github: { actor, triggeringActor: actor },
+    github: { id: "42", actor, triggeringActor: actor },
   } as ActionRun;
   return { workflow, run, evaluate: () => evaluateActionRunAdmission(ctx, workflow, run) };
 }
 beforeEach(() => {
   vi.resetAllMocks();
+  mock.command.mockResolvedValue(undefined);
   mock.runner.mockImplementation(async (_org, id) => ({
     id,
     serverId: id === "mac" ? id : null,
@@ -225,6 +229,39 @@ describe("run admission", () => {
     expect((await f.evaluate()).state).toBe("allowed");
     f.run.github!.triggeringActor = { provider: "github", id: "99", login: actor.login };
     expect((await f.evaluate()).state).toBe("blocked");
+  });
+
+  // The incident this guards: a rerun issued through the API executes as the
+  // instance's GitHub App bot, which no selected-user policy lists, so the new
+  // attempt parked as actor_not_allowed and waited forever. Only attempts with
+  // a durable accepted-command receipt are excused — a human rerunning directly
+  // on GitHub keeps the normal audience check.
+  it("admits the bot actor only for attempts this API dispatched or reran", async () => {
+    const f = fixture();
+    const bot: ActionActorIdentity = { provider: "github", id: "201017", login: "app[bot]" };
+    f.workflow.accessPolicy = {
+      ...policy,
+      audience: "selected",
+      users: [actor],
+      approval: "automatic",
+    };
+    f.run.attempt = 2;
+    f.run.github!.actor = bot;
+    f.run.github!.triggeringActor = bot;
+    expect((await f.evaluate()).reason).toBe("actor_not_allowed");
+    mock.command.mockResolvedValue({ id: "acmd", state: "accepted" });
+    expect((await f.evaluate()).state).toBe("allowed");
+    expect(mock.command).toHaveBeenCalledWith("org", "wf", "42", 2);
+    // The receipt excuses the audience, never the approval or fork gates.
+    f.workflow.accessPolicy!.approval = "required";
+    expect((await f.evaluate()).state).toBe("approval_required");
+    f.workflow.accessPolicy!.approval = "automatic";
+    f.run.untrusted = true;
+    f.workflow.accessPolicy!.forks = "review";
+    f.run.approvedAt = null;
+    expect((await f.evaluate()).state).toBe("approval_required");
+    mock.command.mockResolvedValue(undefined);
+    expect((await f.evaluate()).reason).toBe("actor_not_allowed");
   });
   it("verifies collaborator write access and response identity, and propagates GitHub outages", async () => {
     const f = fixture();

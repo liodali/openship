@@ -180,11 +180,28 @@ export async function evaluateActionRunAdmission(
   if (run.untrusted && policy.forks !== "review") return result("blocked", "fork_disabled");
   if (!runners.some((runner) => runner?.enabled && (!run.untrusted || runner.cloudPoolId)))
     return result("blocked", "destinations_changed");
+  // A dispatch or rerun this API submitted executes as the instance's GitHub
+  // App bot, which no audience policy can ever list — without this arm every
+  // such attempt parked as actor_not_allowed (the rerun had to be re-pushed by
+  // hand). The durable accepted command receipt proves THIS attempt was
+  // initiated here, and the route had already authorized the requesting user;
+  // the bot itself is never a policy principal, and the approval and fork
+  // gates below still apply unchanged.
+  const systemInitiated =
+    !!run.github &&
+    !!(await repos.actions.gitHubRunCommand(
+      ctx.organizationId,
+      workflow.id,
+      run.github.id,
+      run.attempt,
+    ));
   const identities = [actor, triggering];
   const same = (a: ActionActorIdentity, b: ActionActorIdentity) =>
     a.provider === b.provider && a.id === b.id;
   let allowed = false;
-  if (policy.audience === "owner") allowed = identities.every((value) => same(value, policy.owner));
+  if (systemInitiated) allowed = true;
+  else if (policy.audience === "owner")
+    allowed = identities.every((value) => same(value, policy.owner));
   else if (policy.audience === "selected")
     allowed = identities.every((value) => policy.users.some((user) => same(user, value)));
   else if (!workflow.owner)
