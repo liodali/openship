@@ -157,6 +157,10 @@ jobs:
 
       - name: Restore builder layers from Garage
         id: builder-cache
+        # Never load-bearing: a network failure to the bucket (seen live:
+        # ECONNREFUSED from the VPS while the same endpoint answered
+        # elsewhere) must degrade to a cold build, not fail the job.
+        continue-on-error: true
         if: matrix.image != 'edge' && vars.FORK_S3_ENDPOINT != ''
         env:
           S3_ENDPOINT: ${{ vars.FORK_S3_ENDPOINT }}
@@ -243,6 +247,11 @@ jobs:
       # (moving + sha + latest per run). rmi drops the tags while the podman
       # layer cache — the actual speed win — stays untouched.
       - name: Save builder layers to Garage
+        # The upload is an optimization of FUTURE builds; this build already
+        # pushed its image. A refused connection to the bucket must not turn a
+        # green build red (seen live: ECONNREFUSED on the PUT after a fully
+        # successful build+push).
+        continue-on-error: true
         if: matrix.image != 'edge' && vars.FORK_S3_ENDPOINT != '' && steps.builder-cache.outputs.hit == 'false'
         env:
           S3_ENDPOINT: ${{ vars.FORK_S3_ENDPOINT }}
