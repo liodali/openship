@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -299,7 +300,65 @@ func githubContainerArgs(request jobRequest, runnerRoot, dockerName, proxyPath s
 	if request.ContainerPlatform != "" {
 		args = append(args, "--platform", request.ContainerPlatform)
 	}
+	// The official runner is a .NET app. Debian-slim images often ship without
+	// libicu, and Runner.Listener then FailFast-aborts (exit 134) inside
+	// System.Globalization before it can register. Invariant globalization is
+	// harmless where libicu exists, so it ships unconditionally — the smaller
+	// contract than requiring per-image packages.
+	args = append(args, "--env", "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1")
+	// Rootless podman maps --user <uid> to an unrelated subuid (container 1000
+	// becomes host 100999), which cannot traverse the supervisor's 0700 job
+	// directories — Runner.Listener dies with Permission denied before it
+	// starts. keep-id pins the container uid to the same host uid. Detected,
+	// not assumed: plain Docker never sees the flag, and docker only rejects
+	// --userns alongside --pid=host/--ipc=host/--cgroupns=host, none of which
+	// are passed here.
+	if isRootlessPodman() {
+		args = append(args, "--userns=keep-id")
+	}
+	// SELinux confines container_t processes away from the worker's Docker
+	// proxy socket (connectto is denied while enforcing). That proxy is
+	// resource tracking, not a security sandbox — Docker-enabled runners
+	// execute trusted code — so label confinement here adds only breakage.
+	if isSELinuxEnforcing() {
+		args = append(args, "--security-opt", "label=disable")
+	}
 	return append(args, "--entrypoint", "/bin/sh", request.GitHub.Image, "-c", "while :; do sleep 3600; done"), nil
+}
+
+// Engine detection answers once per process: the engine under a long-lived
+// supervisor does not change between jobs, and each probe costs an exec. The
+// variables wrap the probes so tests can substitute deterministic answers.
+func once[T any](probe func() T) func() T {
+	var (
+		syncOnce sync.Once
+		value    T
+	)
+	return func() T {
+		syncOnce.Do(func() { value = probe() })
+		return value
+	}
+}
+
+var isRootlessPodman = once(probeRootlessPodman)
+
+func probeRootlessPodman() bool {
+	if out, err := exec.Command("docker", "info", "--format", "{{.Host.Security.Rootless}}").Output(); err == nil && strings.EqualFold(strings.TrimSpace(string(out)), "true") {
+		return true
+	}
+	// The compatibility client names itself even when the daemon probe above
+	// cannot be answered; real Docker never prints this banner.
+	out, _ := exec.Command("docker", "version").Output()
+	return strings.Contains(string(out), "Podman")
+}
+
+var isSELinuxEnforcing = once(probeSELinuxEnforcing)
+
+func probeSELinuxEnforcing() bool {
+	// Absent getenforce (Ubuntu, macOS dev boxes) or any probe failure reads
+	// as not enforcing: the flag is a podman/SELinux-only remedy.
+	out, err := exec.Command("getenforce").Output()
+	return err == nil && strings.TrimSpace(string(out)) == "Enforcing"
 }
 
 func githubCommand(ctx context.Context, env []string, dir string, input io.Reader, events *eventWriter, binary string, args ...string) error {

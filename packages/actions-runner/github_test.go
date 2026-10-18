@@ -151,6 +151,110 @@ func TestOfficialDockerProxyRemovesShortSocketDirectory(t *testing.T) {
 		t.Fatal("temporary socket directory retained")
 	}
 }
+func TestOfficialContainerArgsTolerateRootlessPodmanAndSELinux(t *testing.T) {
+	r := officialRequest(t)
+	r.GitHub.Image = "alpine:3.22"
+	runnerRoot := filepath.Join(r.Directory, "runner")
+	if err := os.MkdirAll(runnerRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	podman, selinux := isRootlessPodman, isSELinuxEnforcing
+	t.Cleanup(func() { isRootlessPodman, isSELinuxEnforcing = podman, selinux })
+	flags := func(podman, selinux bool) []string {
+		isRootlessPodman = func() bool { return podman }
+		isSELinuxEnforcing = func() bool { return selinux }
+		args, err := githubContainerArgs(r, runnerRoot, "openship-github-"+r.ID, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return args
+	}
+	contains := func(args []string, want ...string) bool {
+		for i := 0; i+len(want) <= len(args); i++ {
+			match := true
+			for j, value := range want {
+				if args[i+j] != value {
+					match = false
+					break
+				}
+			}
+			if match {
+				return true
+			}
+		}
+		return false
+	}
+	plain := flags(false, false)
+	if !contains(plain, "--env", "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1") {
+		t.Fatal("ICU invariant globalization must ship unconditionally")
+	}
+	if contains(plain, "--userns") || contains(plain, "--security-opt") {
+		t.Fatal("plain Docker hosts must not receive podman/SELinux flags")
+	}
+	if !contains(flags(true, false), "--userns=keep-id") {
+		t.Fatal("rootless podman needs keep-id to traverse the 0700 job tree")
+	}
+	if !contains(flags(false, true), "--security-opt", "label=disable") {
+		t.Fatal("SELinux-enforcing hosts need label confinement disabled")
+	}
+	// Option flags must precede the image, or they become the entrypoint's
+	// shell arguments instead of engine options.
+	for _, args := range [][]string{plain, flags(true, true)} {
+		for i, arg := range args {
+			if arg == r.GitHub.Image {
+				for _, option := range []string{"--userns", "--security-opt", "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1", "--env", "HOME=" + filepath.Join(r.Directory, "home")} {
+					for j, value := range args {
+						if value == option && j > i {
+							t.Fatalf("engine option %s appears after the image name", option)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+// The probes answer from a scripted PATH so detection itself is exercised, not
+// just the flag plumbing above.
+func TestOfficialEngineDetectionProbes(t *testing.T) {
+	dir := t.TempDir()
+	script := func(name, body string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", dir)
+	script("docker", "#!/bin/sh\n"+
+		"for arg in \"$@\"; do case $arg in *Rootless*) exit 125;; esac; done\n"+
+		"echo 'Client:\n Podman Engine Version: 5.8.2'\n")
+	script("getenforce", "#!/bin/sh\necho Enforcing\n")
+	if !probeRootlessPodman() {
+		t.Fatal("podman client banner not detected")
+	}
+	if !probeSELinuxEnforcing() {
+		t.Fatal("getenforce output not detected")
+	}
+	script("docker", "#!/bin/sh\n"+
+		"for arg in \"$@\"; do case $arg in *Rootless*) echo true; exit 0;; esac; done\n"+
+		"echo 'Docker version 29.7.1'\n")
+	if !probeRootlessPodman() {
+		t.Fatal("rootless field not detected")
+	}
+	script("docker", "#!/bin/sh\n"+
+		"for arg in \"$@\"; do case $arg in *Rootless*) echo false; exit 0;; esac; done\n"+
+		"echo 'Docker version 29.7.1'\n")
+	script("getenforce", "#!/bin/sh\necho Permissive\n")
+	if probeRootlessPodman() || probeSELinuxEnforcing() {
+		t.Fatal("Docker on a permissive host misclassified")
+	}
+	// No binaries at all: probes fail closed, flags stay off.
+	empty := t.TempDir()
+	t.Setenv("PATH", empty)
+	if probeRootlessPodman() || probeSELinuxEnforcing() {
+		t.Fatal("missing probes must read as absent")
+	}
+}
+
 func TestOfficialContainerFilesStayReadableBySupervisor(t *testing.T) {
 	if exec.Command("docker", "info").Run() != nil {
 		t.Skip("Docker is unavailable")

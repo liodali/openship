@@ -167,4 +167,31 @@ describe("checkDocker", () => {
     // for a daemon that answered nothing. See the comment on daemonCommand.
     expect(systemCatalog.checks.docker.daemonCommand).toContain("ServerVersion");
   });
+
+  // Rootless-podman servers speak docker-compat, not Docker: the first format
+  // expression exits 125 with no output, which without the fallback below read
+  // as "daemon not running" and froze job dispatch for hours (the probe is what
+  // the actions dispatcher trusts). Both engines must be able to answer.
+  it("falls back to Podman's server version field", () => {
+    const command = systemCatalog.checks.docker.daemonCommand!;
+    expect(command).toContain("docker info --format '{{.Version.Version}}'");
+    // The Docker branch's stderr is silenced so a podman template error cannot
+    // become the reported failure text; the fallback branch keeps its own.
+    expect(command).toMatch(/\{\{\.ServerVersion\}\}' 2>\/dev\/null \|\|/);
+  });
+
+  it("reports healthy when only the Podman field answers", async () => {
+    // The shell on the host picks the branch; here the executor answers for the
+    // fallback expression exactly as podman's compat CLI would.
+    const status = await checkDocker(
+      box([
+        [...VERSION],
+        ["docker info --format '{{.Version.Version}}'", "5.8.2"],
+      ]),
+    );
+
+    expect(status.healthy).toBe(true);
+    expect(status.running).toBe(true);
+    expect(status.version).toBe("29.7.1");
+  });
 });

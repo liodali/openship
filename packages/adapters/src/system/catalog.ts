@@ -90,9 +90,15 @@ export const systemCatalog = {
       // A POSITIVE signal, not a bare exit code: only a daemon that answered can
       // name its version. `docker info >/dev/null && echo ok` prints ok on ANY
       // exit-0, so a daemon answering nothing would read as healthy — trading #408's
-      // false negative for a false positive. Leave stderr alone too; `checkDocker`
-      // puts the failure text in the component message.
-      daemonCommand: "docker info --format '{{.ServerVersion}}'",
+      // false negative for a false positive. The second branch is Podman's
+      // docker-compat CLI, which cannot evaluate `.ServerVersion` (exit 125, empty
+      // output) but answers `.Version.Version`; its stderr is silenced so the
+      // fallback's own failure text — the one `checkDocker` reports — stays the
+      // daemon's, not a template complaint from an engine that was about to answer.
+      // Executors run probes through a shell, so `||` composes safely.
+      daemonCommand:
+        "docker info --format '{{.ServerVersion}}' 2>/dev/null || " +
+        "docker info --format '{{.Version.Version}}'",
       parseVersion: (output: string) =>
         output.match(/Docker version ([^\s,]+)/)?.[1] ?? output,
       missingMessage: "Docker is not installed",
