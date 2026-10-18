@@ -2,7 +2,13 @@ import { and, asc, desc, eq, exists, gt, inArray, isNull, lt, or, sql } from "dr
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { actionRunnerAdmitted } from "./action-run-admission";
-import { AppError, actionRunnerMismatch, ACTIONS_RUNNER_SESSION_ATTEMPTS, ACTIONS_RUNNER_SESSION_RETRY_MS } from "@repo/core";
+import {
+  AppError,
+  actionRunnerMismatch,
+  ACTIONS_MAX_LOG_BYTES,
+  ACTIONS_RUNNER_SESSION_ATTEMPTS,
+  ACTIONS_RUNNER_SESSION_RETRY_MS,
+} from "@repo/core";
 import type { Database } from "../client";
 import {
   actionWorkflow,
@@ -11,6 +17,7 @@ import {
   actionRunner,
   actionRunnerSession,
   actionCommand,
+  actionEvent,
 } from "../schema/actions";
 import { organization } from "../schema/organization";
 import { actionRunnerAllocationCount } from "./action-runner-allocation";
@@ -589,6 +596,72 @@ export function createActionGitHubRepo(db: Database) {
         )
         .orderBy(asc(actionRunnerSession.updatedAt))
         .limit(100);
+    },
+    /** The GitHub supervisor journals its runner's stdout — the LIVE job log.
+     * reconcileSession appends it under the session's lease (the openship
+     * controller's appendEvents proves ownership with a run lease the GitHub
+     * path never holds). Same byte cap and dedupe rules as that path. */
+    async appendRunnerSessionEvents(
+      org: string,
+      jobId: string,
+      leaseOwner: string,
+      incoming: Array<typeof actionEvent.$inferSelect["event"]>,
+    ) {
+      if (!incoming.length) return;
+      await db.transaction(async (tx) => {
+        const [job] = await tx
+          .select()
+          .from(actionJob)
+          .where(and(eq(actionJob.organizationId, org), eq(actionJob.id, jobId)))
+          .for("update");
+        if (!job) return;
+        const [session] = await tx
+          .select({ id: actionRunnerSession.id })
+          .from(actionRunnerSession)
+          .where(
+            and(
+              eq(actionRunnerSession.organizationId, org),
+              eq(actionRunnerSession.leaseOwner, leaseOwner),
+              gt(actionRunnerSession.leaseUntil, new Date()),
+              or(
+                eq(actionRunnerSession.demandJobId, jobId),
+                eq(actionRunnerSession.admittedJobId, jobId),
+              ),
+            ),
+          )
+          .limit(1);
+        if (!session) return;
+        let bytes = job.logBytes;
+        let sequence = job.lastEventSequence;
+        const values = [];
+        for (const event of incoming) {
+          if (event.sequence <= sequence) continue;
+          sequence = event.sequence;
+          const size = Buffer.byteLength(JSON.stringify(event));
+          if (event.type === "log" && bytes + size > ACTIONS_MAX_LOG_BYTES) continue;
+          bytes += size;
+          values.push({
+            id: createHash("sha256")
+              .update(`${jobId}:${event.sequence}`)
+              .digest("hex")
+              .slice(0, 24),
+            organizationId: org,
+            runId: job.runId,
+            jobId,
+            sequence,
+            event,
+          });
+        }
+        if (values.length)
+          await tx
+            .insert(actionEvent)
+            .values(values)
+            .onConflictDoNothing({ target: [actionEvent.jobId, actionEvent.sequence] });
+        await tx
+          .update(actionJob)
+          .set({ lastEventSequence: sequence, logBytes: bytes })
+          .where(and(eq(actionJob.organizationId, org), eq(actionJob.id, jobId)));
+      });
     },
     /** Dispatch attempts per demand job — the retry budget a run view exposes. */
     async runnerSessionCounts(org: string, jobIds: string[]) {

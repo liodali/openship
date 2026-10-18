@@ -254,7 +254,7 @@ export function RunWorkspace({
                       : job.status
                   }
                 />
-                {job.externalUrl && !logs.liveGitHub && (
+                {job.externalUrl && (
                   <Button asChild variant="ghost" size="icon">
                     <a
                       href={job.externalUrl}
@@ -295,7 +295,6 @@ export function RunWorkspace({
               events={logs.events}
               loading={logs.loading}
               error={logs.error}
-              liveGitHub={logs.liveGitHub}
               step={step}
               onClearStep={() => select(job.id)}
               onRetry={logs.refresh}

@@ -553,8 +553,18 @@ async function reconcileSession(
         await worker.cancel(binary, directory);
         return;
       }
-      if (snapshot.events.length)
+      if (snapshot.events.length) {
+        // The journal IS the live job log: the runner masks secrets before it
+        // prints, and the worker's event redaction adds ours. Persist it so the
+        // run view streams while the job is still in flight on GitHub.
+        await repos.actions.appendRunnerSessionEvents(
+          org,
+          session.admittedJobId ?? session.demandJobId,
+          owner,
+          snapshot.events,
+        );
         await update({ lastEventSequence: snapshot.events.at(-1)!.sequence });
+      }
       if (snapshot.hasMore) return;
       if (
         ["finished", "interrupted"].includes(snapshot.state) ||

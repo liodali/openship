@@ -572,7 +572,10 @@ describe("official GitHub runner reconciliation", () => {
       worker: {
         inspect: async () => ({
           state: "finished",
-          events: [],
+          events: [
+            { version: 1, sequence: 1, time: new Date().toISOString(), type: "log", message: "##[section]Starting: Run npm ci" },
+            { version: 1, sequence: 2, time: new Date().toISOString(), type: "log", message: "built successfully" },
+          ],
           hasMore: false,
           result: { conclusion: "success" },
         }),
@@ -582,6 +585,14 @@ describe("official GitHub runner reconciliation", () => {
     await reconcileGitHubRunners();
     expect((await f.get())?.finishedAt).toBeTruthy();
     expect((await f.get())?.cleanedAt).toBeNull();
+    // The journal is the LIVE job log: reconcile persists its events (the
+    // section marker line itself is stored verbatim; step splitting happens
+    // at read time in github-output).
+    const events = await repo.events(f.org, f.jobId);
+    expect(events.map((row) => row.event.message)).toEqual([
+      "##[section]Starting: Run npm ci",
+      "built successfully",
+    ]);
     await reconcileGitHubRunners();
     expect(state.open).toHaveBeenCalledOnce();
     expect(release).toHaveBeenCalledOnce();

@@ -321,7 +321,10 @@ it("does not mislabel untagged setup output as an independent step's output", as
   expect(consoleText()).not.toContain("Worker preparing");
 });
 
-it("shows live GitHub's link and fetches the same job's completed log once it finishes", async () => {
+it("streams live logs while the GitHub job runs and refetches the completed log once it finishes", async () => {
+  h.events
+    .mockResolvedValueOnce(page([event(1, "live output", "test")], false))
+    .mockResolvedValueOnce(page([event(1, "build: tests passed", "test")]));
   const value = run([
     job("build", "Build", {
       externalUrl: "https://github.com/acme/app/actions/runs/1/job/2",
@@ -330,7 +333,9 @@ it("shows live GitHub's link and fetches the same job's completed log once it fi
     }),
   ]);
   await render(value);
-  expect(h.events).not.toHaveBeenCalled();
+  // The persisted supervisor journal streams while the job is still running…
+  expect(h.events).toHaveBeenCalledExactlyOnceWith("build", 0);
+  expect(consoleText()).toContain("live output");
   expect(
     host.querySelector('a[href="https://github.com/acme/app/actions/runs/1/job/2"]'),
   ).not.toBeNull();
@@ -338,7 +343,13 @@ it("shows live GitHub's link and fetches the same job's completed log once it fi
     ...value,
     jobs: value.jobs.map((row) => ({ ...row, status: "success", finishedAt: now })),
   });
-  expect(h.events).toHaveBeenCalledExactlyOnceWith("build", 0);
+  // …and finishing switches the source (journal → GitHub's completed blob),
+  // so the fetch restarts from zero instead of splicing the two together.
+  expect(h.events.mock.calls.at(-1)).toEqual(["build", 0]);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+  });
+  expect(consoleText()).not.toContain("live output");
   expect(consoleText()).toContain("build: tests passed");
 });
 

@@ -15,7 +15,6 @@ export function ActionLogs({
   events,
   loading,
   error,
-  liveGitHub,
   step,
   onClearStep,
   onRetry,
@@ -24,7 +23,6 @@ export function ActionLogs({
   events: JobEvent[];
   loading: boolean;
   error: string | null;
-  liveGitHub: boolean;
   step: RunStep | undefined;
   onClearStep: () => void;
   onRetry: () => void;
@@ -71,68 +69,49 @@ export function ActionLogs({
               {a.runView.allLogs}
             </Button>
           )}
-          {!liveGitHub && (
-            <Button
-              type="button"
-              size="icon"
-              variant="ghost"
-              aria-label={a.followLogs}
-              title={a.followLogs}
-              onClick={() => {
-                follow.current = true;
-                if (container.current) container.current.scrollTop = container.current.scrollHeight;
-              }}
-            >
-              <Icon name="arrow-down" />
-            </Button>
-          )}
-        </div>
-      </div>
-      {liveGitHub ? (
-        <div className="flex min-h-56 flex-1 flex-col items-center justify-center gap-4 rounded-xl bg-background/70 p-5 text-center">
-          <Icon name="github" className="size-6 text-muted-foreground" />
-          <p className="max-w-sm text-sm leading-relaxed text-muted-foreground">
-            {a.controller.liveLogs}
-          </p>
-          <Button asChild variant="secondary" size="sm">
-            <a href={job.externalUrl!} target="_blank" rel="noopener noreferrer">
-              {a.controller.watchLiveLogs}
-              <Icon name="arrow-up-right" />
-            </a>
+          <Button
+            type="button"
+            size="icon"
+            variant="ghost"
+            aria-label={a.followLogs}
+            title={a.followLogs}
+            onClick={() => {
+              follow.current = true;
+              if (container.current) container.current.scrollTop = container.current.scrollHeight;
+            }}
+          >
+            <Icon name="arrow-down" />
           </Button>
         </div>
-      ) : (
-        <>
-          <ActionError message={error} onRetry={onRetry} />
-          {step && !scoped && events.length > 0 && (
-            <p className="text-xs text-muted-foreground">{a.runView.fullJobLog}</p>
-          )}
-          <div
-            ref={container}
-            onScroll={(event) => {
-              const element = event.currentTarget;
-              follow.current = element.scrollHeight - element.scrollTop - element.clientHeight < 40;
-            }}
-            className="min-h-[320px] min-w-0 flex-1 overflow-auto rounded-xl bg-background/80 px-4 py-3 @min-[960px]/run:min-h-0"
-            tabIndex={0}
-            role="region"
-            aria-label={a.logs}
-            aria-busy={loading}
-            dir="ltr"
-          >
-            {loading && !text ? (
-              <span className="flex items-center gap-2 text-xs text-muted-foreground" role="status">
-                <Icon name="spinner" className="size-3.5 motion-safe:animate-spin" />
-                {a.runView.loadingLogs}
-              </span>
-            ) : (
-              <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-6 text-foreground/90">
-                {text || (step ? a.runView.noStepLogs : a.queuedLogs)}
-              </pre>
-            )}
-          </div>
-        </>
+      </div>
+      <ActionError message={error} onRetry={onRetry} />
+      {step && !scoped && events.length > 0 && (
+        <p className="text-xs text-muted-foreground">{a.runView.fullJobLog}</p>
       )}
+      <div
+        ref={container}
+        onScroll={(event) => {
+          const element = event.currentTarget;
+          follow.current = element.scrollHeight - element.scrollTop - element.clientHeight < 40;
+        }}
+        className="min-h-[320px] min-w-0 flex-1 overflow-auto rounded-xl bg-background/80 px-4 py-3 @min-[960px]/run:min-h-0"
+        tabIndex={0}
+        role="region"
+        aria-label={a.logs}
+        aria-busy={loading}
+        dir="ltr"
+      >
+        {loading && !text ? (
+          <span className="flex items-center gap-2 text-xs text-muted-foreground" role="status">
+            <Icon name="spinner" className="size-3.5 motion-safe:animate-spin" />
+            {a.runView.loadingLogs}
+          </span>
+        ) : (
+          <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-6 text-foreground/90">
+            {text || (step ? a.runView.noStepLogs : a.queuedLogs)}
+          </pre>
+        )}
+      </div>
     </div>
   );
 }

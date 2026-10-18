@@ -198,8 +198,10 @@ func prepareGitHubRunner(ctx context.Context, g *githubRequest, directory string
 	return nil
 }
 
-// Output is infrastructure diagnostics only. Workflow logs are fetched from
-// GitHub, where its runner has applied secret masking.
+// The runner masks secrets before printing anywhere (console included) and the
+// worker's event redaction adds ours; the controller persists this journal as
+// the LIVE job log while GitHub still has the job in flight. The completed
+// blob fetched from GitHub afterwards remains the authoritative copy.
 func runGitHubRunner(parent context.Context, request jobRequest, events *eventWriter) (jobResult, error) {
 	ctx, cancel := context.WithTimeout(parent, time.Duration(request.TimeoutSeconds)*time.Second)
 	defer cancel()

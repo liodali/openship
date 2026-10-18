@@ -1,5 +1,5 @@
 import { AppError, NotFoundError, type ActionWorkerEvent } from "@repo/core";
-import type { ActionJob, ActionRun } from "@repo/db";
+import { repos, type ActionJob, type ActionRun } from "@repo/db";
 import type { ExecutionContext } from "../../../context";
 import { GitHubActionsApi } from "./github-api";
 
@@ -31,6 +31,61 @@ export async function gitHubArtifactDownload(ctx: ExecutionContext, run: ActionR
     throw new NotFoundError("Actions artifact");
   return apiFor(ctx, run).redirect(`/actions/artifacts/${id}/zip`);
 }
+
+/** One step boundary too many in one place: GitHub's raw job log text (and the
+ * live runner stdout we journal) marks steps with workflow commands. Sections
+ * are the authoritative boundaries; group markers bracket a step's pre-echo
+ * (command/env), and annotation tokens carry a message that must survive. */
+export class StepLogSplitter {
+  private step: string | null = null;
+
+  /** Feed one line; null when the line is pure structure and shows nothing. */
+  feed(line: string): { step: string | null; text: string } | null {
+    // No `$` anchors: lines keep their trailing newline and JS `$` does not
+    // match before one — `.` already stops at the newline.
+    const section = line.match(/##\[section\]Starting:\s*(.*)/);
+    if (section) {
+      this.step = section[1]!.trim() || null;
+      return null;
+    }
+    if (/##\[section\]Finishing:/.test(line)) {
+      this.step = null;
+      return null;
+    }
+    // `##[group]<label>` / `##[endgroup]` bracket the pre-step echo; the
+    // section header that follows repeats the label, so the marker line adds
+    // nothing. Content BETWEEN the markers stays, attributed to the next step.
+    if (/##\[(group|endgroup)\]/.test(line)) return null;
+    // Annotations (##[error], ##[warning], …) keep their message, drop the token.
+    return { step: this.step, text: line.replace(/##\[\w+\]\s?/g, "") };
+  }
+}
+
+/** Chunk step-tagged log text on line boundaries so a chunk never splits a
+ * line and (where possible) never spans two steps. */
+function stepTaggedChunks(
+  text: string,
+  maxBytes: number,
+): Array<{ step: string | null; message: string }> {
+  const splitter = new StepLogSplitter();
+  const chunks: Array<{ step: string | null; message: string }> = [];
+  let current: { step: string | null; message: string } | null = null;
+  const flush = () => {
+    if (current && current.message.trim()) chunks.push(current);
+    current = null;
+  };
+  for (const line of text.split(/(?<=\n)/)) {
+    const fed = splitter.feed(line);
+    if (!fed) continue;
+    if (!current || current.step !== fed.step || Buffer.byteLength(current.message) + Buffer.byteLength(fed.text) > maxBytes) {
+      flush();
+      current = { step: fed.step, message: fed.text };
+    } else current.message += fed.text;
+  }
+  flush();
+  return chunks;
+}
+
 export async function gitHubJobEvents(
   ctx: ExecutionContext,
   run: ActionRun,
@@ -40,9 +95,30 @@ export async function gitHubJobEvents(
   if (job.organizationId !== run.organizationId || job.runId !== run.id)
     throw new NotFoundError("Actions job");
   if (!job.github) throw new Error("Invalid GitHub job");
-  // GitHub's public REST API supplies completed logs. Live output stays in its
-  // authenticated UI; no scraping internal endpoints or storing runner tokens.
-  if (!job.finishedAt) return { events: [], next: after, complete: false };
+  // LIVE: the supervisor journals the runner's own stdout while the job runs
+  // (secret-masked by the runner before it prints, re-masked by the worker's
+  // event redaction), and reconcileSession persists it — stream that. GitHub's
+  // completed blob takes over once the job finishes, as the authoritative copy.
+  if (!job.finishedAt) {
+    const rows = await repos.actions.events(ctx.organizationId, job.id, after);
+    const splitter = new StepLogSplitter();
+    const events: ActionWorkerEvent[] = [];
+    for (const row of rows) {
+      const event = row.event;
+      if (event.type === "log" && event.message !== undefined) {
+        const fed = splitter.feed(event.message);
+        if (!fed) continue;
+        event.step = fed.step ?? undefined;
+        event.message = fed.text;
+      }
+      events.push(event);
+    }
+    return {
+      events,
+      next: rows.length ? rows[rows.length - 1]!.event.sequence : after,
+      complete: false,
+    };
+  }
   const { url } = await apiFor(ctx, run).redirect(`/actions/jobs/${job.github.id}/logs`);
   const response = await fetch(url, { redirect: "error", signal: AbortSignal.timeout(20_000) });
   if (!response.ok || !response.body)
@@ -69,13 +145,14 @@ export async function gitHubJobEvents(
   const text =
     Buffer.concat(parts).toString("utf8") +
     (truncated ? "\nLog preview limited to 8 MiB. Open GitHub to download the full log.\n" : "");
-  const chunks = text.match(/[\s\S]{1,16384}/g) ?? [];
-  const events: ActionWorkerEvent[] = chunks.slice(after, after + 200).map((message, index) => ({
+  const chunks = stepTaggedChunks(text, 16384);
+  const events: ActionWorkerEvent[] = chunks.slice(after, after + 200).map((chunk, index) => ({
     version: 1,
     sequence: after + index + 1,
     time: job.finishedAt!.toISOString(),
     type: "log",
-    message,
+    step: chunk.step ?? undefined,
+    message: chunk.message,
   }));
   const next = Math.max(after, after + events.length);
   return { events, next, complete: next >= chunks.length };

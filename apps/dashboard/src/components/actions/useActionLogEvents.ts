@@ -24,14 +24,30 @@ export function useActionLogEvents(job: ActionJobView | undefined) {
   const keyFor = (id: string) => `${scope}:${id}`;
   const key = job ? keyFor(job.id) : "";
   const jobId = job?.id;
+  // Display hint only (the external link while the run is live): the log itself
+  // now streams from the persisted supervisor journal while the job runs and
+  // switches to GitHub's completed blob when it finishes.
   const liveGitHub = !!job?.externalUrl && !job.finishedAt;
   const cache = useRef(new Map<string, LogPage>());
   const [state, setState] = useState<{ key: string; page: LogPage }>({ key: "", page: EMPTY });
   const [revision, setRevision] = useState(0);
   const refresh = useCallback(() => setRevision((value) => value + 1), []);
+  // Completion switches the server's log source (journal stream → GitHub's
+  // completed blob): their sequence spaces differ, so drop the cached page and
+  // re-arm the poll from zero rather than splicing two sources together.
+  const finishedAt = job?.finishedAt ?? null;
+  const previouslyFinished = useRef(finishedAt);
+  useEffect(() => {
+    const changed = previouslyFinished.current !== finishedAt;
+    previouslyFinished.current = finishedAt;
+    if (changed && jobId) {
+      cache.current.delete(keyFor(jobId));
+      setRevision((value) => value + 1);
+    }
+  }, [finishedAt, jobId, keyFor]);
 
   useEffect(() => {
-    if (!jobId || liveGitHub) return;
+    if (!jobId) return;
     let active = true;
     let timer: ReturnType<typeof setTimeout>;
     let page = cache.current.get(key) ?? EMPTY;
@@ -77,7 +93,7 @@ export function useActionLogEvents(job: ActionJobView | undefined) {
       active = false;
       clearTimeout(timer);
     };
-  }, [key, jobId, liveGitHub, revision]);
+  }, [key, jobId, revision]);
 
   const page = state.key === key ? state.page : (cache.current.get(key) ?? EMPTY);
   return {
