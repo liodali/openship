@@ -54,7 +54,10 @@ permissions:
 jobs:
   sync:
     name: Merge upstream/main
-    runs-on: ubuntu-24.04
+    # The Openship self-hosted runner (rootless podman VPS). Safe: this
+    # workflow triggers only on schedule and manual dispatch — never
+    # pull_request, so no untrusted code reaches the box.
+    runs-on: [self-hosted, openship, linux, x64]
     timeout-minutes: 45
     outputs:
       merged: ${{ steps.decide.outputs.merged }}
@@ -65,13 +68,52 @@ jobs:
         with:
           fetch-depth: 0 # merge needs history; rr-cache lives in .git
 
+      # Best-effort on the self-hosted runner: actions/cache shells out to
+      # zstd, which a slim runner image may not carry. Losing the rr-cache
+      # only costs a manual conflict resolution next time (the issue loop
+      # below covers it) — it must never fail the sync itself.
       - name: Restore rerere memory
+        continue-on-error: true
         uses: actions/cache@v6
         with:
           path: .git/rr-cache
           key: rr-cache-${{ github.run_id }}
           restore-keys: |
             rr-cache-
+
+      # Bun + gh are bootstrapped BEFORE the merge: the failure-path issue
+      # steps below need gh, and bun replaces every system-node assumption
+      # (the runner container has none).
+      - name: Read pinned Bun version
+        run: echo "BUN_VERSION=$(cat .bun-version)" >> "$GITHUB_ENV"
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "${{ env.BUN_VERSION }}"
+
+      # No gh CLI in the runner image. Fetched via bun — no curl/wget assumed.
+      - name: Install gh CLI
+        run: |
+          set -eu
+          command -v gh >/dev/null 2>&1 && { echo "gh already present"; exit 0; }
+          dir="$RUNNER_TEMP/gh"
+          mkdir -p "$dir"
+          GH_DIR="$dir" bun -e '
+            const release = await (await fetch(
+              "https://api.github.com/repos/cli/cli/releases/latest",
+              { headers: { "user-agent": "fork-sync-ci" } },
+            )).json();
+            const asset = release.assets
+              .map((a) => a.name)
+              .find((n) => /^gh_.+_linux_amd64\.tar\.gz$/.test(n));
+            if (!asset) throw new Error("no linux amd64 gh asset in " + release.tag_name);
+            const url = `https://github.com/cli/cli/releases/download/${release.tag_name}/${asset}`;
+            await Bun.write(`${process.env.GH_DIR}/gh.tar.gz`, (await fetch(url)).blob());
+            console.log(`fetched ${asset}`);
+          '
+          tar -xzf "$dir/gh.tar.gz" -C "$dir" --strip-components=1
+          echo "$dir/bin" >> "$GITHUB_PATH"
 
       - name: Fetch upstream
         id: fetch
@@ -173,23 +215,13 @@ jobs:
           fi
 
       # ── Guards: OUR patches + the code they live in still work ────────────
-      - name: Read pinned Bun version
-        if: steps.decide.outputs.merged == 'true'
-        run: echo "BUN_VERSION=$(cat .bun-version)" >> "$GITHUB_ENV"
-
-      - name: Set up Bun
-        if: steps.decide.outputs.merged == 'true'
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: "${{ env.BUN_VERSION }}"
-
       - name: Install dependencies
         if: steps.decide.outputs.merged == 'true'
         run: bun install --frozen-lockfile
 
       - name: Patch guard (are our seven patches still intact?)
         if: steps.decide.outputs.merged == 'true'
-        run: node scripts/fork/patch-guard.mjs
+        run: bun scripts/fork/patch-guard.mjs
 
       - name: Type-check the patched package
         if: steps.decide.outputs.merged == 'true'
@@ -209,8 +241,10 @@ jobs:
 
       # ── Publish: push the merge, then chain the image build ───────────────
       # Save rr-cache AFTER a successful merge too — a rerere resolution only
-      # gets memorized when the merge that recorded it completes.
+      # gets memorized when the merge that recorded it completes. Best-effort
+      # (see the restore step above).
       - name: Save rerere memory
+        continue-on-error: true
         if: steps.decide.outputs.merged == 'true'
         uses: actions/cache/save@v6
         with:

@@ -29,6 +29,40 @@ Files that make this up:
 | `.github/workflows/fork-cli.yml`    | build the `openship` CLI → GitHub release assets (also on manual push to main)   |
 | `scripts/fork/patch-guard.mjs`      | structural check that the seven patches survived the merge (3 Podman + fork badge + folder-deploy endpoints + hosted-only own domain + podman actions runner) |
 
+## Where the pipeline runs (Openship self-hosted runners)
+
+All three fork workflows run on our own Openship Actions runner — the same
+rootless-podman destination the fsvger pipeline builds on — via
+`runs-on: [self-hosted, openship, linux, x64]`. `ci.yml` and
+`actions-e2e.yml` stay on GitHub-hosted runners: they run `pull_request` code
+(never on our box) and need a macOS VM for the darwin supervisor tests.
+
+Safe on purpose: the three fork workflows trigger only on our pushes,
+schedule, dispatch and the sync chain — never `pull_request` — so no
+untrusted code executes on the VPS.
+
+Adaptations the runner container (no system node, curl, gh, npm) requires,
+already in the workflows:
+
+- `bun` everywhere `node`/`npm` appeared (patch guard, version suffix,
+  `bun pm pack`); `setup-bun` downloads it per run.
+- `gh` is fetched in-job (bun downloads the static tarball; no-op where gh
+  exists).
+- Images build with plain `docker build` + `docker push` — the podman-proven
+  fsvger pattern — not buildx/BuildKit, which is unreliable under the
+  docker-compat socket. Layer caching comes from the podman service's own
+  storage on the VPS; built tag refs are dropped after each run. The matrix
+  is serial (`max-parallel: 1`) so three builds cannot thrash one small box.
+- rerere cache save/restore is `continue-on-error` (zstd may be absent in a
+  slim runner image; the memory is an optimization, the issue loop is the
+  safety net).
+
+One-time wiring (before the first run can start — jobs just queue until
+then): grant the Openship GitHub App access to `liodali/openship`, then in
+the Openship dashboard import the repo's workflows and assign the runner.
+If the runner is ever unavailable, reverting the `runs-on` lines returns the
+pipeline to GitHub-hosted runners immediately.
+
 ## One-time setup
 
 **On the GitHub fork** (Settings → Secrets and variables → Actions):

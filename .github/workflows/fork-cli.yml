@@ -45,7 +45,10 @@ permissions:
 jobs:
   build:
     name: Build + publish the fork CLI
-    runs-on: ubuntu-24.04
+    # The Openship self-hosted runner (rootless podman VPS). Safe: this
+    # workflow triggers only on our pushes, dispatch and the sync chain —
+    # never pull_request, so no untrusted code reaches the box.
+    runs-on: [self-hosted, openship, linux, x64]
     timeout-minutes: 30
     steps:
       - name: Checkout fork main
@@ -65,13 +68,40 @@ jobs:
         with:
           bun-version: "${{ env.BUN_VERSION }}"
 
+      # No gh CLI in the runner image (GitHub-hosted runners ship it; the
+      # builder container does not). Fetched via bun — no curl/wget assumed —
+      # and pinned onto PATH for the release steps below. A no-op wherever gh
+      # already exists.
+      - name: Install gh CLI
+        run: |
+          set -eu
+          command -v gh >/dev/null 2>&1 && { echo "gh already present"; exit 0; }
+          dir="$RUNNER_TEMP/gh"
+          mkdir -p "$dir"
+          GH_DIR="$dir" bun -e '
+            const release = await (await fetch(
+              "https://api.github.com/repos/cli/cli/releases/latest",
+              { headers: { "user-agent": "fork-cli-ci" } },
+            )).json();
+            const asset = release.assets
+              .map((a) => a.name)
+              .find((n) => /^gh_.+_linux_amd64\.tar\.gz$/.test(n));
+            if (!asset) throw new Error("no linux amd64 gh asset in " + release.tag_name);
+            const url = `https://github.com/cli/cli/releases/download/${release.tag_name}/${asset}`;
+            await Bun.write(`${process.env.GH_DIR}/gh.tar.gz`, (await fetch(url)).blob());
+            console.log(`fetched ${asset}`);
+          '
+          tar -xzf "$dir/gh.tar.gz" -C "$dir" --strip-components=1
+          echo "$dir/bin" >> "$GITHUB_PATH"
+
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
       - name: Keep the fork version suffix
         run: |
           set -eu
-          node - <<'EOF'
+          # bun, not node: the runner container has no system node.
+          bun -e '
           const fs = require("node:fs");
           const run = process.env.GITHUB_RUN_NUMBER;
           const paths = ["apps/cli/package.json", "packages/openship/package.json"];
@@ -83,7 +113,7 @@ jobs:
           const [cli, pkg] = paths.map(p => JSON.parse(fs.readFileSync(p, "utf8")));
           if (cli.version !== pkg.version) throw new Error("manifest version drift");
           fs.appendFileSync(process.env.GITHUB_ENV, `CLI_VERSION=${pkg.version}\n`);
-          EOF
+          '
 
       - name: Build the CLI + bundled SDK
         run: bun run build:sdk
@@ -91,7 +121,8 @@ jobs:
       - name: Pack
         working-directory: packages/openship
         run: |
-          npm pack
+          # bun pm pack — no npm/node in the runner container.
+          bun pm pack
           cp ./*.tgz "$GITHUB_WORKSPACE/openship-cli.tgz"
           # stable-named copy for the moving cli-latest release
           cp ./*.tgz "$GITHUB_WORKSPACE/openship-cli-fork.tgz"

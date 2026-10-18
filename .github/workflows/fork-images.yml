@@ -46,9 +46,17 @@ permissions:
 jobs:
   build:
     name: Build + push ${{ matrix.image }}
-    runs-on: ubuntu-24.04
+    # The Openship self-hosted runner (rootless podman VPS) — the same
+    # destination the fsvger pipeline already builds on. Safe because this
+    # workflow only ever runs OUR code: push to main, manual dispatch, or
+    # chained from fork-sync — never pull_request.
+    runs-on: [self-hosted, openship, linux, x64]
+    timeout-minutes: 60
     strategy:
       fail-fast: false
+      # One small rootless-podman box: build serially so three image builds
+      # cannot thrash the runner's CPU/RAM limits at once.
+      max-parallel: 1
       matrix:
         # The three images a VPS compose install runs. Add mail/webmail/
         # cluster-tasks here if the box ever needs them.
@@ -69,7 +77,12 @@ jobs:
         id: tags
         run: |
           set -eu
-          version="$(node -p "require('./package.json').version")"
+          # Shell-native on purpose: the runner container has no system node.
+          version="$(sed -n 's/^  "version": "\(.*\)",$/\1/p' package.json | head -n1)"
+          case "$version" in
+            *.*) ;;
+            *) echo "cannot parse version from package.json" >&2; exit 1 ;;
+          esac
           sha="$(git rev-parse --short HEAD)"
           registry="${{ vars.FORK_REGISTRY }}"
           [ -n "$registry" ] || { echo "FORK_REGISTRY repo variable is not set (Settings → Secrets and variables → Actions → Variables)"; exit 1; }
@@ -84,30 +97,44 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
       - name: Log in to the fork registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ vars.FORK_REGISTRY }}
-          username: ${{ secrets.FORK_REGISTRY_USER }}
-          password: ${{ secrets.FORK_REGISTRY_TOKEN }}
+        run: |
+          docker login "${{ vars.FORK_REGISTRY }}" \
+            --username "${{ secrets.FORK_REGISTRY_USER }}" \
+            --password "${{ secrets.FORK_REGISTRY_TOKEN }}"
 
       # Context is the repo root: the Dockerfiles COPY packages/ and sibling
-      # apps/. amd64 only — the VPS is x86_64; add a platform axis (and native
-      # arm runners, like upstream's docker-images.yml) before pointing an arm
-      # box at this registry.
+      # apps/. amd64 only — the VPS is x86_64.
+      #
+      # Plain `docker build` (the podman-proven pattern the fsvger pipeline
+      # already uses on the same box), NOT buildx: the BuildKit container
+      # driver is unreliable under the docker-compat socket, and there is no
+      # GHA cache on a self-hosted runner anyway — the podman service's own
+      # layer cache on the VPS serves that role between runs.
       - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: apps/${{ matrix.image }}/Dockerfile
-          platforms: linux/amd64
-          push: true
-          tags: ${{ steps.tags.outputs.images }}
-          cache-from: type=gha,scope=fork-${{ matrix.image }}
-          cache-to: type=gha,scope=fork-${{ matrix.image }},mode=max
+        run: |
+          set -eu
+          while IFS= read -r image; do
+            [ -n "$image" ] || continue
+            echo "Building $image…"
+            docker build --file "apps/${{ matrix.image }}/Dockerfile" --tag "$image" .
+            docker push "$image"
+          done <<EOF
+          ${{ steps.tags.outputs.images }}
+          EOF
+
+      # The registry has the layers; local tag refs would pile up on the VPS
+      # (moving + sha + latest per run). rmi drops the tags while the podman
+      # layer cache — the actual speed win — stays untouched.
+      - name: Drop the local image tags
+        if: always()
+        run: |
+          while IFS= read -r image; do
+            [ -n "$image" ] || continue
+            docker rmi "$image" >/dev/null 2>&1 || true
+          done <<EOF
+          ${{ steps.tags.outputs.images }}
+          EOF
 
       - name: Print what the VPS can pin
         run: |
