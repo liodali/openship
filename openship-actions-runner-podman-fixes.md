@@ -1,5 +1,10 @@
 # Actions runner on rootless Podman — fork changes needed
 
+> **Status 2026-10-18 (later): all eight items are implemented on this branch**
+> (P1.1–P1.4, P2.5–P2.6, P3.7–P3.8; see the "Implemented" notes per item).
+> The shim-retirement gate below still applies: it needs a fork release that
+> carries P1 deployed to the server first.
+>
 > Created 2026-10-18 after the first successful end-to-end run of the GitHub
 > Actions runner on the self-hosted server (fsvger-op staging pipeline,
 > `v0.0.18-staging-db` built and published). The full incident record lives in
@@ -53,6 +58,10 @@ Both branches return non-empty on their respective engines; the existing
 `docker-check.test.ts:168` asserts `daemonCommand` contains `ServerVersion` —
 still passes. Consider a test for the fallback branch.
 
+**Implemented** exactly as proposed (stderr of the Docker branch silenced so a
+podman template error cannot become the reported failure text). Tests cover
+the fallback expression string and a podman-version answer reading healthy.
+
 ### 2. Rootless UID mapping for the GitHub runner container
 
 `packages/actions-runner/github.go` → `githubContainerArgs` (~line 284).
@@ -86,6 +95,14 @@ Complementary (portability, not required with keep-id): create the runner
 tree dirs `0755` instead of `0700` (file modes stay as extracted). Only do
 this if keep-id is deemed insufficient on its own.
 
+**Implemented.** `isRootlessPodman()` (cached once per process) answers from
+`docker info --format '{{.Host.Security.Rootless}}'` == `true` OR a `docker
+version` client banner mentioning `Podman`; both probes fail closed. The flag
+is appended in `githubContainerArgs` before the image name, alongside the new
+ICU and SELinux flags (see below). Go tests stub the detectors and script a
+fake `docker`/`getenforce` on PATH to exercise the probes themselves. The
+`0755` complement was NOT taken — keep-id is sufficient on the server.
+
 ### 3. .NET runner needs ICU or invariant globalization
 
 `packages/actions-runner/github.go` → `githubContainerArgs`.
@@ -101,6 +118,8 @@ args = append(args, "--env", "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1")
 
 (Alternative: require libicu in runner images and document it; the env var is
 the smaller contract.)
+
+**Implemented** unconditionally in `githubContainerArgs`, as proposed.
 
 ### 4. SELinux `connectto` on the worker Docker proxy
 
@@ -121,6 +140,10 @@ if isSELinuxEnforcing() { // getenforce == "Enforcing"
 (`container_connect_any=1` was also set on this server; keep it as belt and
 braces, it is not sufficient alone.)
 
+**Implemented.** `isSELinuxEnforcing()` (cached, `getenforce` == "Enforcing",
+absent binary reads as not enforcing) adds `--security-opt label=disable` in
+`githubContainerArgs`.
+
 ## P2 — operational robustness (cost real time during the incident)
 
 ### 5. Failed worker sessions poison their job
@@ -132,6 +155,16 @@ times today). Where: `packages/platform/src/engine/modules/actions/github-runner
 finished-failed session becomes eligible again after a bounded backoff
 (e.g. 3 attempts, 5 min apart), with the attempt count visible on the run.
 
+**Implemented in `reserveRunnerSession`** (`packages/db/src/repos/action-github.repo.ts`):
+the previous-session gate now allows a retry when every prior session for the
+demand job is fully cleaned, fewer than `ACTIONS_RUNNER_SESSION_ATTEMPTS` (3)
+sessions exist, and the most recent failed one settled at least
+`ACTIONS_RUNNER_SESSION_RETRY_MS` (5 min) ago. An uncleaned session still
+blocks, and the attempt cap keeps a broken destination from looping (and never
+loops a paid VM). The count surfaces as `runnerAttempts` on each job in the
+run view (`ActionJobSchema`; the dashboard job header shows "Dispatch attempt
+N" when > 1). Covered end-to-end in `github-runners.test.ts`.
+
 ### 6. API reruns are rejected by the access policy
 
 `POST /api/actions/runs/<id>/rerun` executes as `adetifyopenship[bot]`; with
@@ -139,6 +172,15 @@ finished-failed session becomes eligible again after a bounded backoff
 `actor_not_allowed` and the attempt waits forever. Either allow the bot
 actor for reruns it initiated, or fail the rerun loudly instead of parking
 it. Where: `run-access.ts` / `github-commands.ts`.
+
+**Implemented (allow path)** in `evaluateActionRunAdmission`: an accepted
+`action_command` receipt for exactly this (workflow, remote run, attempt)
+proves the attempt was initiated by our API at an already-authorized user's
+request, so the bot actor skips only the audience gate — approval and fork
+gates still apply, and a human rerunning directly on GitHub keeps the normal
+check. This also un-parks bot-dispatched `workflow_dispatch` runs under
+`selected` policies (same mechanism, same reasoning). Covered in
+`run-access.test.ts`.
 
 ## P3 — nice to have
 
@@ -148,12 +190,27 @@ it. Where: `run-access.ts` / `github-commands.ts`.
 probe. A frozen value looks like an outage (it did today). Add a periodic
 `probeActionRunner` sweep or rename/document the field semantics.
 
+**Implemented (sweep).** `probeActionRunnerSweep()` in `runner.service.ts`
+re-probes every enabled server-backed runner (serial, one SSH connect per
+destination) and records capabilities/error/`checkedAt` with the same
+contract as an explicit probe; per-runner failures land on the runner row
+and never fail the pass. Wired into the actions controller tick at a 5-minute
+cadence (`lifecycle.ts`). Covered in `runner.service.test.ts`.
+
 ### 8. Diagnostics defaults
 
 The whole incident was debugged blind because sweep errors are swallowed
 unless `SYSTEM_DEBUG_LOGS` is set. Consider logging dispatcher skips/failures
 at warn level unconditionally (they are rare), or surface the last dispatch
 error on the runner/run records.
+
+**Implemented (both halves, cheaply).** `reserveDemand` now names dispatcher
+skips through `diagnostics.warn` — which prints to the console even with the
+reporter disabled — once per skip-reason *change* per job (no per-tick spam):
+a parked admission state and "no enabled runner matches labels […]" (the
+exact silent `continue` that froze the incident) are the two named
+conditions. Run-level state was already visible via `admission.state/reason`
+on the waiting run; runner-level health now also flows from the P3.7 sweep.
 
 ## What stays server-side (do NOT move into the fork)
 

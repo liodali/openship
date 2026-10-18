@@ -185,7 +185,7 @@ jobs:
         if: steps.decide.outputs.merged == 'true'
         run: bun install --frozen-lockfile
 
-      - name: Patch guard (are our five patches still intact?)
+      - name: Patch guard (are our seven patches still intact?)
         if: steps.decide.outputs.merged == 'true'
         run: node scripts/fork/patch-guard.mjs
 
@@ -202,7 +202,8 @@ jobs:
             src/runtime/docker-builder-mode.test.ts \
             src/runtime/docker-build-cancellation.test.ts \
             src/infra/nginx.test.ts \
-            src/infra/edge-baked-conf.test.ts
+            src/infra/edge-baked-conf.test.ts \
+            src/system/docker-check.test.ts
 
       # ── Publish: push the merge, then chain the image build ───────────────
       # Save rr-cache AFTER a successful merge too — a rerere resolution only

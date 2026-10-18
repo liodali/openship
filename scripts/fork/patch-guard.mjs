@@ -18,6 +18,9 @@
  *   4. fork badge             — dashboard sidebar marks our build (fork-badge.tsx)
  *   5. folder-deploy routes   — SDK passes scan publicEndpoints to ensure + build/access
  *   6. hosted-only own domain — no synthesized *.opsh.io routes on self-hosted
+ *   7. podman actions runner  — daemon probe fallback + runner container flags
+ *                              + failed-session retry + bot rerun admission +
+ *                              heartbeat sweep (openship-actions-runner-podman-fixes.md)
  *
  * WHEN UPSTREAM ADOPTS THE SAME FIX: resolve the merge by taking THEIR version
  * and delete that check here. Every merged upstream PR shrinks the fork back
@@ -158,6 +161,60 @@ check(
   "the sidebar no longer mounts ForkBadge — an upstream refactor of the sidebar header dropped our fork marker (apps/dashboard/src/components/fork-badge.tsx).",
 );
 
+// ── Patch 7: GitHub Actions runner on rootless Podman ───────────────────────
+// The whole fix set from openship-actions-runner-podman-fixes.md, absorbed so
+// the hand-made /usr/local/bin/docker shim could retire. Upstream owns every
+// file it lives in, and the actions module is under active development — a
+// merge that rewrites any of them can drop a fix WITHOUT conflicting, so each
+// arm is guarded structurally.
+const catalogTs = read("packages/adapters/src/system/catalog.ts") ?? "";
+check(
+  "patch 7 (daemon probe tolerates podman)",
+  catalogTs.includes("docker info --format '{{.ServerVersion}}' 2>/dev/null ||") &&
+    catalogTs.includes("{{.Version.Version}}"),
+  "catalog.ts lost the Podman daemon-probe fallback — the server check reports docker unhealthy again and the actions dispatcher never starts jobs on the podman VPS.",
+);
+const githubGo = read("packages/actions-runner/github.go") ?? "";
+check(
+  "patch 7 (runner container tolerances)",
+  githubGo.includes("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1") &&
+    githubGo.includes('"--userns=keep-id"') &&
+    githubGo.includes('"--security-opt", "label=disable"') &&
+    githubGo.includes("if isRootlessPodman() {") &&
+    githubGo.includes("if isSELinuxEnforcing() {"),
+  "githubContainerArgs lost keep-id / invariant-globalization / label=disable — Runner.Listener dies on Permission denied (subuid mapping), aborts 134 without libicu, or is denied connectto to the docker proxy on the podman VPS.",
+);
+const githubRepoTs = read("packages/db/src/repos/action-github.repo.ts") ?? "";
+check(
+  "patch 7 (failed sessions retry with backoff)",
+  githubRepoTs.includes("ACTIONS_RUNNER_SESSION_ATTEMPTS") &&
+    githubRepoTs.includes("ACTIONS_RUNNER_SESSION_RETRY_MS"),
+  "reserveRunnerSession lost the bounded retry — one failed worker session poisons its job again until someone re-pushes the tag.",
+);
+const runAccessTs = read("packages/platform/src/engine/modules/actions/run-access.ts") ?? "";
+check(
+  "patch 7 (bot actor admitted for API reruns)",
+  runAccessTs.includes("systemInitiated") && runAccessTs.includes("gitHubRunCommand"),
+  "evaluateActionRunAdmission lost the command-receipt arm — API reruns execute as the GitHub App bot, fail a selected-user audience, and park forever.",
+);
+check(
+  "patch 7 (runner heartbeat sweep)",
+  (read("packages/platform/src/engine/modules/actions/runner.service.ts") ?? "").includes(
+    "export async function probeActionRunnerSweep",
+  ) &&
+    (read("packages/platform/src/engine/modules/actions/lifecycle.ts") ?? "").includes(
+      "probeActionRunnerSweep",
+    ),
+  "the checkedAt heartbeat sweep vanished from runner.service.ts / lifecycle.ts — a frozen checkedAt reads as a runner outage again.",
+);
+check(
+  "patch 7 (dispatcher skips are logged)",
+  (read("packages/platform/src/engine/modules/actions/github-runners.ts") ?? "").includes(
+    "noteDispatchSkip",
+  ),
+  "reserveDemand lost noteDispatchSkip — jobs sit undispatched silently again (the frozen-dispatch incident shape).",
+);
+
 if (failures.length > 0) {
   console.error("\n✖ fork patch guard: a patch no longer looks intact after the merge.\n");
   for (const f of failures) console.error(`  - ${f}`);
@@ -169,5 +226,5 @@ if (failures.length > 0) {
   process.exit(1);
 }
 console.log(
-  "✔ fork patch guard: all six patches intact (extrahosts JSON, builder fallback, nginx Connection map, fork badge, folder-deploy endpoints, hosted-only own domain).",
+  "✔ fork patch guard: all seven patches intact (extrahosts JSON, builder fallback, nginx Connection map, fork badge, folder-deploy endpoints, hosted-only own domain, podman actions runner).",
 );
