@@ -142,6 +142,7 @@ export async function daemonSupportsBuildKitSession(
       // Unreachable daemon mid-probe is not a build verdict; don't cache a
       // failure as a capability. The build itself will surface the error if
       // the daemon is truly gone.
+      // diagnostics-ignore: probe failure is deliberately not a cached verdict
       return null;
     }
   }
