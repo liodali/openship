@@ -557,6 +557,7 @@
     "fullJobLog": "Showing the complete job log.",
     "approvals": "Approvals",
     "noApprovals": "No pending approvals in Openship.",
-    "approvalClosed": "This run is no longer waiting for approval."
+    "approvalClosed": "This run is no longer waiting for approval.",
+    "dispatchAttempt": "Dispatch attempt"
   }
 }

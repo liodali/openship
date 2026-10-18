@@ -557,6 +557,7 @@
     "fullJobLog": "Das vollständige Job-Log wird angezeigt.",
     "approvals": "Genehmigungen",
     "noApprovals": "Keine ausstehenden Genehmigungen in Openship.",
-    "approvalClosed": "Dieser Lauf wartet nicht mehr auf eine Genehmigung."
+    "approvalClosed": "Dieser Lauf wartet nicht mehr auf eine Genehmigung.",
+    "dispatchAttempt": "Startversuch"
   }
 }

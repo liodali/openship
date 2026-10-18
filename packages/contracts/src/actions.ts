@@ -238,6 +238,9 @@ export const ActionJobSchema = Type.Object(
       Type.Literal("finished"),
     ]),
     runnerId: nullable(Type.String()),
+    /** Runner dispatch attempts for this job (1 = first attempt). Present only
+     * for GitHub-controller jobs, where failed sessions are re-dispatched. */
+    runnerAttempts: Type.Optional(Type.Integer({ minimum: 1 })),
     startedAt: date,
     finishedAt: date,
     cleanedAt: date,

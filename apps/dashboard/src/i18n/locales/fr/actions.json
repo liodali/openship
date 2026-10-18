@@ -557,6 +557,7 @@
     "fullJobLog": "Le journal complet du job est affiché.",
     "approvals": "Approbations",
     "noApprovals": "Aucune approbation en attente dans Openship.",
-    "approvalClosed": "Cette exécution n’attend plus d’approbation."
+    "approvalClosed": "Cette exécution n’attend plus d’approbation.",
+    "dispatchAttempt": "Tentative d’exécution"
   }
 }

@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, gt, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, inArray, isNotNull, isNull, lt, ne, or, sql } from "drizzle-orm";
 import {
   ACTIONS_MAX_JOBS,
   ACTIONS_MAX_LOG_BYTES,
@@ -376,6 +376,20 @@ export function createActionsRepo(db: Database) {
         .select()
         .from(actionRunner)
         .where(eq(actionRunner.organizationId, org))
+        .orderBy(asc(actionRunner.createdAt));
+    },
+    /** Enabled server-backed runners across every organization — the heartbeat
+     * sweep's targets. Cloud pools are health-checked by their provider. */
+    async listServerRunnerDestinations() {
+      return db
+        .select({
+          id: actionRunner.id,
+          organizationId: actionRunner.organizationId,
+          serverId: actionRunner.serverId,
+          name: actionRunner.name,
+        })
+        .from(actionRunner)
+        .where(and(eq(actionRunner.enabled, true), isNotNull(actionRunner.serverId)))
         .orderBy(asc(actionRunner.createdAt));
     },
     async runner(org: string, id: string) {

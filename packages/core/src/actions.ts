@@ -5,6 +5,12 @@ export const ACTIONS_MAX_JOBS = 256;
 export const ACTIONS_MAX_WORKFLOW_BYTES = 256 * 1024;
 export const ACTIONS_MAX_LOG_BYTES = 8 * 1024 * 1024;
 export const ACTIONS_MAX_JOB_SECONDS = 6 * 60 * 60;
+/** A queued GitHub job whose runner session failed is re-dispatched at most
+ * this many times in total, spaced by the backoff below — enough to ride out a
+ * transient provisioning failure, few enough that a broken destination
+ * surfaces instead of looping (and never loops a paid VM). */
+export const ACTIONS_RUNNER_SESSION_ATTEMPTS = 3;
+export const ACTIONS_RUNNER_SESSION_RETRY_MS = 5 * 60_000;
 
 /** Exactly one controller owns a workflow's scheduling and job results. */
 export type ActionWorkflowController = "openship" | "github";

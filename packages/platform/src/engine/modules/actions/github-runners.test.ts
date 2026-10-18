@@ -488,4 +488,59 @@ describe("official GitHub runner reconciliation", () => {
     expect((await f.get())?.cleanedAt).toBeTruthy();
     expect(state.open).not.toHaveBeenCalled();
   });
+
+  it("re-dispatches a failed runner session after a backoff and stops at the attempt cap", async () => {
+    const f = await fixture();
+    // The demand stays queued on GitHub's side while the local session has
+    // fully cleaned after a provisioning failure.
+    await connection.db
+      .update(schema.actionRunnerSession)
+      .set({ state: "finished", error: "provisioning failed", cleanedAt: new Date() })
+      .where(eq(schema.actionRunnerSession.id, f.id));
+    await connection.db
+      .update(schema.actionJob)
+      .set({ status: "queued", finishedAt: null })
+      .where(eq(schema.actionJob.id, f.jobId));
+    const spec = (await repo.job(f.org, f.jobId))!.spec!;
+    const reserve = async (suffix: string) =>
+      repo.reserveRunnerSession({
+        id: generateId(suffix),
+        organizationId: f.org,
+        workflowId: f.workflow.id,
+        runnerId: f.runner.id,
+        demandJobId: f.jobId,
+        repoOwner: "owner",
+        repoName: "test",
+        runnerName: `openship-retry-${suffix}-${generateId("x")}`,
+        spec,
+      });
+    const settleFailure = async (old: boolean) => {
+      const rows = await connection.db
+        .select()
+        .from(schema.actionRunnerSession)
+        .where(eq(schema.actionRunnerSession.demandJobId, f.jobId));
+      const latest = rows.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0]!;
+      await connection.db
+        .update(schema.actionRunnerSession)
+        .set({
+          state: "finished",
+          error: "provisioning failed",
+          cleanedAt: new Date(),
+          updatedAt: new Date(Date.now() - (old ? 6 : 0) * 60_000),
+        })
+        .where(eq(schema.actionRunnerSession.id, latest.id));
+    };
+    // Fresh failure: the backoff window has not elapsed.
+    expect(await reserve("a")).toBeUndefined();
+    // Six minutes later the job is eligible again (attempt 2).
+    await settleFailure(true);
+    expect(await reserve("b")).toBeDefined();
+    // Attempt 3 is allowed after its own backoff…
+    await settleFailure(true);
+    expect(await reserve("c")).toBeDefined();
+    // …but the cap stops the loop: an explicit rerun is needed from here.
+    await settleFailure(true);
+    expect(await reserve("d")).toBeUndefined();
+    expect((await repo.runnerSessionCounts(f.org, [f.jobId])).get(f.jobId)).toBe(3);
+  });
 });

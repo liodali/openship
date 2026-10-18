@@ -241,6 +241,9 @@ export function RunWorkspace({
                 <h2 className="break-words text-base font-medium">{job.name}</h2>
                 <p className="mt-1 break-words text-xs text-muted-foreground">
                   <bdi>{job.labels.join(" · ")}</bdi>
+                  {job.runnerAttempts && job.runnerAttempts > 1 ? (
+                    <bdi>{` · ${a.runView.dispatchAttempt} ${job.runnerAttempts}`}</bdi>
+                  ) : null}
                 </p>
               </div>
               <div className="flex shrink-0 items-center gap-2">

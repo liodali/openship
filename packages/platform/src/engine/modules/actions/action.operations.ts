@@ -53,8 +53,18 @@ async function presentRun(ctx: ExecutionContext, id: string) {
     !run.cancelRequestedAt &&
     (run.admission?.state === "approval_required" ||
       (!run.admission && run.untrusted && !run.approvedAt));
+  const jobs = await repos.actions.jobs(ctx.organizationId, id);
   return {
-    ...actionRunView(run, await repos.actions.jobs(ctx.organizationId, id)),
+    ...actionRunView(
+      run,
+      jobs,
+      run.controller === "github"
+        ? await repos.actions.runnerSessionCounts(
+            ctx.organizationId,
+            jobs.map((job) => job.id),
+          )
+        : undefined,
+    ),
     canApprove:
       !!awaitingApproval &&
       (await visibleAction(async () => {
@@ -119,9 +129,22 @@ export const actionDependencies: ActionDependencies = withCloudActions({
         input.workflowId,
         input.limit,
         input.projectId,
-      ))
-        if (await visibleAction(() => authorizeActionRun(ctx, run)))
-          result.push(actionRunView(run, await repos.actions.jobs(ctx.organizationId, run.id)));
+      )) {
+        if (!(await visibleAction(() => authorizeActionRun(ctx, run)))) continue;
+        const jobs = await repos.actions.jobs(ctx.organizationId, run.id);
+        result.push(
+          actionRunView(
+            run,
+            jobs,
+            run.controller === "github"
+              ? await repos.actions.runnerSessionCounts(
+                  ctx.organizationId,
+                  jobs.map((job) => job.id),
+                )
+              : undefined,
+          ),
+        );
+      }
       return result;
     },
     async runners(ctx) {

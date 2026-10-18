@@ -557,6 +557,7 @@
     "fullJobLog": "正在显示完整的作业日志。",
     "approvals": "审批",
     "noApprovals": "Openship 中没有待审批项。",
-    "approvalClosed": "此运行已不再等待审批。"
+    "approvalClosed": "此运行已不再等待审批。",
+    "dispatchAttempt": "调度尝试"
   }
 }

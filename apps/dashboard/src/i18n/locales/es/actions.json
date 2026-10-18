@@ -557,6 +557,7 @@
     "fullJobLog": "Se muestra el registro completo del trabajo.",
     "approvals": "Aprobaciones",
     "noApprovals": "No hay aprobaciones pendientes en Openship.",
-    "approvalClosed": "Esta ejecución ya no espera aprobación."
+    "approvalClosed": "Esta ejecución ya no espera aprobación.",
+    "dispatchAttempt": "Intento de ejecución"
   }
 }

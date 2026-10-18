@@ -87,7 +87,7 @@ export function actionWorkflowView(workflow: ActionWorkflow) {
     secretNames: Object.keys(workflow.secrets),
   };
 }
-export function actionRunView(run: ActionRun, jobs: ActionJob[]) {
+export function actionRunView(run: ActionRun, jobs: ActionJob[], runnerAttempts?: Map<string, number>) {
   const plan = actionPlanView(run.plan);
   const scopes = new Map(
     jobs.flatMap((job) => job.spec?.scope?.map((frame) => [frame.jobId, frame] as const) ?? []),
@@ -166,6 +166,7 @@ export function actionRunView(run: ActionRun, jobs: ActionJob[]) {
               ? ("provisioning" as const)
               : ("queued" as const),
       runnerId: job.runnerId,
+      runnerAttempts: runnerAttempts?.get(job.id),
       startedAt: job.startedAt,
       finishedAt: job.finishedAt,
       cleanedAt: job.cleanedAt,

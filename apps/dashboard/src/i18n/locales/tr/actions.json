@@ -557,6 +557,7 @@
     "fullJobLog": "İş günlüğünün tamamı gösteriliyor.",
     "approvals": "Onaylar",
     "noApprovals": "Openship’te bekleyen onay yok.",
-    "approvalClosed": "Bu çalıştırma artık onay beklemiyor."
+    "approvalClosed": "Bu çalıştırma artık onay beklemiyor.",
+    "dispatchAttempt": "Deneme"
   }
 }

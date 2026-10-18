@@ -557,6 +557,7 @@
     "fullJobLog": "ジョブのログ全体を表示しています。",
     "approvals": "承認",
     "noApprovals": "Openship に承認待ちの項目はありません。",
-    "approvalClosed": "この実行は承認待ちではなくなりました。"
+    "approvalClosed": "この実行は承認待ちではなくなりました。",
+    "dispatchAttempt": "実行試行"
   }
 }

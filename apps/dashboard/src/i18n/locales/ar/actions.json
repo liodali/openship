@@ -557,6 +557,7 @@
     "fullJobLog": "يُعرض سجل المهمة بالكامل.",
     "approvals": "الموافقات",
     "noApprovals": "لا توجد موافقات معلّقة في Openship.",
-    "approvalClosed": "لم يعد هذا التشغيل ينتظر الموافقة."
+    "approvalClosed": "لم يعد هذا التشغيل ينتظر الموافقة.",
+    "dispatchAttempt": "محاولة التشغيل"
   }
 }
