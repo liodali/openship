@@ -34,7 +34,11 @@ name: Fork upstream sync
 
 on:
   schedule:
-    - cron: "23 3 * * *" # daily, quiet UTC hour
+    # Weekly, not daily: the merge+guard itself is cheap, but each sync used
+    # to chain into build churn and queue noise on the small runner. Manual
+    # dispatch below covers "sync now"; upstream drift between runs is
+    # handled by rerere when the weekly merge conflicts.
+    - cron: "23 4 * * 0" # Sundays, 04:23 UTC
   workflow_dispatch:
 
 concurrency:

@@ -81,10 +81,10 @@ jobs:
     name: Build + publish the fork CLI
     needs: gate
     if: needs.gate.outputs.publish == 'true'
-    # The Openship self-hosted runner (rootless podman VPS). Safe: this
-    # workflow triggers only on our pushes, dispatch and the sync chain —
-    # never pull_request, so no untrusted code reaches the box.
-    runs-on: [self-hosted, openship, linux, x64]
+    # GitHub-hosted (free on this public repo; ~3 min proven). The gh/go
+    # bootstrap steps no-op wherever the tools already exist, and bun comes
+    # from the pinned setup, so the job runs identically anywhere.
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - name: Checkout fork main

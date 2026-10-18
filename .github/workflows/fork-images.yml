@@ -86,17 +86,15 @@ jobs:
     name: Build + push ${{ matrix.image }}
     needs: gate
     if: needs.gate.outputs.publish == 'true'
-    # The Openship self-hosted runner (rootless podman VPS) — the same
-    # destination the fsvger pipeline already builds on. Safe because this
-    # workflow only ever runs OUR code: push to main, manual dispatch, or
-    # chained from fork-sync — never pull_request.
-    runs-on: [self-hosted, openship, linux, x64]
-    timeout-minutes: 90 # cold build + cache serialization can exceed an hour
+    # GitHub-hosted: this repo is public, so these runners are free, and
+    # buildx + the GHA layer cache consistently land the three images in
+    # ~7 minutes — the small VPS runner needed 15-25 even warm (see
+    # docs/fork-maintenance.md "Where the pipeline runs"). fork-sync keeps the
+    # Openship-runner dogfood; the heavy artifact builds do not.
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
     strategy:
       fail-fast: false
-      # No GitHub-side cap: the runner destination's own maxParallel (4 on the
-      # VPS) is the single concurrency authority — all three images start at
-      # once and still leave a session for another workflow to run alongside.
       matrix:
         # The three images a VPS compose install runs. Add mail/webmail/
         # cluster-tasks here if the box ever needs them.
@@ -109,7 +107,7 @@ jobs:
           fetch-depth: 0
           # `main`, not the event sha: when chained from fork-sync via
           # workflow_call, github.sha is the PRE-merge tip that triggered the
-          # sync — without this, every daily merge publishes images of the
+          # sync — without this, every merge publishes images of the
           # previous commit and the merge itself is never built.
           ref: main
 
@@ -143,144 +141,22 @@ jobs:
             --username "${{ secrets.FORK_REGISTRY_USER }}" \
             --password "${{ secrets.FORK_REGISTRY_TOKEN }}"
 
-      # ── Builder-stage cache in Garage S3 (api/dashboard only) ──────────────
-      # node_modules inside the `builder` stage dominates cold build time.
-      # Podman's local layer cache already helps but dies with any storage
-      # prune; the bucket survives. Layers are saved as a gzipped `docker
-      # save` of the --target builder image, keyed by EVERYTHING the install
-      # layer COPYs (manifests, lockfile, patches, Dockerfile). Skipped
-      # entirely until FORK_S3_ENDPOINT is configured — the build must never
-      # depend on the cache existing.
-      - name: Set up Bun
-        if: matrix.image != 'edge' && vars.FORK_S3_ENDPOINT != ''
-        uses: oven-sh/setup-bun@v2
-
-      - name: Restore builder layers from Garage
-        id: builder-cache
-        # Never load-bearing: a network failure to the bucket (seen live:
-        # ECONNREFUSED from the VPS while the same endpoint answered
-        # elsewhere) must degrade to a cold build, not fail the job.
-        continue-on-error: true
-        if: matrix.image != 'edge' && vars.FORK_S3_ENDPOINT != ''
-        env:
-          S3_ENDPOINT: ${{ vars.FORK_S3_ENDPOINT }}
-          S3_BUCKET: ${{ vars.FORK_S3_BUCKET || 'openship-builds' }}
-          S3_KEY: ${{ secrets.FORK_S3_KEY }}
-          S3_SECRET: ${{ secrets.FORK_S3_SECRET }}
-          S3_INSECURE_TLS: ${{ vars.FORK_S3_INSECURE_TLS || '0' }}
-        run: |
-          set -eu
-          key="builder/${{ matrix.image }}-$( { cat package.json bun.lock tsconfig.base.json "apps/${{ matrix.image }}/Dockerfile"; find patches -type f -print0 | sort -z | xargs -0 sha256sum; } | sha256sum | cut -c1-32)"
-          echo "key=$key" >> "$GITHUB_OUTPUT"
-          echo "cache key: $key"
-          dir="$RUNNER_TEMP/s3"
-          mkdir -p "$dir"
-          cd "$dir"
-          echo '{"dependencies":{}}' > package.json
-          bun add @aws-sdk/client-s3@3.826.0 --silent
-          cat > s3.mjs <<'EOF'
-          import { S3Client, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
-          import { createReadStream, createWriteStream } from "node:fs";
-          import { pipeline } from "node:stream/promises";
-          const [, , op, key, file] = process.argv;
-          // Private-CA Garage: opted into explicitly per deployment — the
-          // alternative is distributing the CA into every runner image.
-          if (process.env.S3_INSECURE_TLS === "1") process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
-          const client = new S3Client({
-            endpoint: process.env.S3_ENDPOINT,
-            region: process.env.S3_REGION || "garage",
-            forcePathStyle: true,
-            credentials: {
-              accessKeyId: process.env.S3_KEY,
-              secretAccessKey: process.env.S3_SECRET,
-            },
-          });
-          const bucket = process.env.S3_BUCKET;
-          if (op === "get") {
-            try {
-              const res = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
-              await pipeline(res.Body, createWriteStream(file));
-              console.log("cache hit");
-            } catch (error) {
-              if (error.name === "NoSuchKey") {
-                console.log("cache miss");
-                process.exit(3);
-              }
-              throw error;
-            }
-          } else {
-            await client.send(
-              new PutObjectCommand({ Bucket: bucket, Key: key, Body: createReadStream(file) }),
-            );
-            console.log("uploaded");
-          }
-          EOF
-          if bun s3.mjs get "$key" "$RUNNER_TEMP/builder-cache.tar.gz"; then
-            docker load --input "$RUNNER_TEMP/builder-cache.tar.gz"
-            echo "hit=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "hit=false" >> "$GITHUB_OUTPUT"
-          fi
-          rm -f "$RUNNER_TEMP/builder-cache.tar.gz"
-
       # Context is the repo root: the Dockerfiles COPY packages/ and sibling
-      # apps/. amd64 only — the VPS is x86_64.
-      #
-      # Plain `docker build` (the podman-proven pattern the fsvger pipeline
-      # already uses on the same box), NOT buildx: the BuildKit container
-      # driver is unreliable under the docker-compat socket, and there is no
-      # GHA cache on a self-hosted runner anyway — the podman service's own
-      # layer cache on the VPS serves that role between runs.
+      # apps/. amd64 only — the VPS is x86_64; add a platform axis before
+      # pointing an arm box at this registry.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Build and push
-        run: |
-          set -eu
-          while IFS= read -r image; do
-            [ -n "$image" ] || continue
-            echo "Building $image…"
-            docker build --file "apps/${{ matrix.image }}/Dockerfile" --tag "$image" .
-            docker push "$image"
-          done <<EOF
-          ${{ steps.tags.outputs.images }}
-          EOF
-
-      # The registry has the layers; local tag refs would pile up on the VPS
-      # (moving + sha + latest per run). rmi drops the tags while the podman
-      # layer cache — the actual speed win — stays untouched.
-      - name: Save builder layers to Garage
-        # The upload is an optimization of FUTURE builds; this build already
-        # pushed its image. A refused connection to the bucket must not turn a
-        # green build red (seen live: ECONNREFUSED on the PUT after a fully
-        # successful build+push).
-        continue-on-error: true
-        if: matrix.image != 'edge' && vars.FORK_S3_ENDPOINT != '' && steps.builder-cache.outputs.hit == 'false'
-        env:
-          S3_ENDPOINT: ${{ vars.FORK_S3_ENDPOINT }}
-          S3_BUCKET: ${{ vars.FORK_S3_BUCKET || 'openship-builds' }}
-          S3_KEY: ${{ secrets.FORK_S3_KEY }}
-          S3_SECRET: ${{ secrets.FORK_S3_SECRET }}
-          S3_INSECURE_TLS: ${{ vars.FORK_S3_INSECURE_TLS || '0' }}
-        run: |
-          set -eu
-          cache_tag="openship-builder-cache:${{ matrix.image }}"
-          # After a successful full build every builder layer is in local
-          # cache, so --target builder is a no-op rebuild: this step is pure
-          # serialization (docker save | gzip -1) + upload. Garage and the VPS
-          # share a network, so the upload is the cheap part.
-          docker build --file "apps/${{ matrix.image }}/Dockerfile" --target builder --tag "$cache_tag" .
-          docker save "$cache_tag" | gzip -1 > "$RUNNER_TEMP/builder-cache.tar.gz"
-          (cd "$RUNNER_TEMP/s3" && bun s3.mjs put "${{ steps.builder-cache.outputs.key }}" "$RUNNER_TEMP/builder-cache.tar.gz")
-          rm -f "$RUNNER_TEMP/builder-cache.tar.gz"
-          docker rmi "$cache_tag" >/dev/null 2>&1 || true
-
-      - name: Drop the local image tags
-        if: always()
-        run: |
-          while IFS= read -r image; do
-            [ -n "$image" ] || continue
-            docker rmi "$image" >/dev/null 2>&1 || true
-          done <<EOF
-          ${{ steps.tags.outputs.images }}
-          EOF
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/${{ matrix.image }}/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.tags.outputs.images }}
+          cache-from: type=gha,scope=fork-${{ matrix.image }}
+          cache-to: type=gha,scope=fork-${{ matrix.image }},mode=max
 
       - name: Print what the VPS can pin
         run: |

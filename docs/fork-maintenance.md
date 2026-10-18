@@ -29,44 +29,28 @@ Files that make this up:
 | `.github/workflows/fork-cli.yml`    | build the `openship` CLI → GitHub release assets (also on manual push to main)   |
 | `scripts/fork/patch-guard.mjs`      | structural check that the seven patches survived the merge (3 Podman + fork badge + folder-deploy endpoints + hosted-only own domain + podman actions runner) |
 
-## Where the pipeline runs (Openship self-hosted runners)
+## Where the pipeline runs
 
-All three fork workflows run on our own Openship Actions runner — the same
-rootless-podman destination the fsvger pipeline builds on — via
-`runs-on: [self-hosted, openship, linux, x64]`. `ci.yml` stays on
-GitHub-hosted runners (it runs `pull_request` code — never on our box). The
-fork also deletes upstream's `actions-e2e.yml` (Go supervisor suite + real
-Docker/macOS e2e) and its `actions-runner` caller job in `ci.yml`: the
-macOS VM rental it needed is gone, and the runner patches stay guarded by
-the daily `patch-guard.mjs` instead. Upstream edits to those two files
-recur as delete/modify conflicts — resolve by keeping the removal; rerere
-remembers.
+Split by weight, not by fashion:
 
-Safe on purpose: the three fork workflows trigger only on our pushes,
-schedule, dispatch and the sync chain — never `pull_request` — so no
-untrusted code executes on the VPS.
+- **`fork-sync.yml` runs on the Openship self-hosted runner** (labels
+  `[self-hosted, openship, linux, x64]`) — the dogfood: merge, 7-patch guard
+  and the adapters tests all execute on the same rootless-podman destination
+  the fsvger pipeline builds on. Safe: it triggers only on schedule and
+  manual dispatch, never `pull_request`. Weekly (Sundays 04:23 UTC) plus
+  dispatch-anytime — daily churn bought nothing the version gate didn't
+  already provide.
+- **`fork-images.yml` + `fork-cli.yml` run on GitHub-hosted runners** — free
+  on this public repo, and buildx + the GHA layer cache land the images in
+  ~7 minutes where the small VPS needed 15–25 even warm. The runner-container
+  adaptations in those files (bun instead of system node, in-job gh/go
+  bootstrap) no-op on GitHub runners and stay: they make the jobs
+  runner-agnostic if the split ever flips back.
 
-Adaptations the runner container (no system node, curl, gh, npm) requires,
-already in the workflows:
-
-- `bun` everywhere `node`/`npm` appeared (patch guard, version suffix,
-  `bun pm pack`); `setup-bun` downloads it per run.
-- `gh` is fetched in-job (bun downloads the static tarball; no-op where gh
-  exists).
-- Images build with plain `docker build` + `docker push` — the podman-proven
-  fsvger pattern — not buildx/BuildKit, which is unreliable under the
-  docker-compat socket. Layer caching comes from the podman service's own
-  storage on the VPS; built tag refs are dropped after each run. The matrix
-  is serial (`max-parallel: 1`) so three builds cannot thrash one small box.
-- rerere cache save/restore is `continue-on-error` (zstd may be absent in a
-  slim runner image; the memory is an optimization, the issue loop is the
-  safety net).
-
-One-time wiring (before the first run can start — jobs just queue until
-then): grant the Openship GitHub App access to `liodali/openship`, then in
-the Openship dashboard import the repo's workflows and assign the runner.
-If the runner is ever unavailable, reverting the `runs-on` lines returns the
-pipeline to GitHub-hosted runners immediately.
+A Garage-S3 builder cache was tried and retired: GHA cache beats it on
+GitHub-hosted builds, and the VPS could not reach the bucket (connection
+refused). The `--userns=keep-id`/probe work in the runner itself is
+unaffected.
 
 ## One-time setup
 
@@ -78,23 +62,6 @@ pipeline to GitHub-hosted runners immediately.
 | `FORK_NAMESPACE`      | variable (optional) | namespace under the registry; default `medali`                                                                                                                     |
 | `FORK_REGISTRY_USER`  | **secret**          | registry username with push rights                                                                                                                                 |
 | `FORK_REGISTRY_TOKEN` | **secret**          | registry token (push auth can never be public)                                                                                                                     |
-| `FORK_S3_ENDPOINT`    | variable (optional) | Garage S3 endpoint, e.g. `https://s3.example.com` — enables the builder-layer cache below; unset = cache steps skip                                                   |
-| `FORK_S3_BUCKET`      | variable (optional) | cache bucket; default `openship-builds`                                                                                                                            |
-| `FORK_S3_KEY`         | **secret**          | Garage access key with write access to that bucket                                                                                                                 |
-| `FORK_S3_SECRET`      | **secret**          | Garage secret key                                                                                                                                                    |
-
-### Builder-layer cache (Garage S3)
-
-`fork-images.yml` caches the `builder` stage of the api/dashboard images
-(`bun install`'s node_modules dominates cold build time) as a gzipped
-`docker save` tarball in the Garage bucket, keyed by a hash of everything the
-install layer COPYs (package.json, bun.lock, tsconfig, patches/, the
-Dockerfile). Restore runs `docker load` before the build; after a successful
-build on a miss, `--target builder` (a no-op rebuild — layers are all local)
-is saved back. Path-style addressing, `@aws-sdk/client-s3` fetched per run via
-bun. The build NEVER depends on the cache: any error shape degrades to a
-normal cold build, and the whole block is skipped until `FORK_S3_ENDPOINT`
-is set. The edge image has no node_modules and skips it entirely.
 
 Or with the `gh` CLI:
 
