@@ -33,9 +33,14 @@ Files that make this up:
 
 All three fork workflows run on our own Openship Actions runner — the same
 rootless-podman destination the fsvger pipeline builds on — via
-`runs-on: [self-hosted, openship, linux, x64]`. `ci.yml` and
-`actions-e2e.yml` stay on GitHub-hosted runners: they run `pull_request` code
-(never on our box) and need a macOS VM for the darwin supervisor tests.
+`runs-on: [self-hosted, openship, linux, x64]`. `ci.yml` stays on
+GitHub-hosted runners (it runs `pull_request` code — never on our box). The
+fork also deletes upstream's `actions-e2e.yml` (Go supervisor suite + real
+Docker/macOS e2e) and its `actions-runner` caller job in `ci.yml`: the
+macOS VM rental it needed is gone, and the runner patches stay guarded by
+the daily `patch-guard.mjs` instead. Upstream edits to those two files
+recur as delete/modify conflicts — resolve by keeping the removal; rerere
+remembers.
 
 Safe on purpose: the three fork workflows trigger only on our pushes,
 schedule, dispatch and the sync chain — never `pull_request` — so no

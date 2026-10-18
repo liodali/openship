@@ -28,13 +28,6 @@ concurrency:
 # unmergeable forever with no visible reason.
 
 jobs:
-  actions-runner:
-    name: Actions execution
-    permissions:
-      contents: read
-      actions: read
-    uses: ./.github/workflows/actions-e2e.yml
-
   typecheck:
     name: Typecheck
     runs-on: ubuntu-latest
@@ -191,7 +184,7 @@ jobs:
   # matrix must fail this check; no individual shard can make the PR green.
   test:
     name: Test
-    needs: [test_suites, actions-runner]
+    needs: [test_suites]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 2
@@ -199,10 +192,9 @@ jobs:
       - name: Require every test suite to pass
         env:
           TEST_SUITES_RESULT: ${{ needs.test_suites.result }}
-          ACTIONS_RESULT: ${{ needs.actions-runner.result }}
         run: |
-          if [ "$TEST_SUITES_RESULT" != "success" ] || [ "$ACTIONS_RESULT" != "success" ]; then
-            echo "::error::Test suites: $TEST_SUITES_RESULT; Actions execution: $ACTIONS_RESULT"
+          if [ "$TEST_SUITES_RESULT" != "success" ]; then
+            echo "::error::Test suites: $TEST_SUITES_RESULT"
             exit 1
           fi
 

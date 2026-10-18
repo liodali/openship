@@ -88,7 +88,11 @@ jobs:
               .find((n) => /^gh_.+_linux_amd64\.tar\.gz$/.test(n));
             if (!asset) throw new Error("no linux amd64 gh asset in " + release.tag_name);
             const url = `https://github.com/cli/cli/releases/download/${release.tag_name}/${asset}`;
-            await Bun.write(`${process.env.GH_DIR}/gh.tar.gz`, (await fetch(url)).blob());
+            // Bun.write(Response) — NOT .blob(): the pinned Bun (1.3.14)
+            // stringifies an unawaited Blob promise to "[object Promise]".
+            const res = await fetch(url);
+            if (!res.ok) throw new Error(`gh download HTTP ${res.status}`);
+            await Bun.write(`${process.env.GH_DIR}/gh.tar.gz`, res);
             console.log(`fetched ${asset}`);
           '
           tar -xzf "$dir/gh.tar.gz" -C "$dir" --strip-components=1
