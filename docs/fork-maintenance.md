@@ -46,6 +46,12 @@ Split by weight, not by fashion:
   adaptations in those files (bun instead of system node, in-job gh/go
   bootstrap) no-op on GitHub runners and stay: they make the jobs
   runner-agnostic if the split ever flips back.
+- **Every other upstream workflow is disabled** (`gh workflow list` shows
+  `disabled_manually`: CI, Catalog health, Docker images, Release, Release
+  gate, Scaling E2E) — repo-level settings that survive upstream merges. The
+  weekly sync's 7-patch guard + adapters tests are therefore the fork's only
+  automated check; re-enable with `gh workflow enable <name>` if a full suite
+  run is ever wanted again.
 
 A Garage-S3 builder cache was tried and retired: GHA cache beats it on
 GitHub-hosted builds, and the VPS could not reach the bucket (connection
