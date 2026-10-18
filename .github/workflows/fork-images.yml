@@ -94,9 +94,9 @@ jobs:
     timeout-minutes: 90 # cold build + cache serialization can exceed an hour
     strategy:
       fail-fast: false
-      # One small rootless-podman box: build serially so three image builds
-      # cannot thrash the runner's CPU/RAM limits at once.
-      max-parallel: 1
+      # No GitHub-side cap: the runner destination's own maxParallel (4 on the
+      # VPS) is the single concurrency authority — all three images start at
+      # once and still leave a session for another workflow to run alongside.
       matrix:
         # The three images a VPS compose install runs. Add mail/webmail/
         # cluster-tasks here if the box ever needs them.
