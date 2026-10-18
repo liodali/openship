@@ -65,3 +65,5 @@ pnpm-debug.log*
 next-env.d.ts
 # Local fork registry config (contains a push token) — see fork.env.example
 /fork.env
+# npm pack CLI distribution artifacts (regenerate via `npm pack` in packages/openship)
+packages/openship/*.tgz
