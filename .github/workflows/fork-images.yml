@@ -163,6 +163,7 @@ jobs:
           S3_BUCKET: ${{ vars.FORK_S3_BUCKET || 'openship-builds' }}
           S3_KEY: ${{ secrets.FORK_S3_KEY }}
           S3_SECRET: ${{ secrets.FORK_S3_SECRET }}
+          S3_INSECURE_TLS: ${{ vars.FORK_S3_INSECURE_TLS || '0' }}
         run: |
           set -eu
           key="builder/${{ matrix.image }}-$( { cat package.json bun.lock tsconfig.base.json "apps/${{ matrix.image }}/Dockerfile"; find patches -type f -print0 | sort -z | xargs -0 sha256sum; } | sha256sum | cut -c1-32)"
@@ -178,6 +179,9 @@ jobs:
           import { createReadStream, createWriteStream } from "node:fs";
           import { pipeline } from "node:stream/promises";
           const [, , op, key, file] = process.argv;
+          // Private-CA Garage: opted into explicitly per deployment — the
+          // alternative is distributing the CA into every runner image.
+          if (process.env.S3_INSECURE_TLS === "1") process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
           const client = new S3Client({
             endpoint: process.env.S3_ENDPOINT,
             region: process.env.S3_REGION || "garage",
@@ -245,6 +249,7 @@ jobs:
           S3_BUCKET: ${{ vars.FORK_S3_BUCKET || 'openship-builds' }}
           S3_KEY: ${{ secrets.FORK_S3_KEY }}
           S3_SECRET: ${{ secrets.FORK_S3_SECRET }}
+          S3_INSECURE_TLS: ${{ vars.FORK_S3_INSECURE_TLS || '0' }}
         run: |
           set -eu
           cache_tag="openship-builder-cache:${{ matrix.image }}"
