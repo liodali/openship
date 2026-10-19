@@ -140,18 +140,19 @@ export const ProjectSidebar = () => {
         <div className="mt-4 space-y-3">
           {/* Label above, value below: a long domain gets the full card width
               instead of squeezing the label row (which forced horizontal scroll). */}
-          <div>
-            <span className="text-sm text-muted-foreground">
+          <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-1">
+            <span className="block text-sm text-muted-foreground">
               {isLocal ? t.projects.sidebar.local : t.projects.sidebar.production}
             </span>
             {canOpen ? (
-              <div className="mt-1 flex min-w-0 items-center gap-1.5">
+              <div className="flex w-full min-w-0 items-center gap-1.5">
                 {domains.length > 1 ? (
                   <DomainSwitcher
                     domains={domains}
                     value={activeDomain}
                     onChange={setSelectedDomain}
                     align="left"
+                    className="flex-1"
                   />
                 ) : (
                   <span title={displayUrl} className="min-w-0 truncate text-sm font-medium text-foreground">{displayUrl}</span>

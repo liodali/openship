@@ -81,8 +81,10 @@ export function DomainSwitcher({
     <DropdownMenu
       actions={actions}
       align={align}
+      wrapLabels
+      menuClassName="w-full min-w-0 max-h-80 overflow-y-auto"
       className={`min-w-0 max-w-full ${className}`}
-      triggerClassName="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-lg border border-border/50 bg-muted/30 px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted/50"
+      triggerClassName="inline-flex w-full min-w-0 max-w-full items-center justify-between gap-1.5 rounded-lg border border-border/50 bg-muted/30 px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-muted/50"
       trigger={
         <>
           <span className="truncate" title={current || undefined}>

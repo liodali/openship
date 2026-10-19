@@ -1,5 +1,5 @@
 /**
- * Fork marker — a quiet tag beside the sidebar brand name identifying this
+ * Fork marker — a quiet tag beneath the sidebar account identifying this
  * dashboard as OUR build (liodali/openship), not an upstream release.
  *
  * Fork-specific UI lives in its own file on purpose: the daily upstream merge

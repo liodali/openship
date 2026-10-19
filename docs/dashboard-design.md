@@ -31,6 +31,11 @@ show failures inline; blank resets the override. Bare and service-owned recipes 
 Borderless cards do not remove those functional indicators. Menus should use the shared dropdown
 component's existing positioning, keyboard behavior, and menu surface.
 
+The project sidebar stacks the Production label above its domain. Keep long hostnames
+within the card with ellipsis; domain menu options wrap to show the full hostname.
+Show the running instance version and fork marker in small muted text beneath the
+sidebar account, hiding that footer when the sidebar is collapsed.
+
 Reuse [Input](../apps/dashboard/src/components/ui/input.tsx),
 [CustomSelect](../apps/dashboard/src/components/ui/CustomSelect.tsx), and
 [Button](../apps/dashboard/src/components/ui/button.tsx) instead of copying their implementations.

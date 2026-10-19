@@ -69,7 +69,7 @@ const sidebarOrgClient = (
 
 export function Sidebar({ mobileOpen = false, onCloseMobile }: { mobileOpen?: boolean; onCloseMobile?: () => void } = {}) {
   const { user } = useAuth();
-  const { selfHosted, deployMode, authMode, machineName, productView } = usePlatform();
+  const { selfHosted, deployMode, authMode, machineName, productView, version } = usePlatform();
   const { connected: cloudConnected, cloudUser } = useCloud();
   const isDesktop = deployMode === "desktop";
 
@@ -322,8 +322,6 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: { mobileOpen?: bo
               {brand}
             </span>
           )}
-          {/* Fork marker (liodali/openship) — guarded by scripts/fork/patch-guard.mjs. */}
-          {!collapsed && <ForkBadge />}
         </div>
 
         {/* Controls */}
@@ -658,6 +656,14 @@ export function Sidebar({ mobileOpen = false, onCloseMobile }: { mobileOpen?: bo
               </button>
             )}
           </>
+        )}
+
+        {!collapsed && (
+          <div className="mt-2 flex min-w-0 items-center justify-center gap-2 px-2 text-[11px] text-muted-foreground" data-build-info>
+            {version && <span className="truncate" title={version}>v{version.replace(/^v/, "")}</span>}
+            {/* Fork marker (liodali/openship) — guarded by scripts/fork/patch-guard.mjs. */}
+            <ForkBadge />
+          </div>
         )}
 
         {/* Collapsed: surface logout when switcher is shown but popover

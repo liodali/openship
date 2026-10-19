@@ -25,6 +25,8 @@ interface DropdownMenuProps {
   className?: string;
   triggerClassName?: string;
   menuClassName?: string;
+  /** Wrap long labels so the entire value remains readable in narrow menus. */
+  wrapLabels?: boolean;
   disabled?: boolean;
   /** Accessible name for the icon-only trigger (also its tooltip). */
   triggerLabel?: string;
@@ -37,6 +39,7 @@ const DropdownMenu: React.FC<DropdownMenuProps> = ({
   className = "",
   triggerClassName = "",
   menuClassName,
+  wrapLabels = false,
   disabled = false,
   triggerLabel,
 }) => {
@@ -138,7 +141,7 @@ const DropdownMenu: React.FC<DropdownMenuProps> = ({
                         {action.icon}
                       </div>
                     )}
-                    <span className="text-sm font-medium truncate" title={action.label}>
+                    <span className={cn("min-w-0 text-sm font-medium", wrapLabels ? "whitespace-normal [overflow-wrap:anywhere]" : "truncate")} title={action.label}>
                       {action.label}
                     </span>
                   </button>
