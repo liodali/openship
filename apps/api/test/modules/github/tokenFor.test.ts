@@ -251,6 +251,33 @@ describe("tokenFor — self-hosted remote (project → user-pat → app, gh refu
   });
 });
 
+describe("tokenFor — App installation mint failures", () => {
+  const githubError = (status: number, credentialRejected: boolean) =>
+    Object.assign(new Error(`GitHub API error (${status})`), {
+      name: "GitHubApiError",
+      status,
+      credentialRejected,
+    });
+
+  it("rethrows a transient mint failure instead of reporting no credential", async () => {
+    // A GitHub 5xx while minting says nothing about the installation. Reading it
+    // as "no token" made the Actions runner reconciler cancel running jobs.
+    setApp(true);
+    setOauth("oauthtok");
+    const outage = githubError(500, false);
+    ghAuth.getInstallationToken.mockRejectedValue(outage);
+    await expect(tokenFor(ctxOrg, "local", withOwner)).rejects.toBe(outage);
+    await expect(requireTokenFor(ctxOrg, "local", withOwner)).rejects.toBe(outage);
+  });
+
+  it("still falls through to the next credential when GitHub rejects the installation", async () => {
+    setApp(true);
+    setOauth("oauthtok");
+    ghAuth.getInstallationToken.mockRejectedValue(githubError(403, true));
+    expect(await tokenFor(ctxOrg, "local", withOwner)).toEqual({ token: "oauthtok", source: "user-oauth" });
+  });
+});
+
 describe("requireTokenFor — actionable throw", () => {
   it("throws GITHUB_REMOTE_TOKEN_REQUIRED for remote with no credential", async () => {
     await expect(requireTokenFor(ctxOrg, "remote", withOwner)).rejects.toMatchObject({

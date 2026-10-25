@@ -639,6 +639,7 @@ it("applies the confirmed port-only choice to an adopted draft without recreatin
 it.each([
   { cloud: true, deployTarget: "cloud", serverId: "managed-host", workspaceId: "paid-workspace" },
   { cloud: false, deployTarget: "server", serverId: "saved-host", workspaceId: undefined },
+  { cloud: true, deployTarget: "server", serverId: "customer-host", workspaceId: undefined },
 ])("restores the saved $deployTarget host when installing a draft", async ({ cloud, ...placement }) => {
   h.info.mockResolvedValue({ data: { project: { slug: "saved-app", ...placement } } });
   await renderApp({ cloud, draft: true });
@@ -860,6 +861,7 @@ it.each(["install", "advanced"])(
   "checks the renamed instance instead of an unrelated draft: %s",
   async (action) => {
     h.cloud = true;
+    h.info.mockResolvedValue({ data: { project: { slug: "supabase", serverId: "managed-server", workspaceId: "managed-workspace", deployTarget: "cloud" } } });
     h.appId = "supabase";
     h.query = "";
     h.template.mockResolvedValue({
@@ -996,4 +998,31 @@ it("never converts an invalid nonempty hostname into a domainless install", asyn
   );
   expect(h.install).not.toHaveBeenCalled();
   expect(h.build).not.toHaveBeenCalled();
+});
+
+it("offers pgAdmin port-only access without Cloud and keeps PostgreSQL internal", async () => {
+  await renderApp({ appId: "postgresql", cloud: false });
+  const pgadmin = document.querySelector('section[aria-labelledby="endpoint-pgadmin:5050"]')!;
+  const picker = pgadmin.querySelector<HTMLElement>('[aria-haspopup="listbox"]');
+  expect(picker, "pgAdmin exposure selector").not.toBeNull();
+  await act(async () => picker!.click());
+  const port = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((node) =>
+    node.textContent?.includes("Port only"),
+  );
+  expect(port, "explicit port-only choice").toBeDefined();
+  await act(async () => port!.click());
+  await click("Install");
+  expect(h.install).not.toHaveBeenCalled();
+  const confirmation = document.querySelector('[role="alertdialog"]');
+  expect(confirmation?.textContent).toContain("pgAdmin");
+  expect(confirmation?.textContent).not.toContain("PostgreSQL");
+  await click("Continue without domains");
+  expect(h.install).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({
+      templateId: "postgresql",
+      routes: [{ service: "pgadmin", port: 5050, mode: "port" }],
+    }),
+  );
+  expect(h.requireCloud).not.toHaveBeenCalled();
+  expect(h.build).toHaveBeenCalledOnce();
 });

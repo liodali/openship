@@ -27,13 +27,14 @@ import { randomBytes } from "node:crypto";
 import { env } from "@repo/platform/engine/config/env";
 import type { ShellSession } from "@repo/adapters";
 import type { TerminalExitReason } from "@repo/db";
-import type { ExecutionContext as RequestContext } from "@repo/platform";
+import { freezeContext, type ExecutionContext as RequestContext } from "@repo/platform";
 import type { CloudTerminalTicket } from "./cloud/terminal-bridge";
 import { trackBackgroundWork } from "@repo/platform/engine/lib/background-work";
 
 // ─── Tickets ────────────────────────────────────────────────────────────────
 
 interface Ticket {
+  context: RequestContext;
   token: string;
   userId: string;
   /** Org the user was acting in at mint time. The WS upgrade scopes
@@ -75,6 +76,7 @@ export function issueTerminalTicket(
   const ttl = env.TERMINAL_TICKET_TTL_MS;
   const token = newToken();
   tickets.set(token, {
+    context: freezeContext(ctx),
     token,
     userId: ctx.userId,
     organizationId: ctx.organizationId,
@@ -93,6 +95,7 @@ export function issueTerminalTicket(
  * (timing-uniform).
  */
 export function consumeTerminalTicket(token: string): {
+  context: RequestContext;
   userId: string;
   organizationId: string;
   serverId: string;
@@ -107,6 +110,7 @@ export function consumeTerminalTicket(token: string): {
   if (ticket.used) return null;
   if (ticket.expiresAt <= Date.now()) return null;
   return {
+    context: ticket.context,
     userId: ticket.userId,
     organizationId: ticket.organizationId,
     serverId: ticket.serverId,

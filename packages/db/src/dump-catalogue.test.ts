@@ -13,6 +13,7 @@ import {
 import {
   PROJECT_TRANSFER_TABLES,
   PROJECT_TRANSFER_UNSUPPORTED_TABLES,
+  PROJECT_TRANSFER_RESET_TABLES,
 } from "./project-transfer";
 
 // Invariants over the dump catalogue itself. Pure — no DB, no fixtures — so they
@@ -151,6 +152,7 @@ describe("dump catalogue: coverage", () => {
           fkParents(table, name).some((parent) => owners.has(parent)) &&
           !PROJECT_TRANSFER_TABLES.has(name) &&
           !PROJECT_TRANSFER_UNSUPPORTED_TABLES[name] &&
+          !PROJECT_TRANSFER_RESET_TABLES[name] &&
           !EXCLUDED_TABLES[name] &&
           !sharedChildren.has(name),
       )

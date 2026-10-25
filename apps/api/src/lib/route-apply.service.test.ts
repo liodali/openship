@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { repos } from "@repo/db";
 
 const reserveObserved = vi.hoisted(() => vi.fn());
 const prepareTarget = vi.hoisted(() => vi.fn());
@@ -42,6 +43,7 @@ const project = {
 
 describe("reconcileProjectRoutes host-port ownership gate", () => {
   beforeEach(() => {
+    vi.spyOn(repos.project, "findById").mockResolvedValue(project as never);
     reserveObserved.mockReset().mockResolvedValue(undefined);
     prepareTarget.mockReset().mockResolvedValue([]);
     convergeTarget.mockReset().mockResolvedValue({ released: 0, retained: [] });

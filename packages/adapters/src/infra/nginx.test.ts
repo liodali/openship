@@ -37,6 +37,7 @@ import {
 import { EDGE_NOT_FOUND_HTML } from "./edge-not-found";
 import type { CommandExecutor, RouteConfig } from "../types";
 import type { RootChecked } from "../system/privilege";
+import { renderRouteProtection, type RouteProtection } from "./route-protection";
 
 // L1 — config GENERATION. Proves NginxProvider emits the right nginx directives
 // for each branch, that the injection guard holds, and that a failed
@@ -93,7 +94,7 @@ function makeExecutor(
   opts: FakeOpts,
   calls: string[],
   removed: string[] = [],
-  writes: Array<{ path: string; content: string }> = [],
+  writes: Array<{ path: string; content: string; mode?: number }> = [],
 ): RootChecked {
   let masterGenerationCaptured = false;
   const exec = async (command: string): Promise<string> => {
@@ -257,8 +258,9 @@ function makeExecutor(
   };
   return {
     exec,
-    writeFile: async (p: string, c: string) => {
-      writes.push({ path: p, content: c });
+    writeFile: async (p: string, c: string, mode?: { mode?: number }) => {
+      if (mode?.mode !== undefined && opts.failChmod) throw new Error("chmod failed");
+      writes.push({ path: p, content: c, mode: mode?.mode });
       files.set(p, c);
     },
     readFile: async (p: string) => {
@@ -283,7 +285,7 @@ function setup(opts: FakeOpts = {}) {
   const files = new Map<string, string>();
   const calls: string[] = [];
   const removed: string[] = [];
-  const writes: Array<{ path: string; content: string }> = [];
+  const writes: Array<{ path: string; content: string; mode?: number }> = [];
   const nginx = new NginxProvider({
     ...opts.provider,
     paths: opts.paths ?? PATHS,
@@ -985,6 +987,67 @@ describe("NginxProvider config generation", () => {
     expect(c).toContain("proxy_pass http://127.0.0.1:3009;");
   });
 
+  test("subdomain inherits parent wildcard cert when available", async () => {
+    const { nginx, conf, files } = setup();
+    const wildcardCert = makeTestCert(["*.example.com"]);
+    files.set("/etc/letsencrypt/live/*.example.com/fullchain.pem", wildcardCert.certPem);
+    files.set("/etc/letsencrypt/live/*.example.com/privkey.pem", wildcardCert.keyPem);
+
+    await nginx.registerRoute(PROXY);
+    const c = conf("app-example-com")!;
+    expect(c).toContain("ssl_certificate /etc/letsencrypt/live/*.example.com/fullchain.pem;");
+    expect(c).toContain("ssl_certificate_key /etc/letsencrypt/live/*.example.com/privkey.pem;");
+
+    const sslInfo = await nginx.verifyCert("app.example.com");
+    expect(sslInfo.verified).toBe(true);
+  });
+
+  test.each(["wrong-host", "wrong-key", "expired", "missing-key"])(
+    "does not serve an unusable wildcard certificate (%s)",
+    async (failure) => {
+      const { nginx, conf, files } = setup();
+      const pair = makeTestCert([failure === "wrong-host" ? "*.elsewhere.test" : "*.example.com"], {
+        days: 1,
+      });
+      files.set("/etc/letsencrypt/live/*.example.com/fullchain.pem", pair.certPem);
+      if (failure !== "missing-key") {
+        files.set(
+          "/etc/letsencrypt/live/*.example.com/privkey.pem",
+          failure === "wrong-key" ? makeTestCert(["other.test"]).keyPem : pair.keyPem,
+        );
+      }
+      if (failure === "expired") vi.setSystemTime(Date.now() + 2 * 86_400_000);
+      try {
+        await nginx.registerRoute(PROXY);
+        expect(conf("app-example-com")).not.toContain(
+          "ssl_certificate /etc/letsencrypt/live/*.example.com/",
+        );
+        expect((await nginx.verifyCert(PROXY.domain)).verified).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  test("keeps exact certificates preferred and never reuses a wildcard across two labels", async () => {
+    const { nginx, conf, files } = setup();
+    const exact = makeTestCert(["app.example.com"]),
+      wildcard = makeTestCert(["*.example.com"]);
+    for (const [name, pair] of [
+      ["app.example.com", exact],
+      ["*.example.com", wildcard],
+    ] as const) {
+      files.set(`/etc/letsencrypt/live/${name}/fullchain.pem`, pair.certPem);
+      files.set(`/etc/letsencrypt/live/${name}/privkey.pem`, pair.keyPem);
+    }
+    await nginx.registerRoute(PROXY);
+    expect(conf("app-example-com")).toContain(
+      "ssl_certificate /etc/letsencrypt/live/app.example.com/fullchain.pem;",
+    );
+    expect((await nginx.verifyCert("deep.app.example.com")).verified).toBe(false);
+    expect(files.get("/etc/letsencrypt/live/*.example.com/fullchain.pem")).toBe(wildcard.certPem);
+  });
+
   test("static route → root + try_files, app is not proxied", async () => {
     const { nginx, conf } = setup();
     await nginx.registerRoute({
@@ -1154,20 +1217,17 @@ describe("NginxProvider config generation", () => {
     expect(configPath).toBeDefined();
     // git-ssh-material layout: the ini lives in its own 0700 directory (locked
     // down BEFORE any secret bytes land, covering even the staged temp file),
-    // the file itself is chmod 600 before the rename publishes it, and cleanup
+    // the file itself is written with mode 600 before rename publishes it, and cleanup
     // removes the whole directory as a unit.
     const secretDir = configPath!.replace(/\/eab\.ini$/, "");
     expect(secretDir).toContain(".openship-eab-");
     const dirChmodIdx = calls.findIndex(
       (c) => c.startsWith("chmod ") && c.includes("'700'") && c.includes(secretDir),
     );
-    const fileChmodIdx = calls.findIndex(
-      (c) => c.startsWith("chmod ") && c.includes("'600'") && c.includes(`${configPath}.tmp-`),
-    );
     const publishIdx = calls.findIndex((c) => c.startsWith("mv ") && c.includes(`'${configPath}'`));
     expect(dirChmodIdx).toBeGreaterThanOrEqual(0);
-    expect(fileChmodIdx).toBeGreaterThan(dirChmodIdx);
-    expect(publishIdx).toBeGreaterThan(fileChmodIdx);
+    expect(secretWrite?.mode).toBe(0o600);
+    expect(publishIdx).toBeGreaterThan(dirChmodIdx);
     expect(removed).toContain(secretDir);
   });
 
@@ -2038,6 +2098,27 @@ describe("provisionCert legacy route recovery", () => {
     },
   );
 
+  test.each(["missing", "invalid JSON", "missing policy"])(
+    "never drops an existing password gate when its sidecar is %s",
+    async (state) => {
+      const { nginx, files, conf } = await legacy();
+      files.set(configPath, conf(slug)!.replace("server {", "server {\nset $openship_route_auth 'private-policy';"));
+      if (state === "invalid JSON") files.set(statePath, "{");
+      if (state === "missing policy") files.set(statePath, JSON.stringify({ domain, tls: true, targetUrl: "http://127.0.0.1:3000" }));
+      const before = conf(slug);
+      await expect(nginx.provisionCert(domain)).rejects.toThrow("Cannot recover this protected route");
+      expect(conf(slug)).toBe(before);
+    },
+  );
+
+  test("does not expose private sidecar data in a parse failure", async () => {
+    const { nginx, files } = await legacy();
+    files.set(statePath, '{"signingKey":"private-key-material"');
+    await expect(nginx.setRouteProtection(domain, null)).rejects.toThrow(
+      "Saved route configuration is invalid.",
+    );
+  });
+
   test("renewal recovers the backend beyond the nested HTTPS redirect", async () => {
     const { nginx, files, conf, issue } = issuing();
     issue();
@@ -2161,25 +2242,14 @@ describe("provisionCert legacy route recovery", () => {
  * the key file is the only thing left protecting it.
  */
 describe("installCert leaves the private key unreadable to other users", () => {
-  /** Drop the two random staging segments so the assertion can be an exact path. */
-  const chmods = (calls: string[]) =>
-    calls
-      .filter((c) => c.startsWith("chmod "))
-      .map((c) => c.replace(/\.staging-[^/]+/, "").replace(/\.tmp-[^']+/, ""));
-
-  test("chmods the key to 0600 on the staged path, before it is published", async () => {
-    const { nginx, calls, files } = setup();
+  test("creates the key with 0600 on the file channel before it is published", async () => {
+    const { nginx, calls, files, writes } = setup();
     await nginx.installCert("app.example.com", makeTestCert(["app.example.com"]));
 
-    // On the STAGED path, because `mv` preserves the mode and a chmod afterwards would
-    // leave a window where the key is already in place and still 0644.
-    expect(chmods(calls)).toEqual([
-      `chmod '600' '/etc/letsencrypt/live/app.example.com/privkey.pem'`,
-    ]);
-    const chmodAt = calls.findIndex((c) => c.startsWith("chmod "));
-    const publishAt = calls.findIndex((c) => c.startsWith("mv -f "));
-    expect(chmodAt).toBeGreaterThanOrEqual(0);
-    expect(chmodAt).toBeLessThan(publishAt);
+    const keyWrite = writes.find(write => write.content.includes("PRIVATE KEY"));
+    expect(keyWrite).toMatchObject({ mode: 0o600 });
+    expect(keyWrite!.path).toContain(".staging-");
+    expect(calls.some(c => c.startsWith("chmod "))).toBe(false);
 
     // The pair still lands as a pair — the mode must not cost the atomic swap.
     expect(files.get("/etc/letsencrypt/live/app.example.com/privkey.pem")).toContain("PRIVATE KEY");
@@ -2187,6 +2257,53 @@ describe("installCert leaves the private key unreadable to other users", () => {
       "CERTIFICATE",
     );
   });
+});
+
+describe("route protection rollback keeps credentials private", () => {
+  test.each(["unlock", "remove"] as const)(
+    "restores private file permissions after a failed %s",
+    async (operation) => {
+      const opts: FakeOpts = { certDomains: ["app.example.com"] };
+      const { nginx, files, writes } = setup(opts);
+      await nginx.registerRoute(OURS);
+      const policy: RouteProtection = {
+        version: "1".repeat(32),
+        salt: "2".repeat(64),
+        verifier: "3".repeat(64),
+        signingKey: "4".repeat(64),
+        iterations: 600_000,
+        sessionSeconds: 86_400,
+      };
+      const configPath = `${SITES}/app-example-com.conf`;
+      const statePath = `${SITES}/app-example-com.route.json`;
+      const config = files
+        .get(configPath)!
+        .replaceAll(
+          "server_name app.example.com;",
+          `server_name app.example.com;\n${renderRouteProtection(policy)}`,
+        );
+      const state = JSON.stringify({ ...OURS, protection: policy });
+      files.set(configPath, config);
+      files.set(statePath, state);
+      writes.length = 0;
+      opts.failReload = true;
+
+      await expect(
+        operation === "unlock"
+          ? nginx.setRouteProtection(OURS.domain, null)
+          : nginx.removeRoute(OURS.domain),
+      ).rejects.toThrow();
+
+      for (const [path, content] of [
+        [configPath, config],
+        [statePath, state],
+      ]) {
+        expect(files.get(path)).toBe(content);
+        const restored = writes.filter((write) => write.content === content).at(-1);
+        expect(restored).toMatchObject({ content, mode: 0o600 });
+      }
+    },
+  );
 });
 
 describe("manual DNS certificate activation", () => {
@@ -2215,14 +2332,17 @@ describe("manual DNS certificate activation", () => {
     await nginx.registerRoute(wildcard);
     const paths = [...files.keys()].filter((path) => path.endsWith(".conf") || path.endsWith(".route.json"));
     const previous = paths.map((path) => [path, files.get(path)]);
+    const cert = makeTestCert([wildcard.domain]);
     opts.failReload = true;
-    await expect(nginx.installCert(wildcard.domain, makeTestCert([wildcard.domain]))).rejects.toThrow();
+    await expect(nginx.installCert(wildcard.domain, cert)).rejects.toThrow();
     expect(paths.map((path) => [path, files.get(path)])).toEqual(previous);
+    expect(files.has(`/etc/letsencrypt/live/${wildcard.domain}/fullchain.pem`)).toBe(false);
+    expect(files.has(`/etc/letsencrypt/live/${wildcard.domain}/privkey.pem`)).toBe(false);
 
-    // The certificate did get written. A retry must activate it instead of
-    // accepting readable PEM files as proof the previous reload succeeded.
+    // A failed upload rolls back its files too; retry the upload through the
+    // same installation path once the edge can reload again.
     opts.failReload = false;
-    await expect(nginx.provisionCert(wildcard.domain)).resolves.toMatchObject({ verified: true });
+    await expect(nginx.installCert(wildcard.domain, cert)).resolves.toMatchObject({ verified: true });
     const config = files.get(paths.find((path) => path.endsWith(".conf"))!)!;
     expect(config).toContain("listen 443 ssl;");
     expect(config).toContain("proxy_pass http://127.0.0.1:4010;");
@@ -2231,7 +2351,7 @@ describe("manual DNS certificate activation", () => {
 
 /**
  * On a CONTAINER edge the two halves of "write it, then tighten it" travel different
- * channels: the write lands on the HOST (bind mount) while `chmod` runs INSIDE the
+ * channels: the write lands on the HOST (bind mount) while publication runs INSIDE the
  * container. Only a mount whose two sides are the same string — `/etc/letsencrypt`,
  * `/opt/openship/static` in `EDGE_CONTAINER_MOUNTS` — makes those the same file, which
  * is why both of today's mode-passing callers happen to work.
@@ -2241,11 +2361,11 @@ describe("manual DNS certificate activation", () => {
  * HMAC key at the default mode with the operation reporting success. So the provider
  * refuses by name instead of writing the secret it cannot protect.
  */
-describe("a container edge refuses a mode it cannot aim at the file it wrote", () => {
+describe("a container edge refuses certificate publication across different namespaces", () => {
   /** A cert store OUTSIDE the same-path mounts — visible on the host, not in the container. */
   const OFF_MOUNT_CERT_DIR = "/var/lib/openship/edge/certs/live";
 
-  test("installCert refuses rather than staging a key it cannot chmod", async () => {
+  test("installCert refuses rather than staging a pair it cannot publish", async () => {
     const { nginx, calls, files, writes } = setup({
       provider: { containerEdge: true, certDir: OFF_MOUNT_CERT_DIR },
     });
@@ -2259,10 +2379,7 @@ describe("a container edge refuses a mode it cannot aim at the file it wrote", (
 
     // Names the path it refused — the STAGED one, which is where the write was aimed —
     // and the mounts that would have been legal.
-    expect(message).toMatch(/^Refusing to write .*privkey\.pem with mode 0600/);
-    expect(message.replace(/\.staging-[^/]+/, "")).toContain(
-      `${OFF_MOUNT_CERT_DIR}/app.example.com/privkey.pem`,
-    );
+    expect(message).toContain(`Refusing to stage certificate files in ${OFF_MOUNT_CERT_DIR}/app.example.com`);
     expect(message).toContain("/etc/letsencrypt");
 
     // Refused BEFORE the key bytes went anywhere: no write, no chmod at a path the
@@ -2296,17 +2413,13 @@ describe("a container edge refuses a mode it cannot aim at the file it wrote", (
     expect(removed.some((p) => p.includes(".openship-eab-"))).toBe(true);
   });
 
-  test("but the mount they actually live on is still tightened", async () => {
+  test("the mounted key is private from creation", async () => {
     // The other half of the guard: refusing must not become "never chmod on a
     // container edge", which would ship the world-readable key this all exists to stop.
-    const { nginx, calls, files } = setup({ provider: { containerEdge: true } });
+    const { nginx, writes, files } = setup({ provider: { containerEdge: true } });
     await nginx.installCert("app.example.com", makeTestCert(["app.example.com"]));
 
-    expect(
-      calls
-        .filter((c) => c.startsWith("chmod "))
-        .map((c) => c.replace(/\.staging-[^/]+/, "").replace(/\.tmp-[^']+/, "")),
-    ).toEqual([`chmod '600' '/etc/letsencrypt/live/app.example.com/privkey.pem'`]);
+    expect(writes.find(write => write.content.includes("PRIVATE KEY"))?.mode).toBe(0o600);
     expect(files.get("/etc/letsencrypt/live/app.example.com/privkey.pem")).toContain("PRIVATE KEY");
   });
 
@@ -3189,6 +3302,15 @@ describe("canonical host redirect", () => {
     }
   });
 
+  test("redirects a host that has no upstream of its own (#1418)", async () => {
+    const { nginx, conf } = setup({ certDomains: ["www.example.com"] });
+    const { targetUrl: _upstream, ...noUpstream } = REDIRECT as RouteConfig & { targetUrl?: string };
+    await nginx.registerRoute({ ...noUpstream, notFound: true } as RouteConfig);
+    const c = wwwConf(conf);
+    expect(c).toContain("return 301 https://example.com$request_uri;");
+    expect(c).not.toContain("return 404;");
+  });
+
   test("goes STRAIGHT to the target from :80 — no bounce through our own https", async () => {
     // The destination is a different host, so there's no Flexible-CDN loop to dodge
     // and the conditional self-redirect would only cost an extra round trip.
@@ -3732,5 +3854,263 @@ describe("operator-trusted proxies on a container edge", () => {
     const { nginx, files } = setup();
     await nginx.registerRoute(PROXY);
     expect(files.has(INCLUDE)).toBe(false);
+  });
+});
+
+
+describe("inherited TLS certificate read safety", () => {
+  const parent = "/etc/letsencrypt/live/*.example.com";
+  const child = "/etc/letsencrypt/live/app.example.com";
+  const certificate = `ssl_certificate ${parent}/fullchain.pem;`;
+
+  function installParent(files: Map<string, string>, days = 2) {
+    const pair = makeTestCert(["*.example.com"], { days });
+    files.set(`${parent}/fullchain.pem`, pair.certPem);
+    files.set(`${parent}/privkey.pem`, pair.keyPem);
+    return pair;
+  }
+
+  function executorOf(nginx: NginxProvider) {
+    return (nginx as unknown as { executor: RootChecked }).executor;
+  }
+
+  function interruptRead(nginx: NginxProvider, name: string) {
+    const executor = executorOf(nginx);
+    const read = executor.readFile.bind(executor);
+    let failed = false;
+    return vi.spyOn(executor, "readFile").mockImplementation(async (path) => {
+      if (!failed && path === `${parent}/${name}`) {
+        failed = true;
+        throw new Error("Temporary SFTP read failure");
+      }
+      return read(path);
+    });
+  }
+
+  test.each(["fullchain.pem", "privkey.pem"])(
+    "keeps a temporary %s read failure distinct from a missing certificate",
+    async (name) => {
+      const { nginx, files } = setup();
+      installParent(files);
+      expect((await nginx.verifyCert(PROXY.domain)).verified).toBe(true);
+      const read = interruptRead(nginx, name);
+      try {
+        expect(await nginx.verifyCert(PROXY.domain)).toMatchObject({
+          verified: false,
+          reason: "read_error",
+        });
+        expect((await nginx.verifyCert(PROXY.domain)).verified).toBe(true);
+      } finally {
+        read.mockRestore();
+      }
+    },
+  );
+
+  test.each(["fullchain.pem", "privkey.pem"])(
+    "preserves the vhost and sidecar without reloading after a temporary %s read failure",
+    async (name) => {
+      const { nginx, files, conf, writes, calls } = setup();
+      installParent(files);
+      await nginx.registerRoute(OURS);
+      const previous = new Map(files);
+      const writeCount = writes.length;
+      const callCount = calls.length;
+      const read = interruptRead(nginx, name);
+      try {
+        await expect(
+          nginx.registerRoute({ ...OURS, targetUrl: "http://127.0.0.1:3010" }),
+        ).rejects.toThrow("Routing was not changed");
+        expect(files).toEqual(previous);
+        expect(writes).toHaveLength(writeCount);
+        expect(
+          calls
+            .slice(callCount)
+            .some((command) => /openssl|certbot|-s reload/.test(command)),
+        ).toBe(false);
+        expect(conf("app-example-com")).toContain(certificate);
+        await nginx.registerRoute({
+          ...OURS,
+          targetUrl: "http://127.0.0.1:3010",
+        });
+        expect(conf("app-example-com")).toContain(certificate);
+        expect(conf("app-example-com")).toContain(
+          "proxy_pass http://127.0.0.1:3010;",
+        );
+      } finally {
+        read.mockRestore();
+      }
+    },
+  );
+
+  test("validates inherited material once per verification and never copies the key to the child", async () => {
+    const { nginx, files } = setup();
+    installParent(files);
+    const read = vi.spyOn(executorOf(nginx), "readFile");
+    try {
+      expect((await nginx.verifyCert(PROXY.domain)).verified).toBe(true);
+      expect(read.mock.calls.map(([path]) => path)).toEqual([
+        `${parent}/fullchain.pem`,
+        `${parent}/privkey.pem`,
+      ]);
+      expect(files.has(`${child}/fullchain.pem`)).toBe(false);
+      expect(files.has(`${child}/privkey.pem`)).toBe(false);
+    } finally {
+      read.mockRestore();
+    }
+  });
+
+  test("keeps an exact certificate authoritative without reading the parent pair", async () => {
+    const { nginx, files } = setup();
+    installParent(files);
+    const pair = makeTestCert([PROXY.domain]);
+    files.set(`${child}/fullchain.pem`, pair.certPem);
+    files.set(`${child}/privkey.pem`, pair.keyPem);
+    const read = vi.spyOn(executorOf(nginx), "readFile");
+    try {
+      expect((await nginx.verifyCert(PROXY.domain)).verified).toBe(true);
+      expect(read.mock.calls.map(([path]) => path)).toEqual([
+        `${child}/fullchain.pem`,
+        `${child}/privkey.pem`,
+      ]);
+    } finally {
+      read.mockRestore();
+    }
+  });
+
+  test.each(["provision", "renew"])(
+    "does not issue a replacement on uncertain reads during %s",
+    async (action) => {
+      const { nginx, files, calls } = setup();
+      installParent(files);
+      const previous = new Map(files);
+      const read = interruptRead(nginx, "privkey.pem");
+      try {
+        const result =
+          action === "provision"
+            ? await nginx.provisionCert(PROXY.domain)
+            : await nginx.renewCert(PROXY.domain);
+        expect(result).toMatchObject({ verified: false, reason: "read_error" });
+        expect(
+          calls.some((command) => /certbot|openssl|-s reload/.test(command)),
+        ).toBe(false);
+        expect(files).toEqual(previous);
+      } finally {
+        read.mockRestore();
+      }
+    },
+  );
+
+  test.each([`${child}/fullchain.pem`, `${parent}/fullchain.pem`])(
+    "preserves read uncertainty when the existence probe rejects for %s",
+    async (path) => {
+      const { nginx, files, writes } = setup();
+      installParent(files);
+      await nginx.registerRoute(OURS);
+      const previous = new Map(files);
+      const writeCount = writes.length;
+      const executor = executorOf(nginx);
+      const exists = executor.exists.bind(executor);
+      const probe = vi
+        .spyOn(executor, "exists")
+        .mockImplementation(async (requested) => {
+          if (requested === path) throw new Error("SSH connection lost");
+          return exists(requested);
+        });
+      try {
+        expect(await nginx.verifyCert(PROXY.domain)).toMatchObject({
+          verified: false,
+          reason: "read_error",
+        });
+        await expect(nginx.registerRoute(OURS)).rejects.toThrow(
+          "Routing was not changed",
+        );
+        expect(files).toEqual(previous);
+        expect(writes).toHaveLength(writeCount);
+      } finally {
+        probe.mockRestore();
+      }
+    },
+  );
+
+  test("reuses a valid parent without ACME and permits an explicitly forced child certificate", async () => {
+    let issued!: () => void;
+    const { nginx, files, conf, calls } = setup({ onCertbot: () => issued() });
+    const original = installParent(files);
+    const replacement = makeTestCert([PROXY.domain]);
+    issued = () => {
+      files.set(`${child}/fullchain.pem`, replacement.certPem);
+      files.set(`${child}/privkey.pem`, replacement.keyPem);
+    };
+    await nginx.registerRoute(OURS);
+    expect((await nginx.provisionCert(PROXY.domain)).verified).toBe(true);
+    expect(calls.some((command) => /^certbot\b/.test(command))).toBe(false);
+    expect(files.has(`${child}/privkey.pem`)).toBe(false);
+    expect(
+      (await nginx.provisionCert(PROXY.domain, { force: true })).verified,
+    ).toBe(true);
+    expect(
+      calls.some((command) => /^certbot\b.*\bcertonly\b/.test(command)),
+    ).toBe(true);
+    expect(conf("app-example-com")).toContain(
+      `ssl_certificate ${child}/fullchain.pem;`,
+    );
+    expect(files.get(`${parent}/fullchain.pem`)).toBe(original.certPem);
+    expect(files.get(`${parent}/privkey.pem`)).toBe(original.keyPem);
+  });
+
+  test("serializes a parent rotation with inherited reads using the existing configuration lock", async () => {
+    const { nginx, files, conf } = setup();
+    const original = installParent(files);
+    const replacement = makeTestCert(["*.example.com"], { days: 20 });
+    await nginx.registerRoute({ ...OURS, domain: "*.example.com" });
+    await nginx.registerRoute(OURS);
+    const before = await nginx.verifyCert(PROXY.domain);
+    const executor = executorOf(nginx);
+    const readFile = executor.readFile.bind(executor);
+    let release!: () => void;
+    let entered!: () => void;
+    const paused = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let first = true;
+    const read = vi
+      .spyOn(executor, "readFile")
+      .mockImplementation(async (path) => {
+        if (first && path === `${parent}/privkey.pem`) {
+          first = false;
+          entered();
+          await paused;
+        }
+        return readFile(path);
+      });
+    const verification = nginx.verifyCert(PROXY.domain);
+    let rotation: Promise<unknown> | undefined;
+    try {
+      await started;
+      rotation = nginx.installCert("*.example.com", replacement);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(files.get(`${parent}/fullchain.pem`)).toBe(original.certPem);
+      release();
+      expect(await verification).toMatchObject({
+        verified: true,
+        expiresAt: before.expiresAt,
+      });
+      expect(await rotation).toMatchObject({ verified: true });
+      const after = await nginx.verifyCert(PROXY.domain);
+      expect(after.verified).toBe(true);
+      expect(new Date(after.expiresAt).getTime()).toBeGreaterThan(
+        new Date(before.expiresAt).getTime(),
+      );
+      expect(conf("app-example-com")).toContain(certificate);
+      expect(files.has(`${child}/privkey.pem`)).toBe(false);
+    } finally {
+      release();
+      await Promise.allSettled([verification, ...(rotation ? [rotation] : [])]);
+      read.mockRestore();
+    }
   });
 });

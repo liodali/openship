@@ -1,12 +1,6 @@
-export type EnvironmentVariableMeta = {
-  source: "env-file" | "default" | "missing" | "interpolated";
-  variable?: string;
-  defaultValue?: string;
-  resolvedValue: string;
-  expression?: string;
-  required?: boolean;
-  unresolvedVariables?: string[];
-};
+import type { ComposeEnvironmentMeta } from "@repo/core";
+
+export type EnvironmentVariableMeta = ComposeEnvironmentMeta;
 
 /** Scan metadata describes the original preview. A nonempty edit supplies a
  * value, but an unchanged, partially interpolated preview is still unresolved. */

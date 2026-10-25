@@ -62,13 +62,14 @@ async function listRepositoryTreeViaContents(
   ctx: RequestContext,
   owner: string,
   repo: string,
-  opts: { branch?: string } = {},
+  opts: { branch?: string; signal?: AbortSignal } = {},
 ): Promise<Array<{ path: string; type: "file" | "dir" }>> {
   const tree: Array<{ path: string; type: "file" | "dir" }> = [];
   const visited = new Set<string>();
   const queue = [""];
 
   while (queue.length > 0) {
+    opts.signal?.throwIfAborted();
     const currentPath = queue.shift() ?? "";
     if (visited.has(currentPath) || isIgnoredRepoPath(currentPath)) {
       continue;
@@ -579,11 +580,12 @@ export async function listFiles(
   ctx: RequestContext,
   owner: string,
   repo: string,
-  opts: { branch?: string; path?: string } = {},
+  opts: { branch?: string; path?: string; signal?: AbortSignal } = {},
 ): Promise<GitHubFileContent[]> {
   const filePath = opts.path ?? "";
   return githubFetch<GitHubFileContent[]>({
     ctx,
+    signal: opts.signal,
     owner,
     repo,
     url: `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${encodeRepoPath(filePath)}`,
@@ -598,11 +600,12 @@ export async function listRepositoryTree(
   ctx: RequestContext,
   owner: string,
   repo: string,
-  opts: { branch?: string } = {},
+  opts: { branch?: string; requireComplete?: boolean; signal?: AbortSignal } = {},
 ): Promise<Array<{ path: string; type: "file" | "dir" }>> {
   const ref = opts.branch?.trim() || "HEAD";
   const data = await githubFetch<GitHubTreeResponse>({
     ctx,
+    signal: opts.signal,
     owner,
     repo,
     url: `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/trees/${encodeURIComponent(ref)}`,
@@ -620,6 +623,8 @@ export async function listRepositoryTree(
     return tree;
   }
 
+  if (opts.requireComplete) throw new Error("GitHub returned an incomplete repository tree");
+
   const fallbackTree = await listRepositoryTreeViaContents(ctx, owner, repo, opts).catch(
     (diagnosticFailure) => { observeCaughtError(diagnosticFailure, "platform/engine/modules/github/github.service"); return tree; },
   );
@@ -634,7 +639,7 @@ export async function getFileContent(
   owner: string,
   repo: string,
   file: string,
-  opts: { branch?: string; json?: boolean } = {},
+  opts: { branch?: string; json?: boolean; signal?: AbortSignal } = {},
 ): Promise<{
   sha: string;
   size: number;
@@ -643,6 +648,7 @@ export async function getFileContent(
 }> {
   const data = await githubFetch<GitHubFileContent>({
     ctx,
+    signal: opts.signal,
     owner,
     repo,
     url: `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${encodeRepoPath(file)}`,

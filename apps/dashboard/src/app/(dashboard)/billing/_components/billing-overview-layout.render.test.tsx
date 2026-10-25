@@ -105,14 +105,14 @@ describe("custom plan presentation", () => {
 
 describe("plan comparison", () => {
   it("keeps the cards focused on resources and places shared information below the comparison", () => {
-    const plans = (["hobby", "starter", "pro", "team"] as const).map((id) => ({
+    const plans = (["starter", "pro", "team"] as const).map((id) => ({
       ...PLANS[id], features: [...PLANS[id].features], resourceLimits: PLANS[id].oblienLimits,
       listPrice: { monthly: PLANS[id].price.monthly }, effectivePrice: { monthly: PLANS[id].price.monthly }, campaign: null,
     }));
     const out = render(<PricingCards plans={plans} ui={ui} />);
     const cards = [...out.matchAll(/<article\b[^>]*>[\s\S]*?<\/article>/g)].map(([card]) => text(card));
     const copy = baseDictionary.billing.resourcesGuide;
-    expect(cards).toHaveLength(4);
+    expect(cards).toHaveLength(3);
     for (const card of cards) {
       expect(card).toContain("vCPU");
       expect(card).toContain("RAM");

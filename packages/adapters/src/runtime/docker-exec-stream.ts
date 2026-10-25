@@ -87,6 +87,8 @@ function bridgeSocket(socket: Duplex, leftover: Buffer): Duplex {
       if (socket.destroyed) return cb();
       // A transport can still be draining acknowledged writes after end().
       // Do not let this wrapper auto-destroy it before its own final callback.
+      // This relies on end() half-closing: Bun 1.3.x closed the whole connection
+      // here, so Docker cut the restore helper's stdin short (#1417).
       socket.end(cb);
     },
     destroy(err, cb) {

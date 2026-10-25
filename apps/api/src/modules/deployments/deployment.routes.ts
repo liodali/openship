@@ -31,11 +31,12 @@ r.get(
   "/",
   {
     tag: "deployment:list",
+    collectionProject: "optional-query",
      mcp: { description: "List deployments in the org (optionally filter with query.projectId).",
    },
     query: ListDeploymentsSchema,
   },
-  cloudProjectProxyByQuery,
+  (c, next) => cloudProjectProxyByQuery(c, next, "deployments:read"),
   ctrl.list,
 );
 // Collection-scoped writes — no :id in the URL, controller resolves the
@@ -144,7 +145,7 @@ r.get(
 r.post("/:id/build", { tag: "deployment:write", auditHandledByOperation: true, mcpExcluded: "Legacy start-by-deployment-ID adapter. Start or redeploy through /api/deployments or /api/deployments/build/access." }, ctrl.buildStart);
 r.post(
   "/:id/redeploy",
-  { tag: "deployment:write", mcp: { description: "Re-run the latest deployment for this project." }, auditHandledByOperation: true, body: RedeploySchema, bodyValidatedByOperation: true },
+  { tag: "deployment:write", mcp: { description: "Redeploy the project. useExistingCommit rebuilds the selected commit; reuseBuild retries a failed attempt's retained completed Docker images with no rebuild or substitute pull." }, auditHandledByOperation: true, body: RedeploySchema, bodyValidatedByOperation: true },
   ctrl.buildRedeploy,
 );
 r.get(
@@ -160,7 +161,7 @@ r.get(
 );
 r.post(
   "/:id/rollback",
-  { tag: "deployment:write", mcp: { description: "Roll back to this deployment's artifact/commit." }, auditHandledByOperation: true },
+  { tag: "deployment:admin", mcp: { description: "Roll back to this deployment's artifact/commit." }, auditHandledByOperation: true },
   ctrl.rollback,
 );
 r.post("/:id/pin", { tag: "deployment:write", auditHandledByOperation: true, mcp: { description: "Pin or unpin a retained deployment image for rollback using body.pinned. Read restore-plan to confirm whether that image is still available." }, body: PinSchema, bodyValidatedByOperation: true }, ctrl.pin);
@@ -177,7 +178,7 @@ r.post(
 );
 r.post(
   "/:id/cancel",
-  { tag: "deployment:write", mcp: { description: "Cancel an in-progress deployment." }, auditHandledByOperation: true },
+  { tag: "deployment:admin", mcp: { description: "Cancel an in-progress deployment." }, auditHandledByOperation: true },
   ctrl.cancel,
 );
 r.delete("/:id", { tag: "deployment:admin", auditHandledByOperation: true, mcp: { description: "Delete an inactive deployment record and its releasable resources. The active deployment is protected; inspect status before deletion." } }, ctrl.remove);

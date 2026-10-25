@@ -735,6 +735,8 @@ export interface MonorepoWorkspace {
 }
 
 export interface MonorepoApp {
+  /** A suggestion for the interactive picker, never deployment authorization. */
+  suggested?: boolean;
   /** Stable identifier for this sub-app (e.g. "apps/web"). */
   id: string;
   /** Display name AND infra identifier (container/network name) - last segment
@@ -875,7 +877,31 @@ function sanitizeAppName(raw: string): string {
   return slugify(raw.replace(/^@/, "").replace(/\//g, "-"));
 }
 
-function toMonorepoApp(snapshot: ProjectRootSnapshot, overrides?: { id?: string; rootDirectory?: string }): MonorepoApp {
+function isSuggestedApp(snapshot: ProjectRootSnapshot): boolean {
+  const pkg = snapshot.packageJson as
+    | {
+        bin?: unknown;
+        dependencies?: Record<string, unknown>;
+        devDependencies?: Record<string, unknown>;
+        scripts?: Record<string, string>;
+      }
+    | undefined;
+  const deps = { ...pkg?.dependencies, ...pkg?.devDependencies };
+  if (deps.expo || deps["react-native"]) return false;
+  if (pkg?.bin && !pkg.scripts?.start) return false;
+  if (
+    snapshot.stack.category === "generic" &&
+    !pkg?.scripts?.start &&
+    snapshot.stack.stack !== "docker"
+  )
+    return false;
+  return true;
+}
+
+function toMonorepoApp(
+  snapshot: ProjectRootSnapshot,
+  overrides?: { id?: string; rootDirectory?: string },
+): MonorepoApp {
   const rootDirectory = overrides?.rootDirectory ?? snapshot.rootDirectory;
   const segments = snapshot.rootDirectory.split("/");
   const stack = snapshot.stack;
@@ -894,6 +920,7 @@ function toMonorepoApp(snapshot: ProjectRootSnapshot, overrides?: { id?: string;
   // cloud (see isStaticService /
   // the static Dockerfile branch). Server sub-apps carry their real start command.
   return {
+    suggested: isSuggestedApp(snapshot),
     id: overrides?.id ?? snapshot.rootDirectory,
     name,
     rootDirectory,

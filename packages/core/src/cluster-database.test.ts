@@ -53,8 +53,31 @@ describe("database lifecycle capabilities", () => {
       clusterDatabasePodCount({ ...config, engine: "redis", mode: "standalone", instances: 1 }),
     ).toBe(1);
   });
+  it("distinguishes non-sharded Redis replication from sharding and refuses destructive conversion", () => {
+    const replication: ClusterDatabaseConfig = { ...config, engine: "redis", mode: "replication" };
+    expect(clusterDatabasePodCount(replication)).toBe(3);
+    expect(() => validateClusterDatabase(replication)).not.toThrow();
+    expect(() =>
+      validateClusterDatabaseUpdate(replication, { ...replication, instances: 4 }),
+    ).not.toThrow();
+    expect(() =>
+      validateClusterDatabaseUpdate({ ...replication, instances: 4 }, replication),
+    ).toThrow(/cannot be removed in place/);
+    expect(() => validateClusterDatabase({ ...replication, instances: 2 })).toThrow();
+    expect(() => validateClusterDatabase({ ...replication, instances: 10 })).toThrow();
+    expect(() => validateClusterDatabase({ ...replication, engine: "postgres" })).toThrow();
+    expect(() =>
+      validateClusterDatabaseUpdate(
+        { ...replication, mode: "standalone", instances: 1 },
+        replication,
+      ),
+    ).toThrow(/Create another database and restore/);
+    expect(() =>
+      validateClusterDatabaseUpdate(replication, { ...replication, mode: "cluster" }),
+    ).toThrow(/Create another database and restore/);
+  });
   it.each([
-    { instances: 2 },
+    { instances: 1 },
     { mode: "standalone", instances: 3 },
     { storageClass: "../outside" },
     { databaseName: "template0" },
@@ -65,11 +88,16 @@ describe("database lifecycle capabilities", () => {
       validateClusterDatabase({ ...config, ...patch } as ClusterDatabaseConfig),
     ).toThrow();
   });
-  it("permits PostgreSQL replica changes without converting standalone data", () => {
+  it("scales the same PostgreSQL resource between one primary and streaming replicas", () => {
     expect(() => validateClusterDatabaseUpdate(config, { ...config, instances: 4 })).not.toThrow();
     expect(() =>
       validateClusterDatabaseUpdate({ ...config, mode: "standalone", instances: 1 }, config),
-    ).toThrow("cannot be changed");
+    ).not.toThrow();
+    expect(() =>
+      validateClusterDatabaseUpdate(config, { ...config, mode: "standalone", instances: 1 }),
+    ).not.toThrow();
+    expect(() => validateClusterDatabase({ ...config, instances: 2 })).not.toThrow();
+    expect(() => validateClusterDatabase({ ...config, engine: "redis", instances: 2 })).toThrow();
   });
   it("refuses shrinking, local volume expansion and accidental Redis resharding", () => {
     expect(() => validateClusterDatabaseUpdate(config, { ...config, storageGiB: 19 })).toThrow(

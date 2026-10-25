@@ -73,10 +73,10 @@ r.post("/:id/dns/challenge/cancel", { tag: "domain:write", auditHandledByOperati
 r.post("/:id/renew", { tag: "domain:write", auditHandledByOperation: true, mcp: { description: "Renew the domain's SSL certificate." } }, ctrl.renewSsl);
 r.post("/:id/verify-ssl", { tag: "domain:write", auditHandledByOperation: true, mcp: { description: "Check/verify the domain's SSL certificate." } }, ctrl.verifySsl);
 // Self-hosted only: installs a cert into the box's OpenResty. On Openship Cloud
-// TLS is owned by the managed edge, so this 404s in CLOUD_MODE (localOnly gate).
+// The shared operation permits certificates only on customer-owned edges.
 r.post(
   "/:id/certificate",
-  { tag: "domain:write", auditHandledByOperation: true, localOnly: true, body: UploadCertBody, mcp: { description: "Install an operator-supplied TLS certificate (bring-your-own / Cloudflare Origin CA)." } },
+  { tag: "domain:write", auditHandledByOperation: true, body: UploadCertBody, mcp: { description: "Install an operator-supplied TLS certificate (bring-your-own / Cloudflare Origin CA)." } },
   ctrl.uploadCert,
 );
 r.post("/renew-all", { tag: "domain:write", auditHandledByOperation: true, mcp: { description: "Attempt certificate renewal for eligible domains in this workspace. Inspect individual domain SSL state afterward; one domain’s failure does not prove all renewals failed." }, collection: true }, ctrl.renewAllSsl);

@@ -730,6 +730,18 @@ export const AUDIT_EVENTS: Record<string, AuditEventDef> = {
   },
 
   /* ---------------- Security ---------------- */
+  "security.advisory": {
+    category: "security",
+    action: "reported a security advisory for",
+    label: "Security advisory",
+    tone: "warning",
+  },
+  "security.refresh_failed": {
+    category: "security",
+    action: "could not verify the security refresh of",
+    label: "Security refresh needs attention",
+    tone: "danger",
+  },
   "admin.bootstrapped": {
     category: "security",
     action: "bootstrapped the first admin account",

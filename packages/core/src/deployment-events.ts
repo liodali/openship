@@ -28,6 +28,8 @@ export interface LogEntry {
   /** Stable id of the service this log belongs to (compose deployments). Routes
    *  the line to its per-service tab without fragile name matching. */
   serviceId?: string;
+  /** Trusted runtime evidence attached by the controller, never parsed from app output. */
+  resourceIssue?: import("./deployment-resource-issue").DeploymentResourceIssue;
   /** Pre-encoded base64 data - passed through to SSE without re-encoding. */
   rawData?: string;
   /** Monotonic sequence assigned by the session manager at append time, used as

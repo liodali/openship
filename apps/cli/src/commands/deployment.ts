@@ -127,9 +127,13 @@ const redeploy = new Command("redeploy")
   .description("Redeploy from an existing deployment")
   .argument("<id>", "Deployment ID")
   .option("--use-existing-commit", "Rebuild the same commit instead of the latest on the branch")
+  .option("--reuse-build", "Retry a failed attempt using its completed Docker images without rebuilding")
   .action(
     run(async (id: string, opts) => {
-      const res = await getShipClient().deployments.redeploy(id, { useExistingCommit: opts.useExistingCommit === true });
+      const res = await getShipClient().deployments.redeploy(id, {
+        useExistingCommit: opts.useExistingCommit === true,
+        reuseBuild: opts.reuseBuild === true,
+      });
       report({ success: true, ...res }, `Redeploy triggered for ${id}`);
     }),
   );

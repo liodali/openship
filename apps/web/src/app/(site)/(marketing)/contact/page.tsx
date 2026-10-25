@@ -1,4 +1,5 @@
-import type { Metadata } from "next";
+import type { Metadata, ResolvingMetadata } from "next";
+import { inheritSocialImages } from "@/lib/social-metadata";
 import { Navbar, Footer } from "@/components/landing";
 import { ContactForm } from "@/components/contact-form";
 import { SUPPORT_EMAIL } from "@repo/core";
@@ -7,7 +8,7 @@ const PAGE_TITLE = "Contact Us";
 const PAGE_DESCRIPTION =
   "Get in touch with the Openship team. Send us a message and we'll get back to you as soon as possible.";
 
-export const metadata: Metadata = {
+const metadata: Metadata = {
   title: PAGE_TITLE,
   description: PAGE_DESCRIPTION,
   alternates: { canonical: "/contact" },
@@ -23,6 +24,13 @@ export const metadata: Metadata = {
     description: PAGE_DESCRIPTION,
   },
 };
+
+export async function generateMetadata(
+  _props: unknown,
+  parent: ResolvingMetadata,
+): Promise<Metadata> {
+  return inheritSocialImages(metadata, parent);
+}
 
 export default function ContactPage() {
   return (

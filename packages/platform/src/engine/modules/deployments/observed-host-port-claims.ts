@@ -67,6 +67,13 @@ export async function reserveObservedLoopbackPublishes(input: {
   projectId: string;
   runtime?: ObservedHostPortRuntime;
   publishes: Iterable<ObservedLoopbackPublish | null | undefined>;
+  /**
+   * The control plane's own dashboard port, passed only for the authorized
+   * self-app route. The dashboard is a host process with no container to
+   * inspect, and every other route is refused this reserved loopback port, so
+   * its publish is the proof that recovers a quarantine there (#1019).
+   */
+  controlPlanePort?: number;
 }): Promise<void> {
   const seen = new Set<string>();
   for (const publish of input.publishes) {
@@ -86,6 +93,7 @@ export async function reserveObservedLoopbackPublishes(input: {
         // A loopback URL (including bare/host-network routing) is not proof of
         // ownership. Re-inspect under the target lock only when recovery is
         // needed; never reclaim from a cached row or an ambiguous scalar port.
+        if (publish.serviceId === null && publish.hostPort === input.controlPlanePort) return true;
         if (!publish.containerId || !input.runtime?.supports("containerInfo")) return false;
         const live = await input.runtime.getContainerInfo(publish.containerId);
         return (

@@ -156,6 +156,8 @@ const AdvancedSchema = Type.Object(
           {
             cpuCores: Type.Optional(Type.Number({ minimum: 0, maximum: 1024 })),
             memoryMb: Type.Optional(Type.Number({ minimum: 0, maximum: 4194304 })),
+            /** Docker-only: run with no swap. Requires a positive effective memory limit. */
+            swapDisabled: Type.Optional(Type.Boolean()),
           },
           { additionalProperties: false },
         ),

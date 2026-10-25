@@ -27,6 +27,12 @@ describe("openship deployment get", () => {
 });
 
 describe("openship deployment redeploy", () => {
+  it("forwards explicit deployment-only retry through the shared SDK contract", async () => {
+    fetchStub = stubFetch(() => ({ json: { success: true, deployment_id: "dep2", project_id: "project-a" } }));
+    const { code } = await runCommand(deploymentCommand, ["redeploy", "dep1", "--reuse-build"]);
+    expect(code).toBe(0);
+    expect(fetchStub.calls[0].body).toMatchObject({ reuseBuild: true, useExistingCommit: false });
+  });
   it("POSTs to /deployments/:id/redeploy", async () => {
     fetchStub = stubFetch(() => ({ json: { success: true, deployment_id: "dep2", project_id: "project-a" } }));
     const { code } = await runCommand(deploymentCommand, ["redeploy", "dep1"]);

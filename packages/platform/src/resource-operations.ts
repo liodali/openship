@@ -66,6 +66,7 @@ async function executeResourceOperation(
     resourceType,
     resourceId: authorizationScope === "organization" ? "*" : id,
     action: spec.action,
+    capability: spec.capability,
     scope: spec.scope,
     projectCreate: spec.projectCreate,
   });

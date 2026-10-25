@@ -8,6 +8,10 @@ The Connection card contains the private `DATABASE_URL`, application password, d
 
 The `app` role owns the application database and cannot administer roles or create databases. Its password and the `DATABASE_URL` are separate from the `openship` instance administrator. Create additional restricted roles in pgAdmin when needed. The stack does not expose PostgreSQL publicly or configure public PostgreSQL TLS.
 
+## Access without a domain
+
+Choose **Port only (no domain)** for pgAdmin during installation to use server port 5050 without a hostname or Openship Cloud connection. This explicitly publishes the pgAdmin web UI on that port. PostgreSQL stays on the private project network. Domain routing remains the default and can be selected instead.
+
 ## Persistence and backups
 
 The database and pgAdmin configuration have separate persistent volumes. Take a database backup before upgrades. Changing PostgreSQL major versions requires migration or dump/restore; changing the image tag alone is insufficient.

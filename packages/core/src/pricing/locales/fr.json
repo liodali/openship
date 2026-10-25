@@ -54,7 +54,7 @@
     "selfHostedServices": "Tous les services managés — Postgres, Redis, mail",
     "selfHostedClients": "CLI, web et desktop — un seul backend",
     "selfHostedFreeSubdomains": "{freeSubdomains} sous-domaines {freeDomainSuffix} gratuits en vous connectant au Cloud",
-    "monthlyCoverage": "CPU, RAM et stockage inclus pour le mois payé",
+    "monthlyCoverage": "CPU, RAM et stockage inclus pour la période payée",
     "namespaceCapacity": "Total : {namespaceCpu} vCPU, {namespaceRamGb} Go de RAM, {namespaceDiskGb} Go de disque"
   },
   "selfHosted": {

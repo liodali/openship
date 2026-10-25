@@ -1,7 +1,8 @@
 import { reportCaughtError } from "@repo/core/diagnostics";
 import Link from "next/link";
 import { blogSource, type BlogFrontmatter } from "@/lib/source";
-import type { Metadata } from "next";
+import type { Metadata, ResolvingMetadata } from "next";
+import { inheritSocialImages } from "@/lib/social-metadata";
 
 const SITE_URL = "https://openship.io";
 
@@ -41,11 +42,14 @@ function formatDate(raw: string): string {
   }
 }
 
-export async function generateMetadata({
-  searchParams,
-}: {
-  searchParams: SearchParams;
-}): Promise<Metadata> {
+export async function generateMetadata(
+  {
+    searchParams,
+  }: {
+    searchParams: SearchParams;
+  },
+  parent: ResolvingMetadata,
+): Promise<Metadata> {
   const search = await searchParams;
   const category = selectedCategory(search.category);
 
@@ -59,7 +63,7 @@ export async function generateMetadata({
       ? `Browse ${category} articles, guides, and updates from the Openship team`
       : "Engineering deep-dives, product updates, and guides from the Openship team.";
 
-  return {
+  const metadata: Metadata = {
     title: pageTitle,
     description: pageDescription,
     openGraph: {
@@ -78,6 +82,7 @@ export async function generateMetadata({
       canonical: `${SITE_URL}/blog`,
     },
   };
+  return inheritSocialImages(metadata, parent);
 }
 
 export default async function BlogPage({ searchParams }: { searchParams: SearchParams }) {

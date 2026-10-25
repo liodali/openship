@@ -117,7 +117,10 @@ export interface OpenshipService {
   readiness?: OpenshipReadiness;
   /** Per-service cpu/memory caps, overriding the top-level `resources` field by
    *  field. Parity with compose `mem_limit` / `deploy.resources.limits`, which
-   *  the compose parser now honors. `0` = no limit. */
+   *  the compose parser now honors. `0` = no limit.
+   *
+   *  `swapDisabled` runs this service's container with no swap and requires a
+   *  positive effective memory limit (its own or the project default). */
   resources?: OpenshipResources;
 }
 
@@ -151,6 +154,8 @@ export interface OpenshipResources {
   cpuCores?: number;
   memoryMb?: number;
   diskMb?: number;
+  /** Service-only: run the container with no swap (requires positive memoryMb). */
+  swapDisabled?: boolean;
 }
 
 export interface OpenshipConfig {
@@ -158,6 +163,8 @@ export interface OpenshipConfig {
   framework?: StackId;
   packageManager?: string;
   rootDirectory?: string;
+  /** Push-only repo-relative path overrides. Root build configuration still triggers deployment. */
+  autoDeployPaths?: { include?: string[]; exclude?: string[] };
   /**
    * Where the compose file lives, when it isn't at the project root — either the
    * file itself (`"deploy/stack.yml"`, which also covers non-standard filenames)

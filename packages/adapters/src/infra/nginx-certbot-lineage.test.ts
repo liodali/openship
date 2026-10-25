@@ -6,7 +6,9 @@ import {
   mkdtemp,
   readFile,
   readlink,
+  rename,
   rm,
+  stat,
   symlink,
   writeFile,
 } from "node:fs/promises";
@@ -30,7 +32,7 @@ afterEach(async () => {
 });
 
 /** Real files and shell file operations; only Certbot and the running edge are simulated. */
-async function setup() {
+async function setup(local = false) {
   const root = await mkdtemp(join(tmpdir(), "openship-certbot-lineage-"));
   temporary.push(root);
   const certDir = join(root, "live");
@@ -52,12 +54,13 @@ async function setup() {
         () => false,
       ),
     readFile: (path: string) => readFile(path, "utf8"),
-    writeFile: (path: string, content: string) => writeFile(path, content),
+    writeFile: (path: string, content: string, options?: { mode?: number }) =>
+      writeFile(path, content, options),
     mkdir: (path: string) => mkdir(path, { recursive: true }),
     rm: (path: string) => rm(path, { recursive: true, force: true }),
   } as unknown as RootChecked;
   const nginx = new NginxProvider({
-    executor,
+    ...(local ? {} : { executor }),
     certDir,
     pinPaths: true,
     paths: { ...OPENRESTY_DEFAULT_PATHS, sitesDir },
@@ -102,6 +105,7 @@ async function setup() {
   commands.length = 0;
   return {
     nginx,
+    executor,
     root,
     commands,
     certDir,
@@ -251,6 +255,119 @@ describe("Certbot renewal after adopting a certificate", () => {
       new X509Certificate(manual.certPem).validToDate.toISOString(),
     );
   });
+
+  test("removes only the replaced lineage's renewal config and preserves its archive", async () => {
+    const s = await setup();
+    await s.put(DOMAIN, s.old, true);
+    const renewalConf = join(s.root, "renewal", `${DOMAIN}.conf`);
+    const otherConf = join(s.root, "renewal", "other.example.com.conf");
+    await writeFile(otherConf, "unrelated renewal");
+    const archiveCert = join(s.root, "archive", DOMAIN, "fullchain1.pem");
+    const archiveBefore = await readFile(archiveCert, "utf8");
+
+    await s.nginx.installCert(DOMAIN, s.renewed);
+
+    await expect(readFile(renewalConf, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(otherConf, "utf8")).toBe("unrelated renewal");
+    expect(await readFile(archiveCert, "utf8")).toBe(archiveBefore);
+    expect(await s.served()).toBe(s.renewed.certPem);
+  });
+
+  test("does not remove renewal ownership when certificate validation fails", async () => {
+    const s = await setup();
+    await s.put(DOMAIN, s.old, true);
+    const conf = join(s.root, "renewal", `${DOMAIN}.conf`);
+    const before = await readFile(conf, "utf8");
+    await expect(
+      s.nginx.installCert(DOMAIN, { ...s.old, keyPem: s.renewed.keyPem }),
+    ).rejects.toThrow(/Invalid certificate/);
+    expect(await readFile(conf, "utf8")).toBe(before);
+    expect(await s.served()).toBe(s.old.certPem);
+    expect(s.reload).not.toHaveBeenCalled();
+  });
+
+  test("does not report successful installation when obsolete renewal cleanup fails", async () => {
+    const s = await setup();
+    await s.put(DOMAIN, s.old, true);
+    const conf = join(s.root, "renewal", `${DOMAIN}.conf`);
+    const remove = s.executor.rm.bind(s.executor);
+    vi.spyOn(s.executor, "rm").mockImplementation(async (path) => {
+      if (path === conf) throw new Error("renewal cleanup permission denied");
+      return remove(path);
+    });
+    await expect(s.nginx.installCert(DOMAIN, s.renewed)).rejects.toThrow(
+      /renewal cleanup permission denied/,
+    );
+    expect(await readFile(conf, "utf8")).toBeTruthy();
+    expect(await s.served()).toBe(s.old.certPem);
+    expect(await readlink(join(s.certDir, DOMAIN, "privkey.pem"))).toBe(
+      `../../archive/${DOMAIN}/privkey1.pem`,
+    );
+    expect(s.reload).not.toHaveBeenCalled();
+  });
+
+  test.each([false, true])(
+    "restores managed links and renewal ownership after reload failure (local: %s)",
+    async (local) => {
+      const s = await setup(local);
+      await s.put(DOMAIN, s.old, true);
+      const conf = join(s.root, "renewal", `${DOMAIN}.conf`);
+      const original = await readFile(conf, "utf8");
+      s.reload.mockRejectedValueOnce(new Error("edge reload rejected"));
+
+      await expect(s.nginx.installCert(DOMAIN, s.renewed)).rejects.toThrow(/edge reload rejected/);
+
+      expect(await s.served()).toBe(s.old.certPem);
+      expect(await readFile(conf, "utf8")).toBe(original);
+      for (const name of ["fullchain", "privkey"]) {
+        expect(await readlink(join(s.certDir, DOMAIN, `${name}.pem`))).toBe(
+          `../../archive/${DOMAIN}/${name}1.pem`,
+        );
+      }
+      expect((await stat(join(s.certDir, DOMAIN, "privkey.pem"))).mode & 0o777).toBe(0o600);
+      await expect(s.nginx.installCert(DOMAIN, s.renewed)).resolves.toMatchObject({
+        verified: true,
+      });
+      await expect(readFile(conf, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    },
+  );
+
+  test("restores both old links after certificate publication stops between the PEM moves", async () => {
+    const s = await setup();
+    await s.put(DOMAIN, s.old, true);
+    const execute = s.executor.exec.bind(s.executor);
+    vi.spyOn(s.executor, "exec").mockImplementation(async (command) => {
+      if (command.startsWith("mv -f ") && command.includes(".staging-")) {
+        const source = command.match(/^mv -f '([^']+)'/)![1]!;
+        await rename(source, join(s.certDir, DOMAIN, "fullchain.pem"));
+        throw new Error("certificate publication interrupted");
+      }
+      return execute(command);
+    });
+
+    await expect(s.nginx.installCert(DOMAIN, s.renewed)).rejects.toThrow(/publication interrupted/);
+    expect(await s.served()).toBe(s.old.certPem);
+    expect(await readlink(join(s.certDir, DOMAIN, "fullchain.pem"))).toBe(
+      `../../archive/${DOMAIN}/fullchain1.pem`,
+    );
+    expect(await readlink(join(s.certDir, DOMAIN, "privkey.pem"))).toBe(
+      `../../archive/${DOMAIN}/privkey1.pem`,
+    );
+    expect(await readFile(join(s.root, "renewal", `${DOMAIN}.conf`), "utf8")).toBeTruthy();
+    expect(s.reload).not.toHaveBeenCalled();
+  });
+
+  test.each([false, true])(
+    "restores a previous manual pair with a private key mode after failed replacement (local: %s)",
+    async (local) => {
+      const s = await setup(local);
+      s.reload.mockRejectedValueOnce(new Error("edge reload rejected"));
+      await expect(s.nginx.installCert(DOMAIN, s.renewed)).rejects.toThrow(/edge reload rejected/);
+      expect(await s.served()).toBe(s.old.certPem);
+      expect(await readFile(join(s.certDir, DOMAIN, "privkey.pem"), "utf8")).toBe(s.old.keyPem);
+      expect((await stat(join(s.certDir, DOMAIN, "privkey.pem"))).mode & 0o777).toBe(0o600);
+    },
+  );
 
   test("renews the linked lineage even when its certificate has already expired", async () => {
     const s = await setup();

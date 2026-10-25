@@ -135,7 +135,23 @@
       },
       "cloudConnectTitle": "Connecter Openship Cloud",
       "cloudConnectBody": "Liez cette instance à Openship Cloud pour parcourir et ajouter des images cloud gérées. Vous pouvez toujours ajouter n'importe quelle image manuellement depuis Images locales.",
-      "cloudConnectButton": "Se connecter à Openship Cloud"
+      "cloudConnectButton": "Se connecter à Openship Cloud",
+      "repositorySource": {
+        "catalog": "Catalogue",
+        "title": "Depuis le dépôt",
+        "subtitle": "Choisissez un service prêt à l’emploi, construisez depuis votre dépôt ou connectez un service existant.",
+        "context": "Contexte de construction",
+        "dockerfile": "Dockerfile",
+        "browseContext": "Parcourir les dossiers",
+        "browseDockerfile": "Parcourir les fichiers",
+        "pathHint": "Les deux chemins partent de la racine du dépôt. Le Dockerfile doit être dans le contexte de construction.",
+        "deployHint": "Enregistrez le service, puis déployez-le pour construire l’image avec la source et la destination de ce projet.",
+        "noRepository": "Connectez un dépôt GitHub à ce projet pour construire un service depuis son code.",
+        "connectRepository": "Connecter un dépôt",
+        "invalidPath": "Saisissez un chemin relatif sans « .. », barre oblique inverse ni barre oblique initiale.",
+        "outsideContext": "Le Dockerfile doit être dans le contexte de construction. Choisissez un dossier parent pour l’inclure.",
+        "noMatches": "Essayez une autre recherche ou catégorie, ou choisissez une image personnalisée."
+      }
     },
     "detail": {
       "tabs": {
@@ -185,27 +201,29 @@
         "loadFailed": "Impossible de charger l’environnement enregistré. Vos variables n’ont pas été modifiées.",
         "checkFailed": "Impossible de comparer avec le service en cours d’exécution. Les variables enregistrées restent disponibles.",
         "checking": "Comparaison avec le service en cours d’exécution…",
-        "check": "Vérifier le service en cours d’exécution",
+        "check": "Vérifier à nouveau",
         "reload": "Recharger l’environnement",
         "removeOverride": "Supprimer la valeur personnalisée (une valeur héritée peut la remplacer)",
         "removeAtSource": "Supprimez les variables héritées dans Compose ou les paramètres du projet. Définissez ici une valeur personnalisée pour ce service.",
         "status": {
           "unchecked": "L’environnement en cours d’exécution n’a pas encore été vérifié.",
           "synced": "Le service en cours d’exécution correspond à l’environnement enregistré.",
-          "pending": "Ces modifications enregistrées n’ont pas encore été appliquées au service en cours d’exécution :",
+          "pending": "Les modifications sont enregistrées. Appliquez-les pour redémarrer ce service avec les nouvelles valeurs.",
           "unavailable": "Impossible de vérifier l’environnement en cours d’exécution.",
           "not-deployed": "Ces variables seront utilisées lors du déploiement de ce service.",
           "unsupported": "Redéployez ce service pour appliquer son environnement enregistré."
         },
-        "recoveryHint": "Le conteneur en cours d’exécution contient des variables non enregistrées dans Openship. Récupérez-les avant l’application si vous souhaitez les conserver :",
-        "recover": "Récupérer depuis le service en cours d’exécution",
-        "removeRuntime": "Appliquer sans récupérer ces variables et les supprimer du service en cours d’exécution.",
-        "recovered": "Récupérées depuis le service en cours d’exécution — pas encore enregistrées",
-        "recoveredHint": "Les valeurs récupérées sont prêtes à être vérifiées. Enregistrez-les pour les conserver dans Openship.",
-        "recoveryFailed": "Impossible de récupérer les variables du service en cours d’exécution. Les variables enregistrées n’ont pas été modifiées."
+        "recoveryHint": "Ces valeurs seront supprimées à l’application si vous ne les copiez et enregistrez pas d’abord.",
+        "recover": "Copier dans l’éditeur",
+        "removeRuntime": "Supprimer ces valeurs lors de l’application.",
+        "recovered": "Copié du conteneur — à enregistrer",
+        "recoveredHint": "Copié dans l’éditeur. Vérifiez les valeurs, puis enregistrez.",
+        "recoveryFailed": "Impossible de récupérer les variables du service en cours d’exécution. Les variables enregistrées n’ont pas été modifiées.",
+        "changedLabel": "Valeurs à modifier",
+        "recoveryTitle": "Variables présentes uniquement dans le conteneur"
       },
       "environmentApply": {
-        "title": "Appliquer les modifications d’environnement",
+        "title": "Appliquer et redémarrer",
         "applying": "Application des modifications…",
         "applied": "Modifications d’environnement appliquées",
         "hint": "Appliquez les variables enregistrées à ce service sans recompilation. Le service redémarrera.",
@@ -321,7 +339,20 @@
         "automaticStorage": "Géré automatiquement",
         "invalidMount": "Saisissez un chemin commençant par / dans le service. Les chemins et noms de volumes ne peuvent pas contenir :.",
         "mountTooLong": "Chaque entrée de volume doit comporter au maximum 500 caractères.",
-        "saveAndBackup": "Enregistrer et sauvegarder"
+        "saveAndBackup": "Enregistrer et sauvegarder",
+        "emptyVolume": {
+          "menu": "Actions du volume",
+          "title": "Démarrer avec un stockage vide",
+          "description": "Ce service sera redéployé avec un nouveau volume. Ses anciennes données et sauvegardes seront conservées.",
+          "retained": "Ancien volume — conservé",
+          "newVolume": "Nouveau volume vide",
+          "recoveryHint": "Pour récupérer les données, modifiez ce montage et rétablissez l’ancien nom du volume. Les autres services utilisant l’ancien volume ne sont pas affectés.",
+          "confirm": "Saisissez {name} pour confirmer",
+          "action": "Enregistrer et redéployer",
+          "retry": "Réessayer le déploiement",
+          "retryHint": "Le nouveau volume est configuré, mais le déploiement n’a pas démarré. Réessayez pour continuer. Le service en cours utilise toujours son ancien volume.",
+          "failed": "Impossible de préparer un stockage vide. Aucune donnée n’a été effacée."
+        }
       }
     },
     "settingsForm": {

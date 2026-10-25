@@ -14,7 +14,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  */
 
 const h = vi.hoisted(() => ({
-  servers: [] as Array<{ id: string }>,
+  servers: [] as Array<{ id: string; isLocal?: boolean; workspaceId?: string; purpose?: string }>,
   cloudMode: false,
   /** serverId → whether the staleness gate says "recently scraped". */
   throttled: new Set<string>(),
@@ -27,7 +27,7 @@ const h = vi.hoisted(() => ({
 
 vi.mock("@repo/db", () => ({
   repos: {
-    server: { list: vi.fn(async () => h.servers) },
+    server: { list: vi.fn(async () => h.servers), get: vi.fn(async (id: string) => h.servers.find(s => s.id === id)) },
     analytics: {
       getLastScrapedMinute: vi.fn(async () => null),
       upsertBuckets: vi.fn(async () => {}),
@@ -114,11 +114,12 @@ describe("runAnalyticsScrapeSweep", () => {
     expect(peak).toBe(1);
   });
 
-  it("hard-stops in cloud mode — the SaaS has no managed servers to dial", async () => {
+  it("collects hosted customer edges, excluding provider VMs, import connections and the API host", async () => {
     h.cloudMode = true;
+    h.servers = [{ id: "customer" }, { id: "provider", workspaceId: "cloud" }, { id: "local", isLocal: true }, { id: "import", purpose: "migration_source" }];
     const r = await runAnalyticsScrapeSweep();
-    expect(r).toEqual({ servers: 0, skipped: 0 });
-    expect(h.scraped).toEqual([]);
+    expect(r).toEqual({ servers: 1, skipped: 0 });
+    expect(h.scraped).toEqual(["customer"]);
   });
 
   it("is a no-op with no servers configured", async () => {

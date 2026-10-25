@@ -1,6 +1,9 @@
 "use client";
 
-import { observedAllSettled, reportCaughtError as observeCaughtError } from "@repo/core/diagnostics";
+import {
+  observedAllSettled,
+  reportCaughtError as observeCaughtError,
+} from "@repo/core/diagnostics";
 import { Icon as UiIcon } from "@repo/ui/icons";
 
 import { useEffect, useRef, useState } from "react";
@@ -18,6 +21,9 @@ import { useProjectSettings } from "@/context/ProjectSettingsContext";
 import { usePlatform } from "@/context/PlatformContext";
 import { useI18n } from "@/components/i18n-provider";
 import { Button } from "@/components/ui/button";
+import { Modal } from "@/components/ui/Modal";
+import { useResourceScope } from "@/hooks/use-scoped-resource";
+import { TopologyScalingSetup } from "./TopologyScalingSetup";
 import { CustomSelect } from "@/components/ui/CustomSelect";
 import { Checkbox } from "@/components/ui/Checkbox";
 import {
@@ -39,6 +45,7 @@ type Props = {
 
 export function TopologyClusterScaling(props: Props) {
   const { selfHosted } = usePlatform();
+  const scope = useResourceScope();
   if (!selfHosted || props.project.deployTarget === "cloud") return null;
   if (
     clusterWorkloadNeedsOperator(props.project.framework) ||
@@ -57,12 +64,13 @@ export function TopologyClusterScaling(props: Props) {
       </section>
     );
   }
-  return <ClusterScaling key={props.project.id} {...props} />;
+  return <ClusterScaling key={`${scope}:${props.project.id}`} {...props} />;
 }
 
 function ClusterScaling({ project, disabled, resources, onDeploy, onClusterState }: Props) {
   const router = useRouter();
   const { t } = useI18n();
+  const text = t.projects.quickScale;
   const { updateProjectData } = useProjectSettings();
   const [view, setView] = useState<ProjectCluster | null>(null);
   const [clusters, setClusters] = useState<ComputeCluster[]>([]);
@@ -75,35 +83,45 @@ function ClusterScaling({ project, disabled, resources, onDeploy, onClusterState
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [revision, setRevision] = useState(0);
+  const [setup, setSetup] = useState<ComputeCluster | null>(null);
+  const [review, setReview] = useState<{
+    from: number;
+    to: number;
+    deploymentId: string;
+    updatedAt: string;
+  } | null>(null);
   const pending = useRef(false);
   useEffect(() => {
     let current = true;
     setLoading(true);
+    setReview(null);
+    setSetup(null);
     setError(null);
     setCatalogError(null);
-    void observedAllSettled([projectClusterApi.get(project.id), computeClustersApi.list()], "dashboard/components/topology/TopologyClusterScaling").then(
-      (results) => {
-        if (!current) return;
-        const state = results[0];
-        if (state.status === "fulfilled") {
-          onClusterState?.(state.value);
-          setView(state.value);
-          setClusterId(state.value.clusterId ?? "");
-          setInstances(String(state.value.config?.replicas ?? 1));
-          setRepository(state.value.config?.imageRepository ?? "");
-          setAcknowledged(!!state.value.clusterId);
-        } else {
-          setView(null);
-          setError(getApiErrorMessage(state.reason, "Scaling settings could not be loaded."));
-        }
-        if (results[1].status === "fulfilled") setClusters(results[1].value);
-        else
-          setCatalogError(
-            getApiErrorMessage(results[1].reason, "Available clusters could not be loaded."),
-          );
-        setLoading(false);
-      },
-    );
+    void observedAllSettled(
+      [projectClusterApi.get(project.id), computeClustersApi.list()],
+      "dashboard/components/topology/TopologyClusterScaling",
+    ).then((results) => {
+      if (!current) return;
+      const state = results[0];
+      if (state.status === "fulfilled") {
+        onClusterState?.(state.value);
+        setView(state.value);
+        setClusterId(state.value.clusterId ?? "");
+        setInstances(String(state.value.config?.replicas ?? 1));
+        setRepository(state.value.config?.imageRepository ?? "");
+        setAcknowledged(!!state.value.clusterId);
+      } else {
+        setView(null);
+        setError(getApiErrorMessage(state.reason, "Scaling settings could not be loaded."));
+      }
+      if (results[1].status === "fulfilled") setClusters(results[1].value);
+      else
+        setCatalogError(
+          getApiErrorMessage(results[1].reason, "Available clusters could not be loaded."),
+        );
+      setLoading(false);
+    });
     return () => {
       current = false;
     };
@@ -112,6 +130,10 @@ function ClusterScaling({ project, disabled, resources, onDeploy, onClusterState
   const count = Number(instances);
   const validCount = Number.isInteger(count) && count >= 1 && count <= 100;
   const selected = clusters.find((cluster) => cluster.id === clusterId);
+  const database =
+    clusterWorkloadNeedsOperator(project.framework) ||
+    clusterWorkloadNeedsOperator(project.appTemplateId);
+  const databaseNeedsOperator = database && selected?.scaling?.provider !== "swarm";
   const selectedState = clusterScalingState(selected);
   // Project operators may scale an existing release without access to the fleet catalog.
   // A successful workload observation already passed the backend's runtime readiness check.
@@ -135,15 +157,18 @@ function ClusterScaling({ project, disabled, resources, onDeploy, onClusterState
     repository.trim() === (view.config?.imageRepository ?? "") &&
     view.activeClusterId === view.clusterId;
   // A failed admission may have saved the desired count without starting a release.
+  const activeReplicas = view?.activeReplicas ?? view?.status?.desired;
   const needsInstanceRelease =
     onlyInstancesChanged &&
     (count !== view?.config?.replicas ||
-      (!!view?.status && view.status.desired > 0 && view.status.desired !== count));
+      (activeReplicas !== undefined && activeReplicas > 0 && activeReplicas !== count));
   const blocked =
+    databaseNeedsOperator ||
     busy ||
     disabled ||
     loading ||
     !view ||
+    !!view.unavailableReason ||
     (!!clusterId &&
       (!ready ||
         !validCount ||
@@ -176,10 +201,17 @@ function ClusterScaling({ project, disabled, resources, onDeploy, onClusterState
     let navigating = false;
     try {
       if (needsInstanceRelease) {
+        if (
+          !review ||
+          review.to !== count ||
+          review.deploymentId !== view.activeDeploymentId ||
+          review.updatedAt !== view.updatedAt
+        )
+          throw new Error("Scaling settings changed. Review the current settings again.");
         const result = await projectClusterApi.scale(project.id, {
-          replicas: count,
-          expectedDeploymentId: view.activeDeploymentId!,
-          expectedUpdatedAt: view.updatedAt,
+          replicas: review.to,
+          expectedDeploymentId: review.deploymentId,
+          expectedUpdatedAt: review.updatedAt,
         });
         router.push(`/build/${result.deploymentId}`);
         navigating = true;
@@ -198,18 +230,24 @@ function ClusterScaling({ project, disabled, resources, onDeploy, onClusterState
               }
             : {}),
           expectedUpdatedAt: view.updatedAt,
-          stateless: true,
+          ...(selected?.scaling?.provider === "swarm"
+            ? { acknowledgePlacement: true as const }
+            : { stateless: true as const }),
         });
         updateTarget(next);
       }
       if (clusterId || (!settingsChanged && destinationPending)) onDeploy();
     } catch (reason) {
+      setReview(null);
       setError(getApiErrorMessage(reason, "Scaling settings could not be applied."));
       // A lost response can have saved the target. Read once; never replay or deploy implicitly.
       try {
         updateTarget(await projectClusterApi.get(project.id));
       } catch (diagnosticFailure) {
-        observeCaughtError(diagnosticFailure, "dashboard/components/topology/TopologyClusterScaling");
+        observeCaughtError(
+          diagnosticFailure,
+          "dashboard/components/topology/TopologyClusterScaling",
+        );
       }
     } finally {
       if (!navigating) {
@@ -239,16 +277,26 @@ function ClusterScaling({ project, disabled, resources, onDeploy, onClusterState
         </Button>
       </div>
       <p className="text-xs leading-relaxed text-muted-foreground">
-        {resolveWorkload(project.options?.workloadType, project.options?.hasServer) === "web"
-          ? "Run multiple instances of this application. Traffic goes to healthy instances automatically."
-          : "Run multiple instances of this worker. Each instance processes work independently."}
+        {databaseNeedsOperator
+          ? "Database scaling requires the database operator on Kubernetes. A new database on Swarm uses one instance pinned to its data on the connected manager."
+          : resolveWorkload(project.options?.workloadType, project.options?.hasServer) === "web"
+            ? "Run multiple instances of this application. Traffic goes to healthy instances automatically."
+            : "Run multiple instances of this worker. Each instance processes work independently."}
       </p>
       {!view && loading && (
         <div role="status" className="flex items-center gap-2 text-xs text-muted-foreground">
           <UiIcon name="spinner" className="size-4 animate-spin" /> Loading scaling settings…
         </div>
       )}
-      {view && (
+      {view?.unavailableReason && (
+        <p
+          role="status"
+          className="rounded-xl bg-muted/40 p-3 text-xs leading-relaxed text-muted-foreground"
+        >
+          {view.unavailableReason}
+        </p>
+      )}
+      {view && !view.unavailableReason && (
         <>
           {view.status && (
             <div className="space-y-3 rounded-xl bg-muted/40 p-3">
@@ -339,7 +387,7 @@ function ClusterScaling({ project, disabled, resources, onDeploy, onClusterState
                   value: cluster.id,
                   label: cluster.name,
                   icon: <UiIcon name="layers" className="size-4 text-info" />,
-                  description: `${cluster.serverIds.length} ${cluster.serverIds.length === 1 ? "server" : "servers"} · ${t.servers.runtime.status[clusterScalingState(cluster)]}`,
+                  description: `${cluster.scaling?.provider === "swarm" ? "Docker Swarm" : `${cluster.serverIds.length} servers`} · ${t.servers.runtime.status[clusterScalingState(cluster)]}`,
                 })),
                 ...(view.clusterId && !clusters.some((cluster) => cluster.id === view.clusterId)
                   ? [
@@ -376,17 +424,19 @@ function ClusterScaling({ project, disabled, resources, onDeploy, onClusterState
                   <p className="text-xs leading-relaxed text-muted-foreground">
                     Finish enabling scaling on this cluster before deploying applications to it.
                   </p>
-                  <Link
-                    href={`/servers/clusters/${selected.id}`}
-                    className="inline-flex items-center gap-1.5 text-xs font-medium text-primary hover:underline"
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setSetup(selected)}
+                    disabled={disabled || busy}
                   >
-                    Open cluster setup <UiIcon name="arrow-right" className="size-3.5" />
-                  </Link>
+                    {text.prepare} <UiIcon name="arrow-right" className="size-3.5" />
+                  </Button>
                 </>
               )}
             </div>
           )}
-          {!!clusterId && ready && (
+          {!!clusterId && ready && !databaseNeedsOperator && (
             <>
               <label className="block space-y-1.5 text-xs text-muted-foreground">
                 <span>Instances</span>
@@ -408,9 +458,12 @@ function ClusterScaling({ project, disabled, resources, onDeploy, onClusterState
               )}
               {validCount && (
                 <div className="space-y-1 text-xs leading-relaxed text-muted-foreground">
+                  {onlyInstancesChanged && !needsInstanceRelease && (
+                    <p className="text-xs text-muted-foreground">{text.unchanged}</p>
+                  )}
                   {needsInstanceRelease && (
                     <p>
-                      {view.status?.desired ?? view.config?.replicas} → {count} instances
+                      {activeReplicas ?? view.config?.replicas} → {count} instances
                     </p>
                   )}
                   <p>Instances are placed automatically on available servers.</p>
@@ -462,8 +515,9 @@ function ClusterScaling({ project, disabled, resources, onDeploy, onClusterState
                     disabled={busy || disabled || loading}
                   />
                   <span>
-                    Each instance can run independently. Important data is stored outside the
-                    application instance.
+                    {selected?.scaling?.provider === "swarm"
+                      ? "Stateless services can run across nodes. Services with named volumes stay on the connected manager with one instance."
+                      : "Each instance can run independently. Important data is stored outside the application instance."}
                   </span>
                 </label>
               )}
@@ -471,10 +525,24 @@ function ClusterScaling({ project, disabled, resources, onDeploy, onClusterState
           )}
           {(!!clusterId || settingsChanged || destinationPending) && (
             <div className="space-y-2">
-              <Button className="w-full" size="sm" disabled={blocked} onClick={() => void apply()}>
+              <Button
+                className="w-full"
+                size="sm"
+                disabled={blocked || (onlyInstancesChanged && !needsInstanceRelease)}
+                onClick={() => {
+                  if (needsInstanceRelease && view.activeDeploymentId)
+                    setReview({
+                      from: activeReplicas ?? view.config?.replicas ?? 1,
+                      to: count,
+                      deploymentId: view.activeDeploymentId,
+                      updatedAt: view.updatedAt,
+                    });
+                  else void apply();
+                }}
+              >
                 {busy && <UiIcon name="spinner" className="size-4 animate-spin" />}
                 {needsInstanceRelease
-                  ? "Apply scaling"
+                  ? text.review
                   : clusterId || !settingsChanged
                     ? "Review deployment"
                     : "Save destination"}
@@ -488,12 +556,13 @@ function ClusterScaling({ project, disabled, resources, onDeploy, onClusterState
               )}
               {needsInstanceRelease && (
                 <p className="text-xs leading-relaxed text-muted-foreground">
-                  Uses the current release. Progress opens when scaling starts.
+                  Uses the current release. Review before applying; progress opens when scaling
+                  starts.
                 </p>
               )}
             </div>
           )}
-          {!!clusterId && ready && (
+          {!!clusterId && ready && !databaseNeedsOperator && (
             <p className="text-xs leading-relaxed text-muted-foreground">
               Keep capacity for the current and new instances during deployment.
             </p>
@@ -503,8 +572,9 @@ function ClusterScaling({ project, disabled, resources, onDeploy, onClusterState
               <summary className="cursor-pointer text-muted-foreground">Technical details</summary>
               <div className="mt-3 space-y-3 text-muted-foreground">
                 <p>
-                  Kubernetes (K3s) manages instance placement and recovery. OpenShip Edge currently
-                  sends incoming traffic through one cluster server.
+                  {selected?.scaling?.provider === "swarm" ? "Docker Swarm" : "Kubernetes (K3s)"}{" "}
+                  manages instance placement and recovery. OpenShip Edge currently sends incoming
+                  traffic through one cluster server.
                 </p>
                 {view.internalHost && (
                   <p className="break-all">
@@ -538,6 +608,77 @@ function ClusterScaling({ project, disabled, resources, onDeploy, onClusterState
         <p role="alert" className="text-xs text-danger">
           {catalogError}
         </p>
+      )}
+      {setup && (
+        <TopologyScalingSetup
+          cluster={setup}
+          onClose={() => setSetup(null)}
+          onReady={() => {
+            setSetup(null);
+            setLoading(true);
+            setRevision((value) => value + 1);
+          }}
+        />
+      )}
+      {review && (
+        <Modal
+          isOpen
+          onClose={() => {
+            if (!busy) setReview(null);
+          }}
+          width="480px"
+          maxWidth="96vw"
+          showCloseButton={false}
+          closable={!busy}
+        >
+          <div role="dialog" aria-modal="true" aria-label={text.review} className="space-y-5 p-6">
+            <h2 className="text-lg font-medium">{text.review}</h2>
+            <div className="rounded-xl bg-muted/40 p-4 text-sm">
+              <p className="font-medium">{project.name || "Application"}</p>
+              <p className="mt-2">
+                {review.from} → {review.to} {text.instances.toLowerCase()}
+              </p>
+              <p className="mt-1 text-muted-foreground">
+                {selected?.name ?? text.currentCluster} · {text.currentRelease}
+              </p>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              {review.to > review.from ? text.appScaleUp : text.appScaleDown}
+            </p>
+            {resources && resources.cpuCores > 0 && resources.memoryMb > 0 && (
+              <p className="text-sm text-muted-foreground">
+                Per instance: {formatCpuCores(resources.cpuCores)} ·{" "}
+                {formatMemoryMb(resources.memoryMb)}. Total limits:{" "}
+                {formatCpuCores(resources.cpuCores * review.to)} ·{" "}
+                {formatMemoryMb(resources.memoryMb * review.to)}.
+              </p>
+            )}
+            {(review.to !== count ||
+              review.updatedAt !== view?.updatedAt ||
+              review.deploymentId !== view?.activeDeploymentId) && (
+              <p role="alert" className="text-sm text-warning">
+                {text.settingsChanged}
+              </p>
+            )}
+            <div className="flex justify-end gap-2">
+              <Button variant="ghost" disabled={busy} onClick={() => setReview(null)}>
+                {t.settings.common.back}
+              </Button>
+              <Button
+                disabled={
+                  blocked ||
+                  review.to !== count ||
+                  review.updatedAt !== view?.updatedAt ||
+                  review.deploymentId !== view?.activeDeploymentId
+                }
+                onClick={() => void apply()}
+              >
+                {busy && <UiIcon name="spinner" className="size-4 animate-spin" />}
+                {text.apply}
+              </Button>
+            </div>
+          </div>
+        </Modal>
       )}
       {!clusters.length && view && !catalogError && !loading && (
         <Link

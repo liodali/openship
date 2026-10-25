@@ -1,4 +1,5 @@
 import { reportCaughtError as observeCaughtError } from "@repo/core/diagnostics";
+import { redactUrlCredentials } from "@repo/core";
 import { spawn } from "node:child_process";
 import { access, lstat, mkdtemp, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
@@ -68,7 +69,8 @@ function spawnGit(
     let stderr = "";
     const emit = opts.onLog;
     const flushLine = (line: string) => {
-      const trimmed = line.trimEnd();
+      // Git echoes the credentialed clone URL on some failures (submodules).
+      const trimmed = redactUrlCredentials(line.trimEnd());
       if (!trimmed) return;
       if (emit) {
         emit({ timestamp: new Date().toISOString(), message: trimmed, level: "info" });
@@ -115,7 +117,7 @@ function spawnGit(
     child.on("close", (code) => {
       clearTimeout(idleTimer);
       if (code === 0) resolve();
-      else reject(new Error(`git exited with code ${code}: ${stderr.trim().slice(-500) || "no stderr"}`));
+      else reject(new Error(`git exited with code ${code}: ${redactUrlCredentials(stderr.trim()).slice(-500) || "no stderr"}`));
     });
   });
 }
@@ -415,6 +417,7 @@ async function cloneGitSource(
   const { cloneUrl, env: gitEnv, credArgs } = assembleGitClone({
     repoUrl: config.repoUrl,
     gitToken: config.gitToken,
+    gitTokenRepositories: config.gitTokenRepositories,
     ssh: sshMaterial,
   });
 

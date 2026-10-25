@@ -2,7 +2,7 @@
 
 import type { ReactNode } from "react";
 import { Icon as UiIcon } from "@repo/ui/icons";
-import { BillingLink as Link, useBillingWorkspace } from "@/components/billing/BillingWorkspaceContext";
+import { BillingLink as Link } from "@/components/billing/BillingWorkspaceContext";
 import { PendingCheckoutsPanel } from "@/components/billing/CheckoutRecovery";
 import { PLANS } from "@repo/core";
 import type { BillingState } from "@/lib/api/billing";
@@ -208,12 +208,11 @@ export function BillingPaymentsPanel({
   hasHistory = true,
 }: PortalPanelProps) {
   const { t } = useI18n();
-  const workspaceId = useBillingWorkspace();
   const copy = t.billing.paymentPanel;
   return (
     <div className="space-y-4">
       <section className="rounded-2xl bg-card p-5">
-        <PendingCheckoutsPanel workspaceId={workspaceId} />
+        <PendingCheckoutsPanel />
       </section>
       {hasHistory ? (
         <section className="rounded-2xl bg-card p-5">

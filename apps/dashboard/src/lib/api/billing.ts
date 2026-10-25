@@ -201,8 +201,8 @@ export const billingApi = {
     (await api.get<Envelope<BillingPlanChange>>(endpoints.billing.change, { params: { changeId, workspaceId } })).data,
   cancelSubscriptionChange: async (changeId: string, workspaceId?: string): Promise<BillingPlanChange> =>
     (await api.post<Envelope<BillingPlanChange>>(endpoints.billing.changeCancel, { changeId, workspaceId })).data,
-  quoteCustomPlan: async (resources: CustomServerResources): Promise<BillingCustomQuote> => {
-    const res = await api.get<Envelope<BillingCustomQuote>>(endpoints.billing.customQuote, { params: { ...resources } });
+  quoteCustomPlan: async (resources: CustomServerResources, interval: "monthly" | "annual" = "monthly"): Promise<BillingCustomQuote> => {
+    const res = await api.get<Envelope<BillingCustomQuote>>(endpoints.billing.customQuote, { params: { ...resources, interval } });
     return res.data;
   },
   getCheckoutStatus: async (checkoutId: string, workspaceId?: string): Promise<BillingCheckoutStatus> => {

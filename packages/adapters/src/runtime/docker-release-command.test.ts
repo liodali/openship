@@ -42,6 +42,7 @@ function fakeDaemon(opts: { statusCode?: number; log?: string; chunks?: Buffer[]
     remove: vi.fn(async (o?: Record<string, unknown>) => { removed.push(o); }),
   };
   const docker = {
+    getImage: () => ({ inspect: async () => ({ Config: {} }) }),
     createContainer: vi.fn(async (args: Record<string, unknown>) => {
       created.push(args);
       return container;

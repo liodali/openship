@@ -51,7 +51,10 @@ async function fakeDaemon(opts: { startError?: Error; removeError?: Error } = {}
     creates.push(args);
     return { id: "c".repeat(64), start, remove };
   });
-  (runtime as unknown as { _docker: unknown })._docker = { createContainer };
+  (runtime as unknown as { _docker: unknown })._docker = {
+    createContainer,
+    getImage: () => ({ inspect: async () => ({ Config: {} }) }),
+  };
   const logs: LogEntry[] = [];
   const onLog = (entry: LogEntry) => {
     logs.push(entry);

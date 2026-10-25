@@ -62,3 +62,23 @@ describe("host-disk probe", () => {
     expect(events.some(event => event.error.message === "host unreachable")).toBe(true);
   });
 });
+
+it("measures fresh storage through the verified runtime connection without re-resolving its server alias", async () => {
+  const { getHostDisk } = await import("@repo/platform/engine/lib/host-disk");
+  const exec = vi
+    .fn()
+    .mockResolvedValueOnce("26214400 1048576")
+    .mockResolvedValueOnce("26214400 6291456");
+  const executor = { exec } as never;
+  expect(await getHostDisk("repointed-alias", "org-a", { executor })).toEqual({
+    totalBytes: 25 * 1024 ** 3,
+    freeBytes: 1024 ** 3,
+  });
+  expect(await getHostDisk("repointed-alias", "org-a", { executor })).toEqual({
+    totalBytes: 25 * 1024 ** 3,
+    freeBytes: 6 * 1024 ** 3,
+  });
+  expect(exec).toHaveBeenCalledTimes(2);
+  for (const [command] of exec.mock.calls)
+    expect(command).not.toContain("repointed-alias");
+});

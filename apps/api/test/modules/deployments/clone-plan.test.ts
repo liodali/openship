@@ -13,6 +13,13 @@ const base: ClonePlanInput = {
 };
 
 describe("resolveClonePlan", () => {
+  it("hosted management keeps even an explicit local-build request on the SSH target", () => {
+    const plan = resolveClonePlan({ ...base, isHosted: true, isDesktop: false,
+      repoIsGithub: false, dockerTransport: "ssh", buildStrategy: "local", cloneStrategy: "api-host" });
+    expect(plan.sourceLocation).toBe("target");
+    expect(plan.cloneCredentialPurpose).toBe("server");
+    expect(plan.relayEligible).toBe(false);
+  });
   it("local build → clone runs locally with a local credential", () => {
     const plan = resolveClonePlan({ ...base, effectiveTarget: "server", buildStrategy: "local" });
     expect(plan.cloneRunsOnTarget).toBe(false);

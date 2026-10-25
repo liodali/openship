@@ -1,4 +1,4 @@
-import { AppError, normalizeRegistryHost, registryForImage } from "@repo/core";
+import { AppError, isMutableImageRef, normalizeRegistryHost, registryForImage } from "@repo/core";
 import type { BuildLogger } from "./build-pipeline";
 
 export interface PreparedDockerImage {
@@ -47,10 +47,6 @@ export function matchingRegistryDigest(
   );
 }
 
-export function isMutableDockerImageRef(ref: string): boolean {
-  return !/(?:^|@)sha256:[a-f0-9]{64}$/.test(ref.trim());
-}
-
 /** Acquire and freeze an image before activation. Unknown daemon state fails closed. */
 export async function prepareDockerImage(
   ref: string,
@@ -78,9 +74,9 @@ export async function prepareDockerImage(
   }
   const refresh =
     options.refreshMutableTag &&
-    isMutableDockerImageRef(ref) &&
+    isMutableImageRef(ref) &&
     !!matchingRegistryDigest(ref, image?.RepoDigests);
-  const force = options.force === true && isMutableDockerImageRef(ref);
+  const force = options.force === true && isMutableImageRef(ref);
   if (!image || (!options.requirePresent && (force || refresh))) {
     await io.pull(ref, { force: force || !!image });
     checkCancellation();

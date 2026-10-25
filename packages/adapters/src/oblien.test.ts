@@ -2,6 +2,25 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { Oblien, cloudWorkspaceCreationFailure } from "./oblien";
 afterEach(() => vi.unstubAllGlobals());
 describe("Oblien SDK transport", () => {
+  it.each(["3", new Date(Date.now() + 30_000).toUTCString()])("preserves a gateway throttle and Retry-After %s without exposing its HTML", async (retryAfter) => {
+    const fetcher = vi.fn(async () => new Response("<html>private gateway data</html>", {
+      status: 429, headers: { "Retry-After": retryAfter },
+    }));
+    vi.stubGlobal("fetch", fetcher);
+    const error = await new Oblien({ token: "test" }).workspaces.create({ wait_ready: false }).catch(error => error);
+    expect(error).toMatchObject({ status: 429, code: "OBLIEN_RATE_LIMITED" });
+    expect(error.details.retryAfterSeconds).toBeGreaterThan(0);
+    expect(error.details.retryAfterSeconds).toBeLessThanOrEqual(30);
+    expect(error.message).toContain("Retry after");
+    expect(error.message).not.toContain("private");
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+  it.each(["invalid", "-1", "99999999999999999999999"])("ignores invalid Retry-After %s", async (retryAfter) => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 503, headers: { "Retry-After": retryAfter } })));
+    const error = await new Oblien({ token: "test" }).workspaces.get("ws").catch(error => error);
+    expect(error.status).toBe(503);
+    expect(error.details).toBeUndefined();
+  });
   it("reads the provider egress pool from its fixed endpoint and strips credentials", async () => {
     const fetcher = vi.fn(async (_url: unknown) => Response.json({ success: true, proxies: [
       { ip: "8.8.4.4", country_code: "US", username: "pool-user", password: "pool-password", internal_id: "private-id" },

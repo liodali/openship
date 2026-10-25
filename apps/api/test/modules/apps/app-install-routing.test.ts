@@ -598,3 +598,18 @@ describe("serviceRoutingPatch", () => {
     expect(next.domain).toBeNull();
   });
 });
+
+it("installs PostgreSQL with a fixed pgAdmin port and no hostname or Cloud requirement", async () => {
+  await installApp(ctx, {
+    templateId: "postgresql",
+    name: "PostgreSQL",
+    routes: [{ service: "pgadmin", port: 5050, mode: "port" }],
+  });
+  expect(payloadFor("pgadmin")).toMatchObject({
+    exposed: false,
+    publicEndpoints: [],
+    ports: ["0.0.0.0:5050:5050"],
+  });
+  expect(payloadFor("postgres")).toMatchObject({ exposed: false, publicEndpoints: [], ports: [] });
+  expect(requireCloudMock).not.toHaveBeenCalled();
+});

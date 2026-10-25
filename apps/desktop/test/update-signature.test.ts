@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { signDesktopUpdates } from "../scripts/sign-updates.mjs";
 
 const h = vi.hoisted(() => ({ publicKey: "", directory: "", fetch: vi.fn() }));
-vi.mock("../src/main/update-trust.json", () => ({ default: { get publicKey() { return h.publicKey; } } }));
+vi.mock("../../../packages/core/src/updates/signing-public-key.json", () => ({ default: { get publicKey() { return h.publicKey; } } }));
 vi.mock("electron", () => ({ app: { getPath: () => h.directory }, net: { fetch: h.fetch }, shell: {} }));
 vi.mock("../src/main/update-download", () => ({ fetchUpdateAsset: h.fetch }));
 import { downloadUpdate } from "../src/main/updater";

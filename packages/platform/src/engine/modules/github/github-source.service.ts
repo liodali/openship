@@ -398,13 +398,15 @@ export async function beginGitHubManifestFlow(
     expiresAt: new Date(Date.now() + SETUP_STATE_TTL_MS),
   });
 
-  const callback = `${githubSourceSetupUrl()}?flow=manifest&state=${encodeURIComponent(state)}`;
+  // GitHub rejects a manifest whose redirect_url carries a query string ("redirect_url must be a valid
+  // URL"). The state goes on the registration URL instead; GitHub hands it back on the redirect as
+  // ?code=…&state=…, and the callback page reads a code without an installation_id as the manifest flow.
   return {
-    url: "https://github.com/settings/apps/new",
+    url: `https://github.com/settings/apps/new?state=${encodeURIComponent(state)}`,
     manifest: {
       name: manifestAppName(name),
       url: resolveDashboardPublicUrl(),
-      redirect_url: callback,
+      redirect_url: githubSourceSetupUrl(),
       setup_url: githubSourceSetupUrl(),
       setup_on_update: false,
       public: false,

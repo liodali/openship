@@ -8,7 +8,7 @@ import type { RollbackCapacity } from "@repo/contracts";
  *  satisfies it structurally. */
 export interface RollbackWindowProject {
   rollbackWindow?: number | null;
-  /** Legacy measurement, ignored by retention. Disk space never changes the limit. */
+  /** Legacy measurement, ignored by retention. Measurements never overwrite the configured ceiling. */
   rollbackWindowComputed?: number | null;
   snapshotSizeBytes?: number | null;
   capacityMeasuredAt?: Date | null;
@@ -25,9 +25,10 @@ export interface ResolvedRollbackWindow {
 }
 
 /**
- * THE rollback window for a project. Every retention decision — prune, the image
+ * The configured rollback ceiling for a project. Count-based prune, the image
  * GC keep set, the wizard's label — resolves through here, so there is exactly
- * one answer to "how many releases stay restorable".
+ * one configured maximum. Inherited limits also allow the locked cleanup path
+ * to reclaim reproducible artifacts under confirmed Docker storage pressure.
  *
  *   explicit          the operator typed a number (`project.rollbackWindow`).
  *   instance-default  no override → instance_settings.default_rollback_window (5).

@@ -17,7 +17,7 @@ export const CustomServerResourcesSchema = Type.Object({
 }, { additionalProperties: false });
 export const CustomSubscriptionSelectionSchema = Type.Object({
   resources: CustomServerResourcesSchema,
-  quoteReference: Type.String({ pattern: "^openship:custom:v2:[a-f0-9]{64}$" }),
+  quoteReference: Type.String({ pattern: "^openship:custom:v[23]:[a-f0-9]{64}$" }),
 }, { additionalProperties: false });
 export type CustomSubscriptionSelection = Static<typeof CustomSubscriptionSelectionSchema>;
 

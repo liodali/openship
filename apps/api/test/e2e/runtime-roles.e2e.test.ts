@@ -8,7 +8,7 @@ import { eq } from "drizzle-orm";
 import { db, repos, schema } from "@repo/db";
 import { seedDeployment, seedOrg, seedProject, setActive } from "../helpers/seed";
 import { BuildLogger, DockerRuntime, type DeployConfig } from "@repo/adapters";
-import type { StackRole } from "@repo/core";
+import { SYSTEM, type StackRole } from "@repo/core";
 import {
   rolloutRoles,
   type RoleRollout,
@@ -419,7 +419,8 @@ describeDockerE2E("runtime roles against Docker", () => {
           await repos.deployment.updateStatus(next.id, "failed");
           throw error;
         }
-        expect(messages.some(message => message.includes("(1s stabilization window)"))).toBe(true);
+        const watch = `(${live.readiness!.stabilizationSeconds}s stabilization window)`;
+        expect(messages.some(message => message.includes(watch))).toBe(true);
         return (await repos.deployment.findById(next.id))!;
       };
       const up = await apply([{ ...queue, replicas: 3 }, cron]);
@@ -427,7 +428,17 @@ describeDockerE2E("runtime roles against Docker", () => {
       for (const ref of first.started) expect(up.roleContainers!.some(next => next.containerId === ref.containerId)).toBe(true);
       const down = await apply([queue, cron]);
       expect(down.roleContainers!.map(ref => ref.containerId).sort()).toEqual(first.started.map(ref => ref.containerId).sort());
-      await expect(apply([{ ...queue, command: "exit 9" }, cron])).rejects.toThrow(/Role startup check failed/);
+      // Healthy rollouts use a short watch to keep this fixture fast. An
+      // intentional crash loop needs the normal window: a one-second sample
+      // can land between restarts before Docker's backoff proves the loop.
+      await repos.project.update(project.id, {
+        readiness: { stabilizationSeconds: SYSTEM.DEPLOYMENTS.STABILIZE_WINDOW_MS / 1000 },
+      });
+      try {
+        await expect(apply([{ ...queue, command: "exit 9" }, cron])).rejects.toThrow(/Role startup check failed/);
+      } finally {
+        await repos.project.update(project.id, { readiness: project.readiness });
+      }
       expect((await repos.project.findById(project.id))!.activeDeploymentId).toBe(down.id);
       await expectAllRunning(first);
       // Returning to the earlier frozen count also requires no build or web restart.

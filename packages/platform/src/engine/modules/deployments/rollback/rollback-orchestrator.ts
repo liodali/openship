@@ -41,10 +41,11 @@
 import { reportCaughtError as observeCaughtError, diagnostics as errorDiagnostics } from "@repo/core/diagnostics";
 import { findActiveDeployment } from "@repo/platform/engine/lib/active-deployment";
 import { repos, type Deployment, type Project } from "@repo/db";
-import { BareRuntime, DockerRuntime, sharedMountExecutor, type DeploymentRef, type ResourceConfig } from "@repo/adapters";
+import { BareRuntime, DockerRuntime, ownsBuiltImage, sharedMountExecutor, type DeploymentRef, type ResourceConfig, type RuntimeAdapter } from "@repo/adapters";
 import { AppError, safeErrorMessage, withTimeout } from "@repo/core";
 import { isArtifactRef, usableRef } from "../../../lib/container-ref";
-import { resolveDeploymentRuntime } from "../../../lib/deployment-runtime";
+import { acquireLocalHostExecutor, resolveDeploymentRuntime, resolveDeploymentRuntimeForRead } from "../../../lib/deployment-runtime";
+import { LOCAL_HOST_PORT_TARGET } from "../../../lib/host-port-target";
 import { withProjectRuntimeLock } from "../../../lib/project-runtime-lock";
 import {
   checkNoActiveBuild,
@@ -54,6 +55,8 @@ import {
 import { buildBackgroundContext } from "../../../lib/background-context";
 import { retainedArtifacts, effectiveServiceArtifacts } from "../retained-artifacts";
 import { withRetentionLock } from "../retention-lock";
+import { reclaimAutomaticRollbackArtifacts } from "../automatic-retention";
+import { getHostDisk } from "../../../lib/host-disk";
 import { withoutPinnedArtifacts } from "../pinned-artifacts";
 import { roleTeardownTimeoutMs } from "../role-runtime";
 import {
@@ -535,8 +538,12 @@ export async function prune(projectId: string): Promise<{ purged: number; failed
   return await withRetentionLock(projectId, pruneUnlocked) ?? { purged: 0, failed: 0 };
 }
 
-async function pruneUnlocked(project: Project): Promise<{ purged: number; failed: number }> {
-  const keep = await retainedArtifacts(project);
+async function pruneUnlocked(
+  project: Project,
+  keep?: Awaited<ReturnType<typeof retainedArtifacts>>,
+  runtimeOverride?: RuntimeAdapter,
+): Promise<{ purged: number; failed: number }> {
+  keep ??= await retainedArtifacts(project);
   let purged = 0;
   let failed = 0;
   for (const dep of keep.overflow) {
@@ -544,7 +551,7 @@ async function pruneUnlocked(project: Project): Promise<{ purged: number; failed
       // Read the complete inventory before any deletion. Losing the query must
       // never look like a release without services and clear its retry marker.
       const serviceRows = await effectiveServiceArtifacts(dep, await repos.service.listByDeployment(dep.id));
-      const { runtime } = await resolveDeploymentRuntime(dep);
+      const runtime = runtimeOverride ?? (await resolveDeploymentRuntime(dep)).runtime;
       try {
         // Roles share the release image. Remove them before purging that image,
         // while respecting references from every release in the keep set.
@@ -611,7 +618,7 @@ async function pruneUnlocked(project: Project): Promise<{ purged: number; failed
         }
         if (serviceFailure) throw serviceFailure;
       } finally {
-        await runtime.dispose?.();
+        if (!runtimeOverride) await runtime.dispose?.();
       }
       await repos.deployment.setArtifactRetainedAt(dep.id, null);
       purged += 1;
@@ -633,7 +640,44 @@ export async function reconcileProjectRetention(projectId: string) {
     // remove more of that release while its cleanup is incomplete.
     if (result.failed) return { purged: result.purged, removed: 0, bytes: 0, skippedInUse: 0, errors: result.failed };
     const { reapProjectImages } = await import("../image-gc");
-    return { ...await reapProjectImages(project), purged: result.purged };
+    const reaped = await reapProjectImages(project);
+    if (reaped.errors || project.rollbackWindow != null || !project.activeDeploymentId)
+      return { ...reaped, purged: result.purged };
+    const active = await findActiveDeployment(project);
+    if (!active) return { ...reaped, purged: result.purged };
+    const destination = await resolveDeploymentRuntimeForRead(active);
+    const { runtime, hostPortTarget } = destination;
+    try {
+      // This policy measures Docker storage only. Durable units and unknown
+      // destinations keep their existing retention behavior.
+      if (!(runtime instanceof DockerRuntime) || !hostPortTarget?.stable) return { ...reaped, purged: result.purged };
+      const serverId = destination.serverId ?? undefined;
+      // A socket runtime may not retain an executor. Its disk is on this host,
+      // never an implicit/repurposed org server selected by an alias lookup.
+      const executor = runtime.connectionOptions?.executor ??
+        (hostPortTarget.targetKey === LOCAL_HOST_PORT_TARGET.targetKey ? await acquireLocalHostExecutor() : null);
+      if (!executor) return { ...reaped, purged: result.purged };
+      const automatic = await reclaimAutomaticRollbackArtifacts(project, {
+        readDisk: () => getHostDisk(serverId, project.organizationId, { refresh: true, executor }),
+        load: () => retainedArtifacts(project),
+        ownedImages: async () => new Set((await runtime.listProjectImages(project.id)).flatMap(image => image.repoTags.filter(ownsBuiltImage))),
+        purge: async (inventory) => {
+          const historical = await resolveDeploymentRuntimeForRead(inventory.overflow[0]!);
+          try {
+            if (!(historical.runtime instanceof DockerRuntime) || historical.hostPortTarget?.stable !== true ||
+                historical.hostPortTarget.targetKey !== hostPortTarget.targetKey) return { purged: 0, failed: 0 };
+            // Use this exact verified connection for removal, not a second
+            // resolution through a server alias that an operator can repoint.
+            return await pruneUnlocked(project, inventory, historical.runtime);
+          } finally {
+            await historical.runtime.dispose?.();
+          }
+        },
+      });
+      return { ...reaped, purged: result.purged + automatic.purged, errors: reaped.errors + automatic.failed };
+    } finally {
+      await runtime.dispose?.();
+    }
   }) ?? { purged: 0, removed: 0, bytes: 0, skippedInUse: 0, errors: 0 };
 }
 

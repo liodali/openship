@@ -8,10 +8,33 @@ import { TypeTable } from 'fumadocs-ui/components/type-table';
 Billing covers plans, subscriptions, credits, and usage. Plan listing is public on every installation.
 Openship defines its prices, namespace credits, limits and checkout copy. Oblien
 collects the payment and applies the saved offer on payment and renewal. Each
-subscription owns a managed server and maps to an immutable provider namespace.
+Cloud compute subscription owns a managed server and maps to an immutable provider namespace.
+Manage subscriptions have a separate organization-owned billing namespace and grant no compute.
 Account operations require configured Cloud billing. Self-hosted HTTP routes can proxy a connected user's
 Cloud billing account; fixed SDK scopes require a direct compatible Cloud API connection.
 See [Cloud compatibility](/docs/api/sdk/compatibility#cloud).
+
+## Hosted management
+
+`billing.getManagement()` returns the authenticated organization’s Manage pricing,
+verified access, connected-server count and saved subscription. These operations
+have no Cloud Space selector: one management subscription belongs to the organization.
+
+Use `purchaseManagement({ servers: 2, idempotencyKey })` to start a checkout or
+review an allowance change. Reuse the key after an uncertain response. The server
+calculates prices and Cloud inclusion; callers cannot supply offers or namespaces.
+For a returned quote, call `confirmManagementChange({ quoteId })` after review.
+
+`resumeManagementCheckout()` and `cancelManagementCheckout()` recover or cancel
+an unfinished payment. `cancelManagementChange()` cancels an eligible pending
+change. `cancelManagementSubscription()` ends renewal after the paid period;
+`resumeManagementSubscription()` resumes unchanged valid terms.
+`createManagementPortal()` opens this subscription’s invoices and payment details.
+
+All reads require billing read access and all mutations require billing admin
+access. HTTP, the TypeScript SDK and the CLI use the same operation contracts.
+See the [billing guide](/docs/guides/billing#your-infrastructure-openship-manage)
+for pricing, Cloud inclusion and cancellation behavior.
 
 ## Select the billing owner
 
@@ -112,7 +135,8 @@ Two conventions matter when you render this:
 
 Prices, credits, packs and limits come from Openship's server catalog in
 `@repo/core`. The API, dashboard and [pricing page](/pricing) read the same
-published catalog. Monthly paid plans are $5 / $20 / $39 / $99; annual checkout is
+published catalog. New monthly Cloud plans are $20 / $39 / $99. Existing $5 Hobby renewals keep
+their saved terms, but new checkouts refuse that retired offer. Annual checkout is
 hidden until explicit yearly terms are published. Linked local installations
 read the SaaS public catalog without sending local credentials.
 
@@ -451,6 +475,20 @@ closure and resource cleanup.
 | Start a prepaid Actions checkout with an approved deposit and idempotency key. Requires configured Cloud billing and valid live usage rates. | `billing.createActionsCheckout(input)` | `POST /api/billing/actions/checkout`<br />`billing:write` |
 | Resume the original Actions checkout without creating another payment. Requires configured Cloud billing and valid live usage rates. | `billing.resumeActionsCheckout(input)` | `POST /api/billing/actions/checkout/resume`<br />`billing:write` |
 
+### Hosted management
+
+| Operation | SDK | REST API |
+| --- | --- | --- |
+| Read hosted management pricing, paid access and the connected-server allowance. | `billing.getManagement()` | `GET /api/billing/manage`<br />`billing:read` |
+| Create or recover a Manage checkout, or quote an allowance change, using an idempotency key. | `billing.purchaseManagement(input)` | `POST /api/billing/manage/checkout`<br />`billing:admin` |
+| Confirm the reviewed allowance quote; paid upgrades activate only after settlement. | `billing.confirmManagementChange(input)` | `POST /api/billing/manage/change`<br />`billing:admin` |
+| Resume the saved Manage checkout without creating another payment. | `billing.resumeManagementCheckout()` | `POST /api/billing/manage/checkout/resume`<br />`billing:admin` |
+| Cancel a pending allowance change without ending the current paid period. | `billing.cancelManagementChange()` | `POST /api/billing/manage/change/cancel`<br />`billing:admin` |
+| Cancel the saved unpaid Manage checkout. | `billing.cancelManagementCheckout()` | `POST /api/billing/manage/checkout/cancel`<br />`billing:admin` |
+| Stop Manage renewal; customer workloads and data remain on their infrastructure. | `billing.cancelManagementSubscription()` | `POST /api/billing/manage/cancel`<br />`billing:admin` |
+| Resume renewal at the verified saved price while its coverage terms still apply. | `billing.resumeManagementSubscription()` | `POST /api/billing/manage/resume`<br />`billing:admin` |
+| Open payment details and invoices for the Manage subscription. | `billing.createManagementPortal()` | `POST /api/billing/manage/portal`<br />`billing:admin` |
+
 ### HTTP endpoints
 
 | Operation | SDK | REST API |
@@ -459,3 +497,22 @@ closure and resource cleanup.
 | Retired Stripe webhook; returns 410 without changing billing. | HTTP only | `POST /api/billing/webhook/stripe`<br />`Handler authentication` |
 
 {/* api-operations:end */}
+
+## Manage from the CLI
+
+These commands use the active organization in your selected Openship context.
+They use the same paid allowance and authorization checks as the dashboard.
+
+```bash
+openship billing manage get
+openship billing manage purchase --servers 3 --idempotency-key manage-purchase-0001
+openship billing manage apply QUOTE_ID --yes
+openship billing manage checkout resume
+openship billing manage checkout cancel --yes
+openship billing manage cancel --yes
+```
+
+`purchase` returns a payment URL for a new subscription or a quote for an existing
+one. Review its amount due before `apply`. `cancel` ends renewal; workloads and
+data remain on your servers. Use `resume` to resume renewal at its saved terms,
+`cancel-change` to cancel a pending change, or `portal` for payment details.

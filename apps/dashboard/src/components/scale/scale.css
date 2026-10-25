@@ -82,6 +82,16 @@
   max-width: calc(100% - 32px);
 }
 
+.scale-inspector-overlay[data-fit-content] {
+  inset-block-end: auto;
+  max-height: calc(100% - 32px);
+}
+
+.scale-inspector-overlay[data-fit-content]:not([hidden]) {
+  display: flex;
+  flex-direction: column;
+}
+
 .scale-storage-notice {
   top: 88px;
   max-width: min(32rem, calc(100% - 32px));

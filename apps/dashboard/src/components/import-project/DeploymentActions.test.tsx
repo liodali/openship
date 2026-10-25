@@ -194,6 +194,20 @@ describe("shared deployment controls", () => {
     expect(button(copy.redeploy).disabled).toBe(false);
   });
 
+  it("offers a deployment-only retry only with the server's retained build receipt", async () => {
+    deployment.deploymentStatus = "failed";
+    await render();
+    expect(button(baseDictionary.billing.workspaces.retryDeployment)).toBeUndefined();
+    deployment.state.canRetryDeployment = true;
+    await render();
+    await act(async () => button(baseDictionary.billing.workspaces.retryDeployment).click());
+    expect(redeploy).toHaveBeenCalledExactlyOnceWith({ reuseBuild: true });
+    expect(button(copy.redeploy)).toBeDefined();
+    deployment.deploymentStatus = "cancelled";
+    await render();
+    expect(button(baseDictionary.billing.workspaces.retryDeployment)).toBeUndefined();
+  });
+
   it("uses the project header and correct configuration link for a local source", async () => {
     deployment.config.localPath = "/workspace/example";
     await render(true);

@@ -2,7 +2,7 @@ import { reportCaughtError as observeCaughtError } from "@repo/core/diagnostics"
 import { AppError, NotFoundError } from "@repo/core";
 import { repos, tryAcquireAdvisoryLock } from "@repo/db";
 import type { CommandExecutor, ShellOptions } from "@repo/adapters";
-import { assertServerExecution, assertSelfHosted, assertDeploymentServer } from "../modules/system/server-access";
+import { assertServerExecution, assertDeploymentServer } from "../modules/system/server-access";
 import { openCloudWorkspaceExecutor } from "./cloud-workspace-host";
 import { sshManager } from "./ssh-manager";
 import { withCloudWorkspaceActivity, holdCloudWorkspaceActivity } from "./cloud-workspace-lock";
@@ -20,7 +20,6 @@ export async function acquireServerExecution(organizationId: string, serverId: s
     dispose = () => executor.dispose();
   } else {
     if (!(options?.migration && server.purpose === "migration_source")) {
-      assertSelfHosted();
       await assertServerExecution(server);
     }
     sshManager.retain(serverId);

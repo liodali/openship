@@ -1,3 +1,4 @@
+import { listRouteProtection, changeRouteProtection } from "../../lib/route-protection";
 import { diagnostics as errorDiagnostics } from "@repo/core/diagnostics";
 import { findActiveDeployment } from "@repo/platform/engine/lib/active-deployment";
 import { AppError, NotFoundError, isWildcardHostname, normalizeCustomHostname, safeErrorMessage } from "@repo/core";
@@ -13,9 +14,10 @@ import { sanitizeSpec, normalizePathPrefix } from "../route-rules/rule-inputs";
 import { domainDependencies } from "../domains/domain.operations";
 import type { AddDomainResult } from "../domains/domain.service";
 import { HEALTH_WATCH_JOB, healthWatchActive } from "../monitoring/health-watch-policy";
+import { isCustomerProject } from "../billing/management.service";
 
 async function localProject(ctx: ExecutionContext, id: string) {
-  if (env.CLOUD_MODE) throw new NotFoundError("Operation");
+  if (env.CLOUD_MODE && !await isCustomerProject(ctx.organizationId, id)) throw new NotFoundError("Operation");
   const project = await repos.project.findById(id);
   assertResourceInOrg(project, "Project", ctx.organizationId, id);
   return project;
@@ -39,6 +41,12 @@ function record(ctx: ExecutionContext, projectId: string, operation: string, rul
 }
 
 export const projectRoutingOperations: ResourceServices<typeof ProjectRoutingSchemas> = {
+  listRouteProtection,
+  async changeRouteProtection(ctx, id, input) {
+    const result = await changeRouteProtection(ctx, id, input);
+    record(ctx, id, `routeProtection.${input.action}`, input.hostname);
+    return result;
+  },
   async listRouteRules(ctx, id) {
     await localProject(ctx, id);
     return repos.routeRule.listByProject(id);

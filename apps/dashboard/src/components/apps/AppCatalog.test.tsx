@@ -40,15 +40,15 @@ afterEach(async () => {
 });
 const button = (name: string) => [...container.querySelectorAll("button")].find(node => node.textContent?.includes(name))!;
 
-it("labels GPU placement and blocks self-hosted-only apps in Cloud", async () => {
+it("labels customer-server requirements before opening the shared install flow", async () => {
   h.cloud = true;
   h.catalog.mockResolvedValue({ data: [{ id: "ollama", name: "Ollama", kind: "template", category: "ai", description: "Models", gpu: "recommended", supportsCloud: false }] });
   await act(async () => root.render(<AppCatalog />));
-  expect(button("Ollama").disabled).toBe(true);
+  expect(button("Ollama").disabled).toBe(false);
   expect(container.textContent).toContain("GPU recommended");
-  expect(container.textContent).toContain("Self-hosted only");
+  expect(container.textContent).toContain("Requires your own server");
   await act(async () => button("Ollama").click());
-  expect(h.push).not.toHaveBeenCalled();
+  expect(h.push).toHaveBeenCalledWith("/apps/new/ollama");
 });
 
 it("uses existing template and flow install routes without starting an installation", async () => {

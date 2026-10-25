@@ -93,7 +93,7 @@ export function AppCatalog({ embedded = false }: { embedded?: boolean } = {}) {
   }, []);
 
   const install = (app: AppCatalogEntry) => {
-    if (isLocked(app) || (!selfHosted && app.supportsCloud === false)) return;
+    if (isLocked(app)) return;
     // Flow apps (mail) own a bespoke wizard.
     if (app.kind === "flow" && app.flowHref) {
       router.push(app.flowHref);
@@ -219,7 +219,7 @@ export function AppCatalog({ embedded = false }: { embedded?: boolean } = {}) {
         <div className="mt-4 grid grid-cols-1 gap-4 @xl/app-catalog:grid-cols-2 @4xl/app-catalog:grid-cols-3">
           {filtered.map((app) => {
             const busy = installingId === app.id;
-            const locked = isLocked(app) || (!selfHosted && app.supportsCloud === false);
+            const locked = isLocked(app);
             const needsUpdate = !!app.requiresUpdate;
             return (
               <div key={app.id} className="group relative">
@@ -238,7 +238,7 @@ export function AppCatalog({ embedded = false }: { embedded?: boolean } = {}) {
                     <AppLogo appId={app.id} className="size-[22px]" />
                   </div>
                   <div className="min-w-0 flex-1">
-                    {app.supportsCloud === false && <p className="mb-1 text-xs text-muted-foreground">{ap.gpu.selfHostedOnly}</p>}
+                    {app.supportsCloud === false && <p className="mb-1 text-xs text-muted-foreground">{selfHosted ? ap.gpu.selfHostedOnly : "Requires your own server"}</p>}
                     <div className="flex items-center justify-between gap-2">
                       <span className="inline-flex min-w-0 items-center gap-1.5 font-medium text-foreground">
                         <span className="truncate">{app.name}</span>

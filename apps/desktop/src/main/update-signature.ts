@@ -1,5 +1,5 @@
 import { verify } from "node:crypto";
-import trust from "./update-trust.json";
+import trust from "../../../../packages/core/src/updates/signing-public-key.json";
 
 /** The signed bytes bind an installer to its exact name, version and digest.
  * The release signer uses the same v1 JSON field order (covered end to end). */

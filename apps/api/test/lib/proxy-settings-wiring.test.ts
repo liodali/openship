@@ -184,11 +184,12 @@ function source(rel: string): string {
   return readFileSync(new URL(rel, import.meta.url), "utf8");
 }
 
-/** The `{...}` argument of every `registerRoute(` call in `src`, brace-balanced. */
+/** Route payloads from both the provider and the project registration boundary. */
 function registerRoutePayloads(src: string): string[] {
   const out: string[] = [];
-  const call = ".registerRoute(";
-  for (let at = src.indexOf(call); at !== -1; at = src.indexOf(call, at + 1)) {
+  const calls = /\.registerRoute\(|\bregisterProjectRoute\(/g;
+  for (const match of src.matchAll(calls)) {
+    const at = match.index!;
     const open = src.indexOf("{", at);
     if (open === -1 || open > src.indexOf(")", at) + 1) continue; // called with a variable
     let depth = 0;

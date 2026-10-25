@@ -241,6 +241,7 @@ export const clusterStorageCollection = {
     assertNetworkSetupAcceptingWork();
     validateClusterStorage(input.config);
     const { runtime } = await requireClusterDeploymentTarget(ctx.organizationId, input.clusterId);
+    if (runtime.provider !== "k3s") throw new AppError("Shared cluster storage requires Kubernetes. Swarm services use named volumes on their connected manager.", 422, "CLUSTER_PROVIDER_UNSUPPORTED");
     for (const host of runtime.plan.hosts) await authorizeMember(ctx, host.serverId);
     if (input.config.backupDestinationId)
       await resolveClusterBackupStorage(ctx, input.config.backupDestinationId);

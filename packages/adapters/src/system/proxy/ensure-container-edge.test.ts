@@ -100,6 +100,7 @@ function box(opts: BoxOpts = {}) {
 
   const answer = async (cmd: string): Promise<string> => {
     commands.push(cmd);
+    if (cmd.includes("{{json .Swarm}}")) return '{"LocalNodeState":"inactive"}';
 
     if (cmd.startsWith("docker ps --filter name=openship-edge")) return opts.edgeContainer ?? "";
     if (cmd.startsWith("docker ps")) return "";

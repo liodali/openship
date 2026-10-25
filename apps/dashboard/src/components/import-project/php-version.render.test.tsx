@@ -87,32 +87,32 @@ it("keeps Composer enabled when a new version is selected without an asset build
   });
 });
 
-it("offers the runtime base override only for Docker source builds, and clears it explicitly", async () => {
+it("shows runtime settings directly, and clears an explicit Docker runtime image", async () => {
   h.config.runtimeMode = "docker";
   h.config.runtimeImage = "custom/runtime:83";
   await act(async () => root.render(<BuildSettings />));
-  expect(
-    Array.from(host.querySelectorAll<HTMLInputElement>("input")).filter(
-      (input) => input.value === "custom/runtime:83",
-    ),
-  ).toHaveLength(0);
-  const advanced = Array.from(host.querySelectorAll("button")).find((button) =>
-    button.textContent?.includes(baseDictionary.importProject.buildSettings.advanced),
+  const runtime = host.querySelector<HTMLElement>('section[aria-labelledby]');
+  expect(runtime?.textContent).toContain(baseDictionary.importProject.buildSettings.runtimeTitle);
+  expect(runtime?.textContent).toContain(baseDictionary.importProject.buildSettings.runtimeVersionLabel);
+  expect(runtime?.textContent).toContain(baseDictionary.importProject.buildSettings.buildImageLabel);
+  expect(input(baseDictionary.importProject.buildSettings.buildImageLabel).closest("section")).toBe(runtime);
+  const advanced = Array.from(host.querySelectorAll("button")).find(button =>
+    button.textContent === baseDictionary.importProject.buildSettings.advanced,
   );
-  if (advanced) await act(async () => advanced.click());
+  expect(advanced?.getAttribute("aria-expanded")).toBe("false");
   expect(
     Array.from(host.querySelectorAll<HTMLInputElement>("input")).filter(
       (input) => input.value === "custom/runtime:83",
     ),
   ).toHaveLength(1);
-  const input = Array.from(host.querySelectorAll<HTMLInputElement>("input")).find(
+  const runtimeInput = Array.from(host.querySelectorAll<HTMLInputElement>("input")).find(
     (input) => input.value === "custom/runtime:83",
   );
-  expect(input).toBeDefined();
+  expect(runtimeInput).toBeDefined();
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
   await act(async () => {
-    setter.call(input, "");
-    input!.dispatchEvent(new Event("input", { bubbles: true }));
+    setter.call(runtimeInput, "");
+    runtimeInput!.dispatchEvent(new Event("input", { bubbles: true }));
   });
   expect(h.updateConfig).toHaveBeenCalledWith({ runtimeImage: null });
 });
@@ -128,4 +128,134 @@ it("hides the runtime image field for a bare app without an override", async () 
   expect(host.textContent).not.toContain(
     baseDictionary.importProject.buildSettings.runtimeImageLabel,
   );
+  expect(host.textContent).not.toContain(baseDictionary.importProject.buildSettings.runtimeVersionLabel);
+  expect(host.textContent).toContain(baseDictionary.importProject.buildSettings.runtimeBareDesc);
+});
+
+function input(label: string): HTMLInputElement {
+  const target = Array.from(host.querySelectorAll("label")).find(row => row.textContent?.startsWith(label));
+  expect(target).toBeDefined();
+  return document.getElementById(target!.htmlFor) as HTMLInputElement;
+}
+
+async function setInput(field: HTMLInputElement, value: string) {
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, value);
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+
+it.each([
+  [{ runtimeMode: "bare" }, "runtimeBareDesc"],
+  [{ options: { hasBuild: true, hasServer: false, workloadType: "static" } }, "runtimeStaticDesc"],
+  [{ projectType: "docker" }, "runtimeDockerfileDesc"],
+  [{ buildKind: "dockerfile" }, "runtimeDockerfileDesc"],
+  [{ projectType: "services" }, "runtimeServicesDesc"],
+  [{ composePath: "compose.yml" }, "runtimeServicesDesc"],
+  [{ sourceKind: "image" }, "runtimePrebuiltDesc"],
+] as const)("explains runtime ownership without offering ignored controls: %j", async (changes, key) => {
+  Object.assign(h.config, changes);
+  await act(async () => root.render(<BuildSettings />));
+  expect(host.textContent).toContain(baseDictionary.importProject.buildSettings[key]);
+  expect(host.querySelector('button[aria-haspopup="listbox"]')).toBeNull();
+  expect(Array.from(host.querySelectorAll("label")).some(row => row.textContent?.startsWith(
+    baseDictionary.importProject.buildSettings.runtimeImageLabel,
+  ))).toBe(false);
+  expect(h.updateConfig).not.toHaveBeenCalled();
+  if (key !== "runtimeStaticDesc")
+    expect(Array.from(host.querySelectorAll("label")).some(row => row.textContent?.startsWith(
+      baseDictionary.importProject.buildSettings.buildImageLabel,
+    ))).toBe(false);
+});
+
+it("exposes a static Docker builder without offering a running runtime image", async () => {
+  Object.assign(h.config, {
+    framework: "vite",
+    runtimeMode: "docker",
+    buildKind: "static",
+    buildImage: "node:22",
+    options: { hasBuild: true, hasServer: false, workloadType: "static" },
+  });
+  await act(async () => root.render(<BuildSettings />));
+  const builder = input(baseDictionary.importProject.buildSettings.buildImageLabel);
+  expect(builder.value).toBe("node:22");
+  expect(builder.closest("section")?.textContent).toContain(baseDictionary.importProject.buildSettings.runtimeStaticDesc);
+  expect(Array.from(host.querySelectorAll("label")).some(row => row.textContent?.startsWith(
+    baseDictionary.importProject.buildSettings.runtimeImageLabel,
+  ))).toBe(false);
+  await setInput(builder, "oven/bun:1.3.14");
+  expect(h.updateConfig).toHaveBeenCalledWith({ buildImage: "oven/bun:1.3.14" });
+});
+
+it("keeps the builder in Runtime when Advanced opens, without a duplicate editor", async () => {
+  await act(async () => root.render(<BuildSettings />));
+  const advanced = Array.from(host.querySelectorAll("button")).find(button =>
+    button.textContent === baseDictionary.importProject.buildSettings.advanced,
+  )!;
+  await act(async () => advanced.click());
+  const builders = Array.from(host.querySelectorAll("label")).filter(row => row.textContent?.startsWith(
+    baseDictionary.importProject.buildSettings.buildImageLabel,
+  ));
+  expect(builders).toHaveLength(1);
+  expect(builders[0].closest("section")).not.toBeNull();
+});
+
+it("shows an incompatible builder image beside the visible runtime settings", async () => {
+  Object.assign(h.config, { runtimeVersion: "8.3", buildImage: "php:8.4-cli-bookworm" });
+  await act(async () => root.render(<BuildSettings />));
+  const builder = input(baseDictionary.importProject.buildSettings.buildImageLabel);
+  expect(builder.value).toBe("php:8.4-cli-bookworm");
+  await act(async () => builder.dispatchEvent(new FocusEvent("focusout", { bubbles: true })));
+  const error = host.querySelector('[role="alert"]');
+  expect(error?.textContent).toContain("uses PHP 8.4");
+  expect(error?.closest("section")).toBe(builder.closest("section"));
+  expect(h.updateConfig).not.toHaveBeenCalled();
+});
+
+it("keeps image digest pins explicit when choosing another supported version", async () => {
+  const image = `private.example/php-runtime:8.3@sha256:${"a".repeat(64)}`;
+  h.config.runtimeImage = image;
+  await act(async () => root.render(<BuildSettings />));
+  expect(input(baseDictionary.importProject.buildSettings.runtimeImageLabel).value).toBe(image);
+  await choose("8.3");
+  expect(h.updateConfig).toHaveBeenCalledWith({ runtimeVersion: "8.3", buildImage: "php:8.3-cli-bookworm" });
+  expect(h.updateConfig.mock.calls[0][0]).not.toHaveProperty("runtimeImage");
+});
+
+it("shows a generic runtime image for an undetected stack and preserves custom values", async () => {
+  const image = "private.example/custom:stable";
+  Object.assign(h.config, { framework: "unknown", runtimeImage: image });
+  await act(async () => root.render(<BuildSettings />));
+  expect(host.textContent).toContain(baseDictionary.importProject.buildSettings.runtimeTitle);
+  expect(host.textContent).not.toContain(baseDictionary.importProject.buildSettings.runtimeVersionLabel);
+  expect(input(baseDictionary.importProject.buildSettings.runtimeImageLabel).value).toBe(image);
+  expect(h.updateConfig).not.toHaveBeenCalled();
+  await setInput(input(baseDictionary.importProject.buildSettings.runtimeImageLabel), "other.example/runtime:1");
+  expect(h.updateConfig).toHaveBeenCalledWith({ runtimeImage: "other.example/runtime:1" });
+});
+
+it("lets an unknown version be cleared without losing a custom runtime image", async () => {
+  const image = "private.example/custom:stable";
+  Object.assign(h.config, { framework: "unknown", runtimeVersion: "22", runtimeImage: image });
+  await act(async () => root.render(<BuildSettings />));
+  const select = host.querySelector<HTMLButtonElement>('button[aria-haspopup="listbox"]')!;
+  expect(select.textContent).toContain("22");
+  await act(async () => select.click());
+  const reset = Array.from(document.querySelectorAll<HTMLElement>('[role="option"]')).find(
+    row => row.textContent === baseDictionary.importProject.buildSettings.runtimeVersionDefault,
+  )!;
+  await act(async () => reset.click());
+  expect(h.updateConfig).toHaveBeenCalledWith({ runtimeVersion: null });
+});
+
+it("allows saved overrides to be removed on an unsupported target", async () => {
+  Object.assign(h.config, { runtimeMode: "bare", runtimeVersion: "8.3", runtimeImage: "private.example/custom:83" });
+  await act(async () => root.render(<BuildSettings />));
+  expect(host.textContent).toContain("private.example/custom:83");
+  expect(host.textContent).toContain(baseDictionary.importProject.buildSettings.runtimeOverrideUnused);
+  const clear = Array.from(host.querySelectorAll("button")).find(
+    button => button.textContent === baseDictionary.importProject.buildSettings.clearRuntimeOverrides,
+  )!;
+  await act(async () => clear.click());
+  expect(h.updateConfig).toHaveBeenCalledWith({ runtimeVersion: null, runtimeImage: null });
 });

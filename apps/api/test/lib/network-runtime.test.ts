@@ -120,21 +120,23 @@ afterAll(async () => {
   if (directory) await rm(directory, { recursive: true, force: true });
 });
 
-it("keeps the API image and package manager on the release's tested Bun version", async () => {
+it("pins the API installer and its patched Node runtime", async () => {
   const repoDir = fileURLToPath(new URL("../../../../", import.meta.url));
   const version = (await readFile(join(repoDir, ".bun-version"), "utf8")).trim();
   const dockerfile = await readFile(join(apiDir, "Dockerfile"), "utf8");
-  const stages = [...dockerfile.matchAll(/^FROM oven\/bun:(\S+) AS (builder|runner)$/gm)];
-  expect(stages.map((match) => [match[2], match[1]])).toEqual([
-    ["builder", version],
-    ["runner", version],
-  ]);
+  expect(dockerfile).toContain(`FROM oven/bun:${version}@sha256:`);
+  const nodeImage = dockerfile.match(
+    /^ARG NODE_IMAGE=(node:22\.23\.4-bookworm-slim@sha256:[a-f0-9]{64})$/m,
+  )?.[1];
+  expect(nodeImage).toBeDefined();
+  expect(dockerfile).toContain("FROM ${NODE_IMAGE} AS runner");
+  expect(dockerfile).toContain("FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS node-build");
   const manifest = JSON.parse(await readFile(join(repoDir, "package.json"), "utf8"));
   expect(manifest.packageManager).toBe(`bun@${version}`);
 });
 
 // Vitest runs on Node even when invoked with `bun run test`. Separate processes
-// exercise the actual production Bun transport as well as the desktop/dev Node path.
+// exercise the production Node transport and the Bun development path.
 describe.each(["node", "bun"])("API network transport under %s", (runtime) => {
   async function probe(mode: "tls" | "untrusted-ca" | "websocket") {
     const env = {

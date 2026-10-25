@@ -1,6 +1,6 @@
 {
   "name": "@repo/api",
-  "version": "0.9.3-fork.9",
+  "version": "0.9.5-fork.1",
   "license": "Apache-2.0",
   "private": true,
   "type": "module",
@@ -36,7 +36,7 @@
     "ioredis": "^5.10.0",
     "ipaddr.js": "^2.4.0",
     "maxmind": "^5.0.6",
-    "nodemailer": "^9.0.3",
+    "nodemailer": "^10.1.7",
     "pino": "^10.3.1",
     "stripe": "^20.4.0",
     "ws": "^8.21.3",
@@ -46,7 +46,6 @@
   "devDependencies": {
     "@repo/sdk": "workspace:*",
     "@types/node": "^22.13.0",
-    "@types/nodemailer": "^8.0.1",
     "@types/ws": "^8.18.1",
     "tsup": "^8.5.1",
     "tsx": "^4.21.0",

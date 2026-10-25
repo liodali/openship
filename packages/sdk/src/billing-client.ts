@@ -6,6 +6,16 @@ export function createRemoteBillingOperations(http: HttpClient): BillingOperatio
   return Object.freeze({
     ...createRemoteScopedOperations(http, BillingPublicSchemas, { listPlans: { method: "GET", path: () => "/billing/plans", envelope: "data" } }),
     ...createRemoteScopedOperations(http, BillingOperationSchemas, {
+      getManagement: { method: "GET", path: () => "/billing/manage", envelope: "data" },
+      purchaseManagement: { method: "POST", path: () => "/billing/manage/checkout", envelope: "data" },
+      confirmManagementChange: { method: "POST", path: () => "/billing/manage/change", envelope: "data" },
+      resumeManagementCheckout: { method: "POST", path: () => "/billing/manage/checkout/resume", envelope: "data" },
+      cancelManagementChange: { method: "POST", path: () => "/billing/manage/change/cancel", envelope: "data" },
+      cancelManagementCheckout: { method: "POST", path: () => "/billing/manage/checkout/cancel", envelope: "data" },
+      cancelManagementSubscription: { method: "POST", path: () => "/billing/manage/cancel", envelope: "data" },
+      resumeManagementSubscription: { method: "POST", path: () => "/billing/manage/resume", envelope: "data" },
+      createManagementPortal: { method: "POST", path: () => "/billing/manage/portal", envelope: "data" },
+
       getActionsBudget: { method: "GET", path: () => "/billing/actions", envelope: "data" },
       getActionsPurchase: { method: "GET", path: () => "/billing/actions/purchase", envelope: "data" },
       createActionsCheckout: { method: "POST", path: () => "/billing/actions/checkout", envelope: "data" },

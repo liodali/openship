@@ -1,4 +1,6 @@
-import themeTokens from "../../../dashboard/src/styles/theme.css";
+// The native splash embeds CSS as text, so it cannot resolve theme.css's
+// relative @import from its offline data URL. Embed the shared palettes directly.
+import themeTokens from "../../../dashboard/src/styles/theme-tokens.css";
 import regularFont from "../../assets/fonts/Gellix-Regular.woff2";
 import mediumFont from "../../assets/fonts/Gellix-Medium.woff2";
 

@@ -15,7 +15,7 @@ export function DeploymentHeader({
   isCompose = false,
   warningResolved = false,
 }: {
-  onRedeploy: () => void | Promise<string | null>;
+  onRedeploy: (options?: { reuseBuild?: boolean }) => void | Promise<string | null>;
   serviceCount?: number;
   decisionPending?: boolean;
   isCompose?: boolean;

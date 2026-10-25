@@ -202,6 +202,30 @@
     "pageOf": "Página {page} de {total}",
     "range": "Implantações {from}–{to} de {total}"
   },
+  "resourceGuidance": {
+    "label": "Orientações sobre recursos da implantação",
+    "reviewCapacity": "Revisar capacidade",
+    "reviewTitle": "Revisar a capacidade do espaço Cloud",
+    "reviewHint": "Verifique primeiro o uso e os limites configurados. O upgrade é opcional; abrir esta revisão não altera nem repete a implantação.",
+    "slowTitle": "Esta compilação está demorando",
+    "slowDescription": "Downloads, a rede ou comandos podem ser lentos. Mais capacidade pode ajudar em compilações intensivas; verifique os logs primeiro.",
+    "titles": {
+      "container-oom": "O contêiner ficou sem memória",
+      "memory-allocation": "Falha ao alocar memória",
+      "process-heap": "Limite de heap do aplicativo atingido",
+      "storage-full": "Falha ao alocar armazenamento",
+      "storage-low": "Armazenamento livre insuficiente para compilar",
+      "process-killed": "O processo de compilação foi encerrado"
+    },
+    "causes": {
+      "container-oom": "O Docker confirmou um encerramento por falta de memória. Verifique o limite do contêiner e a capacidade do espaço Cloud antes de tentar novamente.",
+      "memory-allocation": "O processo não conseguiu alocar memória. Verifique os limites configurados e a capacidade disponível antes de escolher um plano maior.",
+      "process-heap": "O processo atingiu seu próprio limite de heap. Verifique as configurações de execução; apenas aumentar o plano pode não resolver.",
+      "storage-full": "A operação esgotou o espaço em disco ou os inodes. Revise o uso e os artefatos não utilizados, preservando os dados do aplicativo.",
+      "storage-low": "O sistema de arquivos do Docker tem pouco espaço livre ou nenhum inode livre. Revise o uso ou aumente o armazenamento.",
+      "process-killed": "O processo recebeu SIGKILL (código de saída 137). Isso sozinho não comprova falta de memória. Verifique os logs."
+    }
+  },
   "cloudBuildQueue": {
     "label": "Fila de compilação na nuvem",
     "title": "Compilação na fila",

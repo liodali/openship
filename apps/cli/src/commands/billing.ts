@@ -1,4 +1,5 @@
 import { Command, Option } from "commander";
+import { managementBillingCommand } from "./billing-management";
 import {
   BillingOperationSchemas,
   CreateSubscriptionBody,
@@ -286,3 +287,5 @@ scoped(topup.command("create").argument("<pack>", "Pack ID from topup packs"))
     }),
   );
 billingCommand.addCommand(topup);
+
+billingCommand.addCommand(managementBillingCommand);

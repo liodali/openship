@@ -60,7 +60,7 @@ export interface ServerDependencies {
     ): Promise<AsyncIterable<DeploymentEvent>>;
   };
   installations?: {
-    lookup(input: ServerInstallSessionInput): Promise<ServerInstallSession>;
+    lookup(ctx: ExecutionContext, input: ServerInstallSessionInput): Promise<ServerInstallSession>;
     respond(ctx: ExecutionContext, sessionId: string, action: string): Promise<{ ok: true }>;
     start(
       ctx: ExecutionContext,
@@ -155,7 +155,12 @@ export function createServerOperations(
   }
   async function session(ctx: ExecutionContext, command?: ServerInstallSessionInput) {
     const input = parseInput(ServerInstallSessionInputSchema, command ?? {});
-    const data: unknown = JSON.parse(JSON.stringify(await installations().lookup(input)));
+    // Authorize the requested host even when it has no session. This keeps
+    // exact-server credentials useful without granting collection-wide access.
+    if (input.serverId) await authorization.authorize(ctx, {
+      resourceType: "server", resourceId: input.serverId, action: "admin",
+    });
+    const data: unknown = JSON.parse(JSON.stringify(await installations().lookup(ctx, input)));
     if (!Value.Check(ServerInstallSessionSchema, data))
       throw new AppError(
         "Invalid installation session response",
@@ -164,8 +169,9 @@ export function createServerOperations(
       );
     const context = await authorization.authorize(ctx, {
       resourceType: "server",
-      resourceId: data.active ? data.serverId : "*",
+      resourceId: data.active ? data.serverId : input.serverId ?? "*",
       action: data.active ? "admin" : "read",
+      ...(!data.active && !input.serverId ? { scope: "list" as const } : {}),
     });
     return { context, data };
   }

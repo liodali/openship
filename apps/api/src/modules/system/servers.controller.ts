@@ -18,6 +18,16 @@ export async function getServer(c: Context) {
 export async function getInfrastructure(c: Context) {
   return c.json(await operationData(c, operations().infrastructure(operationContext(c), param(c, "id"))));
 }
+export async function inspectSwarm(c: Context) {
+  const details = c.req.query("details");
+  const input = parseInput(ServerResourceSchemas.inspectSwarm.input, {
+    ...(details === undefined ? {} : { details: details === "true" ? true : details === "false" ? false : details }),
+  });
+  return c.json(await operationData(c, operations().inspectSwarm(operationContext(c), param(c, "id"), input)));
+}
+export async function connectSwarm(c: Context) {
+  return c.json(await operationData(c, operations().connectSwarm(operationContext(c), param(c, "id"), await c.req.json())), 201);
+}
 export async function probeReachability(c: Context) {
   return c.json(await operationData(c, operations().reachability(operationContext(c), param(c, "id"))));
 }

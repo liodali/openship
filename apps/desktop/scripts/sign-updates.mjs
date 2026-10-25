@@ -25,7 +25,7 @@ export async function signDesktopUpdates({ directory, version, privateKey, publi
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
-  const trust = JSON.parse(await readFile(new URL("../src/main/update-trust.json", import.meta.url), "utf8"));
+  const trust = JSON.parse(await readFile(new URL("../../../packages/core/src/updates/signing-public-key.json", import.meta.url), "utf8"));
   const assets = await signDesktopUpdates({ directory: process.argv[2] ?? "dist",
     version: (process.env.GITHUB_REF_NAME ?? "").replace(/^v/, ""),
     privateKey: process.env.OPENSHIP_DESKTOP_SIGNING_KEY, publicKey: trust.publicKey });

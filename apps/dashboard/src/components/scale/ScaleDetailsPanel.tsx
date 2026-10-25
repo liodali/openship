@@ -23,6 +23,8 @@ interface ScaleDetailsPanelProps {
   onMinimize?: () => void;
   onClose: () => void;
   onBack?: () => void;
+  /** Compact pickers grow with their content, within the canvas height. */
+  fitContent?: boolean;
   children: ReactNode;
 }
 
@@ -37,6 +39,7 @@ export function ScaleDetailsPanel({
   onMinimize,
   onClose,
   onBack,
+  fitContent = false,
   children,
 }: ScaleDetailsPanelProps) {
   const id = useId();
@@ -195,6 +198,7 @@ export function ScaleDetailsPanel({
         role="region"
         aria-label={`${title} settings`}
         tabIndex={-1}
+        data-fit-content={fitContent || undefined}
         className="scale-inspector-overlay scale-floating-surface overflow-hidden rounded-2xl border border-border/60 outline-none"
         onKeyDown={(event) => {
           if (
@@ -209,7 +213,7 @@ export function ScaleDetailsPanel({
         }}
       >
         {(open || hasOpened) && (
-          <div className="flex h-full flex-col">
+          <div className="flex h-full min-h-0 flex-col">
             {onBack && (
               <div className="shrink-0 border-b border-border/50 px-3 py-2">
                 <Button
@@ -223,7 +227,9 @@ export function ScaleDetailsPanel({
                 </Button>
               </div>
             )}
-            <div className="min-h-0 flex-1">{children}</div>
+            <div className={fitContent ? "flex min-h-0 flex-1 flex-col" : "min-h-0 flex-1"}>
+              {children}
+            </div>
           </div>
         )}
       </div>

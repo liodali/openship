@@ -202,6 +202,30 @@
     "pageOf": "Sayfa {page} / {total}",
     "range": "{total} dağıtımdan {from}–{to}"
   },
+  "resourceGuidance": {
+    "label": "Dağıtım kaynak rehberi",
+    "reviewCapacity": "Kapasiteyi incele",
+    "reviewTitle": "Cloud alanı kapasitesini incele",
+    "reviewHint": "Önce kullanımı ve yapılandırılmış sınırları kontrol edin. Yükseltme isteğe bağlıdır; bu incelemeyi açmak dağıtımı değiştirmez veya yeniden denemez.",
+    "slowTitle": "Bu derleme biraz zaman alıyor",
+    "slowDescription": "İndirmeler, ağ gecikmeleri veya derleme komutları yavaş olabilir. Daha fazla kapasite yoğun derlemelere yardımcı olabilir; önce günlükleri kontrol edin.",
+    "titles": {
+      "container-oom": "Kapsayıcının belleği tükendi",
+      "memory-allocation": "Bellek ayırma başarısız",
+      "process-heap": "Uygulama yığın sınırına ulaşıldı",
+      "storage-full": "Depolama ayırma başarısız",
+      "storage-low": "Derleme için yeterli boş depolama yok",
+      "process-killed": "Derleme işlemi sonlandırıldı"
+    },
+    "causes": {
+      "container-oom": "Docker, bellek yetersizliği nedeniyle sonlandırmayı doğruladı. Yeniden denemeden önce kapsayıcı bellek sınırını ve Cloud alanı kapasitesini inceleyin.",
+      "memory-allocation": "Başarısız işlem bellek ayıramadı. Daha büyük bir plan seçmeden önce yapılandırılmış sınırları ve kullanılabilir kapasiteyi inceleyin.",
+      "process-heap": "İşlem kendi heap sınırına ulaştı. Çalışma zamanı ayarlarını kontrol edin; daha büyük bir plan tek başına çözmeyebilir.",
+      "storage-full": "İşlem disk alanını veya inode’ları tüketti. Uygulama verilerini koruyarak kullanımı ve kullanılmayan çıktıları inceleyin.",
+      "storage-low": "Docker dosya sisteminde çok az boş alan var veya boş inode yok. Kullanımı inceleyin ya da depolamayı artırın.",
+      "process-killed": "İşlem SIGKILL aldı (çıkış kodu 137). Bu tek başına bellek yetersizliğini kanıtlamaz. Günlükleri kontrol edin."
+    }
+  },
   "cloudBuildQueue": {
     "label": "Bulut derleme kuyruğu",
     "title": "Derleme kuyrukta",

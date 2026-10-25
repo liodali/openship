@@ -202,6 +202,30 @@
     "pageOf": "Seite {page} von {total}",
     "range": "Bereitstellungen {from}–{to} von {total}"
   },
+  "resourceGuidance": {
+    "label": "Ressourcenhinweise zur Bereitstellung",
+    "reviewCapacity": "Kapazität prüfen",
+    "reviewTitle": "Kapazität des Cloud-Bereichs prüfen",
+    "reviewHint": "Prüfe zuerst Nutzung und konfigurierte Limits. Ein Upgrade ist optional; diese Ansicht ändert oder wiederholt die Bereitstellung nicht.",
+    "slowTitle": "Dieser Build dauert etwas länger",
+    "slowDescription": "Downloads, Netzwerkverzögerungen oder Build-Befehle können langsam sein. Mehr Kapazität kann rechenintensive Builds beschleunigen; prüfe zuerst die Logs.",
+    "titles": {
+      "container-oom": "Container hatte zu wenig Arbeitsspeicher",
+      "memory-allocation": "Speicherzuweisung fehlgeschlagen",
+      "process-heap": "Heap-Limit der Anwendung erreicht",
+      "storage-full": "Speicherplatzzuweisung fehlgeschlagen",
+      "storage-low": "Zu wenig freier Speicherplatz für den Build",
+      "process-killed": "Build-Prozess wurde beendet"
+    },
+    "causes": {
+      "container-oom": "Docker hat eine Beendigung wegen Speichermangels bestätigt. Prüfe das Speicherlimit des Containers und die Cloud-Kapazität vor einem erneuten Versuch.",
+      "memory-allocation": "Der fehlgeschlagene Prozess konnte keinen Arbeitsspeicher zuweisen. Prüfe konfigurierte Limits und verfügbare Kapazität, bevor du einen größeren Tarif wählst.",
+      "process-heap": "Der Prozess hat sein eigenes Heap-Limit erreicht. Prüfe die Laufzeiteinstellungen; ein größerer Tarif allein löst dies möglicherweise nicht.",
+      "storage-full": "Der Vorgang hatte keinen freien Speicherplatz oder keine freien Inodes mehr. Prüfe Nutzung und ungenutzte Artefakte und bewahre die Anwendungsdaten.",
+      "storage-low": "Das Docker-Dateisystem hat zu wenig freien Platz oder keine freien Inodes. Prüfe die Nutzung oder erweitere den Speicher.",
+      "process-killed": "Der Prozess erhielt SIGKILL (Exit-Code 137). Das allein beweist keinen Speichermangel. Prüfe die Logs."
+    }
+  },
   "cloudBuildQueue": {
     "label": "Cloud-Build-Warteschlange",
     "title": "Build eingereiht",

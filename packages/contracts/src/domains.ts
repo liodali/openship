@@ -180,8 +180,8 @@ export const PendingDomainVerificationSchema = Type.Object({
 });
 
 export const DomainCollectionSchemas = {
-  list: { action: "read", output: Type.Array(DomainSchema) },
-  create: { action: "write", input: CreateDomainInputSchema, output: CreateDomainResultSchema },
+  list: { action: "read", capability: "domains:read", output: Type.Array(DomainSchema) },
+  create: { action: "write", capability: "domains:write", input: CreateDomainInputSchema, output: CreateDomainResultSchema },
 } as const satisfies Record<string, ResourceOperationSchema>;
 export const DomainResourceSchemas = {
   get: { action: "read", output: DomainSchema },

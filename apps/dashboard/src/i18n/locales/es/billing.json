@@ -136,7 +136,8 @@
     "billingInterval": "Intervalo de facturación",
     "monthly": "Mensual",
     "annual": "Anual",
-    "billedAnnually": "Facturación anual"
+    "billedAnnually": "Facturación anual",
+    "annualTotal": "{price} facturados al año; cancela la renovación cuando quieras"
   },
   "topups": {
     "loadError": "No se pudieron cargar los paquetes de recarga",
@@ -719,8 +720,10 @@
     "nextPlan": "Nuevo plan"
   },
   "purchase": {
+    "manage": "Gestiona tu servidor",
+    "manageDescription": "Conecta tus servidores para gestionar despliegues, dominios, supervisión y copias de seguridad.",
     "mode": "Modelo de facturación",
-    "monthly": "Planes mensuales",
+    "monthly": "Planes Cloud",
     "payg": "Uso prepago",
     "title": "Hosting prepago",
     "description": "Elige un nivel de recursos, añade créditos y paga por el uso de tus servidores.",
@@ -851,6 +854,35 @@
       "processing": "Pago enviado · confirmando su estado",
       "canceling": "Confirmando cancelación…",
       "unavailable": "El estado del pago no está disponible temporalmente"
+    }
+  },
+  "managementPlans": {
+    "label": "Plan de soporte",
+    "basic": "Básico",
+    "priority": "Prioritario",
+    "email": "Soporte por correo",
+    "prioritySupport": "Soporte prioritario",
+    "description": "Despliega y actualiza aplicaciones, supervisa su estado y haz copias de seguridad. Tus servidores, gestionados desde Openship.",
+    "basicDescription": "Para aplicaciones cotidianas y proyectos personales.",
+    "priorityDescription": "Para aplicaciones en producción que necesitan soporte prioritario.",
+    "serversIncluded": "{count} servidores conectados",
+    "serverCount": "Servidores",
+    "extraServers": "{included} incluidos · {price}/mes por servidor adicional",
+    "billingNote": "Facturación mensual, cancela cuando quieras",
+    "selected": "Seleccionado",
+    "select": "Elegir {name}",
+    "monthlyTotal": "Total mensual",
+    "includedTitle": "Incluido en ambos planes",
+    "cloudIncluded": "Basic está incluido en tu Cloud Space de pago. Priority añade {price}/mes.",
+    "cloudBasic": "Incluido con Cloud",
+    "perMonth": "/mes",
+    "features": {
+      "updates": "Despliegues y actualizaciones de imágenes",
+      "health": "Comprobaciones de estado y alertas",
+      "monitoring": "Supervisión de CPU, memoria y almacenamiento",
+      "domains": "Dominios y HTTPS automático",
+      "backups": "Copias de seguridad programadas y restauración",
+      "automation": "Acceso por API, SDK y CLI"
     }
   }
 }

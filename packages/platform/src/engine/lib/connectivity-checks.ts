@@ -21,6 +21,7 @@ import {
 import { classifyConnectivityError, connFail, connOk, type ConnectivityResult } from "@repo/core";
 import { registerConnectivityCheck } from "./connectivity";
 import { sshManager } from "@repo/platform/engine/lib/ssh-manager";
+import { env } from "../config/env";
 
 const ECHO_TIMEOUT_MS = 15_000;
 
@@ -67,7 +68,7 @@ registerConnectivityCheck<string>("ssh-server", async (serverId) => {
  *  own preflight (writes + deletes a probe), staying on its own connection. */
 registerConnectivityCheck<BackupDestinationRow>("backup-destination", async (row) => {
   const startedAt = Date.now();
-  const result = await resolveDestination(row).preflight();
+  const result = await resolveDestination({ ...row, publicNetworkOnly: env.CLOUD_MODE }).preflight();
   if (result.ok) return connOk(Date.now() - startedAt);
   const { code, message } = classifyConnectivityError(result.reason);
   return connFail(code, message);

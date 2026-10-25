@@ -66,6 +66,7 @@ export const planLimitsSchema = z.object({
 
 const planSchema = z.object({
   id: z.string().min(1),
+  availableForPurchase: z.boolean().default(true),
   price: z.object({
     /** USD cents, or null for "contact sales". */
     monthly: z.number().int().nonnegative().nullable(),
@@ -193,6 +194,11 @@ export const customPricingSchema = z.object({
     memoryGb: z.number().int().positive(),
     diskGb: z.number().int().positive(),
   }).strict(),
+  extraAnnualCents: z.object({
+    cpuCore: z.number().int().positive(),
+    memoryGb: z.number().int().positive(),
+    diskGb: z.number().int().positive(),
+  }).strict(),
 }).strict();
 
 /** Openship resource access tiers, independent of monthly offers and usage rates.
@@ -256,6 +262,16 @@ export const pricingCatalogSchema = z
     custom: customPricingSchema,
     payg: paygPricingSchema,
     actions: actionsPricingSchema,
+    management: z.object({
+      version: z.number().int().positive(),
+      monthlyCents: z.number().int().min(100),
+      priorityMonthlyCents: z.number().int().min(100),
+      includedServers: z.number().int().positive(),
+      extraServerMonthlyCents: z.number().int().min(100),
+      maxServers: z.number().int().positive(),
+      includedWithCloud: z.boolean(),
+      dedicatedContact: z.email(),
+    }).strict(),
     plans: z.array(planSchema).min(1),
     creditPacks: z.array(creditPackSchema),
     /**
@@ -283,6 +299,9 @@ export const pricingCatalogSchema = z
       });
     }
 
+    if (data.management.priorityMonthlyCents <= data.management.monthlyCents) {
+      ctx.addIssue({ code: "custom", path: ["management", "priorityMonthlyCents"], message: "Priority must include the Basic price and an additional support fee" });
+    }
     const ids = new Set<string>();
     data.payg.tiers.forEach((tier, i) => {
       const previous = data.payg.tiers[i - 1];
@@ -334,9 +353,9 @@ export const pricingCatalogSchema = z
         });
       }
       if (plan.billing.mode === "monthly" && (plan.billing.creditsPerCycle !== 0 ||
-          plan.billing.yearlyCreditsPerCycle !== null || plan.price.annual !== null ||
+          plan.billing.yearlyCreditsPerCycle !== null ||
           plan.billing.overdraft !== 0 || plan.billing.suspendThreshold !== 0)) {
-        ctx.addIssue({ code: "custom", path: ["plans", i, "billing"], message: "Monthly capacity has no credit allowance, overdraft or annual purchase" });
+        ctx.addIssue({ code: "custom", path: ["plans", i, "billing"], message: "Prepaid capacity has no compute-credit allowance or overdraft" });
       }
       const annualPurchasable = plan.price.annual !== null && plan.price.annual > 0;
       // Oblien wallet funding is 100 credits/USD. Retail allowances must be
@@ -365,7 +384,7 @@ export const pricingCatalogSchema = z
           }
         }
       }
-      if (annualPurchasable && !plan.billing.yearlyCreditsPerCycle) {
+      if (annualPurchasable && plan.billing.mode === "metered" && !plan.billing.yearlyCreditsPerCycle) {
         ctx.addIssue({
           code: "custom",
           path: ["plans", i, "billing", "yearlyCreditsPerCycle"],

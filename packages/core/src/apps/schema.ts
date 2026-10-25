@@ -84,12 +84,15 @@ const serviceSpec = z.object({
   /** SHA-256 of explicitly retired inline recipes eligible for operator-reviewed
    * conversion to this image and its runtime setup files. Never auto-applied. */
   replacesBuilds: z.array(z.string().regex(/^[a-f0-9]{64}$/)).optional(),
-  /** Advisory sizing recommendation, never an installed container limit. */
+  /** Advisory sizing recommendation. CPU/disk are never installed as container
+   *  limits; an explicit `swapDisabled` IS carried over (with the memory limit
+   *  it requires), because it changes runtime safety rather than sizing. */
   resources: z
     .object({
       cpuCores: z.number().min(MIN_CPU_CORES),
       memoryMb: z.number().int().min(MIN_MEMORY_MB),
       diskMb: z.number().int().min(64),
+      swapDisabled: z.boolean().optional(),
     })
     .strict()
     .optional(),

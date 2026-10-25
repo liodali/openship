@@ -27,7 +27,13 @@ const m = vi.hoisted(() => ({
   },
   service: { listByProject: vi.fn(), update: vi.fn() },
   deployment: { findById: vi.fn() },
-  domain: { getPrimaryByProject: vi.fn() },
+  domain: { getPrimaryByProject: vi.fn(), listByProject: vi.fn() },
+  protection: { read: vi.fn(), inherit: vi.fn(), sync: vi.fn() },
+}));
+vi.mock("@repo/platform/engine/lib/route-protection", () => ({
+  readPreviewRouteProtection: m.protection.read,
+  inheritPreviewRouteProtection: m.protection.inherit,
+  syncPreviewRouteProtection: m.protection.sync,
 }));
 vi.mock("@repo/db", () => ({
   repos: {
@@ -113,6 +119,10 @@ beforeEach(() => {
   };
   m.native.mockReturnValue(true);
   m.preview.findLeased.mockImplementation(async () => intent);
+  m.preview.list.mockResolvedValue([]);
+  m.protection.read.mockResolvedValue(null);
+  m.protection.inherit.mockResolvedValue(undefined);
+  m.protection.sync.mockResolvedValue(undefined);
   m.preview.claimSources.mockResolvedValue([]);
   m.preview.due.mockImplementation(async () => [intent]);
   m.preview.claim.mockImplementation(async () => ({ ...intent }));
@@ -133,6 +143,7 @@ beforeEach(() => {
   m.service.listByProject.mockResolvedValue([]);
   m.deployment.findById.mockResolvedValue({ id: "dep", status: "ready" });
   m.domain.getPrimaryByProject.mockResolvedValue({ hostname: "preview.example" });
+  m.domain.listByProject.mockResolvedValue([]);
   m.request.mockImplementation(async (args) =>
     args.url.endsWith("/pulls/5") ? pr : args.method === "POST" ? { id: 77 } : [],
   );
@@ -215,6 +226,91 @@ describe("preview templates across stacks", () => {
       ),
     ).toThrow("Environment");
   });
+  test("disabled services are copied with isolated resources so they can be enabled later", () => {
+    const web = { id: "web", name: "web", enabled: true, volumes: ["cache:/cache"] } as Service;
+    const tools = {
+      id: "tools",
+      name: "tools",
+      enabled: false,
+      namespaceVolumes: false,
+      volumes: ["/srv/config:/config:ro", "tools-data:/data"],
+      advanced: { networkMode: "host" },
+    } as unknown as Service;
+    const rows = previewEnvironmentInput(source, [web, tools], 5, "feature").services;
+    expect(rows.map((item) => [item.row.name, item.row.enabled])).toEqual([
+      ["web", true],
+      ["tools", false],
+    ]);
+    expect(rows[1]!.row).toMatchObject({
+      volumes: ["tools-data:/data"],
+      namespaceVolumes: true,
+      advanced: {},
+    });
+    expect(rows[1]!.row.advanced).not.toHaveProperty("networkMode");
+    expect(tools.advanced).toEqual({ networkMode: "host" });
+    expect(tools.volumes).toEqual(["/srv/config:/config:ro", "tools-data:/data"]);
+    expect(() =>
+      previewEnvironmentInput(
+        source,
+        [{ ...rows[1]!.row, id: "copied-tools", enabled: true } as Service],
+        5,
+        "feature",
+      ),
+    ).not.toThrow();
+    for (const enabled of [
+      { ...tools, enabled: true },
+      { ...tools, enabled: undefined },
+      { ...tools, enabled: true, namespaceVolumes: true, advanced: {} },
+      { ...tools, enabled: true, volumes: ["site:/usr/share/nginx/html"], advanced: {} },
+    ])
+      expect(() =>
+        previewEnvironmentInput(source, [web, enabled as Service], 5, "feature"),
+      ).toThrow(/isolated/);
+  });
+  test.each(["host", "container:production-db", " container:production-db "])(
+    "removes external network and PID namespaces %s only from disabled copies",
+    (mode) => {
+      const service = {
+        id: "tools",
+        name: "tools",
+        enabled: false,
+        advanced: { networkMode: mode, pidMode: mode, healthcheck: { test: ["CMD", "true"] } },
+      } as Service;
+      const copied = previewEnvironmentInput(source, [service], 5, "feature").services[0]!.row;
+      expect(copied.advanced).toEqual({ healthcheck: { test: ["CMD", "true"] } });
+      expect(service.advanced).toEqual({
+        networkMode: mode,
+        pidMode: mode,
+        healthcheck: { test: ["CMD", "true"] },
+      });
+      for (const field of ["networkMode", "pidMode"] as const) {
+        expect(() =>
+          previewEnvironmentInput(
+            source,
+            [
+              {
+                ...service,
+                enabled: true,
+                advanced: { [field]: mode },
+              },
+            ],
+            5,
+            "feature",
+          ),
+        ).toThrow(/isolated/);
+      }
+    },
+  );
+  test.each(["service:db", "none"])("preserves isolated namespace mode %s", (networkMode) => {
+    const service = {
+      id: "tools",
+      name: "tools",
+      enabled: false,
+      advanced: { networkMode, pidMode: "service:db", healthcheck: { test: ["CMD", "true"] } },
+    } as unknown as Service;
+    const copied = previewEnvironmentInput(source, [service], 5, "feature").services[0]!.row;
+    expect(copied.advanced).toEqual(service.advanced);
+  });
   test("forks, drafts, wrong base branches and closed PRs cannot run preview code", () => {
     expect(previewEligible(pr, source)).toBe(true);
     for (const change of [
@@ -228,6 +324,23 @@ describe("preview templates across stacks", () => {
 });
 
 describe("preview deployment preparation", () => {
+  test("persists protection for the generated host before route synchronization", async () => {
+    const protectedSource = { ...source, previewSettings: { enabled: true, comments: false, baseDomain: "preview.test", protectionHostname: "dev.test" } };
+    m.project.findByIdInOrganization.mockResolvedValue(protectedSource);
+    await preparePreviewDeployment({ organizationId: "org" } as never, child, { id: "intent", token: "lease" });
+    expect(m.protection.read).toHaveBeenCalledWith(expect.anything(), protectedSource);
+    expect(m.protection.inherit).toHaveBeenCalledWith("child", "app-pr-5.preview.test");
+    const { syncProjectRouteState } = await import("@repo/platform/engine/modules/domains/project-route.service");
+    expect(m.protection.inherit.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(syncProjectRouteState).mock.invocationCallOrder[0]!);
+  });
+  test("a missing password stops admission before any domain can be published", async () => {
+    m.protection.read.mockRejectedValue(new Error("missing preview password"));
+    await expect(preparePreviewDeployment({ organizationId: "org" } as never, child, { id: "intent", token: "lease" }))
+      .rejects.toThrow("missing preview password");
+    const { syncProjectRouteState } = await import("@repo/platform/engine/modules/domains/project-route.service");
+    expect(syncProjectRouteState).not.toHaveBeenCalled();
+    expect(m.protection.inherit).not.toHaveBeenCalled();
+  });
   test("rejects host mounts introduced by the PR's Compose revision", async () => {
     m.service.listByProject.mockResolvedValue([
       { id: "new", name: "db", volumes: ["/production/data:/var/lib/db"] },
@@ -254,6 +367,21 @@ describe("preview deployment preparation", () => {
 });
 
 describe("durable preview reconciliation", () => {
+  test("requires cleanup before changing the password source of existing previews", async () => {
+    m.preview.list.mockResolvedValue([intent]);
+    await expect(configurePreviews({ organizationId: "org" } as never, "source", {
+      enabled: true, comments: false, baseDomain: "preview.test", protectionHostname: "dev.test",
+    })).rejects.toMatchObject({ code: "PREVIEW_ROUTE_PROTECTION_MANAGED" });
+    expect(m.project.update).not.toHaveBeenCalled();
+    expect(m.trigger).not.toHaveBeenCalled();
+  });
+  test("reconciles inherited sessions before reporting a ready preview", async () => {
+    m.project.findByIdInOrganization.mockImplementation(async (id) => id === "source"
+      ? { ...source, previewSettings: { ...source.previewSettings, protectionHostname: "dev.test" } } : child);
+    await runPullRequestPreviewsSweep();
+    expect(m.protection.sync).toHaveBeenCalledWith(expect.anything(), "child");
+    expect(intent.status).toBe("ready");
+  });
   test("allows disabling and queuing cleanup after the GitHub source is disconnected", async () => {
     m.project.findByIdInOrganization.mockResolvedValue({
       ...source,

@@ -1,12 +1,12 @@
+import { verifyCustomerSshConnection } from "../../lib/customer-ssh";
 import { createHash } from "node:crypto";
-import { AppError, NotFoundError, assertSshSettings } from "@repo/core";
-import { createExecutor } from "@repo/adapters";
+import { AppError, NotFoundError } from "@repo/core";
 import { repos } from "@repo/db";
 import type { MigrationSourceInput } from "@repo/contracts";
 import type { ExecutionContext } from "../../../context";
 import { authorization } from "../../lib/authorization";
 import { audit, operationAuditContext } from "../../lib/audit-emitter";
-import { buildSshConfig, sshManager } from "../../lib/ssh-manager";
+import { sshManager } from "../../lib/ssh-manager";
 import { encryptSecretField } from "../../lib/credential-encryption";
 import { withServerInventoryLock } from "../../lib/server-inventory-lock";
 import { serializeServer } from "../system/server-view";
@@ -15,36 +15,7 @@ function sourceView(server: NonNullable<Awaited<ReturnType<typeof repos.server.g
   return { ...serializeServer(server)!, projectCount: 0, hostChannel: null };
 }
 
-/** Same SSH adapter as connected servers; first successful authentication pins
- * the public host key. Saved sources check that key on every reconnect. */
-async function verifySource(input: MigrationSourceInput) {
-  assertSshSettings(input);
-  const settings = {
-    purpose: "migration_source",
-    sshHost: input.sshHost.trim(),
-    sshPort: input.sshPort ?? 22,
-    sshUser: input.sshUser?.trim() || "root",
-    sshAuthMethod: input.sshAuthMethod,
-    sshPassword: input.sshAuthMethod === "password" ? input.sshPassword : undefined,
-    sshPrivateKey: input.sshAuthMethod === "key" ? input.sshPrivateKey : undefined,
-    sshKeyPassphrase: input.sshAuthMethod === "key" ? input.sshKeyPassphrase : undefined,
-  };
-  let hostKey: string | undefined;
-  const config = await buildSshConfig(settings, { trustOnFirstUse: key => {
-    const value = key.toString("base64");
-    hostKey ??= value;
-    return value === hostKey;
-  } });
-  if (!config) throw new AppError("Enter a password or upload the server's private SSH key", 400, "INVALID_MIGRATION_CONNECTION");
-  const executor = createExecutor(config);
-  try {
-    await executor.exec("true", { timeout: 15_000 });
-    if (!hostKey) throw new AppError("The server did not provide an SSH host key", 502, "MIGRATION_HOST_KEY_MISSING");
-    return { settings, hostKey };
-  } finally {
-    await executor.dispose();
-  }
-}
+const verifySource = (input: MigrationSourceInput) => verifyCustomerSshConnection(input, "migration_source");
 
 export async function listMigrationSources(ctx: ExecutionContext) {
   const rows = await repos.server.listMigrationSources(ctx.organizationId);

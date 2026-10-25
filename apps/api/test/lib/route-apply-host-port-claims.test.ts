@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { db, HOST_PORT_QUARANTINE_OWNER, repos, schema, type HostPortClaim } from "@repo/db";
 import type { Platform, RuntimeAdapter } from "@repo/adapters";
 import type { HostPortTargetIdentity } from "@repo/platform/engine/lib/host-port-target";
@@ -68,6 +68,14 @@ function routeOptions(hostPortTarget = localTarget) {
 }
 
 describe("live route host-port recovery (#915)", () => {
+  beforeAll(async () => {
+    await db.insert(schema.organization).values({ id: project.organizationId, name: "Routing" });
+    const group = await repos.projectGroup.create({
+      organizationId: project.organizationId, name: "Routing", slug: "routing",
+    });
+    await db.insert(schema.project).values({ ...project, groupId: group.id, name: "App" });
+  });
+
   beforeEach(async () => {
     await db.delete(schema.hostPortClaim);
   });
@@ -263,5 +271,106 @@ describe("live route host-port recovery (#915)", () => {
     expect(await repos.hostPortClaim.listHostPortClaims(localTarget.targetKey)).toContainEqual(
       expect.objectContaining(owner),
     );
+  });
+});
+
+describe("control-plane dashboard route recovery (#1019)", () => {
+  const selfApp = {
+    ...project,
+    id: "proj_openship",
+    slug: "openship",
+    activeDeploymentId: "dep_adopt",
+  };
+  const dashboard = { serviceId: null, containerPort: 3001, hostPort: 3001 };
+
+  beforeAll(async () => {
+    await db
+      .insert(schema.organization)
+      .values({ id: project.organizationId, name: "Routing" })
+      .onConflictDoNothing();
+    const group = await repos.projectGroup.create({
+      organizationId: project.organizationId,
+      name: "Self app",
+      slug: "self-app",
+    });
+    await db.insert(schema.project).values({
+      ...selfApp,
+      groupId: group.id,
+      name: "Openship",
+      appTemplateId: "openship",
+    });
+  });
+
+  // The adopted dashboard is a host process: no container, no runtime proof.
+  function dashboardRoute(controlPlanePort?: number) {
+    const registerRoute = vi.fn(async () => {});
+    return {
+      hostPortTarget: localTarget,
+      runtime: { supports: vi.fn(() => false), getContainerInfo: vi.fn() },
+      routing: {
+        registerRoute,
+        removeRoute: vi.fn(async () => {}),
+      } as unknown as Platform["routing"],
+      registerRoute,
+      // A dashboard vhost from the previous setup run with no durable claim.
+      edgeProxy: { listLoopbackUpstreamPortsStrict: async () => new Set([3001]) },
+      ...(controlPlanePort ? { controlPlanePort } : {}),
+      registers: [
+        {
+          hostname: "new-domain.example.com",
+          isCustomDomain: true,
+          targetUrl: "http://127.0.0.1:3001",
+          observedLoopbackPublishes: [{ ...dashboard, containerId: undefined }],
+        },
+      ],
+    };
+  }
+
+  beforeEach(async () => {
+    await db.delete(schema.hostPortClaim);
+  });
+
+  it("recovers the quarantined dashboard port for the control plane's own route", async () => {
+    const options = dashboardRoute(3001);
+
+    await reconcileProjectRoutes(selfApp, options);
+    await reconcileProjectRoutes(selfApp, options);
+
+    expect(options.registerRoute).toHaveBeenCalledTimes(2);
+    expect(await repos.hostPortClaim.listHostPortClaims(localTarget.targetKey)).toEqual([
+      expect.objectContaining({
+        projectId: selfApp.id,
+        serviceId: null,
+        port: 3001,
+        containerPort: 3001,
+      }),
+    ]);
+  });
+
+  it("keeps the quarantine for a route that is not the control plane's", async () => {
+    const options = dashboardRoute();
+
+    await expect(reconcileProjectRoutes(selfApp, options)).rejects.toThrow(
+      "Host port 3001 is already reserved on local",
+    );
+    expect(options.registerRoute).not.toHaveBeenCalled();
+    expect(await repos.hostPortClaim.listHostPortClaims(localTarget.targetKey)).toEqual([
+      expect.objectContaining({ port: 3001, projectId: HOST_PORT_QUARANTINE_OWNER }),
+    ]);
+  });
+
+  it("never takes the dashboard port from another workload's claim", async () => {
+    const other = await repos.hostPortClaim.reserveHostPortClaim({
+      targetKey: localTarget.targetKey,
+      projectId: "another_project",
+      serviceId: "svc_other",
+      port: 3001,
+      containerPort: 3001,
+    });
+    const options = dashboardRoute(3001);
+
+    await expect(reconcileProjectRoutes(selfApp, options)).rejects.toThrow("already reserved");
+    expect(options.registerRoute).not.toHaveBeenCalled();
+    expect(await repos.hostPortClaim.listHostPortClaims(localTarget.targetKey)).toEqual([other]);
   });
 });

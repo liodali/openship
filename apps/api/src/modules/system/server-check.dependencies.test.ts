@@ -17,6 +17,7 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/db", () => ({
+  tryAcquireAdvisoryLock: vi.fn(async () => ({ release: vi.fn(async () => {}) })),
   repos: {
     server: {
       get: vi.fn(async () => undefined),

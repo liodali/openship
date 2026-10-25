@@ -88,6 +88,8 @@ const ROOT_CONFIG_FILES = new Set([
   "bun.lock",
   "bun.lockb",
   "turbo.json",
+  "turbo.jsonc",
+  "openship.json",
   "nx.json",
   "rush.json",
   "tsconfig.json",

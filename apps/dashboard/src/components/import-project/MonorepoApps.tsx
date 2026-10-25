@@ -1,5 +1,8 @@
 "use client";
 
+import { Button } from "@/components/ui/button";
+import { Modal } from "@/components/ui/Modal";
+import { RepositoryAppPicker } from "./RepositoryAppPicker";
 import { Icon as UiIcon } from "@repo/ui/icons";
 
 /**
@@ -17,8 +20,7 @@ import React, { useCallback, useState } from "react";
 import { useDeployment } from "@/context/DeploymentContext";
 import { usePlatform } from "@/context/PlatformContext";
 import { MonorepoAppProvider } from "@/context/deployment/MonorepoAppProvider";
-import type { MonorepoAppConfig, PublicEndpoint } from "@/context/deployment/types";
-import { createPublicEndpoint } from "@/context/deployment/types";
+import type { MonorepoAppConfig } from "@/context/deployment/types";
 import { getModeSwitchUpdates } from "@/context/deployment/mode-config";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { getFrameworkConfig } from "./Frameworks";
@@ -27,7 +29,6 @@ import BuildSettings from "./BuildSettings";
 import EnvironmentVariables from "./EnvironmentVariables";
 import { useI18n, interpolate } from "@/components/i18n-provider";
 import { Input } from "@/components/ui/input";
-import { useDefaultDomainType } from "@/context/CloudContext";
 
 // Tiny class-joining helper to avoid pulling in a util just for the toggle.
 function cn(...parts: Array<string | false | undefined | null>): string {
@@ -42,8 +43,8 @@ function cn(...parts: Array<string | false | undefined | null>): string {
  * gets a visibly distinct host that matches what the backend will mint
  * at deploy time.
  */
-function previewSubAppHost(app: MonorepoAppConfig, projectName: string, baseDomain: string): string | null {
-  if (!baseDomain) return null;
+function previewSubAppHost(app: MonorepoAppConfig, baseDomain: string): string | null {
+  if (!baseDomain || app.exposed === false) return null;
   const ep = app.publicEndpoints?.[0];
   if (ep?.domainType === "custom" && ep.customDomain) {
     return ep.customDomain;
@@ -71,8 +72,8 @@ const WorkspaceCard: React.FC = () => {
   return (
     <div className="bg-card rounded-2xl">
       <div className="px-5 py-5 space-y-4">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center">
+        <div className="flex items-start gap-3">
+          <div className="w-8 h-8 shrink-0 rounded-lg bg-primary/10 flex items-center justify-center">
             <UiIcon name="layers" className="w-4 h-4 text-primary" />
           </div>
           <div>
@@ -121,65 +122,36 @@ const WorkspaceCard: React.FC = () => {
 const AppCard: React.FC<{ app: MonorepoAppConfig; index: number }> = ({ app, index }) => {
   const { config, updateConfig } = useDeployment();
   const { baseDomain } = usePlatform();
-  const newEndpointDomainType = useDefaultDomainType();
   const { t } = useI18n();
   const a = t.importProject.monorepo.app;
   const apps = config.monorepoApps ?? [];
-  // Only the first sub-app expands on mount. Operators usually deal with
-  // sub-apps one at a time - opening N at once makes the page very tall
-  // and most of those cards stay scrolled past. Each card is one click
-  // away from its details via the chevron.
-  const [expanded, setExpanded] = useState(index === 0);
+  const [expanded, setExpanded] = useState(false);
+  const [pickingFolder, setPickingFolder] = useState(false);
   const frameworkConfig = getFrameworkConfig(app.framework);
 
-  const setEnabled = useCallback(
-    (enabled: boolean) => {
-      const next = apps.slice();
-      next[index] = { ...app, enabled };
+  const setEnabled = (enabled: boolean) =>
+    updateConfig({
+      monorepoApps: apps.map((candidate) =>
+        candidate.id === app.id ? { ...candidate, enabled } : candidate,
+      ),
+    });
 
-      // Sync publicEndpoints to the enabled set. The seed in
-      // useDeploymentConfig.ts mints one endpoint per sub-app with the
-      // label `{slugify(app.name)}-{slugify(projectDomain)}`, so the
-      // app's slug appears as a stable substring in the endpoint's domain
-      // - we use that to preserve any custom-domain edits the user made
-      // on already-enabled apps while dropping endpoints for disabled
-      // apps and re-seeding defaults for newly re-enabled ones.
-      const slugify = (v: string) =>
-        v.toLowerCase().replace(/^@/, "").replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "");
-      const currentEndpoints: PublicEndpoint[] = config.publicEndpoints ?? [];
-      const projectSlug = slugify(config.projectName || "app");
-      const nextEndpoints: PublicEndpoint[] = next
-        .filter((a) => a.enabled)
-        .map((a) => {
-          const appSlug = slugify(a.name);
-          const existing = currentEndpoints.find(
-            (ep) =>
-              (ep.domain && ep.domain.includes(appSlug)) ||
-              (ep.customDomain && ep.customDomain.includes(appSlug)),
-          );
-          if (existing) return existing;
-          return createPublicEndpoint({
-            port: a.port || "",
-            targetPath: a.hasServer ? "" : "/",
-            domain: `${appSlug}-${projectSlug}`,
-            domainType: newEndpointDomainType,
-          });
-        });
-
-      updateConfig({ monorepoApps: next, publicEndpoints: nextEndpoints });
-    },
-    [apps, app, index, config.projectName, config.publicEndpoints, newEndpointDomainType, updateConfig],
-  );
-
-  // Preview the host this sub-app will be served on - same logic the
-  // deploy backend uses to mint the default free subdomain. Lets the
-  // operator see "→ apps-dashboard-diavira.opsh.io" right in the row
-  // header without having to expand the card or look at the right
-  // sidebar (which still only shows the PROJECT-level endpoint).
-  const previewHost = previewSubAppHost(app, config.projectName ?? "", baseDomain);
+  const previewHost = previewSubAppHost(app, baseDomain);
 
   return (
-    <div className={`bg-card rounded-2xl border ${app.enabled ? "border-border/50" : "border-border/30 opacity-70"} overflow-hidden`}>
+    <div className="bg-card rounded-2xl overflow-hidden">
+      {pickingFolder && (
+        <RepositoryAppPicker
+          app={app}
+          onClose={() => setPickingFolder(false)}
+          onAdd={(next) => {
+            updateConfig({
+              monorepoApps: apps.map((candidate) => (candidate.id === app.id ? next : candidate)),
+            });
+            setPickingFolder(false);
+          }}
+        />
+      )}
       {/* Header row */}
       <div className="flex items-center gap-3 px-5 py-4">
         <button
@@ -202,7 +174,9 @@ const AppCard: React.FC<{ app: MonorepoAppConfig; index: number }> = ({ app, ind
           </div>
           <div className="flex items-center gap-3 mt-0.5 text-xs text-muted-foreground flex-wrap">
             <span>{frameworkConfig.name}</span>
-            {app.port && <span>{interpolate(a.portSuffix, { port: String(app.port) })}</span>}
+            {app.hasServer && app.port && (
+              <span>{interpolate(a.portSuffix, { port: String(app.port) })}</span>
+            )}
             {app.packageManager && <span>· {app.packageManager}</span>}
             {/* Preview domain - only when this sub-app is actually going
                 to deploy (enabled) AND we can compute a host. Disabled
@@ -227,19 +201,22 @@ const AppCard: React.FC<{ app: MonorepoAppConfig; index: number }> = ({ app, ind
         </label>
       </div>
 
-      {/* Expanded body - single-app form components scoped to this
-          sub-app via MonorepoAppProvider. Domain control lives only in
-          the right sidebar's <PublicEndpointsCard>, which renders one
-          card per sub-app from the seeded `config.publicEndpoints`. We
-          deliberately do NOT render a domain editor inline here - that
-          would duplicate the same field in two places and the two
-          slices (project-level publicEndpoints vs sub-app slice) would
-          drift apart on edit. One canonical surface, no duplication. */}
+      {/* Shared app editors write only to this app. Domains use the sidebar editor. */}
       {expanded && app.enabled && (
         <div className="border-t border-border/40 bg-muted/10 px-5 py-5 space-y-5">
+          <div className="flex items-center justify-between gap-3 text-sm">
+            <span className="min-w-0 truncate font-mono text-muted-foreground">
+              {app.rootDirectory}
+            </span>
+            {!config.uploadSessionId && (
+              <Button variant="secondary" onClick={() => setPickingFolder(true)}>
+                {t.importProject.monorepo.selection.chooseFolder}
+              </Button>
+            )}
+          </div>
           <MonorepoAppProvider index={index}>
             <ProjectSettings />
-            <BuildSettings />
+            <BuildSettings allowWorker={false} />
             <EnvironmentVariables />
           </MonorepoAppProvider>
         </div>
@@ -265,6 +242,14 @@ const MonorepoApps: React.FC = () => {
   const selectedCount = apps.filter((a) => a.enabled).length;
   const isSingleAppMode = config.serviceDeploymentMode === "single";
   const [modeOptionsOpen, setModeOptionsOpen] = useState(false);
+  const [choosing, setChoosing] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [selection, setSelection] = useState<Set<string>>(new Set());
+  const copy = mr.selection;
+  const choose = () => {
+    setSelection(new Set(apps.filter((app) => app.enabled).map((app) => app.id)));
+    setChoosing(true);
+  };
 
   // Mirrors the compose-side mode switch - the same `getModeSwitchUpdates`
   // helper covers monorepo (it branches on `projectType` internally). When
@@ -283,25 +268,119 @@ const MonorepoApps: React.FC = () => {
     MONOREPO_MODE_OPTIONS.find((option) => option.id === config.serviceDeploymentMode) ??
     MONOREPO_MODE_OPTIONS[0];
 
-  if (apps.length === 0) return null;
-
   return (
-    <div className="space-y-5">
+    <div className="min-w-0 space-y-5">
+      {adding && (
+        <RepositoryAppPicker
+          onClose={() => setAdding(false)}
+          onAdd={(app) => {
+            updateConfig({ monorepoApps: [...apps, app] });
+            setAdding(false);
+          }}
+        />
+      )}
+      {choosing && (
+        <Modal
+          isOpen
+          onClose={() => setChoosing(false)}
+          width="640px"
+          maxWidth="calc(100vw - 32px)"
+          footer={
+            <div className="flex items-center justify-between gap-3 p-4">
+              <span className="text-sm text-muted-foreground">
+                {interpolate(copy.selected, { count: String(selection.size) })}
+              </span>
+              <div className="flex gap-2">
+                <Button variant="secondary" onClick={() => setChoosing(false)}>
+                  {copy.cancel}
+                </Button>
+                <Button
+                  onClick={() => {
+                    updateConfig({
+                      monorepoApps: apps.map((app) => ({ ...app, enabled: selection.has(app.id) })),
+                    });
+                    setChoosing(false);
+                  }}
+                >
+                  {copy.applySelection}
+                </Button>
+              </div>
+            </div>
+          }
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="choose-apps-title"
+            onKeyDown={(event) => {
+              if (event.key === "Escape") setChoosing(false);
+            }}
+            className="p-5 space-y-4"
+          >
+            <div className="pe-8">
+              <h2 id="choose-apps-title" className="text-lg font-semibold">
+                {copy.chooseApps}
+              </h2>
+              <p className="mt-1 text-sm text-muted-foreground">{copy.chooseHint}</p>
+            </div>
+            <div className="space-y-1">
+              {apps.map((app) => (
+                <label
+                  key={app.id}
+                  className="flex cursor-pointer items-center gap-3 rounded-xl bg-background p-3 hover:bg-muted/60"
+                >
+                  <Checkbox
+                    checked={selection.has(app.id)}
+                    onCheckedChange={(checked) =>
+                      setSelection((previous) => {
+                        const next = new Set(previous);
+                        if (checked) next.add(app.id);
+                        else next.delete(app.id);
+                        return next;
+                      })
+                    }
+                    aria-label={app.name}
+                  />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-medium">{app.name}</span>
+                    <span className="block truncate text-xs text-muted-foreground">
+                      {app.rootDirectory} · {app.framework}
+                    </span>
+                  </span>
+                  <span className="text-xs text-muted-foreground">
+                    {app.suggested === false ? copy.manualReview : copy.detectedApp}
+                  </span>
+                </label>
+              ))}
+            </div>
+          </div>
+        </Modal>
+      )}
+
       {/* Header banner */}
       <div className="bg-card rounded-2xl px-5 py-4">
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center">
             <UiIcon name="grid" className="w-4 h-4 text-primary" />
           </div>
-          <div className="flex-1">
-            <h3 className="text-[15px] font-semibold text-foreground">
-              {interpolate(mr.header.title, { count: String(apps.length) })}
-            </h3>
+          <div className="min-w-0 flex-1">
+            <h3 className="text-[15px] font-semibold text-foreground">{copy.title}</h3>
             <p className="text-xs text-muted-foreground">
               {isSingleAppMode
                 ? mr.header.singleDesc
-                : interpolate(mr.header.multiDesc, { selected: String(selectedCount), total: String(apps.length) })}
+                : interpolate(copy.selected, { count: String(selectedCount) })}
             </p>
+          </div>
+          <div className="ms-auto flex flex-wrap items-center justify-end gap-2">
+            <Button variant="secondary" onClick={choose}>
+              {selectedCount ? copy.changeSelection : copy.chooseApps}
+            </Button>
+            {!isSingleAppMode && !config.uploadSessionId && (
+              <Button variant="secondary" onClick={() => setAdding(true)}>
+                <UiIcon name="plus" className="size-4" />
+                {copy.addMore}
+              </Button>
+            )}
           </div>
         </div>
       </div>
@@ -313,23 +392,26 @@ const MonorepoApps: React.FC = () => {
           via the mode toggle below at any time. */}
       {!isSingleAppMode ? (
         <>
-          <WorkspaceCard />
-
-          <div className="space-y-3">
-            {apps.map((app, i) => (
-              <AppCard key={app.id} app={app} index={i} />
-            ))}
-          </div>
+          {selectedCount > 0 ? (
+            <>
+              <div className="space-y-3">
+                {apps.map((app, i) =>
+                  app.enabled ? <AppCard key={app.id} app={app} index={i} /> : null,
+                )}
+              </div>
+              <WorkspaceCard />
+            </>
+          ) : (
+            <p className="px-1 text-sm text-muted-foreground">{copy.empty}</p>
+          )}
         </>
       ) : (
         <>
           <div className="rounded-xl border border-border/50 bg-muted/20 p-4">
-            <p className="text-sm text-muted-foreground leading-relaxed">
-              {mr.singleNote}
-            </p>
+            <p className="text-sm text-muted-foreground leading-relaxed">{mr.singleNote}</p>
           </div>
           {/* Single-app commands editor - mirrors ComposeServices' inline
-              <BuildSettings /> for compose's single-app mode. The mode
+              <BuildSettings allowWorker={false} /> for compose's single-app mode. The mode
               switch already promoted one sub-app's install/build/start
               into config.options; this UI now lets the operator edit
               them like any single-app project. */}

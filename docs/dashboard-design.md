@@ -23,11 +23,40 @@ dim and dark lift the inner surface. Form dropdowns use a lighter surface than t
 the trigger override above is intentional because `filled` alone uses the input background.
 
 Keep visible keyboard focus, error indicators, meaningful selection outlines, and useful dividers.
-Runtime version selection belongs in the existing deploy wizard's build settings, using the shared
-filled dropdown. Derive the default and supported versions from the selected stack's runtime policy, and report incompatible custom
-builders inline. Docker builds offer an optional runtime base image in Advanced settings, with
-its managed default as the placeholder. Keep overrides explicit, validate compatibility, and
-show failures inline; blank resets the override. Bare and service-owned recipes do not offer it. The saved project Configuration card shows the selected version beside its build settings.
+Runtime version, build image, and runtime image selection belong in a visible **Runtime** section of the
+existing deploy wizard. Use the shared filled dropdown and inputs. Derive supported versions and
+managed image defaults from the stack's runtime policy; show incompatible custom overrides inline.
+Blank resets an image override. Unsupported destinations explain which source or server owns the
+runtime, and saved overrides remain visible so users can clear them. Static Docker builds show
+only the build image. Do not repeat these fields under Advanced. The saved project Configuration
+card shows the selected runtime version.
+Build-location choices and summaries describe execution, independently of source cloning.
+Keep local building in the destination's advanced controls only when the runtime supports it.
+Remote Docker, static sandbox, service, managed Cloud and cluster builds name their build
+destination; a stale local-build preference must not advertise work on Desktop. Preserve the
+separate clone-location choice and existing source behavior when hiding unavailable builds.
+Image updates belong in the existing project and service Redeploy dropdown. Reuse the same
+**Refresh images & redeploy** and **Check image updates** actions for every stack, including
+prebuilt image services. Refresh preserves configured versions and digest pins. Image drift uses
+the existing compact recommendation notice and direct redeploy action; unknown baselines are never
+reported current. Record image identities in deployment metadata without executing interpreter
+probes. Cache clearing only clears cache; it never schedules a future runtime update. Restart and
+environment refresh do not imply an image update or automatic security coverage.
+Security advisories reuse those deployment actions and the existing root UpdateCenter
+banner. **Review affected apps** opens a shared dialog; do not repeat notices in
+project Deployments or service panels. Group evidence and actions by affected app
+inside the dialog. Show unknown/stale coverage, upstream guidance and inspection time.
+Reading the root banner aggregates current observations without container exec;
+new/changed rules are inspected by the bounded background job.
+Automatic security refresh is an explicit, off-by-default project switch with
+its limited scope explained beside it. Keep per-channel security alert controls
+in Settings → Notifications. Runtime security checks may use cached, bounded
+version probes inside isolated containers. Keep **Check again** beside the last
+inspection time; it refreshes evidence without deploying. Image drift checks remain receipt-based.
+The failed deployment page offers **Retry deployment** only when the server reports a retained
+completed image. It replays that attempt's saved configuration with no build or replacement image
+pull. Keep ordinary **Redeploy** available for a new build. Routing-only warnings use the existing
+Domains retry action; do not turn those into image rebuilds.
 Borderless cards do not remove those functional indicators. Menus should use the shared dropdown
 component's existing positioning, keyboard behavior, and menu surface.
 
@@ -236,7 +265,9 @@ use their installed tools and physical CPU.
 ## Layout and density
 
 Project navigation groups metrics, runtime/request logs and available Health views
-under **Monitoring & Logs**. Reuse the shared project section tabs above the content
+under **Monitoring & Logs**. Runtime-health attention on project cards opens the existing
+Health view and clears from the same incident state when a workload recovers;
+a successful deployment remains a successful deployment. Reuse the shared project section tabs above the content
 on desktop and mobile. Keep existing section URLs so saved links and log shortcuts
 open the same view, and show Health only where the project already supports it.
 
@@ -259,6 +290,14 @@ Read preferences and organization defaults together. A failed defaults read must
 show an error and Retry, never editable empty defaults. Preserve a previous
 successful snapshot on refresh failure, with preference controls disabled until
 a successful retry.
+
+Alert preferences keep both switches at the start of the controls row and only the channel
+picker at the end, wrapping on narrow screens. A header search button reveals a local filter over alert names
+and descriptions within the selected category tab; closing it clears the filter. Channel
+cards keep Edit and Delete in a top-end More menu, while Send test sits at the end of its row.
+Notifications has inline Channels & alerts and Delivery history tabs. Load history only when
+opened, use server-backed newest-first pagination, and retain channel drafts when changing
+tabs. Refresh returns to the latest page; browsing history never acknowledges deliveries.
 
 Global deployment history lives in Monitoring’s final Deployments tab. Lead with server-side
 7/30/90-day outcome totals, a daily chart and a project breakdown, followed by the history.
@@ -318,6 +357,7 @@ check retryable before starting the move.
 
 - Use [PageContainer](../apps/dashboard/src/components/ui/PageContainer.tsx) for its existing
   1600px page limit and responsive padding. Avoid a second page-width cap inside it.
+  Keep its default top padding for page headings, including Billing.
 - Project and deployment configuration pages use a 340px action sidebar when there is room,
   then stack on smaller containers. Catalog installs keep their destination and action together.
   Source deployments use the same destination summary above configuration and target-settings
@@ -403,6 +443,8 @@ check retryable before starting the move.
 - The Cloud sidebar orders its sections as Main, Settings, then Infrastructure.
   Self-hosted instances keep Infrastructure before Settings, including when connected to Cloud.
   Backups belongs under Infrastructure beside Servers/Resources, Emails and Jobs, in every platform mode.
+  Missing-edge warnings use the API's routing requirement, independently of the total project count.
+  Private workloads and workers keep the optional install action without an outage/attention indicator.
   Cloud and Cloud-connected installations add Support as the final entry, under Help.
   Keep it reachable for existing Cloud projects if the connection needs attention, using
   the sidebar's loaded project inventory. The private support center uses a
@@ -453,12 +495,59 @@ check retryable before starting the move.
   below the comparison, alongside shared capabilities. Keep additional transfer, backup
   and storage terms in a compact disclosure. Follow this with the catalog's Enterprise
   contact card; do not repeat these details inside every plan or in a separate text card.
+- Billing uses one navigation for overview, usage, plans and payments. Plan selection
+  offers Cloud plans, Prepaid PAYG and Manage your server, in that order. Manage opens
+  the shared management subscription view; do not repeat it as a compute-plan card or
+  a separate Cloud/Manage product switch. Its coverage and allowance belong to the
+  workspace, independently of the selected Cloud server. Load it only when selected.
+  Preserve Cloud form state when switching views. Hide Cloud capacity controls while
+  Manage is open and disable switching while checkout is in progress. Deployment and
+  server-acquisition dialogs retain their compute-only choices. The direct Manage URL
+  remains available for payment returns and reuses the same view.
+- Cloud plan purchases place the compact Monthly / Yearly control before Plans / Custom
+  in the same purchase header. Use the existing secondary fill for the selected interval;
+  do not add a decorative ring or another label row.
+  Default new purchases to Yearly, while preserving a saved
+  subscription or an explicit monthly purchase intent. Show it only when the provider enables annual purchases.
+  Yearly cards display a monthly equivalent with the full annual charge directly below;
+  checkout charges that full year. Custom uses the same interval and resets its quote
+  on interval changes. Existing subscriptions keep their saved interval; Manage remains
+  monthly. Disable interval changes during checkout and never reuse a quote from another
+  interval. Do not add another product navigation or price calculator.
+- Manage uses standalone Basic and Priority pricing cards matching Cloud's card spacing,
+  icons and typography. Keep the native radio selection, with a neutral filled action
+  and checkmark inside each card; reserve the primary fill for checkout. Do not wrap the
+  comparison in another large card. Place the introduction above the comparison grid so
+  the right card starts level with the plan cards. Keep shared benefits, server count,
+  monthly total and the full-width checkout button together in that right card, stacking
+  it below the plans on narrow containers. Keep the total and checkout action in a sticky
+  footer while the details scroll. On mobile, pin that one footer above the safe area and
+  reserve room below the content; short desktop windows use the stacked comparison so the
+  footer remains visible. Keep checkout validation and pending-payment restrictions intact.
+  Explain app deployments and image updates,
+  health checks and alerts, resource
+  monitoring, domains/HTTPS, scheduled backups and API access. Do not replace these benefits
+  with a self-hosting pitch or promise unattended OS/app patching. Basic includes email
+  support and Priority includes priority support. Both use the same server allowance,
+  checkout recovery and paid subscription verification. Keep the selection distinct from
+  the verified paid support level. Paid Cloud includes Basic; Priority retains its support
+  fee. Use existing theme fills, selected checkmarks and controls, with no new product switch.
+  Show the infrastructure summary once an allowance is active; an unpaid first visit does
+  not need an empty server-usage card. Adapt comparison columns to the available container.
+- Add Server reuses Billing's Manage purchase component inline when a Cloud workspace has
+  no active allowance or all its slots are used. Share pricing, payment recovery and
+  subscription changes; do not send users elsewhere just to start checkout. Keep the
+  server form gated on the verified allowance, and reset the purchase state on account,
+  organization or instance changes. Self-hosted connection forms stay unchanged.
 - Cloud billing keeps its header and tabs mounted when switching servers. List managed
   servers in the right sidebar on usage and history tabs, reusing the shared destination rows.
   One server is a summary; several servers switch billing directly from the visible list.
-  Keep one Get server action in the page header across billing tabs; the sidebar only
-  selects the server being inspected. Plans keeps the shared compact server picker beside
-  that action. With one or two preset choices, show the saved subscription and capacity in
+  Keep one Add resources action at the right of the page header; the sidebar
+  selects the server being inspected. Plans keeps the shared Cloud space picker beside
+  Add resources in that header, with the normal destination summary and searchable menu.
+  Billing tabs occupy their own full-width row underneath, with an uninterrupted divider.
+  Keep adjacent links at the shared tab height so the divider meets the active underline on a single row.
+  With one Cloud space, show its summary without a redundant menu. With one or two preset choices, show the saved subscription and capacity in
   the standard 340px right column when the container has room; stack it first on smaller
   screens. Keep a single priced offer at a maximum of 26rem, shrinking to the available
   width on small screens. Complimentary-plan support guidance belongs inside the saved-plan
@@ -466,8 +555,8 @@ check retryable before starting the move.
   Custom keep the compact summary below the tabs. Use the
   picker's displayed choices for this layout too; an inactive subscription uses a short
   inline notice. New purchases use the plan introduction
-  as the page title and description. Keep Plans / Custom beside Back to billing in the
-  header, using matching 40px controls. Purchasing does not require a server-name field.
+  as the page title and description. Keep Plans / Custom in the purchase header and
+  Back to billing in the same header, using matching 40px controls. Purchasing does not require a server-name field.
   An existing server without a plan keeps the server selector, including when every
   server is unpaid. Only an explicit new-server purchase replaces it with Back to billing.
   Do not repeat the introduction below the page heading. Default to relevant upgrades; offer
@@ -480,9 +569,10 @@ check retryable before starting the move.
   catalog and bind the retry identity to the authenticated organization. Reloads
   reuse the same server and payment; generic Get server links remain browse-only.
   Unscoped billing opens an existing subscription directly; never
-  auto-switch a checkout return or an explicitly selected server. New customers see only
-  Monthly server and Pay as you go in the existing top tab bar, without empty billing-history
-  tabs. Reuse the same purchase controls in server setup and destination dialogs. Switching
+  auto-switch a checkout return or an explicitly selected server. New customers see
+  Cloud plans and Pay as you go with a direct Payments & invoices link in the existing
+  tab row, so unfinished purchases remain recoverable before the first subscription.
+  Reuse the same purchase controls in server setup and destination dialogs. Switching
   these views keeps resource inputs and never starts a purchase. The page's purchase
   tabs sit directly above the plan cards. Standalone setup and destination dialogs reuse
   the same Plans / Custom control beside their tabs, without a separate page header. Until a usage
@@ -496,8 +586,10 @@ check retryable before starting the move.
   Payments and invoices share one tab and the existing scoped Stripe portal. Show Top-ups
   only when the billing API enables them for the selected server; the purchase-view choice
   must never override paid terms or provider entitlement.
-  Keep Pending payments accessible in the Billing header even for unpaid servers. Cloud
-  lists unfinished payments across the organization's servers. Connected installations
+  Keep Pending payments inside Payments & invoices, including for unpaid servers, with
+  a yellow pending count on that tab. Share one scoped read with the recovery list, refresh
+  on return from hosted checkout, and remove counts only after confirmed cancellation.
+  Cloud lists unfinished payments across the organization's servers. Connected installations
   use the same Cloud inventory, filtered to a selected server when requested, without
   creating local execution links. Preserve local aliases for explicitly linked servers
   and clear payment state when the connected Cloud account changes. Reuse the same compact recovery list in
@@ -657,6 +749,11 @@ is an explicit refresh, not an automatic SSH request when the page opens. Show
 proxy overrides only for targets that apply them, preserving stored values when
 editing other routing rules.
 
+Project and service route saves share the same inline preparation and HTTPS progress viewer.
+The first exposed route retains proxy takeover consent and completes domain checks after edge
+setup. New custom hostnames on an existing edge use the existing project routing/HTTPS check;
+DNS-01 setup stays explicit. Reordering/removing routes does not request another certificate.
+Refresh canonical route and certificate state after any preparation outcome.
 Routing retries keep their logs inline and reconnect to the same server operation after a
 refresh. Refresh domain status and the routing warning from the canonical project response;
 do not clear one optimistically. A domain card has one primary repair action, including when
@@ -793,3 +890,67 @@ only to new custom domains and must be explicit in the deployment and Add domain
 Existing hostnames keep their Access choice when server defaults change. Close or reset
 private dialogs on account/organization switches, discard late results, and guard
 backdrop, Escape and close buttons while a write is in flight.
+
+The project Apps & Services view keeps runtime-role configuration and live role replicas
+available when the primary app is represented by a service row. The existing role editor
+reads support from the API; do not add a duplicate primary application card. Service-only
+changes retain the web process and roles, while the toolbar wraps on narrow screens.
+
+Webhook delivery rows show a short, localized explanation below the repository when change analysis records a decision. Reuse the existing feed; keep unknown reason codes out of user-facing text.
+
+## Topology scaling
+
+Node Overview offers a compact Scale action that opens the existing inspector.
+Keep replica controls directly accessible. For ordinary Docker services, lead with
+the existing Clone action and identify it as an independent copy, not synchronized
+replication. CPU, memory, swap and moving the environment belong in a collapsed
+Advanced section. Use short scope hints and the shared swap switch; retain resource
+validation, pending-change review and destination capability checks.
+Application replica changes show the observed and requested counts in a review
+before calling the existing configuration release API. Preserve stale-release
+preconditions and action locks. Unsupported Kubernetes Compose workloads, storage,
+and Cloud destinations show their capability reason; do not advertise application
+copies as synchronized replicas. An existing compute cluster can open the shared
+runtime setup inline, preserving the workload draft. Embedded setup omits runtime
+removal and unrelated navigation; continuation rechecks readiness and does not
+deploy an application.
+
+Managed database nodes have Overview, Scale, and Details views.
+Replicated database data members are expanded in the project overview by default,
+with primary/replica roles, readiness, servers, and replication arrows. Keep a
+compact toggle for large graphs. A transparent logical database header retains
+settings and writer/reader bindings; individual pods remain inspection-only.
+Never invent members from the requested count or a primary from pod ordinals.
+Sentinel voters are counted separately and remain inspectable in Instances.
+Single-instance databases stay as one card. Scale shows the primary/replica or shard
+layout, observed readiness and timestamp, and reviews changes against the saved
+sequence. PostgreSQL presents a read-replica count;
+Redis replication and sharding remain distinct. Connection fields allow explicit
+writer and reader bindings, explain application-side selection, and keep secrets
+masked. Use semantic surfaces and existing controls, with progress from saved
+operations. Account, workspace and instance changes reset private drafts/reviews.
+
+Fine-grained token capability hints describe the enforced operation scope. Deployment trigger access does not promise cancellation, rollback, or deletion; those keep their project admin requirement.
+
+Monorepo imports start with an explicit **Choose apps** step. Detection supplies candidates;
+CLI tools, mobile apps and packages are never enabled just because they have a port.
+Show selected app cards only, with **Change selection** followed by **Add more** on the
+right of the section header. **Add more** opens the repository folder picker. Folder
+selection reuses repository browsing and detection, while
+commands, environment and framework edits reuse the existing app form. Rescans retain
+user choices and manually added folders. Keep each route on its owning app. The sidebar
+shows at most three domain rows, a total count and **View all**; the shared domain editor
+uses an app selector and a public-access toggle. Changing wizard settings takes effect
+when saved or deployed, according to the existing wizard action.
+
+Service detail headers keep Open, Redeploy and image-update actions in the shared More
+menu. Reuse the existing runtime-update actions and operation guards; Settings remains the
+place for the full lifecycle controls. Volume cards must allow their action menu to extend
+outside the card instead of clipping it with `overflow-hidden`.
+
+### Adding project services
+
+- The topology resource chooser has a compact header with Close and a padded, scrollable body. Fit the chooser to its options within the canvas height; keep resource forms in the full-height inspector.
+- Services and Topology share the same Add service modal. Its compact source selector offers Catalog, From repository, Custom image, and Connect existing; a searchable category dropdown replaces a permanent catalog sidebar.
+- Repository builds use the current project's repository and branch. Browse folders and files through the shared repository path browser; manual paths remain available if browsing fails. Show build context and Dockerfile paths relative to the repository root, with inline validation and a save-then-deploy hint.
+- Reuse the existing service create fields and deployment action. Do not label every self-hosted destination “Local Docker” or add a second build pipeline for this form.

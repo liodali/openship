@@ -38,7 +38,7 @@ function titleCase(label: string): string {
   return label.charAt(0).toUpperCase() + label.slice(1);
 }
 
-export type ManagedImageKind = "edge" | "mail";
+export type ManagedImageKind = "edge" | "mail" | "buildkit";
 
 // Whether THIS control plane builds a given managed image from a source checkout (dev)
 // rather than pulling a published tag (prod). Injected at boot PER COMPONENT from the
@@ -50,7 +50,7 @@ export type ManagedImageKind = "edge" | "mail";
 // control-plane build/ship didn't complete: the tag is unpublished, so a `docker pull`
 // can only 404. The create/swap paths surface that plainly instead of a doomed pull.
 // Default false ⇒ prod pulls exactly as before.
-const fromSourceManaged: Record<ManagedImageKind, boolean> = { edge: false, mail: false };
+const fromSourceManaged: Record<ManagedImageKind, boolean> = { edge: false, mail: false, buildkit: false };
 export function setManagedImagesFromSource(kind: ManagedImageKind, value: boolean): void {
   fromSourceManaged[kind] = value;
 }

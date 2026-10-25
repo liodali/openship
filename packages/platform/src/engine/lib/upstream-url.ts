@@ -40,7 +40,7 @@ export function usesHostLoopbackUpstream(
   runtime: RouteTopologyRuntime,
 ): boolean {
   return (
-    runtime.name !== "kubernetes" &&
+    !runtime.supports("clusterStatus") &&
     (strategy === "loopback-port" || runtime.name === "bare" || !runtime.supports("containerIp"))
   );
 }

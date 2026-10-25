@@ -73,7 +73,7 @@ export async function finishRepositoryAuthorization(c: Context) {
     });
     deleteCookie(c, cookieName, { path: REPOSITORY_OAUTH_CALLBACK_PATH });
     if (result.callbackMode === "bridge")
-      return c.redirect(`${resolveAuthBaseUrl()}/api/cloud/github/oauth-success`);
+      return c.redirect(`${resolveAuthBaseUrl()}/api/cloud/github/install-callback?${new URLSearchParams({ flow: "select", state: result.state })}`);
     return c.redirect(
       `${resolveDashboardPublicUrl()}/auth/callback/install?${new URLSearchParams({ state: result.state })}`,
     );

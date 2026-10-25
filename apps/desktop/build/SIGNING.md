@@ -1,6 +1,6 @@
 Desktop updates require both a SHA-256 sidecar and a publisher signature. The
 updater verifies the downloaded bytes, installer name and release version against
-the public key embedded from `src/main/update-trust.json`. Missing or invalid
+the public key embedded from `packages/core/src/updates/signing-public-key.json`. Missing or invalid
 proofs stop installation, including for unsigned legacy release assets.
 
 The GitHub release workflow runs `scripts/sign-updates.mjs` with the encrypted

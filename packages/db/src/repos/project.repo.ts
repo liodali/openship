@@ -2,7 +2,7 @@ import { eq, and, or, isNull, isNotNull, inArray, desc, sql, type SQL } from "dr
 import { generateId, ForbiddenError, UnauthorizedError, ConflictError, ValidationError, inspectCommandEnvironment, manualBuildCaches } from "@repo/core";
 import type { Database, DatabaseTransaction } from "../connection";
 import { createConfigurationSecrets, type ConfigurationEncryption } from "../configuration-secrets";
-import { project, projectGroup, envVar, deployment, service } from "../schema";
+import { project, projectGroup, envVar, deployment, service, domain } from "../schema";
 import { member } from "../schema/organization";
 // Cloning a project writes its group and service rows in the same transaction, so this repo
 // needs both insert types. Imported from their own repos (where they are already declared)
@@ -13,6 +13,7 @@ import { personalAccessTokenGrant } from "../schema/personal-access-token-grant"
 import { personalAccessToken } from "../schema/personal-access-token";
 import { assertCloudWorkspacePlacement } from "./cloud-workspace.repo";
 import { projectWorkspaceScope } from "./workspace-scope";
+import { assertProjectSwapResources } from "./service-swap-resources";
 import { assertProjectConfigurationWritable, withProjectConfigurationWrite } from "./project-work-admission";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -512,6 +513,9 @@ export function createProjectRepo(db: Database, encryption: ConfigurationEncrypt
 
     async update(id: string, data: Partial<NewProject>) {
       await withProjectConfigurationWrite(db, eq(project.id, id), async (tx) => {
+        if (data.resources !== undefined) {
+          await assertProjectSwapResources(tx, eq(project.id, id), data.resources, codec);
+        }
         if (data.workspaceId !== undefined) {
           const current = await tx.query.project.findFirst({ where: eq(project.id, id) });
           if (current && data.workspaceId !== current.workspaceId) throw new Error("Changing a project's Cloud workspace requires an explicit migration");
@@ -540,10 +544,12 @@ export function createProjectRepo(db: Database, encryption: ConfigurationEncrypt
 
     async updateByApp(groupId: string, data: Partial<NewProject>) {
       const predicate = and(eq(project.groupId, groupId), isNull(project.deletedAt))!;
-      await withProjectConfigurationWrite(db, predicate, async (tx) => tx
-        .update(project)
-        .set({ ...data, updatedAt: new Date() })
-        .where(predicate));
+      await withProjectConfigurationWrite(db, predicate, async (tx) => {
+        if (data.resources !== undefined) {
+          await assertProjectSwapResources(tx, predicate, data.resources, codec);
+        }
+        await tx.update(project).set({ ...data, updatedAt: new Date() }).where(predicate);
+      });
     },
 
     /** Update a source identity shared by every environment and its project_app
@@ -557,7 +563,11 @@ export function createProjectRepo(db: Database, encryption: ConfigurationEncrypt
     ) {
       const updatedAt = new Date();
       await db.transaction(async (tx) => {
-        await assertProjectConfigurationWritable(tx, and(eq(project.groupId, groupId), isNull(project.deletedAt))!);
+        const predicate = and(eq(project.groupId, groupId), isNull(project.deletedAt))!;
+        await assertProjectConfigurationWritable(tx, predicate);
+        if (projectData.resources !== undefined) {
+          await assertProjectSwapResources(tx, predicate, projectData.resources, codec);
+        }
         await tx
           .update(project)
           .set({ ...projectData, updatedAt })
@@ -692,9 +702,9 @@ export function createProjectRepo(db: Database, encryption: ConfigurationEncrypt
      * to that server — preferring the DURABLE `project.server_id` binding and
      * falling back to the active deployment's `meta.serverId` for legacy rows not
      * yet backfilled. Powers the "N projects" chip + Projects stat on the Servers
-     * list (and the container-issues classifier's absent-edge alarm).
+     * list. `withRoutes` limits the missing-edge alarm to projects with durable routes.
      */
-    async countActiveByServer(organizationId: string): Promise<Record<string, number>> {
+    async countActiveByServer(organizationId: string, opts: { withRoutes?: boolean } = {}): Promise<Record<string, number>> {
       const rows = await db
         .select({
           serverId: boundServerId,
@@ -707,6 +717,17 @@ export function createProjectRepo(db: Database, encryption: ConfigurationEncrypt
             eq(project.organizationId, organizationId),
             isNull(project.deletedAt),
             sql`${boundServerId} is not null`,
+            // Domain rows are the durable route inventory. Private services and
+            // workers do not require an edge merely because they are deployed.
+            opts.withRoutes ? sql`exists (
+              select 1 from ${domain}
+              left join ${service} on ${domain.serviceId} = ${service.id}
+              where ${domain.projectId} = ${project.id} and ${domain.status} <> 'removing'
+                and (${domain.targetPort} is not null or ${domain.targetPath} is not null
+                  or exists (select 1 from jsonb_array_elements(coalesce(${project.compositeRoutes}, '[]'::jsonb)) route
+                    where route->>'hostname' = ${domain.hostname}))
+                and (${domain.serviceId} is null or (${service.enabled} and ${service.exposed}))
+            )` : undefined,
           ),
         )
         .groupBy(boundServerId);

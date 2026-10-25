@@ -6,6 +6,9 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 const mocks = vi.hoisted(() => ({
   destroy: vi.fn(async () => {}),
   updateStatus: vi.fn(async () => true),
+  listByDeployment: vi.fn(async (): Promise<unknown[]> => []),
+  setActiveDeployment: vi.fn(async () => {}),
+  sessionStatus: vi.fn(),
 }));
 
 // The lifecycle module transitively pulls in auth/notification wiring that reads
@@ -21,8 +24,8 @@ vi.mock("@repo/db", () => ({
       appendBuildLog: vi.fn(async () => {}),
       finishBuildSession: vi.fn(async () => {}),
     },
-    project: { setActiveDeployment: vi.fn(async () => {}) },
-    service: { listByDeployment: vi.fn(async () => []) },
+    project: { setActiveDeployment: mocks.setActiveDeployment },
+    service: { listByDeployment: mocks.listByDeployment },
   },
 }));
 vi.mock("@repo/platform/engine/lib/notification-dispatcher", () => ({
@@ -32,11 +35,14 @@ vi.mock("../../../src/lib/audit", () => ({ audit: { recordAsync: vi.fn(), record
 vi.mock("@repo/platform/engine/lib/favicon-detector", () => ({
   detectAndStoreFavicon: vi.fn(async () => {}),
 }));
+vi.mock("@repo/platform/engine/modules/projects/cleanup-keep-set", () => ({
+  computeCleanupKeepSet: vi.fn(async () => ({ containers: new Set<string>() })),
+}));
 vi.mock("@repo/platform/engine/modules/mail/webmail/webmail-install.service", () => ({
   onWebmailDeployed: vi.fn(async () => {}),
 }));
 vi.mock("@repo/platform/engine/modules/deployments/session-manager", () => ({
-  updateStatus: vi.fn(),
+  updateStatus: mocks.sessionStatus,
   broadcastServiceStatus: vi.fn(),
   broadcastInstallPhase: vi.fn(),
   getSession: vi.fn(() => null),
@@ -84,6 +90,7 @@ const RELEASE_DIR = "/opt/openship/static/releases/d_old";
 describe("a reused artifact is not on the failure reclaim list", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.listByDeployment.mockResolvedValue([]);
   });
 
   it("onFailure destroys whatever the pipeline recorded — including a release dir", async () => {
@@ -94,6 +101,50 @@ describe("a reused artifact is not on the failure reclaim list", () => {
   it("onCancelled destroys it too", async () => {
     await onCancelled(ctx({ imageRef: RELEASE_DIR }), 10);
     expect(mocks.destroy).toHaveBeenCalledWith(RELEASE_DIR);
+  });
+
+  it("records uncertain routing recovery as failed without deleting either release", async () => {
+    mocks.listByDeployment.mockResolvedValue([
+      { id: "sd_candidate", serviceId: "svc1", containerId: "candidate", status: "ready" },
+    ]);
+    const attempt = ctx({ imageRef: RELEASE_DIR });
+
+    await onFailure(
+      attempt,
+      "Routing recovery could not be verified. Both releases were preserved.",
+      250,
+      { errorCode: "SERVICE_CUTOVER_RECOVERY_REQUIRED" },
+      { keepProvisioned: true },
+    );
+
+    expect(mocks.destroy).not.toHaveBeenCalled();
+    expect(mocks.listByDeployment).not.toHaveBeenCalled();
+    expect(mocks.setActiveDeployment).not.toHaveBeenCalled();
+    expect(mocks.updateStatus).toHaveBeenCalledWith(
+      "d_new",
+      "failed",
+      expect.objectContaining({
+        buildDurationMs: 250,
+        errorCode: "SERVICE_CUTOVER_RECOVERY_REQUIRED",
+        errorMessage: "Routing recovery could not be verified. Both releases were preserved.",
+      }),
+    );
+    expect(mocks.sessionStatus).toHaveBeenCalledWith(
+      "d_new",
+      "failed",
+      expect.objectContaining({ errorCode: "SERVICE_CUTOVER_RECOVERY_REQUIRED" }),
+    );
+    expect(attempt).toHaveProperty("settled", "failed");
+  });
+
+  it("still cleans up an ordinary failed attempt's unprotected service container", async () => {
+    mocks.listByDeployment.mockResolvedValue([
+      { id: "sd_candidate", serviceId: "svc1", containerId: "candidate", status: "ready" },
+    ]);
+
+    await onFailure(ctx({}), "readiness failed");
+
+    expect(mocks.destroy).toHaveBeenCalledWith("candidate");
   });
 
   it("neither hook reclaims anything when nothing was recorded", async () => {

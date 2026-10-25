@@ -291,6 +291,7 @@ describe("reapplyProjectLiveRoutes self-app loopback route (issue #129)", () => 
 
   it("registers the self-app's own loopback dashboard route when isSelfApp is set", async () => {
     await reapplyProjectLiveRoutes(project, [], { isSelfApp: true });
+    expect(reconcile.mock.calls[0][1].controlPlanePort).toBe(3001);
 
     expect(reconcile).toHaveBeenCalledTimes(1);
     expect(reconcile.mock.calls[0][1].registers).toEqual([
@@ -307,6 +308,7 @@ describe("reapplyProjectLiveRoutes self-app loopback route (issue #129)", () => 
 
   it("still refuses the same loopback dashboard route for an ordinary tenant project", async () => {
     await reapplyProjectLiveRoutes(project, []);
+    expect(reconcile.mock.calls[0][1].controlPlanePort).toBeUndefined();
 
     expect(reconcile).toHaveBeenCalledTimes(1);
     expect(reconcile.mock.calls[0][1].registers).toEqual([]);
@@ -1067,6 +1069,32 @@ describe("reapplyProjectLiveRoutes multi-service project-level routes (issue #61
     expect(onWarning).toHaveBeenCalledWith(
       expect.stringMatching(/select a target port for app\.example\.com.*services offer/),
     );
+  });
+
+  it("routes a redirect-only domain without a target port (#1418)", async () => {
+    listByProject.mockResolvedValue([
+      projectDomain(3000),
+      {
+        ...projectDomain(null),
+        id: "dom-www",
+        hostname: "www.app.example.com",
+        isPrimary: false,
+        redirectTo: "app.example.com",
+        redirectStatus: 301,
+      },
+    ]);
+    const onWarning = vi.fn();
+    await reapplyProjectLiveRoutes(project, [], { onWarning });
+    expect(reconcile.mock.calls.at(-1)?.[1].registers).toEqual([
+      expect.objectContaining({ hostname: "app.example.com", targetUrl: "http://127.0.0.1:3000" }),
+      {
+        hostname: "www.app.example.com",
+        isCustomDomain: true,
+        redirectHost: { target: "app.example.com", statusCode: 301 },
+        notFound: true,
+      },
+    ]);
+    expect(onWarning).not.toHaveBeenCalledWith(expect.stringContaining("www.app.example.com"));
   });
 
   it("does not fall back to the project port when service deployment records are missing (#879)", async () => {

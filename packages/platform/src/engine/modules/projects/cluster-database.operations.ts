@@ -4,6 +4,7 @@ import { isDeepStrictEqual } from "node:util";
 import {
   AppError,
   clusterDatabasePodCount,
+  clusterDatabaseUnsupportedReason,
   validateClusterDatabase,
   clusterPostgresVersion,
   type ClusterDatabaseStep,
@@ -71,6 +72,7 @@ export function presentClusterDatabase(row: ClusterDatabaseRecord): ClusterDatab
     observation: row.observation,
     error: row.error,
     envKey: row.envKey,
+    readEnvKey: row.readEnvKey,
     sourceDatabaseId:
       row.restoreSource && row.restoreSource.format !== "backup-artifact"
         ? row.restoreSource.databaseId
@@ -119,6 +121,11 @@ export async function runClusterDatabase(
     ...(parentSignal ? [parentSignal] : []),
   ]);
   const progress = structuredClone(row.progress);
+  // Recovery loads data once. This durable checkpoint survives retries and
+  // later configuration changes; provenance is not a request to import again.
+  const restored = row.progress.steps.some(
+    (item) => item.id === "restore" && item.status === "completed",
+  );
   const active = async () => {
     signal.throwIfAborted();
     await fleetAdmin(ctx);
@@ -160,7 +167,13 @@ export async function runClusterDatabase(
         if (!signal.aborted && !(await repos.clusterDatabase.heartbeat(row.id, row.generation)))
           cancelled.abort();
       })
-      .catch((diagnosticFailure) => { observeCaughtError(diagnosticFailure, "platform/engine/modules/projects/cluster-database.operations"); return cancelled.abort(); });
+      .catch((diagnosticFailure) => {
+        observeCaughtError(
+          diagnosticFailure,
+          "platform/engine/modules/projects/cluster-database.operations",
+        );
+        return cancelled.abort();
+      });
   }, 20_000);
   timer.unref();
   let connection: Awaited<ReturnType<typeof openClusterApi>> | undefined;
@@ -180,12 +193,15 @@ export async function runClusterDatabase(
       connection!.api,
       {
         ...row,
+        restoreCompleted: restored,
         hosts: connection!.runtime.plan.hosts,
         consumerProjectIds: () => nativeDatabaseConsumers(row),
         ...(row.intent !== "remove" && row.config.backup
           ? { backupStorage: await backupStorage(ctx, row.config.backup.destinationId) }
           : {}),
-        ...(row.intent === "apply" && row.restoreSource
+        ...(row.intent === "apply" &&
+        row.restoreSource &&
+        (!restored || !row.restoreSource.format || row.restoreSource.format === "postgres-physical")
           ? {
               restoreStorage: await backupStorage(
                 ctx,
@@ -250,45 +266,48 @@ export async function runClusterDatabase(
           row.restoreSource.format ?? "",
         )
       ) {
-        const loaded = row.progress.steps.some(
-          (item) => item.id === "restore" && item.status === "completed",
-        );
-        await step("restore", "Recovering the saved data into this new database.", async () => {
-          if (!loaded && row.restoreSource?.format === "postgres-logical") {
-            const source = await repos.clusterDatabase.get(
-              ctx.organizationId,
-              row.projectId,
-              row.restoreSource.databaseId,
-            );
-            if (
-              source.status !== "ready" ||
-              !isDeepStrictEqual(source.config, row.restoreSource.sourceConfig)
-            )
-              throw new Error(
-                "The original database changed while its copy was being prepared. Keep its saved settings until recovery finishes.",
+        if (!restored)
+          await step("restore", "Recovering the saved data into this new database.", async () => {
+            if (row.restoreSource?.format === "postgres-logical") {
+              const source = await repos.clusterDatabase.get(
+                ctx.organizationId,
+                row.projectId,
+                row.restoreSource.databaseId,
               );
-            const sourceAdapter = new ClusterDatabaseAdapter(
-              connection!.api,
-              {
-                ...source,
-                hosts: connection!.runtime.plan.hosts,
-                backupStorage: await backupStorage(
-                  ctx,
-                  row.restoreSource.destinationId,
-                  row.restoreSource,
-                ),
-              },
-              signal,
-              active,
-            );
-            await sourceAdapter.dataTasks.secret(
-              "backup-destination",
-              await backupStorage(ctx, row.restoreSource.destinationId, row.restoreSource),
-            );
-            await sourceAdapter.dataTasks.run(row.requestId, source.generation, log, row.requestId);
-          }
-          await adapter.restore(log);
-        });
+              if (
+                source.status !== "ready" ||
+                !isDeepStrictEqual(source.config, row.restoreSource.sourceConfig)
+              )
+                throw new Error(
+                  "The original database changed while its copy was being prepared. Keep its saved settings until recovery finishes.",
+                );
+              const sourceAdapter = new ClusterDatabaseAdapter(
+                connection!.api,
+                {
+                  ...source,
+                  hosts: connection!.runtime.plan.hosts,
+                  backupStorage: await backupStorage(
+                    ctx,
+                    row.restoreSource.destinationId,
+                    row.restoreSource,
+                  ),
+                },
+                signal,
+                active,
+              );
+              await sourceAdapter.dataTasks.secret(
+                "backup-destination",
+                await backupStorage(ctx, row.restoreSource.destinationId, row.restoreSource),
+              );
+              await sourceAdapter.dataTasks.run(
+                row.requestId,
+                source.generation,
+                log,
+                row.requestId,
+              );
+            }
+            await adapter.restore(log);
+          });
         observation = await step(
           "verify",
           "Verifying the recovered database and its private connection.",
@@ -313,7 +332,10 @@ export async function runClusterDatabase(
       const message = safe(error);
       updateNetworkSetupStep(progress, current, "failed", message);
       await persist().catch((diagnosticFailure) => {
-        observeCaughtError(diagnosticFailure, "platform/engine/modules/projects/cluster-database.operations");
+        observeCaughtError(
+          diagnosticFailure,
+          "platform/engine/modules/projects/cluster-database.operations",
+        );
       });
       await repos.clusterDatabase.finish(row.id, row.generation, "failed", null, message);
     }
@@ -497,6 +519,8 @@ export function createClusterDatabaseOperations(
             );
           }
           const { runtime } = await requireClusterDeploymentTarget(ctx.organizationId, clusterId);
+          const unavailable = clusterDatabaseUnsupportedReason(runtime.provider);
+          if (unavailable) throw new AppError(unavailable, 422, "CLUSTER_PROVIDER_UNSUPPORTED");
           for (const host of runtime.plan.hosts) await authorizeMember(ctx, host.serverId);
           const count = clusterDatabasePodCount(input.config);
           if (runtime.plan.hosts.length < count)
@@ -636,7 +660,10 @@ export function createClusterDatabaseOperations(
                 )
                   await undoPin();
               } catch (diagnosticFailure) {
-                observeCaughtError(diagnosticFailure, "platform/engine/modules/projects/cluster-database.operations");
+                observeCaughtError(
+                  diagnosticFailure,
+                  "platform/engine/modules/projects/cluster-database.operations",
+                );
               }
             }
             throw error;
@@ -668,9 +695,19 @@ export function createClusterDatabaseOperations(
           input.envKey,
           value,
           input.replace,
+          input.readEnvKey === undefined
+            ? undefined
+            : {
+                envKey: input.readEnvKey,
+                encryptedValue: input.readEnvKey
+                  ? encrypt(
+                      clusterDatabaseUrl(row.id, row.config, decrypt(row.secretEncrypted), "read"),
+                    )
+                  : null,
+              },
         );
         notifyClusterDatabase(ctx.organizationId, id);
-        audit(ctx, id, row.id, input.envKey ? "connected" : "disconnected");
+        audit(ctx, id, row.id, updated.envKey || updated.readEnvKey ? "connected" : "disconnected");
         return presentClusterDatabase(updated);
       });
       if (!result) throw new AppError("The project is being removed.", 409, "PROJECT_UNAVAILABLE");

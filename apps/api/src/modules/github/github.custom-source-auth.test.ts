@@ -5,6 +5,7 @@ const h = vi.hoisted(() => ({
   cacheSet: vi.fn(),
   cloudConnected: vi.fn(),
   cloudInstallations: vi.fn(),
+  cloudUserStatus: vi.fn(),
   cloudInstallationToken: vi.fn(),
   findByOrgAndOwner: vi.fn(),
   findByOrgOwnerAndInstallationId: vi.fn(),
@@ -56,6 +57,7 @@ vi.mock("@repo/platform/engine/lib/cloud/client", () => ({
   cloudClient: vi.fn(() => ({
     github: {
       installations: h.cloudInstallations,
+      userStatus: h.cloudUserStatus,
       installationToken: h.cloudInstallationToken,
     },
   })),
@@ -76,7 +78,7 @@ vi.mock("@repo/platform/engine/modules/github/github-source.service", () => ({
   resolveGitHubSourceCredentialsForInstallation: h.resolveSourceCredentials,
 }));
 
-import { getInstallationId, getInstallationToken, resolveGitHubAuthMode } from "@repo/platform/engine/modules/github/github.auth";
+import { getInstallationId, getInstallationToken, resolveGitHubAuthMode, getUserStatus, getUserInstallations } from "@repo/platform/engine/modules/github/github.auth";
 
 const ctx = {
   userId: "user_1",
@@ -169,5 +171,19 @@ describe("mixed custom and legacy GitHub source resolution", () => {
     );
     expect(h.cloudInstallationToken).toHaveBeenCalledWith("legacy-owner", undefined);
     expect(h.appFetch).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("hosted App workspace identity", () => {
+  it("reads status with the same org-owner Cloud identity as installation discovery", async () => {
+    h.hasActiveSource.mockResolvedValue(false);
+    h.cloudConnected.mockResolvedValue(true);
+    h.cloudUserStatus.mockResolvedValue({ connected: true, login: "workspace-owner" });
+    h.cloudInstallations.mockResolvedValue([{ id: 99, login: "workspace-owner", avatarUrl: "", type: "User" }]);
+    const { cloudClient } = await import("@repo/platform/engine/lib/cloud/client");
+    expect(await getUserStatus("local-member-with-a-different-cloud-login", ctx)).toMatchObject({ connected: true, login: "workspace-owner" });
+    expect(await getUserInstallations(ctx)).toHaveLength(1);
+    expect(vi.mocked(cloudClient).mock.calls.slice(-2).map(call => call[0])).toEqual([{ organizationId: "org_1" }, { organizationId: "org_1" }]);
   });
 });

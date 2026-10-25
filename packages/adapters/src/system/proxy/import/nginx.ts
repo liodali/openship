@@ -21,6 +21,9 @@ import type { ImportedSite, ProxyScanResult } from "../../types";
 import { EDGE_HOST_PATHS, OPENRESTY_DEFAULT_PATHS } from "../../../infra/openresty-lua";
 import { containerCommand } from "../../edge-container-executor";
 import { detectEdgeContainer, resolveOurEdgeContainer } from "../detect";
+import { swarmEdgePorts } from "../swarm";
+import { probePortListeningOnce } from "../../port-listen";
+import { rootOrDegrade } from "../../privilege";
 import {
   collapseByHost,
   extractBlocks,
@@ -655,6 +658,45 @@ export async function scanOpenshipEdge(executor: CommandExecutor): Promise<Proxy
   return parseNginxConfig(fromContainer ?? "");
 }
 
+async function proveNoIngress(executor: CommandExecutor): Promise<boolean> {
+  try {
+    // A routing mesh can publish without a local listener. Unreadable Swarm
+    // state and unidentified listeners are not evidence of an unused host.
+    if ((await swarmEdgePorts(executor)).size > 0) return false;
+    for (const port of [80, 443]) {
+      if ((await probePortListeningOnce(executor, port)) !== false) return false;
+    }
+    // Also reject dormant ingress: standard host proxy installations/configs,
+    // host-network containers, and stopped Docker edge port declarations.
+    // Only a successful, explicit proof permits an empty inventory. Shell or
+    // Docker errors never look like the success marker.
+    const inspection = await rootOrDegrade(executor, {
+      purpose: "Inspecting dormant ingress",
+      consequence: "The absence of existing routes cannot be verified.",
+      report: (message) => observeCaughtError(new Error(message), "adapters/system/proxy/import/nginx"),
+    });
+    const proof = await inspection.exec(`set -eu
+[ "$(id -u)" = 0 ] || exit 1
+for binary in openresty nginx caddy traefik haproxy apache2 httpd; do
+  if command -v "$binary" >/dev/null 2>&1; then exit 1; fi
+done
+for path in /etc/nginx /etc/openresty /etc/caddy /etc/traefik /etc/haproxy /etc/apache2 /etc/httpd /usr/local/etc/nginx /usr/local/openresty/nginx/conf ${shellQuote(EDGE_HOST_PATHS.sitesDir)}; do
+  if [ -e "$path" ]; then exit 1; fi
+done
+ids=$(docker ps -aq --no-trunc)
+if [ -n "$ids" ]; then
+  ingress=$(docker inspect --format '{{if eq .HostConfig.NetworkMode "host"}}ingress{{end}}{{range .HostConfig.PortBindings}}{{range .}}{{if or (eq .HostPort "80") (eq .HostPort "443")}}ingress{{end}}{{end}}{{end}}' $ids)
+  if [ -n "$ingress" ]; then exit 1; fi
+fi
+printf '__OPENSHIP_NO_INGRESS__'
+`);
+    return proof.trim() === "__OPENSHIP_NO_INGRESS__";
+  } catch (error) {
+    observeCaughtError(error, "adapters/system/proxy/import/nginx");
+    return false;
+  }
+}
+
 /**
  * Security-sensitive variant of {@link scanOpenshipEdge}.
  *
@@ -686,12 +728,14 @@ export async function scanOpenshipEdgeStrict(
   if (!detected.exists) {
     // "No Openship container" is not proof that the edge has no routes. A
     // foreign nginx/caddy/traefik may still own :80/:443 and retain a stale
-    // loopback upstream that a new workload could capture. Allocation callers
-    // run this only after routing preflight, so a genuinely fresh Docker host
-    // should have an Openship edge by now. The one supported container-less
-    // topology is bare OpenResty; its resolved config is authoritative.
+    // loopback upstream that a new workload could capture. Private deployments
+    // must not install/take over an edge merely to allocate a loopback port.
+    // A bare OpenResty dump or a positive proof of no ingress is authoritative.
     const bareConfig = await dumpResolvedConfig(executor, ["openresty"]);
     if (bareConfig) return parseStrictEdgeConfig(bareConfig);
+    if (await proveNoIngress(executor)) {
+      return { ...parseNginxConfig(""), loopbackUpstreamPorts: new Set() };
+    }
     throw new Error(
       "Cannot read Openship edge routes: no running Openship edge or bare OpenResty inventory is available",
     );

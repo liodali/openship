@@ -46,7 +46,7 @@
  */
 
 import { reportCaughtError as observeCaughtError } from "@repo/core/diagnostics";
-import nodemailer, { type Transporter } from "nodemailer";
+import nodemailer from "nodemailer";
 import { sshManager } from "@repo/platform/engine/lib/ssh-manager";
 import { readState } from "@repo/platform/engine/modules/mail/mail-state";
 import { safeErrorMessage } from "@repo/core";
@@ -248,7 +248,7 @@ export async function sendTestEmail(
   // Postfix is healthy on 0.0.0.0:465. `servername` keeps TLS validating
   // against the hostname, so certificate checking is unchanged.
   const connectHost = await resolvePublicMailAddress(smtpHost);
-  const transporter: Transporter = nodemailer.createTransport({
+  const transporter = nodemailer.createTransport({
     host: connectHost,
     tls: { servername: smtpHost },
     port: SUBMISSION_PORT,

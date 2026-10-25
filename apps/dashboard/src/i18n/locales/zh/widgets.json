@@ -285,7 +285,26 @@
       "repoCountOther": "{count} 个仓库",
       "coveredByOrg": "已被上方的组织级授权涵盖。",
       "noRepos": "没有仓库。",
-      "searchRepos": "搜索仓库……"
+      "searchRepos": "搜索仓库……",
+      "capabilityAreas": {
+        "domains": "域名",
+        "deployments": "部署"
+      },
+      "capabilityLabels": {
+        "domains:read": "查看",
+        "domains:write": "添加和验证",
+        "domains:delete": "删除",
+        "deployments:read": "查看",
+        "deployments:trigger": "触发"
+      },
+      "capabilityHints": {
+        "domains:read": "查看域名、DNS 记录和证书状态",
+        "domains:write": "添加、验证和续期域名，执行 DNS 质询",
+        "domains:delete": "删除域名",
+        "deployments:read": "查看部署、日志和构建状态",
+        "deployments:trigger": "启动、重新部署、重启和固定部署，以及处理部署决策。取消、回滚和删除需要项目管理权限。"
+      },
+      "capabilityImplied": "已包含在此资源的访问级别中"
     },
     "sourceAccess": {
       "title": "源码访问权限",
@@ -483,6 +502,31 @@
       "dnsHintSelfhosted": "先添加指向你服务器 IP 的 A 记录，然后添加用于验证的 TXT 记录。",
       "dnsHintCloud": "先添加用于路由的 CNAME 记录，然后添加用于验证的 TXT 记录。",
       "dnsPropagation": "DNS 更改最多可能需要 48 小时才能生效。"
+    },
+    "protection": {
+      "unknown": "无法检查保护状态。",
+      "title": "密码保护",
+      "chooseHostname": "请先选择主机名",
+      "description": "访客输入一次共享密码后，可保持登录24小时。更改密码会使所有人退出登录。",
+      "unsupported": "适用于在自托管边缘上使用HTTPS的精确自定义主机名。暂不支持Cloud、免费子域名和外部TLS代理。",
+      "loading": "正在检查保护…",
+      "staged": "密码已暂存。此路由发布前将安装保护。",
+      "pending": "已保存，但尚未在边缘确认。请重试或部署此项目；暂时不要将其作为私密站点分享。",
+      "protected": "密码保护已启用",
+      "public": "此路由公开可访问",
+      "password": "站点密码",
+      "newPassword": "新的站点密码",
+      "passwordHint": "请至少使用12个字符。仅与应有访问权限的人分享。",
+      "save": "保存密码",
+      "loadFailed": "无法检查路由保护。请重新打开此对话框以重试。",
+      "saveFailed": "无法应用保护。请检查连接后重试。",
+      "retry": "重试边缘更新",
+      "revoke": "使所有人退出登录",
+      "remove": "移除保护",
+      "unlockConfirm": "任何知道此URL的人都能打开站点。是否移除密码？",
+      "unlock": "设为公开",
+      "cancel": "取消",
+      "scope": "仅保护此主机名。其他域名和服务的直接端口仍使用各自的访问设置。请清除所有外部CDN中先前缓存的内容。"
     }
   },
   "updates": {

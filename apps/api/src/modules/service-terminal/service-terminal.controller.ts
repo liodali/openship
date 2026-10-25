@@ -33,7 +33,6 @@ import {
   TERMINAL_COLS_MAX as COLS_MAX, TERMINAL_ROWS_MAX as ROWS_MAX,
 } from "@repo/contracts";
 import { randomUUID } from "node:crypto";
-import { auth } from "@repo/platform/engine/lib/auth";
 import { trustedOrigins } from "@repo/platform/engine/config/env";
 import { upgradeWebSocket } from "../../lib/ws";
 import { prepareCloudTerminal, cloudTerminalHandlers } from "../../lib/cloud/terminal-bridge";
@@ -44,8 +43,9 @@ import { disposeRuntime, resolveDeploymentRuntime } from "@repo/platform/engine/
 import { holdCloudWorkspaceActivity } from "@repo/platform/engine/lib/cloud-workspace-lock";
 import { safeErrorMessage } from "@repo/core";
 import { getRequestContext } from "../../lib/request-context";
-import { resolveActiveOrganizationId } from "../../middleware/active-organization";
-import { checkPermission } from "@repo/platform/engine/lib/authorization";
+import { resolveTerminalContext, watchTerminalAuthorization } from "../../lib/terminal-authorization";
+import { authorization } from "@repo/platform/engine/lib/authorization";
+import type { ExecutionContext } from "@repo/platform";
 import { containerIdForService, liveContainerIdWithRuntime } from "@repo/platform/engine/modules/services/service-container";
 import {
   attachServiceWs,
@@ -117,28 +117,23 @@ type ErrorCode =
  * which close code to emit.
  *
  * Scoping is by `project.organizationId` rather than `project.userId`
- * so org-member terminals work for shared projects. NULL-org rows pass
- * via the `assertResourceInOrg`-style allowance.
+ * so authorized org members can use terminals for shared projects.
  */
 async function resolveServiceForOrg(
   serviceId: string,
-  organizationId: string,
-  userId: string,
+  ctx: ExecutionContext,
   forShell = false,
 ): Promise<
-  | { ok: true; containerId: string; runtime: import("@repo/adapters").RuntimeAdapter;
+  | { ok: true; projectId: string; containerId: string; runtime: import("@repo/adapters").RuntimeAdapter;
       openShell?: () => Promise<ShellSession>; release?: () => Promise<void> }
   | { ok: false; code: ErrorCode; message: string }
 > {
   const service = await repos.service.findById(serviceId);
   if (!service) return { ok: false, code: "server_not_found", message: "Service not found" };
 
-  // Primary gate: opening a service shell is admin-tier (full reach into
-  // the container). We use the pure resolver because the WS upgrade path
-  // doesn't carry a Hono context; the HTTP ticket path also calls this
-  // helper, so funneling both through checkPermission keeps the gate in
-  // one spot. 404-shape on deny — never confirm existence to non-admins.
-  const allowed = await checkPermission(userId, organizationId, {
+  // Apply the same credential and tenant policy as HTTP operations. Never
+  // substitute the token owner's broader membership for its explicit grants.
+  const allowed = await authorization.checkPermissionOnResource(ctx, {
     resourceType: "project",
     resourceId: service.projectId,
     action: "admin",
@@ -150,11 +145,10 @@ async function resolveServiceForOrg(
   const project = await repos.project.findById(service.projectId);
   if (
     !project ||
-    (project.organizationId != null && project.organizationId !== organizationId)
+    (project.organizationId != null && project.organizationId !== ctx.organizationId)
   ) {
     // Same 404-shape as backup endpoints: don't leak existence vs.
-    // authorization. NULL-org projects pass through for any caller —
-    // same allowance assertResourceInOrg makes.
+    // authorization; the shared policy above also validates ownership.
     return { ok: false, code: "server_not_found", message: "Service not found" };
   }
 
@@ -189,6 +183,7 @@ async function resolveServiceForOrg(
       // the project's app itself deploys "bare".
       meta: { ...(dep.meta as Record<string, unknown> | null), runtimeMode: "docker" },
       organizationId: dep.organizationId,
+      projectId: dep.projectId,
     });
     const resolved = await (activity ? activity.run(resolve) : resolve());
     runtime = resolved.runtime;
@@ -236,10 +231,10 @@ async function resolveServiceForOrg(
     // session (which disposes it when the session ends), and `issueTicket` — which
     // only wants the validation — releases it straight away.
     handedOff = true;
-    if (!activity) return { ok: true, containerId, runtime };
+    if (!activity) return { ok: true, projectId: project.id, containerId, runtime };
     let releasing: Promise<void> | undefined;
     return {
-      ok: true, containerId, runtime,
+      ok: true, projectId: project.id, containerId, runtime,
       openShell: () => activity!.run(() => runtime.openServiceShell!(containerId, {
         cols: 80, rows: 24, term: "xterm-256color",
       })),
@@ -276,7 +271,7 @@ export async function issueTicket(c: Context) {
   // WS open path, which can communicate a structured error frame.
   // Org-scoped + permission-gated — out-of-org / non-admin services 404
   // indistinguishably from missing.
-  const result = await resolveServiceForOrg(serviceId, ctx.organizationId, ctx.userId);
+  const result = await resolveServiceForOrg(serviceId, ctx);
   // This endpoint deliberately uses none of the runtime it just resolved (the WS
   // open path re-resolves and owns it), so release the transport immediately —
   // otherwise merely OPENING the terminal drawer leaked a bridge per ticket.
@@ -315,52 +310,30 @@ export const serviceTerminalWsHandler = upgradeWebSocket(async (c) => {
     ? resumeProto.slice(RESUME_SUBPROTOCOL_PREFIX.length)
     : "";
 
-  let userId: string | null = null;
-  let ticketServiceId: string | null = null;
-  // not ctx-scoped: WebSocket upgrade path. Bypasses Hono auth
-  // middleware, so identity is re-derived from scratch.
-  //   - Ticket path: ticket carries (userId, orgId, serviceId) baked
-  //     in at mint time → WS scopes against THAT org by construction.
-  //   - Cookie path: no ticket → re-derive via session +
-  //     resolveActiveOrganizationId (same resolver authMiddleware uses).
-  let activeOrgId: string | null = null;
-  if (ticket) {
-    userId = ticket.userId;
-    ticketServiceId = ticket.serviceId;
-    activeOrgId = ticket.organizationId;
-  } else {
-    try {
-      const session = await auth.api.getSession({ headers: c.req.raw.headers });
-      if (session?.user?.id) {
-        userId = session.user.id;
-        const sessOrgId =
-          (session.session as { activeOrganizationId?: string | null } | null)
-            ?.activeOrganizationId ?? null;
-        activeOrgId = await resolveActiveOrganizationId(userId, sessOrgId).catch((diagnosticFailure) => { observeCaughtError(diagnosticFailure, "api/modules/service-terminal/service-terminal.controller"); return null; });
-      }
-    } catch (diagnosticFailure) {
-      observeCaughtError(diagnosticFailure, "api/modules/service-terminal/service-terminal.controller");
-      /* fall through */
-    }
+  let actor;
+  try {
+    actor = await resolveTerminalContext(c.req.raw.headers, ticket?.context);
+  } catch (error) {
+    observeCaughtError(error, "api/lib/terminal-authorization");
+    return openInitFailure("ssh_auth", "Unauthorized", 4401);
   }
-  if (!userId) return openInitFailure("ssh_auth", "Unauthorized", 4401);
-  if (!activeOrgId) return openInitFailure("ssh_auth", "No active organization", 4401);
+  const { userId } = actor;
 
   // 3. Service existence + path binding
   const pathServiceId = c.req.param("serviceId");
   if (!pathServiceId)
     return openInitFailure("server_not_found", "serviceId required", 4400);
-  if (ticketServiceId && ticketServiceId !== pathServiceId) {
+  if (ticket && ticket.serviceId !== pathServiceId) {
     return openInitFailure("ssh_auth", "Ticket / path mismatch", 4401);
   }
   if (ticket?.cloud) return cloudTerminalHandlers({ kind: "service", id: pathServiceId,
-    userId, organizationId: activeOrgId, cloud: ticket.cloud, resumeToken });
+    context: ticket.context, cloud: ticket.cloud, resumeToken });
 
   // Resolve runtime + containerId. Org-scoped + admin-permission-gated
   // — refuses if the parent project doesn't belong to the caller's active
   // organization, OR if the caller lacks admin permission on the project
   // (opening a service shell is admin-tier).
-  const resolved = await resolveServiceForOrg(pathServiceId, activeOrgId, userId, !resumeToken);
+  const resolved = await resolveServiceForOrg(pathServiceId, actor, !resumeToken);
   if (!resolved.ok) {
     const closeCode =
       resolved.code === "server_not_found"
@@ -391,7 +364,9 @@ export const serviceTerminalWsHandler = upgradeWebSocket(async (c) => {
     const userAgent = c.req.header("user-agent") ?? null;
 
     const ctx: HandshakeCtx = {
+      actor: ticket?.context ?? actor,
       userId,
+      projectId: resolved.projectId,
       serviceId: pathServiceId,
       containerId: resolved.containerId,
       runtime: resolved.runtime,
@@ -418,6 +393,8 @@ export const serviceTerminalWsHandler = upgradeWebSocket(async (c) => {
 // ─── Per-connection state ───────────────────────────────────────────────────
 
 interface HandshakeCtx {
+  projectId: string;
+  actor: ExecutionContext;
   userId: string;
   serviceId: string;
   containerId: string;
@@ -436,6 +413,7 @@ export interface ConnState {
   shell: ShellSession | null;
   ws: WSLike | null;
   heartbeatTimer: ReturnType<typeof setInterval> | null;
+  stopAuthorizationWatch?: () => void;
   /** True when this WebSocket connection has detached; stops its data pump and incoming messages. */
   closed: boolean;
   /** True when this connection's session has been fully ended (shell killed, audit row closed). */
@@ -460,6 +438,15 @@ function buildHandlers(ctx: HandshakeCtx) {
     ended: false,
     userTerminated: false,
   };
+
+  function watchAuthorization(ws: WSLike) {
+    state.stopAuthorizationWatch = watchTerminalAuthorization(ctx.actor, { resourceType: "project", resourceId: ctx.projectId }, () => {
+      sendControl(ws, { type: "error", code: "ssh_auth", message: "Terminal authorization expired. Reconnect to continue." });
+      state.userTerminated = true;
+      safeWsClose(ws, 4401, "authorization_expired");
+      void teardown(state, "client_close", null, false, true);
+    });
+  }
 
   return {
     async onOpen(_evt: unknown, ws: WSLike) {
@@ -517,6 +504,7 @@ function buildHandlers(ctx: HandshakeCtx) {
           sendControl(ws, { type: "pong" });
         }, HEARTBEAT_INTERVAL_MS);
         (state.heartbeatTimer as { unref?: () => void }).unref?.();
+        watchAuthorization(ws);
 
         sendControl(ws, {
           type: "ready",
@@ -632,6 +620,7 @@ function buildHandlers(ctx: HandshakeCtx) {
         sendControl(ws, { type: "pong" });
       }, HEARTBEAT_INTERVAL_MS);
       (state.heartbeatTimer as { unref?: () => void }).unref?.();
+      watchAuthorization(ws);
 
       sendControl(ws, {
         type: "ready",
@@ -717,6 +706,7 @@ async function teardownConnection(
   forceClose: boolean,
 ) {
   // Full teardown already completed for this connection.
+  state.stopAuthorizationWatch?.();
   if (state.ended) return;
 
   // The WS side of this connection is already gone and this is not the

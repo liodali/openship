@@ -656,6 +656,28 @@ describe("detectStack - rule ordering & gate disambiguation", () => {
     expect(result.stack).toBe("docker-compose");
   });
 
+  it.each(["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"])(
+    "prefers root %s over Vite + Dockerfile (#1355)",
+    (composeFile) => {
+      const result = detectStack(
+        files("package.json", "vite.config.ts", "Dockerfile", composeFile),
+        { devDependencies: { vite: "^6.0.0" } },
+      );
+      expect(result).toMatchObject({ stack: "docker-compose", projectType: "services" });
+    },
+  );
+
+  it.each([
+    { marker: "next.config.ts", packageJson: { dependencies: { next: "^15.0.0" } } },
+    { marker: "go.mod", packageJson: undefined },
+  ])(
+    "keeps Compose topology when $marker matches before Docker (#1355)",
+    ({ marker, packageJson }) => {
+      const result = detectStack(files(marker, "Dockerfile", "compose.yaml"), packageJson);
+      expect(result).toMatchObject({ stack: "docker-compose", projectType: "services" });
+    },
+  );
+
   it("Static site does NOT match when package.json is also present (falls to a JS stack)", () => {
     const result = detectStack(files("index.html", "package.json"), {
       dependencies: { express: "^5.0.0" },
@@ -1005,7 +1027,7 @@ describe("detectStack - output directory and build image", () => {
       dependencies: { next: "^15.0.0" },
     });
     expect(result.packageManager).toBe("bun");
-    expect(result.buildImage).toBe("oven/bun:1.3.14");
+    expect(result.buildImage).toBe("oven/bun:1.4.4");
   });
 
   it("bun does NOT override build image for non-JS stacks", () => {

@@ -83,8 +83,10 @@ export async function cloudFetch(
   if (!path.startsWith("/api/") || path.includes("#")) throw new Error("Invalid Cloud API path");
 
   const targetUrl = `${cloudRuntimeTarget.api}${path}`;
+  // Query strings can carry one-time GitHub/OAuth state. Never log them.
+  const logTarget = targetUrl.split("?")[0];
   const method = (init?.method ?? "GET").toUpperCase();
-  console.log(`[cloud-client] → ${method} ${targetUrl}  (cloudRuntimeTargetId=${cloudRuntimeTargetId})`);
+  console.log(`[cloud-client] → ${method} ${logTarget}  (cloudRuntimeTargetId=${cloudRuntimeTargetId})`);
   // Deadline on getting response HEADERS, cleared the moment fetch() resolves —
   // so a dead/stalled SaaS can't hang the request forever, but streamed bodies
   // (SSE logs/build) are untouched (headers arrive fast, then the timer is off).
@@ -108,12 +110,12 @@ export async function cloudFetch(
       signal: init?.signal ? AbortSignal.any([controller.signal, init.signal]) : controller.signal,
     });
   } catch (err) {
-    errorDiagnostics.warn("platform/engine/lib/cloud/transport", `[cloud-client] fetch failed ${targetUrl}: ${(err as Error).message}`, err);
+    errorDiagnostics.warn("platform/engine/lib/cloud/transport", `[cloud-client] fetch failed ${logTarget}: ${(err as Error).message}`, err);
     return null;
   } finally {
     clearTimeout(timer);
   }
-  console.log(`[cloud-client] ← ${method} ${targetUrl} ${res.status}`);
+  console.log(`[cloud-client] ← ${method} ${logTarget} ${res.status}`);
 
   // An account switch can finish while the upstream request is in flight.
   // Do not deliver the previous account's inventory, credentials or response.
@@ -127,7 +129,7 @@ export async function cloudFetch(
 
   if (res.status === 401) {
     errorDiagnostics.warn("platform/engine/lib/cloud/transport",
-      `[cloud-client] 401 from SaaS for ${path} — leaving stored session intact; caller should surface the auth error.`,
+      `[cloud-client] 401 from SaaS for ${path.split("?")[0]} — leaving stored session intact; caller should surface the auth error.`,
     );
   }
 

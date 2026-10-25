@@ -23,7 +23,7 @@ vi.mock("@repo/adapters", async () => ({
   probeTcp: vi.fn(),
   resolveSshAuthSock: () => process.env.SSH_AUTH_SOCK,
 }));
-vi.mock("@repo/platform/engine/lib/box-org", () => ({ isLocalHostRow: vi.fn() }));
+vi.mock("@repo/platform/engine/lib/box-org", () => ({ isLocalHostRow: vi.fn(), boxOwningOrgId: async () => "operator-org" }));
 
 // The path allowlist is tested on its own (ssh-key-path); here we only need to
 // know WHETHER the path branch runs, so make it an identity + assert on the read.
@@ -44,7 +44,7 @@ import { buildSshConfig } from "@repo/platform/engine/lib/ssh-manager";
 // REAL encryption — the whole point is that a stored enc1: value round-trips.
 import { encryptSecretField } from "@repo/platform/engine/lib/credential-encryption";
 
-const base = { sshHost: "10.0.0.1", sshAuthMethod: "key" as const };
+const base = { organizationId: "operator-org", sshHost: "10.0.0.1", sshAuthMethod: "key" as const };
 
 beforeEach(() => {
   readFileSync.mockClear();
@@ -80,7 +80,7 @@ describe("native SSH host policy", () => {
 
 describe("buildSshConfig — pasted/uploaded key material", () => {
   it("carries Cloudflare through password, encrypted-key and agent authentication", async () => {
-    const settings = { sshHost: "ssh.example.test", sshTransport: "cloudflare" };
+    const settings = { organizationId: "operator-org", sshHost: "ssh.example.test", sshTransport: "cloudflare" };
     expect(await buildSshConfig({ ...settings, sshAuthMethod: "password", sshPassword: encryptSecretField("password") }))
       .toMatchObject({ sshTransport: "cloudflare", password: "password" });
     expect(await buildSshConfig({ ...settings, sshAuthMethod: "key", sshPrivateKey: encryptSecretField("key"), sshKeyPassphrase: encryptSecretField("passphrase") }))

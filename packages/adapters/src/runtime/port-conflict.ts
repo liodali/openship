@@ -53,6 +53,7 @@ export interface PortOccupant {
   containerId?: string;
   containerName?: string;
   containerImage?: string;
+  swarmService?: string;
   /** `openship.project` / `openship.service` off that container's labels. */
   ownerProjectId?: string;
   serviceName?: string;
@@ -122,6 +123,7 @@ async function resolveListenerOwner(
 
 /** Why a port whose owner we CAN see is one we won't offer to free. */
 export type PortRefusal =
+  | "swarm"
   | "ambiguous"
   | "our-edge"
   | "platform"
@@ -149,6 +151,7 @@ export type PortVerdict =
  * total switch on {@link PortRefusal} makes a new refusal a compile error instead.
  */
 export function portStopVerdict(occupant: PortOccupant): PortVerdict {
+  if (occupant.swarmService) return { target: "none", why: "swarm" };
   // Two owners for one port: stopping either is a coin flip with someone's app.
   if (occupant.ambiguousOwners) return { target: "none", why: "ambiguous" };
 
@@ -500,6 +503,7 @@ async function withContainer(
     ...(platform ? { platformContainer: true } : {}),
     containerId: container.id,
     containerName: container.name,
+    swarmService: container.swarmService,
     containerImage: container.image,
     ...(container.projectId ? { ownerProjectId: container.projectId } : {}),
     ...(container.deploymentId ? { deploymentId: container.deploymentId } : {}),
@@ -677,6 +681,8 @@ function freeActionLabel(occupant: PortOccupant): string {
 function refusalReason(port: number, occupant: PortOccupant, why: PortRefusal): string {
   const named = occupant.containerName ?? occupant.containerId;
   switch (why) {
+    case "swarm":
+      return `Port ${port} belongs to Swarm service ${occupant.swarmService}. Change its published ports through a Swarm manager; a task cannot be stopped as a standalone container.`;
     case "ambiguous":
       return (
         `Port ${port} is published by ${occupant.ambiguousOwners} containers at once (${occupant.command}), ` +

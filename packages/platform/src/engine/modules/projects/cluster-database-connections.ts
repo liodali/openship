@@ -1,29 +1,42 @@
-import { AppError } from "@repo/core";
+import {
+  AppError,
+  clusterDatabaseHasReaders,
+  clusterDatabaseConnectionOutputId,
+  clusterDatabaseConnectionTarget,
+} from "@repo/core";
 import { repos, type ClusterDatabaseRecord, type Project } from "@repo/db";
 import { ClusterDatabaseAdapter, clusterDatabaseUrl } from "@repo/adapters";
 import { decrypt } from "../../lib/encryption";
 import { openClusterApi } from "../../lib/cluster-deployment-target";
 
-export const clusterDatabaseOutputId = (id: string) => "cluster-database:" + id;
+export const clusterDatabaseOutputId = clusterDatabaseConnectionOutputId;
 
 /** Native database outputs use the existing authenticated project connection surface. */
 export async function nativeDatabaseOutputs(project: Project) {
   const rows = await repos.clusterDatabase.list(project.organizationId, project.id);
-  return rows.map((row) => ({
-    id: clusterDatabaseOutputId(row.id),
-    sourceDatabaseId: row.id,
-    clusterId: row.clusterId,
-    label: row.name,
-    service: null,
-    secret: true,
-    internal: true,
-    envKey: row.config.engine === "postgres" ? "DATABASE_URL" : "REDIS_URL",
-    width: "full" as const,
-    value:
-      row.status === "ready" && row.intent !== "remove"
-        ? clusterDatabaseUrl(row.id, row.config, decrypt(row.secretEncrypted))
+  return rows.flatMap((row) => {
+    const ready = row.status === "ready" && row.intent !== "remove";
+    const output = (target: "write" | "read") => ({
+      id: clusterDatabaseOutputId(row.id, target),
+      sourceDatabaseId: row.id,
+      clusterId: row.clusterId,
+      label: target === "read" ? `${row.name} · Read replicas` : row.name,
+      service: null,
+      secret: true,
+      internal: true,
+      envKey:
+        target === "read"
+          ? "DATABASE_READ_URL"
+          : row.config.engine === "postgres"
+            ? "DATABASE_URL"
+            : "REDIS_URL",
+      width: "full" as const,
+      value: ready
+        ? clusterDatabaseUrl(row.id, row.config, decrypt(row.secretEncrypted), target)
         : "",
-  }));
+    });
+    return [output("write"), ...(clusterDatabaseHasReaders(row.config) ? [output("read")] : [])];
+  });
 }
 
 export async function requireNativeDatabaseConnection(
@@ -65,7 +78,7 @@ export async function sharedNativeDatabases(
   const target = await repos.project.findByIdInOrganization(projectId, organizationId);
   if (!target || target.deletionInProgress)
     throw new AppError("Project is unavailable.", 404, "PROJECT_NOT_FOUND");
-  const result: Array<{ databaseId: string; projectId: string }> = [];
+  const result = new Map<string, { databaseId: string; projectId: string }>();
   for (const link of await repos.projectConnection.listByTarget(projectId)) {
     if (!link.sourceDatabaseId) continue;
     const source = await repos.project.findByIdInOrganization(link.sourceProjectId, organizationId);
@@ -75,7 +88,7 @@ export async function sharedNativeDatabases(
       link.mode !== "internal" ||
       !link.usesPrivateNetwork ||
       link.organizationId !== organizationId ||
-      link.outputId !== clusterDatabaseOutputId(link.sourceDatabaseId)
+      !clusterDatabaseConnectionTarget(link.sourceDatabaseId, link.outputId)
     )
       throw new AppError(
         "This database connection has changed. Reconnect it before deploying.",
@@ -83,15 +96,19 @@ export async function sharedNativeDatabases(
         "CLUSTER_CONNECTION_UNAVAILABLE",
       );
     const database = await requireNativeDatabaseConnection(source, target, link.sourceDatabaseId);
-    if (database.runtimeId !== runtimeId)
+    if (
+      (clusterDatabaseConnectionTarget(database.id, link.outputId) === "read" &&
+        !clusterDatabaseHasReaders(database.config)) ||
+      database.runtimeId !== runtimeId
+    )
       throw new AppError(
         "The shared database belongs to a different cluster installation.",
         409,
         "CLUSTER_CONNECTION_UNAVAILABLE",
       );
-    result.push({ databaseId: database.id, projectId: source.id });
+    result.set(database.id, { databaseId: database.id, projectId: source.id });
   }
-  return result;
+  return [...result.values()];
 }
 
 export async function nativeDatabaseConsumers(
@@ -111,7 +128,7 @@ export async function nativeDatabaseConsumers(
       link.usesPrivateNetwork &&
       link.organizationId === row.organizationId &&
       link.sourceProjectId === row.projectId &&
-      link.outputId === clusterDatabaseOutputId(row.id) &&
+      clusterDatabaseConnectionTarget(row.id, link.outputId) &&
       target?.clusterId === row.clusterId &&
       !target.deletionInProgress &&
       !target.workspaceId

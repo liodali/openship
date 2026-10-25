@@ -5,5 +5,5 @@ export function isOblienConfigured(): boolean {
 }
 
 export function isOblienBackedDeployment(deployTarget?: string | null): boolean {
-  return isOblienConfigured() || deployTarget === "cloud";
+  return deployTarget ? deployTarget === "cloud" : isOblienConfigured();
 }

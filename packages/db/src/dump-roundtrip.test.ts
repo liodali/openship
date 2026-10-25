@@ -154,6 +154,7 @@ async function seedOneRowPerTable(): Promise<Map<string, Record<string, unknown>
     // A project chooses exactly one execution target. Other instance parents
     // still get their own rows and are independently round-tripped.
     if (spec.sqlName === "project") { row.clusterId = null; }
+    if (spec.sqlName === "project_security") { row.autoRefresh = true; }
     // A standalone workflow has nullable repository fields but must carry its YAML.
     if (spec.sqlName === "action_workflow") {
       row.source = "name: Automation\non: workflow_dispatch\njobs:\n  run:\n    runs-on: self-hosted\n    steps:\n      - run: echo restored\n";
@@ -214,8 +215,12 @@ describe("whole-instance dump → restore round trip", () => {
     for (const spec of topoOrderedTables()) {
       expect(await rowCount(spec), `${spec.sqlName} did not survive the restore`).toBe(1);
     }
-    const restoredRuntime = (await dumpSubgraph({ kind: "instance" })).tables.cluster_runtime;
+    const restored = (await dumpSubgraph({ kind: "instance" })).tables;
+    const restoredRuntime = restored.cluster_runtime;
     expect(JSON.parse(JSON.stringify(restoredRuntime))).toEqual(overTheWire.tables.cluster_runtime);
+    expect(restored.project_security?.[0]?.autoRefresh).toBe(true);
+    for (const table of ["project_security", "security_refresh_attempt"])
+      expect(JSON.parse(JSON.stringify(restored[table]))).toEqual(overTheWire.tables[table]);
 
     // Spot-check the exact edge that broke in production: a domain bound to a
     // service, restored with its binding intact rather than nulled or dropped.

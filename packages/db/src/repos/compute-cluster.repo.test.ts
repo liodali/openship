@@ -34,6 +34,9 @@ afterAll(async () => {
   await client.close();
 });
 beforeEach(async () => {
+  await db.delete(schema.project);
+  await db.delete(schema.projectGroup);
+  await db.delete(schema.clusterRuntime);
   await db.delete(schema.computeCluster);
   await db.delete(schema.managedNetworkOperation);
   await db.delete(schema.serverCluster);
@@ -239,4 +242,90 @@ describe("independent networks and compute pools", () => {
       await networks.claimOperation("org", cleanup.id, cleanup.planHash, "apply"),
     ).toMatchObject({ started: true });
   });
+});
+
+describe("existing Swarm connections", () => {
+  const input = (serverId = "a") => ({
+    name: "Existing Swarm",
+    requestId: "swarm-request",
+    inputHash: "verified-hash",
+    clusterUid: "swarm-uid",
+    manager: {
+      serverId,
+      name: serverId,
+      address: serverId,
+      privateIp: "",
+      nodeName: "manager-node",
+      role: "server" as const,
+      hostIdentity: "verified-machine",
+      interfaceName: null,
+      installed: false,
+      ready: true,
+      steps: [],
+      logs: [],
+    },
+  });
+  it("registers once without a private network; refuses cross-org and duplicate-manager connections", async () => {
+    const first = await clusters.connectSwarm("org", input());
+    expect(first).toMatchObject({
+      networkId: null,
+      serverIds: ["a"],
+      scaling: { provider: "swarm", status: "ready" },
+    });
+    expect((await clusters.connectSwarm("org", input())).id).toBe(first.id);
+    expect(await db.select().from(schema.serverCluster)).toEqual([]);
+    await expect(clusters.connectSwarm("other", input("b"))).rejects.toThrow();
+    await expect(
+      clusters.connectSwarm("org", { ...input("b"), requestId: "duplicate" }),
+    ).rejects.toMatchObject({ code: "CLUSTER_CONFLICT" });
+    await expect(
+      clusters.connectSwarm("org", { ...input(), inputHash: "different" }),
+    ).rejects.toMatchObject({ code: "CLUSTER_CONFLICT" });
+    await clusters.remove("org", first.id, first.revision);
+    expect(await db.select().from(schema.clusterRuntime)).toEqual([]);
+    expect(await db.select().from(schema.servers)).toHaveLength(4);
+  });
+  it("will not disconnect a Swarm while a project uses its manager or replace it with a native cluster", async () => {
+    const cluster = await clusters.connectSwarm("org", input());
+    await db
+      .insert(schema.projectGroup)
+      .values({ id: "swarm-group", organizationId: "org", name: "Swarm app", slug: "swarm-app" });
+    await db
+      .insert(schema.project)
+      .values({
+        id: "swarm-project",
+        groupId: "swarm-group",
+        organizationId: "org",
+        name: "Swarm app",
+        slug: "swarm-app",
+        clusterId: cluster.id,
+      });
+    await expect(clusters.remove("org", cluster.id, cluster.revision)).rejects.toMatchObject({
+      code: "CLUSTER_CONFLICT",
+    });
+    expect((await clusters.get("org", cluster.id)).scaling?.provider).toBe("swarm");
+  });
+});
+
+it("keeps deferred network membership enforced when Swarm makes network IDs nullable", async () => {
+  const network = await networks.create("org", config(), "network", "hash");
+  const cluster = await clusters.create(
+    "org",
+    { name: "Native", networkId: network.id, serverIds: ["a"] },
+    "native",
+    "hash-native",
+  );
+  await expect(
+    db
+      .update(schema.computeClusterMember)
+      .set({ networkId: null })
+      .where(eq(schema.computeClusterMember.clusterId, cluster.id)),
+  ).rejects.toThrow();
+  await expect(
+    db
+      .update(schema.computeCluster)
+      .set({ networkId: null })
+      .where(eq(schema.computeCluster.id, cluster.id)),
+  ).rejects.toThrow();
+  expect((await clusters.get("org", cluster.id)).networkId).toBe(network.id);
 });

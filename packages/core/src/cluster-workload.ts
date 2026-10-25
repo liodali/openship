@@ -15,6 +15,25 @@ export function clusterWorkloadNeedsOperator(
   );
 }
 
+/** Shared admission and presentation rule; runtime capabilities stay authoritative. */
+export function clusterWorkloadUnsupportedReason(input: {
+  workload: string;
+  volumes?: readonly string[];
+  services?: readonly unknown[];
+  framework?: string | null;
+  image?: string;
+  provider?: "k3s" | "swarm";
+}): string | null {
+  if (input.workload === "static") return "Static sites have no application process to replicate.";
+  if (clusterWorkloadNeedsOperator(input.framework, input.image))
+    return "Database replication uses database management. Add a managed database and review its data migration before switching connections.";
+  if (input.services?.length && input.provider !== "swarm")
+    return "This environment contains services. Per-service replication is not supported on this target yet; its existing services and data stay on their current server.";
+  if (input.volumes?.length && input.provider !== "swarm")
+    return "This application has persistent storage. Review a shared-storage migration before running multiple instances.";
+  return null;
+}
+
 /** Persisted product intent. Kubernetes owns placement, health and reconciliation. */
 export interface ClusterWorkloadConfig {
   replicas: number;

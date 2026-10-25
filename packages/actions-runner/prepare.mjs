@@ -79,6 +79,17 @@ export function prepareRunnerModule() {
   writableDirectories(patched);
   chmodSync(join(patched, "pkg/container/host_environment.go"), 0o644);
   writeFileSync(join(patched, "pkg/container/host_environment.go"), source);
+  // go-archive 0.3.0 moves compression constants into its compression package.
+  // Keep act's Docker build-context stream uncompressed through the new API.
+  const buildPath = join(patched, "pkg/container/docker_build.go");
+  source = readFileSync(buildPath, "utf8");
+  replace(
+    '\t"github.com/moby/go-archive"\n',
+    '\t"github.com/moby/go-archive"\n\tarchivecompression "github.com/moby/go-archive/compression"\n',
+  );
+  replace("compression := archive.Uncompressed", "compression := archivecompression.None");
+  chmodSync(buildPath, 0o644);
+  writeFileSync(buildPath, source);
   source = readFileSync(join(patched, "pkg/runner/run_context.go"), "utf8");
   replace(
     "\tMatrix              map[string]interface{}\n",

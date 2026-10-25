@@ -165,6 +165,7 @@ beforeAll(async () => {
   vi.spyOn(docker, "inspectNamedVolumes").mockResolvedValue([]);
   vi.spyOn(docker, "listProjectContainerIds").mockResolvedValue([]);
   vi.spyOn(docker, "listAllContainers").mockResolvedValue([]);
+  vi.spyOn(docker, "listAllVolumes").mockResolvedValue([]);
   vi.spyOn(docker, "listProjectImages").mockResolvedValue([]);
 });
 
@@ -601,6 +602,30 @@ describe("collectProjectManifest — a ref is classified by its shape", () => {
     expect(docker.inspectNamedVolumes).toHaveBeenCalledTimes(1);
     expect(docker.inspectNamedVolumes).toHaveBeenCalledWith("9f1c2b3a4d5e");
     expect(typesOf(manifest, STATIC_RELEASE_DIR)).toEqual(["artifact"]);
+  });
+
+  it("previews unattached self-hosted data volumes and wipes only this project's owned storage", async () => {
+    h.deployments = [deployment()];
+    const inventory = [
+      { name: "owned-image-data", labels: { "openship.project": "p1" } },
+      { name: "other-project-data", labels: { "openship.project": "p2" } },
+      { name: "unlabelled-data", labels: {} },
+    ] as Awaited<ReturnType<DockerRuntime["listAllVolumes"]>>;
+    vi.mocked(docker.listAllVolumes).mockResolvedValueOnce(inventory);
+    const preview = await previewProjectDeletion(project as never);
+    expect(preview.deploymentVolumes).toEqual(["owned-image-data"]);
+    expect(preview.totalVolumes).toBe(1);
+    expect((await collectProjectManifest(project as never)).resources.filter(r => r.type === "volume")).toEqual([]);
+    vi.mocked(docker.listAllVolumes).mockResolvedValueOnce(inventory);
+    const manifest = await collectProjectManifest(project as never, { wipeVolumes: true });
+    expect(manifest.resources.filter(r => r.type === "volume").map(r => r.ref)).toEqual(["owned-image-data"]);
+  });
+
+  it("blocks a requested self-hosted volume wipe when ownership inventory is unavailable", async () => {
+    h.deployments = [deployment()];
+    vi.mocked(docker.listAllVolumes).mockRejectedValueOnce(new Error("daemon unavailable"));
+    await expect(collectProjectManifest(project as never, { wipeVolumes: true }))
+      .rejects.toThrow("inspect managed project volumes failed");
   });
 
   it("fails closed when requested volume discovery cannot be completed", async () => {

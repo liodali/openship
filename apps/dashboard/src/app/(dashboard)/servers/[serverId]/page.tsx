@@ -45,6 +45,7 @@ import { ServerConnectionCard } from "./_components/connection-card";
 import { ServerDeletionModal } from "@/components/servers/ServerDeletionModal";
 import { usePlatform } from "@/context/PlatformContext";
 import { ServerInfrastructure } from "@/components/servers/ServerInfrastructure";
+import { ServerSwarm } from "@/components/servers/ServerSwarm";
 import { Button } from "@/components/ui/button";
 import DropdownMenu from "@/components/ui/DropdownMenu";
 import { ServerUsage } from "@/components/servers/ServerUsage";
@@ -515,7 +516,7 @@ function ServerDetail({ serverId }: { serverId: string }) {
     // Check for active install session (page reload recovery)
     void (async () => {
       try {
-        const session = await systemApi.getInstallSession();
+        const session = await systemApi.getInstallSession(undefined, serverId);
         if (
           session.active &&
           session.status === "running" &&
@@ -730,6 +731,7 @@ function ServerDetail({ serverId }: { serverId: string }) {
                 showComponents={canInspect}
               />}
               {server.gpu && <GpuCard key={`${serverId}:${server.gpu.override ?? "auto"}`} server={server} onChanged={updated => setServer(current => current ? { ...current, ...updated } : updated)} />}
+              {canInspect && components.some(component => component.name === "docker" && component.installed) && <ServerSwarm serverId={serverId} />}
               <ServerUsage serverId={serverId} showProjects metrics={!canMonitor} />
             </>}
 

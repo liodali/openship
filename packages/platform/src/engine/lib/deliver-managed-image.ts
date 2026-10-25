@@ -9,6 +9,7 @@ import { posix } from "node:path";
 
 import { edgeBuildSpec } from "./edge-image";
 import { mailBuildSpec } from "./mail-image";
+import { buildKitBuildSpec } from "./buildkit-image";
 
 /**
  * Stage B of the managed-image pipeline: get OUR source built into the pinned image
@@ -38,7 +39,7 @@ import { mailBuildSpec } from "./mail-image";
  * the image absent and `docker pull`s the published tag.
  */
 export interface DeliverManagedImageOpts {
-  kind: "edge" | "mail";
+  kind: "edge" | "mail" | "buildkit";
   /** The resolved pinned ref — dev-suffixed in a checkout, plain APP_VERSION in prod. */
   image: string;
   /** The box the image is FOR — probed for the checkout, built on, shipped to. */
@@ -50,7 +51,7 @@ export async function deliverManagedImage(
   opts: DeliverManagedImageOpts,
 ): Promise<{ delivered: boolean }> {
   const { kind, image, targetExecutor, onLog } = opts;
-  const spec = kind === "edge" ? edgeBuildSpec() : mailBuildSpec();
+  const spec = { edge: edgeBuildSpec, mail: mailBuildSpec, buildkit: buildKitBuildSpec }[kind]();
   // No checkout to build from → prod / compiled install. The adapters gate pulls the
   // published tag; this returns without touching any daemon.
   if (!spec) return { delivered: false };

@@ -202,6 +202,30 @@
     "pageOf": "Page {page} sur {total}",
     "range": "Déploiements {from}–{to} sur {total}"
   },
+  "resourceGuidance": {
+    "label": "Conseils sur les ressources du déploiement",
+    "reviewCapacity": "Examiner la capacité",
+    "reviewTitle": "Examiner la capacité de l’espace Cloud",
+    "reviewHint": "Vérifiez d’abord l’utilisation et les limites configurées. La mise à niveau est facultative ; ouvrir cet écran ne modifie ni ne relance le déploiement.",
+    "slowTitle": "Cette compilation prend du temps",
+    "slowDescription": "Les téléchargements, le réseau ou les commandes peuvent être lents. Plus de capacité peut aider les compilations intensives ; consultez d’abord les journaux.",
+    "titles": {
+      "container-oom": "Le conteneur a manqué de mémoire",
+      "memory-allocation": "Échec de l’allocation mémoire",
+      "process-heap": "Limite du tas de l’application atteinte",
+      "storage-full": "Échec de l’allocation du stockage",
+      "storage-low": "Stockage libre insuffisant pour compiler",
+      "process-killed": "Le processus de compilation a été arrêté"
+    },
+    "causes": {
+      "container-oom": "Docker a confirmé un arrêt par manque de mémoire. Vérifiez la limite du conteneur et la capacité de l’espace Cloud avant de réessayer.",
+      "memory-allocation": "Le processus n’a pas pu allouer de mémoire. Vérifiez les limites configurées et la capacité disponible avant de choisir un forfait supérieur.",
+      "process-heap": "Le processus a atteint sa propre limite de tas. Vérifiez les paramètres d’exécution ; un forfait supérieur seul pourrait ne pas suffire.",
+      "storage-full": "L’opération a épuisé l’espace disque ou les inodes. Examinez l’utilisation et les artefacts inutilisés en préservant les données de l’application.",
+      "storage-low": "Le système de fichiers Docker manque d’espace libre ou d’inodes. Examinez l’utilisation ou augmentez le stockage.",
+      "process-killed": "Le processus a reçu SIGKILL (code de sortie 137). Cela seul ne prouve pas un manque de mémoire. Consultez les journaux."
+    }
+  },
   "cloudBuildQueue": {
     "label": "File de compilation Cloud",
     "title": "Compilation en attente",

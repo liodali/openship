@@ -154,7 +154,7 @@ export const project = pgTable(
     /** Null uses the shared default: deployment and per-service GitHub Checks. */
     githubChecks: jsonb("github_checks").$type<GitHubDeploymentChecks | null>(),
     /** Opt-in pull request environments. A custom base domain uses the server's wildcard DNS/TLS. */
-    previewSettings: jsonb("preview_settings").$type<{ enabled: boolean; baseDomain?: string; comments: boolean } | null>(),
+    previewSettings: jsonb("preview_settings").$type<{ enabled: boolean; baseDomain?: string; comments: boolean; protectionHostname?: string } | null>(),
     previewScannedAt: timestamp("preview_scanned_at"),
     /** Internal successful build receipts, keyed by project or service id. */
     buildCacheReceipts: jsonb("build_cache_receipts").$type<Record<string, { targets: string[]; deploymentId: string; completedAt: string; durationMs?: number }> | null>(),
@@ -481,6 +481,8 @@ export const project = pgTable(
     webhookSecret: text("webhook_secret"),
     /** Whether pushes to the branch trigger auto-deploy */
     autoDeploy: boolean("auto_deploy").notNull().default(false),
+    /** Only obsolete automatic builds may be cancelled; activation always finishes. */
+    autoDeployCancelBuilds: boolean("auto_deploy_cancel_builds").notNull().default(false),
     /**
      * Collect per-path request counts at the edge ("Top Paths").
      *

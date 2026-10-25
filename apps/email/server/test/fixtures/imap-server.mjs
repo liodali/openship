@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { createServer } from "node:net";
 import { createServer as createTlsServer, createSecureContext, TLSSocket } from "node:tls";
 
-const [mode, reply, dir] = process.argv.slice(2);
+const [mode, reply, dir, commandLogDelayMs = "0"] = process.argv.slice(2);
 const key = readFileSync(join(dir, "key.pem"));
 const cert = readFileSync(join(dir, "cert.pem"));
 const emit = (event) => process.stdout.write(`${JSON.stringify(event)}\n`);
@@ -39,7 +39,11 @@ function attach(socket, secure, greeting = true) {
         continue;
       }
       const [tag, command, , initial] = line.split(" ");
-      emit({ command });
+      // The socket response and stdout telemetry are independent transports.
+      // Allow tests to reproduce a final command receipt arriving after logout.
+      if (command === "LOGOUT" && Number(commandLogDelayMs) > 0)
+        setTimeout(() => emit({ command }), Number(commandLogDelayMs));
+      else emit({ command });
       if (command === "STARTTLS") {
         socket.write(`${tag} OK Start TLS\r\n`);
         socket.removeListener("data", read);

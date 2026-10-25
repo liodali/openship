@@ -14,8 +14,9 @@
  * though `serverId` comes from a caller. Server selection stays org-scoped by
  * the shared server execution boundary.
  *
- * Advisory by contract: the rollback UI displays this measurement; it never
- * changes the configured retention window. Never throws.
+ * UI measurements are advisory and cached. Retention supplies its already-owned
+ * executor for fresh reads of the exact cleanup destination, bypassing the cache.
+ * Measurements never overwrite the configured retention window. Never throws.
  */
 
 import { reportCaughtError as observeCaughtError } from "@repo/core/diagnostics";
@@ -69,14 +70,14 @@ function parseDf(output: string): HostDisk {
 export async function getHostDisk(
   serverId: string | undefined,
   organizationId: string,
-  opts?: { refresh?: boolean },
+  opts?: { refresh?: boolean; executor?: import("@repo/adapters").CommandExecutor },
 ): Promise<HostDisk> {
-  if (env.CLOUD_MODE && !serverId) return { ...UNKNOWN_DISK };
+  if (env.CLOUD_MODE && !serverId && !opts?.executor) return { ...UNKNOWN_DISK };
 
   const key = cacheKey(serverId, organizationId);
-  const store = await cacheStore<HostDisk>(NAMESPACE, { maxSize: 500 });
+  const store = opts?.executor ? null : await cacheStore<HostDisk>(NAMESPACE, { maxSize: 500 });
 
-  if (!opts?.refresh) {
+  if (!opts?.refresh && store) {
     const hit = await store.get(key);
     if (hit) return hit;
   }
@@ -84,12 +85,12 @@ export async function getHostDisk(
   try {
     const read = async (executor: import("@repo/adapters").CommandExecutor) =>
       parseDf(await executor.exec(DISK_COMMAND, { timeout: 10_000 }));
-    const disk = env.CLOUD_MODE
+    const disk = opts?.executor ? await read(opts.executor) : env.CLOUD_MODE
       ? await withServerExecution(organizationId, serverId!, read)
       : await read((await resolveServerExecutor(serverId, organizationId)).executor);
     // Only cache a real answer, so a briefly-unreachable box doesn't pin
     // "unknown" for the whole TTL.
-    if (disk.freeBytes !== null) await store.set(key, disk, TTL_SECONDS).catch((diagnosticFailure) => {
+    if (disk.freeBytes !== null && store) await store.set(key, disk, TTL_SECONDS).catch((diagnosticFailure) => {
       observeCaughtError(diagnosticFailure, "platform/engine/lib/host-disk");
     });
     return disk;

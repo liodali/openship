@@ -285,7 +285,26 @@
       "repoCountOther": "{count} repos",
       "coveredByOrg": "Covered by the org-wide grant above.",
       "noRepos": "No repositories.",
-      "searchRepos": "Search repos…"
+      "searchRepos": "Search repos…",
+      "capabilityAreas": {
+        "domains": "Domains",
+        "deployments": "Deployments"
+      },
+      "capabilityLabels": {
+        "domains:read": "View",
+        "domains:write": "Add & verify",
+        "domains:delete": "Delete",
+        "deployments:read": "View",
+        "deployments:trigger": "Trigger"
+      },
+      "capabilityHints": {
+        "domains:read": "List domains, DNS records and certificate status",
+        "domains:write": "Add, verify and renew domains, run DNS challenges",
+        "domains:delete": "Delete domains",
+        "deployments:read": "Read deployments, logs and build status",
+        "deployments:trigger": "Start, redeploy, restart and pin deployments; handle deployment decisions. Cancel, rollback and deletion require project admin."
+      },
+      "capabilityImplied": "Included in this resource's access level"
     },
     "sourceAccess": {
       "title": "Source access",
@@ -483,6 +502,31 @@
       "dnsHintSelfhosted": "Add the A record pointing to your server IP, then the TXT record for verification.",
       "dnsHintCloud": "Add the CNAME record for routing, then the TXT record for verification.",
       "dnsPropagation": "DNS changes can take up to 48 hours."
+    },
+    "protection": {
+      "unknown": "Protection status could not be checked.",
+      "title": "Password protection",
+      "chooseHostname": "Choose a hostname first",
+      "description": "Visitors enter a shared password once, then stay signed in for 24 hours. Changing the password signs everyone out.",
+      "unsupported": "Available for exact custom hostnames with HTTPS on a self-hosted edge. Cloud, free subdomains and external TLS proxies are not supported yet.",
+      "loading": "Checking protection…",
+      "staged": "Password staged. Protection will be installed before this route is published.",
+      "pending": "Saved, but not confirmed on the edge. Retry or deploy this project; do not share it as private yet.",
+      "protected": "Password protection is active",
+      "public": "This route is public",
+      "password": "Site password",
+      "newPassword": "New site password",
+      "passwordHint": "Use at least 12 characters. Share it only with people who should have access.",
+      "save": "Save password",
+      "loadFailed": "Could not check route protection. Reopen this dialog to retry.",
+      "saveFailed": "Could not apply protection. Check the connection and retry.",
+      "retry": "Retry edge update",
+      "revoke": "Sign everyone out",
+      "remove": "Remove protection",
+      "unlockConfirm": "Anyone with this URL will be able to open the site. Remove the password?",
+      "unlock": "Make public",
+      "cancel": "Cancel",
+      "scope": "This protects this hostname only. Other domains and direct service ports keep their own access settings. Previously cached content must be purged from any external CDN."
     }
   },
   "updates": {

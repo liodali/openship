@@ -22,6 +22,7 @@ import { NetworkSetupConfirmation } from "./NetworkSetupConfirmation";
 import { NetworkStreamNotice } from "./NetworkStreamNotice";
 import { ClusterRuntimePanel } from "./ClusterRuntimePanel";
 import { ClusterStoragePanel } from "./ClusterStoragePanel";
+import { ServerSwarm } from "../ServerSwarm";
 
 export function ClusterDetail({ id }: { id: string }) {
   const { t } = useI18n();
@@ -128,12 +129,14 @@ export function ClusterDetail({ id }: { id: string }) {
             </div>
             {capabilities?.canManage && (
               <div className="flex items-center gap-2">
-                <Button asChild variant="secondary">
-                  <Link href={`/servers/clusters/${encodeURIComponent(id)}/edit`}>
-                    <UiIcon name="sliders" className="size-4" />
-                    {c.editCluster}
-                  </Link>
-                </Button>
+                {cluster.network && (
+                  <Button asChild variant="secondary">
+                    <Link href={`/servers/clusters/${encodeURIComponent(id)}/edit`}>
+                      <UiIcon name="sliders" className="size-4" />
+                      {c.editCluster}
+                    </Link>
+                  </Button>
+                )}
                 <Button
                   variant="ghost"
                   onClick={() => {
@@ -144,84 +147,103 @@ export function ClusterDetail({ id }: { id: string }) {
                   className="hover:bg-danger/10 hover:text-danger"
                 >
                   <UiIcon name="trash" className="size-4" />
-                  {c.removeCluster}
+                  {cluster.scaling?.provider === "swarm" ? "Disconnect cluster" : c.removeCluster}
                 </Button>
               </div>
             )}
           </div>
-          <ClusterRuntimePanel
-            key={cluster.id}
-            cluster={cluster}
-            canManage={!!capabilities?.canManage}
-            onReadyChange={setScalingReady}
-          />
-          <ClusterStoragePanel
-            key={`storage:${cluster.id}`}
-            cluster={cluster}
-            canManage={!!capabilities?.canManage}
-            scalingReady={scalingReady}
-          />
-          <div className="@container/cluster-detail">
-            <div className="grid grid-cols-1 items-start gap-6 @4xl/cluster-detail:grid-cols-[minmax(0,1fr)_320px]">
-              <section
-                className="min-w-0 rounded-2xl bg-card p-5 sm:p-7"
-                aria-labelledby="cluster-members-title"
-              >
-                <h2 id="cluster-members-title" className="text-base font-semibold">
-                  {c.members}
-                </h2>
-                <div className="mt-3 divide-y divide-border/50">
-                  {cluster.network.members
-                    .filter((member) => cluster.serverIds.includes(member.serverId))
-                    .map((member) => (
-                      <Link
-                        key={member.serverId}
-                        href={`/servers/${encodeURIComponent(member.serverId)}`}
-                        className="flex items-center gap-3 py-4 text-sm hover:text-primary"
-                      >
-                        <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-muted/40 text-muted-foreground">
-                          <UiIcon name="server" className="size-4" />
-                        </span>
-                        <span className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-                          <NetworkDiagnosticText value={member.name} />
-                          <span aria-hidden="true" className="h-3 w-px bg-border" />
-                          <span className="font-mono text-xs text-muted-foreground">
-                            <BlurIp>{member.privateIp}</BlurIp>
-                          </span>
-                        </span>
-                        <UiIcon
-                          name="arrow-up-right"
-                          className="size-4 shrink-0 text-muted-foreground rtl:-rotate-90"
-                        />
+          {cluster.network ? (
+            <>
+              <ClusterRuntimePanel
+                key={cluster.id}
+                cluster={cluster}
+                canManage={!!capabilities?.canManage}
+                onReadyChange={setScalingReady}
+              />
+              <ClusterStoragePanel
+                key={`storage:${cluster.id}`}
+                cluster={cluster}
+                canManage={!!capabilities?.canManage}
+                scalingReady={scalingReady}
+              />
+              <div className="@container/cluster-detail">
+                <div className="grid grid-cols-1 items-start gap-6 @4xl/cluster-detail:grid-cols-[minmax(0,1fr)_320px]">
+                  <section
+                    className="min-w-0 rounded-2xl bg-card p-5 sm:p-7"
+                    aria-labelledby="cluster-members-title"
+                  >
+                    <h2 id="cluster-members-title" className="text-base font-semibold">
+                      {c.members}
+                    </h2>
+                    <div className="mt-3 divide-y divide-border/50">
+                      {cluster.network.members
+                        .filter((member) => cluster.serverIds.includes(member.serverId))
+                        .map((member) => (
+                          <Link
+                            key={member.serverId}
+                            href={`/servers/${encodeURIComponent(member.serverId)}`}
+                            className="flex items-center gap-3 py-4 text-sm hover:text-primary"
+                          >
+                            <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-muted/40 text-muted-foreground">
+                              <UiIcon name="server" className="size-4" />
+                            </span>
+                            <span className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+                              <NetworkDiagnosticText value={member.name} />
+                              <span aria-hidden="true" className="h-3 w-px bg-border" />
+                              <span className="font-mono text-xs text-muted-foreground">
+                                <BlurIp>{member.privateIp}</BlurIp>
+                              </span>
+                            </span>
+                            <UiIcon
+                              name="arrow-up-right"
+                              className="size-4 shrink-0 text-muted-foreground rtl:-rotate-90"
+                            />
+                          </Link>
+                        ))}
+                    </div>
+                  </section>
+                  <aside className="space-y-4 rounded-2xl bg-card p-5">
+                    <div className="flex items-center gap-2 text-sm font-semibold">
+                      <UiIcon name="network" className="size-4 text-info" />
+                      {cluster.network.name}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+                      <NetworkStatus cluster={cluster.network} />
+                      <NetworkSource cluster={cluster.network} />
+                    </div>
+                    <p className="break-words font-mono text-xs text-muted-foreground">
+                      <BlurIp>{cluster.network.network.cidrs.join(", ")}</BlurIp>
+                    </p>
+                    <Button asChild variant="secondary" className="w-full">
+                      <Link href={`/servers/networks/${encodeURIComponent(cluster.network.id)}`}>
+                        {c.openNetwork}
+                        <UiIcon name="arrow-up-right" className="size-4 rtl:-rotate-90" />
                       </Link>
-                    ))}
+                    </Button>
+                  </aside>
                 </div>
-              </section>
-              <aside className="space-y-4 rounded-2xl bg-card p-5">
-                <div className="flex items-center gap-2 text-sm font-semibold">
-                  <UiIcon name="network" className="size-4 text-info" />
-                  {cluster.network.name}
-                </div>
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-                  <NetworkStatus cluster={cluster.network} />
-                  <NetworkSource cluster={cluster.network} />
-                </div>
-                <p className="break-words font-mono text-xs text-muted-foreground">
-                  <BlurIp>{cluster.network.network.cidrs.join(", ")}</BlurIp>
-                </p>
-                <Button asChild variant="secondary" className="w-full">
-                  <Link href={`/servers/networks/${encodeURIComponent(cluster.networkId)}`}>
-                    {c.openNetwork}
-                    <UiIcon name="arrow-up-right" className="size-4 rtl:-rotate-90" />
-                  </Link>
-                </Button>
-              </aside>
+              </div>
+            </>
+          ) : (
+            <div className="space-y-5">
+              <p className="text-sm text-muted-foreground">
+                Create or save a project draft, then choose this cluster in Topology → Scale before
+                deploying. Source builds require a registry repository. Persistent services run as
+                one instance on this manager; stateless services can run across the cluster.
+              </p>
+              {cluster.serverIds.map((serverId) => (
+                <ServerSwarm key={serverId} serverId={serverId} connected />
+              ))}
             </div>
-          </div>
+          )}
           {removing && (
             <NetworkSetupConfirmation
               title={c.removeCluster}
-              description={c.removeDescription}
+              description={
+                cluster.scaling?.provider === "swarm"
+                  ? "Disconnecting removes this cluster from Openship. It does not leave Swarm or change its nodes. Remove the Openship projects and retained deployments using it first."
+                  : c.removeDescription
+              }
               confirmLabel={c.removeCluster}
               busy={busy}
               error={error}

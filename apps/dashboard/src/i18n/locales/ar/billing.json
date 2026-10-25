@@ -136,7 +136,8 @@
     "monthly": "شهري",
     "annual": "سنوي",
     "billedAnnually": "تُدفع سنوياً",
-    "comingSoon": "قريبًا"
+    "comingSoon": "قريبًا",
+    "annualTotal": "يتم تحصيل {price} سنوياً، يمكنك إلغاء التجديد في أي وقت"
   },
   "topups": {
     "loadError": "تعذّر تحميل باقات الشحن",
@@ -719,8 +720,10 @@
     "nextPlan": "الخطة الجديدة"
   },
   "purchase": {
+    "manage": "إدارة خادمك",
+    "manageDescription": "اربط خوادمك لإدارة عمليات النشر والنطاقات والمراقبة والنسخ الاحتياطية.",
     "mode": "نموذج الفوترة",
-    "monthly": "خطط شهرية",
+    "monthly": "خطط السحابة",
     "payg": "حسب الاستخدام مسبقًا",
     "title": "استضافة مسبقة الدفع",
     "description": "اختر مستوى الموارد، ثم أضف الرصيد وادفع مقابل استخدام خوادمك.",
@@ -851,6 +854,35 @@
       "processing": "أُرسلت الدفعة · جارٍ تأكيد حالتها",
       "canceling": "جارٍ تأكيد الإلغاء…",
       "unavailable": "حالة الدفع غير متاحة مؤقتًا"
+    }
+  },
+  "managementPlans": {
+    "label": "خطة الدعم",
+    "basic": "الأساسية",
+    "priority": "الأولوية",
+    "email": "الدعم عبر البريد الإلكتروني",
+    "prioritySupport": "دعم ذو أولوية",
+    "description": "انشر تطبيقاتك وحدّثها، وراقب صحتها، واحتفظ بنسخ احتياطية لبياناتك. أدر خوادمك من Openship.",
+    "basicDescription": "للتطبيقات اليومية والمشاريع الشخصية.",
+    "priorityDescription": "لتطبيقات الإنتاج التي تحتاج إلى دعم ذي أولوية.",
+    "serversIncluded": "{count} خوادم متصلة",
+    "serverCount": "الخوادم",
+    "extraServers": "{included} مشمولة · {price}/شهر لكل خادم إضافي",
+    "billingNote": "فوترة شهرية، ويمكنك الإلغاء في أي وقت",
+    "selected": "محددة",
+    "select": "اختر {name}",
+    "monthlyTotal": "الإجمالي الشهري",
+    "includedTitle": "مشمول في الخطتين",
+    "cloudIncluded": "خطة Basic مشمولة مع مساحة Cloud المدفوعة. تضيف Priority مبلغ {price}/شهر.",
+    "cloudBasic": "مشمول مع Cloud",
+    "perMonth": "/شهر",
+    "features": {
+      "updates": "نشر التطبيقات وتحديث صورها",
+      "health": "فحوصات صحة التطبيقات والتنبيهات",
+      "monitoring": "مراقبة المعالج والذاكرة والتخزين",
+      "domains": "النطاقات وHTTPS تلقائي",
+      "backups": "نسخ احتياطية مجدولة واستعادة",
+      "automation": "الوصول عبر API وSDK وCLI"
     }
   }
 }

@@ -12,6 +12,8 @@
  *      64 GB; the old fixed 8192 MB / 4-core cap made that impossible.
  */
 
+import { AppError } from "./errors";
+
 /** Preset limits, a custom limit, or the full available server capacity. */
 export type ResourceTier = "unlimited" | "micro" | "low" | "medium" | "high" | "xlarge" | "custom";
 
@@ -25,6 +27,24 @@ export interface ResourceValues {
   memoryMb: number;
   /** Writable disk in MB. Only cloud workspaces enforce this. */
   diskMb: number;
+}
+
+/** Swap is a service/container option, not a project or VM capacity dimension.
+ * Explicit zero overrides inherited memory and cannot disable swap. */
+export function validateSwapDisabled(
+  resources?: { memoryMb?: number; swapDisabled?: boolean } | null,
+  inherited?: { memoryMb?: number } | null,
+): void {
+  if (
+    resources?.swapDisabled === true &&
+    !hasMemoryLimit({ memoryMb: resources.memoryMb ?? inherited?.memoryMb })
+  ) {
+    throw new AppError(
+      "Disabling swap requires a positive memory limit. Set a memory limit on the service or its project, then try again.",
+      400,
+      "SWAP_DISABLED_REQUIRES_MEMORY_LIMIT",
+    );
+  }
 }
 
 /** No additional container cap — the server is the default ceiling. */

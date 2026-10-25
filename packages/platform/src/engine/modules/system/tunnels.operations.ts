@@ -18,7 +18,7 @@ import {
 import { repos, type ServerTunnel } from "@repo/db";
 import { resolvePlatformConfig } from "../../lib/platform-config";
 import { authorization } from "../../lib/authorization";
-import { requireSelfHostedServer, assertServerExecution } from "./server-access";
+import { requireConnectedServer, assertServerExecution } from "./server-access";
 import { assertNativeLocalForwarding } from "../../native/execution-policy";
 import { audit, operationAuditContext } from "../../lib/audit-emitter";
 import {
@@ -33,7 +33,7 @@ import {
  * before looking up any configured forward.
  */
 async function guardServer(ctx: ExecutionContext, serverId: string) {
-  const server = await requireSelfHostedServer(ctx, serverId);
+  const server = await requireConnectedServer(ctx, serverId);
   if (process.env.OPENSHIP_NATIVE !== "true" && resolvePlatformConfig().target !== "desktop")
     throw new OperationError("Not available in this mode", 404, "CAPABILITY_UNAVAILABLE");
   return { serverId, server };
@@ -171,7 +171,7 @@ async function startTunnelHandler(ctx: ExecutionContext, id: string, input: { tu
         });
         await getOwnedTunnel(id, row.id);
         assertNativeLocalForwarding();
-        await assertServerExecution(await requireSelfHostedServer(context, id));
+        await requireConnectedServer(context, id);
       },
     });
   } catch (err) {

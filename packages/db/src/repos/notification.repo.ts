@@ -188,6 +188,9 @@ export function createNotificationChannelRepo(db: Database) {
 
 export function createNotificationSubscriptionRepo(db: Database) {
   return {
+    async listForCategory(organizationId: string, category: string): Promise<NotificationSubscription[]> {
+      return db.select().from(notificationSubscription).where(and(eq(notificationSubscription.organizationId, organizationId), eq(notificationSubscription.category, category)));
+    },
     /** All subscriptions for a user in one org — drives the Settings UI table. */
     async listForUserInOrg(
       userId: string,
@@ -378,7 +381,7 @@ export function createNotificationDeliveryRepo(db: Database) {
     async listForUser(
       userId: string,
       organizationId: string,
-      opts?: { limit?: number; unseenOnly?: boolean; offset?: number; excludeFailed?: boolean },
+      opts?: { limit?: number; unseenOnly?: boolean; offset?: number; excludeFailed?: boolean; before?: string },
     ): Promise<NotificationDelivery[]> {
       const conditions = [
         eq(notificationDelivery.userId, userId),
@@ -388,6 +391,15 @@ export function createNotificationDeliveryRepo(db: Database) {
         conditions.push(sql`${notificationDelivery.seenAt} IS NULL`);
       }
       if (opts?.excludeFailed) conditions.push(sql`${notificationDelivery.status} != 'failed'`);
+      if (opts?.before) {
+        // Compare in SQL so the cursor retains PostgreSQL's timestamp precision.
+        // A missing or foreign cursor yields no rows, never another user's history.
+        conditions.push(sql`(${notificationDelivery.createdAt}, ${notificationDelivery.id}) < (
+          SELECT cursor.created_at, cursor.id FROM notification_delivery AS cursor
+          WHERE cursor.id = ${opts.before} AND cursor.user_id = ${userId}
+            AND cursor.organization_id = ${organizationId}
+        )`);
+      }
       return db
         .select()
         .from(notificationDelivery)

@@ -154,14 +154,17 @@ describe("server installation outcomes", () => {
 
 
 describe("server administration recovery", () => {
-  it("reattaches to an installation without running it again", async () => {
+  it.each([
+    { args: ["setup-existing"], query: { id: "setup-existing" } },
+    { args: ["--server", "srv1"], query: { serverId: "srv1" } },
+  ])("reattaches to an installation without running it again: $args", async ({ args, query }) => {
     setJsonMode(true);
     fetchStub = stubFetch(() => ({ text: 'event: complete\ndata: {"status":"completed"}\n\n', headers: { "content-type": "text/event-stream" } }));
-    const result = await runCommand(serverCommand, ["install-events", "setup-existing"]);
+    const result = await runCommand(serverCommand, ["install-events", ...args]);
     expect(result.code, result.err).toBe(0);
     expect(fetchStub.calls).toHaveLength(1);
     expect(fetchStub.calls[0]).toMatchObject({ method: "GET" });
-    expect(fetchStub.calls[0].url).toContain("id=setup-existing");
+    expect(Object.fromEntries(new URL(fetchStub.calls[0].url).searchParams)).toEqual(query);
   });
 
   it("defers component support to the controller, and preserves a failed removal outcome", async () => {

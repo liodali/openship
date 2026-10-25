@@ -27,6 +27,7 @@ export const oblienCapacityTariffSchema = z.object({
   }),
 });
 export const oblienCapacityCatalogSchema = z.object({
+  resellerSubscriptionIntervals: z.array(z.enum(["monthly", "yearly"])).optional(),
   success: z.literal(true), currency: z.literal("usd"), tariffId: z.string().min(1),
   billingModes: z.array(computeBillingModeSchema), tariff: oblienCapacityTariffSchema,
   paymentSources: z.object({ payg: z.array(z.enum(["wallet", "stripe"])), monthly: z.array(z.enum(["wallet", "stripe"])) }),

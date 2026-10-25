@@ -1,17 +1,22 @@
 # Cloud plan enforcement
 
-These limits apply to new Cloud offers (offer version 11). Existing purchased
+These limits apply to new Cloud offers (offer version 13). Existing purchased
 offers retain their saved limits. Self-hosted installations do not use these
 Cloud quota gates.
 
 | Plan    | Monthly price | CPU    | RAM   | Disk   | Projects/apps | Running services | Build admission ceiling |
 | ------- | ------------- | ------ | ----- | ------ | ------------- | ---------------- | ----------------------- |
-| Hobby   | $5            | 1 vCPU | 2 GB  | 40 GB  | 3             | 4                | 1                       |
-| Starter | $20           | 2 vCPU | 8 GB  | 128 GB | 10            | 15               | 4                       |
-| Pro     | $39           | 4 vCPU | 16 GB | 250 GB | 25            | 40               | 8                       |
-| Scale   | $99           | 8 vCPU | 32 GB | 600 GB | 100           | 100              | 20                      |
+| Hobby   | $12           | 1 vCPU | 4 GB  | 50 GB  | 3             | 4                | 1                       |
+| Starter | $24           | 2 vCPU | 8 GB  | 128 GB | 10            | 15               | 4                       |
+| Pro     | $47           | 4 vCPU | 16 GB | 250 GB | 25            | 40               | 8                       |
+| Scale   | $119          | 8 vCPU | 32 GB | 600 GB | 50            | 100              | 20                      |
 
-Starter is the featured plan. Projects/apps share one project allowance; services
+Annual charges are $120, $240, $468 and $1,188 respectively, paid upfront.
+Their displayed monthly equivalents are $10, $20, $39 and $99. Both intervals
+use the same capacity and application limits. Catalog changes do not rewrite
+existing paid subscription terms or their renewal prices.
+
+Hobby includes email support. Starter is the featured plan. Projects/apps share one project allowance; services
 share the subscribed server's capacity. Container resource ceilings do not
 reserve that amount of memory for every service.
 

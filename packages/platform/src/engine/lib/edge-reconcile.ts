@@ -10,7 +10,7 @@ import {
 import { safeErrorMessage } from "@repo/core";
 
 import { deliverManagedImage } from "./deliver-managed-image";
-import { pinnedEdgeImage } from "./edge-image";
+import { edgeBuildSpec, pinnedEdgeImage } from "./edge-image";
 
 /**
  * Converge a server's edge onto the container image.
@@ -124,6 +124,10 @@ export async function reconcileServerEdge(
 /** The subset of SystemManager this needs — keeps the helper testable and avoids
  *  dragging the platform type through. */
 interface RoutingFeatureManager {
+  ensureComponents(
+    names: string[],
+    onLog?: (log: SystemLog) => void,
+  ): Promise<void>;
   ensureFeature(
     feature: "routing",
     onLog?: (log: SystemLog) => void,
@@ -132,8 +136,8 @@ interface RoutingFeatureManager {
 }
 
 /**
- * "Make this server able to serve routes" — components THEN edge convergence, in
- * that order, as one step.
+ * "Make this server able to serve routes" — prepare a source image when needed,
+ * install routing components, then converge the edge, as one step.
  *
  * Both halves are required and neither implies the other: `ensureFeature` installs
  * what's missing (and no-ops when nothing is), `reconcileServerEdge` moves an
@@ -143,8 +147,8 @@ interface RoutingFeatureManager {
  * failure mode of forgetting is invisible: the box keeps serving on its old edge, so
  * nothing looks broken until the Lua and the API disagree.
  *
- * Order matters: components first, because the edge convergence needs Docker on the
- * box, and Docker is one of the components `ensureFeature` installs.
+ * Order matters: a source image needs Docker before it can build, and the routing
+ * installer needs that image before it can start a fresh edge.
  */
 export async function ensureRoutingReady(
   executor: CommandExecutor,
@@ -154,6 +158,18 @@ export async function ensureRoutingReady(
     promptUser?: PromptUserFn;
   },
 ): Promise<{ edgeDown: boolean }> {
+  // A fresh source-based installation uses an unpublished content tag. Prepare
+  // Docker and deliver that image before the routing feature installer tries to
+  // start it. Reconciliation below still handles drift on an existing edge.
+  if (edgeBuildSpec()) {
+    await system.ensureComponents(["docker"], opts.onLog);
+    await deliverManagedImage({
+      kind: "edge",
+      image: pinnedEdgeImage(),
+      targetExecutor: executor,
+      onLog: opts.onLog,
+    });
+  }
   await system.ensureFeature("routing", opts.onLog, { promptUser: opts.promptUser });
   const { edgeDown, error } = await reconcileServerEdge(executor, opts);
   // The one outcome a caller must be able to act on: an image swap failed AND its

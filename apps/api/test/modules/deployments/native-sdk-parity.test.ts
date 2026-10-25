@@ -93,6 +93,7 @@ const h = vi.hoisted(() => ({
 
 vi.mock("@repo/db", () => ({
   withAdvisoryLock: async (_key: string, fn: () => Promise<unknown>) => fn(),
+  tryAcquireAdvisoryLock: async () => ({ release: async () => {} }),
   schema: {},
   getDriver: () => "postgres",
   repos: {
@@ -109,6 +110,7 @@ vi.mock("@repo/db", () => ({
     },
     member: { find: async (org: string, user: string) => h.members.get(`${org}:${user}`) },
     project: { findById: async (id: string) => h.projects.get(id),
+      findByIdInOrganization: async (id: string, org: string) => h.projects.get(id)?.organizationId === org ? h.projects.get(id) : undefined,
       findDraftByAppTemplate: h.appDraft,
       listEnvVars: async (id: string, environment: string, service?: string) => service
         ? h.appEnv.get(`${id}:${environment}:${service}`) ?? []
@@ -539,6 +541,32 @@ describe("deployment preparation HTTP/native parity", () => {
     }
     expect(h.localInfo).not.toHaveBeenCalled();
     expect(h.audit).not.toHaveBeenCalled();
+  });
+
+  it("checks a selected native folder against sourceRoots before scanning through either entry point", async () => {
+    vi.stubEnv("OPENSHIP_NATIVE", "true");
+    const directory = await mkdtemp(join(tmpdir(), "prepare-selected-root-"));
+    try {
+      const root = join(await realpath(directory), "source");
+      await mkdir(join(root, "app"), { recursive: true });
+      await symlink(directory, join(root, "outside"));
+      const local = await native();
+      configureNativeSourceRoots([root]);
+      for (const deployments of [local.deployments, remote().deployments]) {
+        h.localInfo.mockClear();
+        await expect(
+          deployments.prepare({ source: "local", path: root, rootDirectory: "outside" }),
+        ).rejects.toMatchObject({ code: "SOURCE_PATH_NOT_ALLOWED", statusCode: 403 });
+        expect(h.localInfo).not.toHaveBeenCalled();
+        await deployments.prepare({ source: "local", path: root, rootDirectory: "app" });
+        expect(h.localInfo).toHaveBeenCalledWith(
+          expect.objectContaining({ path: root, rootDirectory: "app" }),
+        );
+      }
+    } finally {
+      configureNativeSourceRoots([]);
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it("returns editable source values in one authorized HTTP or native preparation", async () => {
@@ -1757,7 +1785,7 @@ describe("domain and DNS HTTP/native parity", () => {
       expect(await contextFor("domain-b", "provision")).toBeNull();
     }
   });
-  it("keeps certificate contents out of audit and preserves the cloud upload refusal", async () => {
+  it("keeps certificate contents out of audit and refuses uploads to provider-managed Cloud domains", async () => {
     h.domainUpload.mockResolvedValue({ domain: "app.example.com", sslStatus: "active", issuer: "manual" });
     const local = await native();
     const input = { certPem: "private-certificate-content", keyPem: "private-key-content" };
@@ -1766,6 +1794,7 @@ describe("domain and DNS HTTP/native parity", () => {
     expect(JSON.stringify(h.audit.mock.calls)).not.toContain("private-key-content");
     expect(JSON.stringify(h.audit.mock.calls)).not.toContain("private-certificate-content");
     h.env.CLOUD_MODE = true;
+    h.projects.set("project-a", { organizationId: "org-a", serverId: "cloud-server", workspaceId: "cloud-space" });
     await expect(local.domains.uploadCert("domain-a", input)).rejects.toMatchObject({ statusCode: 404 });
     await expect(remote().domains.uploadCert("domain-a", input)).rejects.toMatchObject({ status: 404 });
     expect(h.domainUpload).toHaveBeenCalledTimes(2);
@@ -2015,7 +2044,7 @@ describe("server installation HTTP/native parity", () => {
     expect(setupPromptState(session.id)).toEqual({ pending: false, subscribers: 0 });
   });
 
-  it("keeps session replay and response private, including busy-install errors", async () => {
+  it("keeps session replay and response private without blocking an independent server", async () => {
     restrictToServer();
     const session = createSetupSession([{ name: "edge", label: "Edge" }], "server-b");
     setupSessions.add(session.id);
@@ -2024,11 +2053,15 @@ describe("server installation HTTP/native parity", () => {
       await expect(servers.getInstallSession({ sessionId: session.id })).rejects.toMatchObject({ code: "NOT_FOUND" });
       await expect(servers.respondToInstall({ sessionId: session.id, action: "override" })).rejects.toMatchObject({ code: "NOT_FOUND" });
       await expect(servers.installEvents({ sessionId: session.id })[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: "NOT_FOUND" });
-      const failure = await servers.installComponents("server-a", { components: ["edge"] })[Symbol.asyncIterator]().next().catch(error => error);
-      expect(failure).toMatchObject({ statusCode: 409, code: "install_in_progress" });
-      expect(JSON.stringify(failure.details)).not.toContain(session.id);
+      await expect(servers.getInstallSession()).rejects.toMatchObject({ code: "NOT_FOUND" });
+      expect(await servers.getInstallSession({ serverId: "server-a" })).toEqual({ active: false });
+      const events = [];
+      for await (const event of servers.installComponents("server-a", { components: ["edge"] })) events.push(event);
+      expect(events.at(-1)?.event).toBe("end");
+      expect(JSON.stringify(events)).not.toContain(session.id);
+      await drainServerInstallations();
     }
-    expect(h.installEdge).not.toHaveBeenCalled();
+    expect(h.installEdge).toHaveBeenCalledTimes(2);
   });
 
   it("revalidates server grants before starting the next installation component", async () => {

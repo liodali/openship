@@ -1,3 +1,4 @@
+import { managementBillingRoutes } from "./management-billing.routes";
 import { Hono } from "hono";
 import { BillingOperationSchemas, CreateSubscriptionBody, CreateTopupBody } from "@repo/contracts";
 import { authMiddleware } from "../../middleware";
@@ -39,7 +40,7 @@ plansR.public(
  * regardless of mount order. The secureRouter permission middleware
  * runs AFTER authMiddleware on every route, layered automatically.
  */
-export const billingSaasRoutes = new Hono().route("/", billingPlanChangeRoutes).route("/", billingCheckoutRoutes).route("/", actionsBillingRoutes);
+export const billingSaasRoutes = new Hono().route("/", managementBillingRoutes).route("/", billingPlanChangeRoutes).route("/", billingCheckoutRoutes).route("/", actionsBillingRoutes);
 const r = secureRouter(billingSaasRoutes, {
   module: "billing",
   basePath: "/api/billing",
@@ -84,7 +85,7 @@ r.get("/resources", { query: BillingOperationSchemas.getResources.input, tag: "b
 r.get("/allowances", { query: BillingOperationSchemas.listAllowanceDetail.input, tag: "billing:read", authorizationHandledByOperation: true, mcp: { description: "List resources consuming workspace allowances, including the projects holding managed domains." } }, billingController.listAllowanceDetail);
 
 /* ---------- Subscription ---------- */
-r.get("/subscription/quote", { query: BillingOperationSchemas.quoteCustomPlan.input, tag: "billing:read", authorizationHandledByOperation: true, mcp: { description: "Quote a Custom Cloud server's monthly retail price for its CPU, memory in MiB, and disk in GiB. Monthly compute and storage are covered for the paid period, without a compute-credit allowance. This read does not create a server or start a purchase. Complete checkout in Billing." } }, billingController.quoteCustomPlan);
+r.get("/subscription/quote", { query: BillingOperationSchemas.quoteCustomPlan.input, tag: "billing:read", authorizationHandledByOperation: true, mcp: { description: "Quote a Custom Cloud server's retail price for the selected monthly or annual interval for its CPU, memory in MiB, and disk in GiB. Compute and storage are covered for the paid period, without a compute-credit allowance. This read does not create a server or start a purchase. Complete checkout in Billing." } }, billingController.quoteCustomPlan);
 // GET returns the per-org subscription slice (tier + status + period).
 // POST requests an Oblien hosted checkout; provider entitlements confirm access.
 r.get("/subscription", { query: BillingOperationSchemas.getSubscription.input, tag: "billing:read", authorizationHandledByOperation: true, mcp: { description: "Read the selected Cloud server's saved subscription, billing mode, paid period and pending plan change." } }, billingController.getSubscription);

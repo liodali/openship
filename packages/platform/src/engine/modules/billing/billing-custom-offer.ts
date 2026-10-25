@@ -4,25 +4,27 @@ import type { BillingCustomQuote } from "@repo/contracts";
 import type { OblienOffer } from "../../lib/oblien-billing-api";
 import { monthlyCapacity } from "./billing-capacity";
 
-export const CUSTOM_OFFER_VERSION = "custom-v2";
-export const isCustomOfferVersion = (version?: string) => version === CUSTOM_OFFER_VERSION || version === "custom-v1";
+export const CUSTOM_OFFER_VERSION = "custom-v3";
+export const isCustomOfferVersion = (version?: string) => version === CUSTOM_OFFER_VERSION || version === "custom-v2" || version === "custom-v1";
 
 /** Binds the complete retail terms, including limits, to checkout retries.
  * Key order is canonical because the provider may reorder its saved snapshot. */
-function customOfferReference(tier: PlanTierId, limits: PlanLimits, offer: OblienOffer): string {
+function customOfferReference(tier: PlanTierId, limits: PlanLimits, offer: OblienOffer, interval: "monthly" | "annual" = "monthly", legacy = false): string {
   const { reference: _reference, ...terms } = offer;
-  const snapshot = JSON.stringify({ tier, limits, offer: terms }, (_key, value: unknown) =>
+  const snapshot = JSON.stringify({ tier, limits, offer: terms, ...(legacy ? {} : { interval }) }, (_key, value: unknown) =>
     value && typeof value === "object" && !Array.isArray(value)
       ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0))
       : value);
-  return `openship:custom:${offer.billingMode === "monthly" ? "v2" : "v1"}:${createHash("sha256").update(snapshot).digest("hex")}`;
+  const legacyVersion = offer.billingMode === "monthly" ? "v2" : "v1";
+  const version = legacy ? legacyVersion : "v3";
+  return `openship:custom:${version}:${createHash("sha256").update(snapshot).digest("hex")}`;
 }
 
-export function customSubscriptionOffer(resources: CustomServerResources) {
-  const terms = quoteCustomResources(resources);
+export function customSubscriptionOffer(resources: CustomServerResources, interval: "monthly" | "annual" = "monthly") {
+  const terms = quoteCustomResources(resources, undefined, interval);
   const offer: OblienOffer = {
     name: "Openship Custom",
-    description: `${resources.cpuCores} vCPU · ${resources.memoryMb / 1024} GB RAM · ${resources.diskGb} GB disk. CPU, RAM and storage are covered for the paid month.`,
+    description: `${resources.cpuCores} vCPU · ${resources.memoryMb / 1024} GB RAM · ${resources.diskGb} GB disk. CPU, RAM and storage are covered for the paid ${interval === "annual" ? "year" : "month"}.`,
     unitAmount: terms.priceCents,
     currency: "usd",
     billingMode: "monthly",
@@ -30,8 +32,9 @@ export function customSubscriptionOffer(resources: CustomServerResources) {
     capacity: monthlyCapacity(terms.resourceLimits),
     resourceLimits: terms.resourceLimits,
   };
-  offer.reference = customOfferReference(terms.basePlanTierId, terms.limits, offer);
+  offer.reference = customOfferReference(terms.basePlanTierId, terms.limits, offer, interval);
   const quote: BillingCustomQuote = {
+    interval,
     basePlanTierId: terms.basePlanTierId,
     resources: terms.resources,
     reference: offer.reference,
@@ -45,11 +48,12 @@ export function customSubscriptionOffer(resources: CustomServerResources) {
 }
 
 /** Renewals verify the saved contract without consulting today's retail rates. */
-export function validCustomOffer(tier: PlanTierId, limits: PlanLimits, offer: OblienOffer): boolean {
+export function validCustomOffer(tier: PlanTierId, limits: PlanLimits, offer: OblienOffer, interval: "monthly" | "annual" = "monthly"): boolean {
   const resources = offer.resourceLimits;
   const service = limits.maxServiceResources;
   const monthly = offer.billingMode === "monthly";
-  return Boolean(resources && service && (monthly ? !offer.policy && offer.credits === 0 : offer.policy) &&
+  const legacy = !offer.reference?.startsWith("openship:custom:v3:");
+  return Boolean((!legacy || interval === "monthly") && resources && service && (monthly ? !offer.policy && offer.credits === 0 : offer.policy) &&
     offer.credits <= offer.unitAmount &&
     resources.max_workspaces === 1 &&
     Object.values(resources).every(value => Number.isSafeInteger(value) && value! > 0) &&
@@ -57,5 +61,5 @@ export function validCustomOffer(tier: PlanTierId, limits: PlanLimits, offer: Ob
     resources.max_ram_mb === resources.max_total_ram_mb &&
     resources.max_disk_gb === resources.max_total_disk_gb &&
     service.cpuCores === resources.max_vcpus && service.memoryMb === resources.max_ram_mb &&
-    offer.reference === customOfferReference(tier, limits, offer));
+    offer.reference === customOfferReference(tier, limits, offer, interval, legacy));
 }

@@ -3,8 +3,8 @@
 import { Icon as UiIcon } from "@repo/ui/icons";
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { ENV_MASK, looksLikeSecretKey } from "@repo/core";
-import type { MergeServiceEnvVarsInput, ServiceEnvironment } from "@repo/contracts";
+import { looksLikeSecretKey } from "@repo/core";
+import type { ServiceEnvironment } from "@repo/contracts";
 import EnvironmentVariables, {
   type EnvironmentVariableRow,
 } from "@/components/import-project/EnvironmentVariables";
@@ -14,6 +14,11 @@ import { useI18n } from "@/components/i18n-provider";
 import { useToast } from "@/context/ToastContext";
 import { getApiErrorMessage } from "@/lib/api/client";
 import { servicesApi, type Service } from "@/lib/api/services";
+import {
+  comparableServiceEnvironment as comparable,
+  serviceEnvironmentRows,
+  serviceEnvironmentChanges,
+} from "@/lib/service-environment-editor";
 
 type Props = {
   projectId: string;
@@ -21,19 +26,10 @@ type Props = {
   applying: boolean;
   operationBusy: boolean;
   onApply: () => Promise<void>;
+  onDeploy?: () => void;
+  deployLabel?: string;
   onDirtyChange: (dirty: boolean) => void;
 };
-
-const comparable = (rows: EnvironmentVariableRow[]) =>
-  rows
-    .filter((row) => row.key.trim())
-    .map((row) => ({
-      key: row.key.trim(),
-      value: row.preserveValue ? ENV_MASK : row.value,
-      isSecret: row.isSecret ?? looksLikeSecretKey(row.key),
-      sourceId: row.sourceId ?? null,
-    }))
-    .sort((a, b) => a.key.localeCompare(b.key));
 
 /** The editor displays effective values but writes ONLY deliberately changed overrides. */
 export function ServiceEnvironmentPanel({
@@ -42,6 +38,8 @@ export function ServiceEnvironmentPanel({
   applying,
   operationBusy,
   onApply,
+  onDeploy,
+  deployLabel,
   onDirtyChange,
 }: Props) {
   const { t } = useI18n();
@@ -65,18 +63,7 @@ export function ServiceEnvironmentPanel({
   const mutation = useRef(false);
 
   const projectRows = useCallback(
-    (value: ServiceEnvironment): EnvironmentVariableRow[] =>
-      value.variables.map((row) => ({
-        key: row.key,
-        value: row.value,
-        isSecret: row.isSecret,
-        visible: !row.isSecret,
-        sourceId: row.sourceId,
-        originLabel: labels.sources[row.source],
-        keyReadOnly: row.source !== "service",
-        removalDisabled: row.source !== "service",
-        removalLabel: row.source === "service" ? labels.removeOverride : labels.removeAtSource,
-      })),
+    (value: ServiceEnvironment): EnvironmentVariableRow[] => serviceEnvironmentRows(value, labels),
     [labels],
   );
 
@@ -153,19 +140,7 @@ export function ServiceEnvironmentPanel({
     generation.current++;
     setChecking(false);
     try {
-      const before = comparable(baseline);
-      const after = comparable(rows);
-      const deletes = before
-        .filter((row) => row.sourceId && !after.some((next) => next.sourceId === row.sourceId))
-        .map((row) => ({ key: row.key, sourceId: row.sourceId! }));
-      const upserts: MergeServiceEnvVarsInput["upserts"] = after.filter((row) => {
-        const old = row.sourceId
-          ? before.find((item) => item.sourceId === row.sourceId)
-          : before.find((item) => item.key === row.key);
-        return (
-          !old || old.key !== row.key || old.value !== row.value || old.isSecret !== row.isSecret
-        );
-      });
+      const { upserts, deletes } = serviceEnvironmentChanges(baseline, rows);
       const result = await servicesApi.mergeEnv(projectId, service.id, {
         environment: state.environment,
         upserts,
@@ -248,6 +223,9 @@ export function ServiceEnvironmentPanel({
     (key) => !deletedKeys.current.has(key),
   );
   const needsRecoveryReview = unreviewedRuntimeKeys.length > 0 && !allowRuntimeRemoval;
+  const changedKeys = (state?.changedKeys ?? []).filter(
+    (key) => !state?.recoverableKeys.includes(key),
+  );
 
   return (
     <div className="bg-card rounded-2xl border border-border/50">
@@ -281,6 +259,17 @@ export function ServiceEnvironmentPanel({
             {saving ? <UiIcon name="spinner" className="animate-spin" /> : <UiIcon name="save" />}
             {t.projectSettings.settingSection.save}
           </Button>
+          {state?.status === "not-deployed" && onDeploy && (
+            <Button
+              size="sm"
+              disabled={dirty || busy || loading || checking || !service.enabled}
+              title={dirty ? copy.environmentApply.saveFirst : undefined}
+              onClick={onDeploy}
+            >
+              <UiIcon name="rocket" />
+              {deployLabel ?? copy.redeploy}
+            </Button>
+          )}
           {(state?.status === "pending" || applying || dirty) && (
             <Button
               size="sm"
@@ -333,33 +322,55 @@ export function ServiceEnvironmentPanel({
                   {labels.check}
                 </Button>
               </div>
-              {!checking && state.status === "pending" && <p>{state.changedKeys.join(", ")}</p>}
-              {!checking && state.recoverableKeys.length > 0 && (
-                <div className="space-y-2">
-                  <p>
-                    {labels.recoveryHint} {state.recoverableKeys.join(", ")}
-                  </p>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={busy}
-                    onClick={() => void recover()}
-                  >
-                    {recovering ? <UiIcon name="spinner" className="animate-spin" /> : null}
-                    {labels.recover}
-                  </Button>
-                  {unreviewedRuntimeKeys.length > 0 && (
-                    <label className="flex items-start gap-2">
-                      <input
-                        type="checkbox"
-                        checked={allowRuntimeRemoval}
-                        disabled={busy || dirty}
-                        onChange={(event) => setAllowRuntimeRemoval(event.target.checked)}
-                      />
-                      <span>{labels.removeRuntime}</span>
-                    </label>
-                  )}
+              {!checking && state.status === "pending" && changedKeys.length > 0 && (
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span>{labels.changedLabel}:</span>
+                  {changedKeys.map((key) => (
+                    <code
+                      key={key}
+                      className="rounded-md bg-muted/50 px-1.5 py-0.5 text-foreground"
+                    >
+                      {key}
+                    </code>
+                  ))}
                 </div>
+              )}
+              {!checking && state.recoverableKeys.length > 0 && (
+                <details className="rounded-xl bg-muted/30 px-3 py-2.5">
+                  <summary className="cursor-pointer text-foreground">
+                    {labels.recoveryTitle} · {state.recoverableKeys.length}
+                  </summary>
+                  <div className="mt-2 space-y-2">
+                    <p>{labels.recoveryHint}</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {state.recoverableKeys.map((key) => (
+                        <code key={key} className="rounded-md bg-muted/50 px-1.5 py-0.5">
+                          {key}
+                        </code>
+                      ))}
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={busy}
+                      onClick={() => void recover()}
+                    >
+                      {recovering ? <UiIcon name="spinner" className="animate-spin" /> : null}
+                      {labels.recover}
+                    </Button>
+                    {unreviewedRuntimeKeys.length > 0 && (
+                      <label className="flex items-start gap-2">
+                        <input
+                          type="checkbox"
+                          checked={allowRuntimeRemoval}
+                          disabled={busy || dirty}
+                          onChange={(event) => setAllowRuntimeRemoval(event.target.checked)}
+                        />
+                        <span>{labels.removeRuntime}</span>
+                      </label>
+                    )}
+                  </div>
+                </details>
               )}
             </>
           )

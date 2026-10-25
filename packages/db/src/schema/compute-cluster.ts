@@ -24,9 +24,7 @@ export const computeCluster = pgTable(
     name: text("name").notNull(),
     location: text("location"),
     revision: integer("revision").notNull().default(1),
-    networkId: text("network_id")
-      .notNull()
-      .references(() => privateNetwork.id, { onDelete: "no action" }),
+    networkId: text("network_id").references(() => privateNetwork.id, { onDelete: "no action" }),
     requestId: text("request_id").notNull(),
     inputHash: text("input_hash").notNull(),
     createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -49,7 +47,7 @@ export const computeClusterMember = pgTable(
     clusterId: text("cluster_id")
       .notNull()
       .references(() => computeCluster.id, { onDelete: "cascade" }),
-    networkId: text("network_id").notNull(),
+    networkId: text("network_id"),
     serverId: text("server_id")
       .notNull()
       .references(() => servers.id, { onDelete: "no action" }),

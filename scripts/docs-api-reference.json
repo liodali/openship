@@ -57,7 +57,7 @@
     "deployments.redeploy": {
       "page": "deployments",
       "section": "Submit",
-      "description": "Submit a new deployment based on an existing release.",
+      "description": "Rebuild an existing release, or retry a failed attempt with its retained completed Docker images using reuseBuild.",
       "route": "POST /api/deployments/:id/redeploy"
     },
     "deployments.pin": {
@@ -521,6 +521,18 @@
       "section": "Lifecycle",
       "description": "Inspect resources that project deletion would affect.",
       "route": "GET /api/projects/:id/deletion-preview"
+    },
+    "projects.listRouteProtection": {
+      "page": "projects",
+      "section": "Routing and monitoring",
+      "description": "Read hostname password-protection status without exposing credentials.",
+      "route": "GET /api/projects/:id/route-protection"
+    },
+    "projects.changeRouteProtection": {
+      "page": "projects",
+      "section": "Routing and monitoring",
+      "description": "Protect or unlock a self-hosted HTTPS hostname, revoke sessions, or retry a pending edge update.",
+      "route": "PUT /api/projects/:id/route-protection"
     },
     "projects.listRouteRules": {
       "page": "projects",
@@ -1289,6 +1301,18 @@
       "section": "Server lifecycle",
       "description": "Read the private networks and compute cluster associated with a server.",
       "route": "GET /api/system/servers/:id/infrastructure"
+    },
+    "servers.connectSwarm": {
+      "page": "servers",
+      "section": "Docker Swarm",
+      "description": "Connect a verified existing Swarm manager for new project deployments. Requires fleet administration. Reuse requestId after a lost response; does not alter existing stacks or nodes.",
+      "route": "POST /api/system/servers/:id/swarm/connect"
+    },
+    "servers.inspectSwarm": {
+      "page": "servers",
+      "section": "Docker Swarm inspection",
+      "description": "Inspect membership on a connected self-hosted Docker server. Set details=true for a manager's stacks, services and nodes. Requires server administration; does not adopt or change workloads.",
+      "route": "GET /api/system/servers/:id/swarm"
     },
     "servers.clusterCapabilities": {
       "page": "servers",
@@ -2393,6 +2417,48 @@
       "section": "Operations",
       "description": "Apply an available update to the specified project ID.",
       "route": "POST /api/updates/:projectId/apply"
+    },
+    "updates.updateRuntime": {
+      "page": "updates",
+      "section": "Operations",
+      "description": "Refresh configured runtime images and rebuild selected services at the deployed source version.",
+      "route": "POST /api/updates/:projectId/runtime"
+    },
+    "updates.checkRuntime": {
+      "page": "updates",
+      "section": "Operations",
+      "description": "Compare deployed image and recorded base-image digests with the registry.",
+      "route": "POST /api/updates/:projectId/runtime/check"
+    },
+    "updates.advisories": {
+      "page": "updates",
+      "section": "Operations",
+      "description": "Read the shared release/security feeds and authorized workspace findings from current cached observations.",
+      "route": "GET /api/updates/advisories"
+    },
+    "updates.checkSecurity": {
+      "page": "updates",
+      "section": "Operations",
+      "description": "Refresh isolated runtime observations and match current verified advisories.",
+      "route": "POST /api/updates/:projectId/security/check"
+    },
+    "updates.security": {
+      "page": "updates",
+      "section": "Operations",
+      "description": "Match public security advisories against scoped deployment evidence.",
+      "route": "GET /api/updates/:projectId/security"
+    },
+    "updates.securityPolicy": {
+      "page": "updates",
+      "section": "Operations",
+      "description": "Opt in or out of automatic verified image patches; disabled by default.",
+      "route": "PUT /api/updates/:projectId/security/policy"
+    },
+    "updates.applySecurity": {
+      "page": "updates",
+      "section": "Operations",
+      "description": "Refresh an affected runtime after checking the advisory and active deployment.",
+      "route": "POST /api/updates/:projectId/security/apply"
     },
     "audit.list": {
       "page": "audit",
@@ -3709,6 +3775,60 @@
       "section": "Operations",
       "description": "Atomically move literal command variables into the selected environment without overwriting conflicting values.",
       "route": "POST /api/projects/:id/env/migrate-commands"
+    },
+    "billing.getManagement": {
+      "page": "billing",
+      "section": "Hosted management",
+      "description": "Read hosted management pricing, paid access and the connected-server allowance.",
+      "route": "GET /api/billing/manage"
+    },
+    "billing.purchaseManagement": {
+      "page": "billing",
+      "section": "Hosted management",
+      "description": "Create or recover a Manage checkout, or quote an allowance change, using an idempotency key.",
+      "route": "POST /api/billing/manage/checkout"
+    },
+    "billing.confirmManagementChange": {
+      "page": "billing",
+      "section": "Hosted management",
+      "description": "Confirm the reviewed allowance quote; paid upgrades activate only after settlement.",
+      "route": "POST /api/billing/manage/change"
+    },
+    "billing.resumeManagementCheckout": {
+      "page": "billing",
+      "section": "Hosted management",
+      "description": "Resume the saved Manage checkout without creating another payment.",
+      "route": "POST /api/billing/manage/checkout/resume"
+    },
+    "billing.cancelManagementChange": {
+      "page": "billing",
+      "section": "Hosted management",
+      "description": "Cancel a pending allowance change without ending the current paid period.",
+      "route": "POST /api/billing/manage/change/cancel"
+    },
+    "billing.cancelManagementCheckout": {
+      "page": "billing",
+      "section": "Hosted management",
+      "description": "Cancel the saved unpaid Manage checkout.",
+      "route": "POST /api/billing/manage/checkout/cancel"
+    },
+    "billing.cancelManagementSubscription": {
+      "page": "billing",
+      "section": "Hosted management",
+      "description": "Stop Manage renewal; customer workloads and data remain on their infrastructure.",
+      "route": "POST /api/billing/manage/cancel"
+    },
+    "billing.resumeManagementSubscription": {
+      "page": "billing",
+      "section": "Hosted management",
+      "description": "Resume renewal at the verified saved price while its coverage terms still apply.",
+      "route": "POST /api/billing/manage/resume"
+    },
+    "billing.createManagementPortal": {
+      "page": "billing",
+      "section": "Hosted management",
+      "description": "Open payment details and invoices for the Manage subscription.",
+      "route": "POST /api/billing/manage/portal"
     }
   },
   "http": {

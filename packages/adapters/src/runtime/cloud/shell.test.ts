@@ -43,6 +43,16 @@ beforeEach(() => {
 });
 
 describe("managed terminal recovery", () => {
+  it("refreshes runtime credentials for teardown after the terminal's original token expires", async () => {
+    const freshRuntime = { terminal, exec } as unknown as Runtime;
+    const refresh = vi.fn(async () => freshRuntime);
+    const shell = await withManagedCommandTracking(hooks,
+      () => openCloudShell({ terminal, ws: () => socket } as unknown as Runtime, {}, "owned-vm", refresh));
+    await shell.close();
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(terminal.close).toHaveBeenCalledWith("pty-1");
+    expect(pending.size).toBe(0);
+  });
   it("records intent before opening and clears it only after verified shutdown", async () => {
     const shell = await open();
     const [ref] = [...pending.values()];

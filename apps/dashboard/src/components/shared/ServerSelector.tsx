@@ -104,7 +104,7 @@ export function useServerSelection({
   const loading = destinationsLoading || loadingPreference || linking;
   const [internalId, setInternalId] = useState<string | null>(null);
   const autoSelected = useRef(false);
-  const canAddServer = restrictedSource || selfHosted || requiredCapability !== "ssh";
+  const canAddServer = true;
   const openAddServer = useAddServerModal({ connectedOnly: selfHostedOnly || requiredCapability === "ssh" || restrictedSource, migrationSource: restrictedSource });
   const requestedId = value === undefined ? internalId : value;
   const selectedId = data?.servers.find(server => matchesServer(server, requestedId))?.id ?? requestedId;
@@ -267,7 +267,7 @@ export function ServerSelectorView({
     restrictedSource, removeSource, removing, actionError,
   } = selection;
   const effective = selectedId ?? "";
-  const fieldLabel = label ?? (!selfHosted && !restrictedSource ? t.servers.resources.selectPool : copy.serverLabel);
+  const fieldLabel = label ?? (!selfHosted && !restrictedSource ? "Deployment destination" : copy.serverLabel);
   const addLabel = restrictedSource ? t.migration.sources.connect : !selfHosted && forDeployment ? managedCopy.newProjectServer : copy.addNewServer;
   return (
     <div className={compact ? "space-y-2" : "mb-5 space-y-2"}>

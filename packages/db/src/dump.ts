@@ -192,6 +192,16 @@ export interface TableSpec {
 }
 
 const TABLES: ReadonlyArray<TableSpec> = [
+  // A full controller move retains consent and one-attempt execution ownership.
+  // Project imports deliberately start with fresh consent and observations.
+  {
+    sqlName: "project_security", table: schema.projectSecurity,
+    scopes: [{ in: "instance", via: "all-rows" }], hasOrganizationId: true,
+  },
+  {
+    sqlName: "security_refresh_attempt", table: schema.securityRefreshAttempt,
+    scopes: [{ in: "instance", via: "all-rows" }], hasOrganizationId: false,
+  },
   {
     sqlName: "ingress_connection", table: schema.ingressConnection,
     scopes: [{ in: "instance", via: "all-rows" }], hasOrganizationId: true,
@@ -215,6 +225,7 @@ const TABLES: ReadonlyArray<TableSpec> = [
     ["action_storage_chunk", schema.actionStorageChunk],
     ["action_budget", schema.actionBudget],
     ["action_credit_purchase", schema.actionCreditPurchase],
+    ["management_billing", schema.managementBilling],
   ].map(([sqlName, table]) => ({
     sqlName: sqlName as string,
     table: table as PgTable,
@@ -609,6 +620,16 @@ const TABLES: ReadonlyArray<TableSpec> = [
     ],
     hasOrganizationId: true,
   },
+  {
+    sqlName: "route_protection",
+    table: schema.routeProtection,
+    hasOrganizationId: false,
+    scopes: [
+      { in: "instance", via: "all-rows" },
+      { in: "organization", via: "fk", column: "projectId" },
+      { in: "project", via: "fk", column: "projectId" },
+    ],
+  },
   // Inbound webhook SOURCES (Settings → Webhooks). MUST be catalogued: `domain`
   // carries a `webhookSourceId` FK to it, so the first row this table ever holds
   // makes an import fail on a violation no reordering can fix. Latent rather than
@@ -920,6 +941,7 @@ export const EXCLUDED_TABLES: Record<string, string> = {
     "physical-target port reservations; never export, clone, or transfer across instances",
 
   // Caches / host-derived — the host, not the DB, is the source of truth.
+  advisory_feed: "public feed cache and polling leases; re-fetch and verify on the destination",
   update_status: "cached upstream scan result; the next `updates:scan` refills it",
   server_container_status: "cached container drift; re-probed from the host",
   server_module_status: "cached module drift; re-probed from the host",
@@ -1088,6 +1110,7 @@ export const ENCRYPTED_COLUMNS: ReadonlyArray<EncryptedColumnSpec> = [
   { table: "two_factor", column: "backupCodes" },
   { table: "cluster_database", column: "secretEncrypted" },
   { table: "cluster_database", column: "envValueEncrypted" },
+  { table: "cluster_database", column: "readEnvValueEncrypted" },
   { table: "user_settings", column: "cloudSessionToken" },
   { table: "user_settings", column: "cloneTokenEncrypted" },
   { table: "user_settings", column: "githubAuthorizationEncrypted" },
@@ -1098,6 +1121,7 @@ export const ENCRYPTED_COLUMNS: ReadonlyArray<EncryptedColumnSpec> = [
   { table: "incoming_webhook", column: "tokenEncrypted" },
   { table: "incoming_webhook", column: "hmacSecretEncrypted" },
   { table: "env_var", column: "value" },
+  { table: "route_protection", column: "secret" },
   { table: "backup_destination", column: "accessKeyIdEnc" },
   { table: "backup_destination", column: "secretAccessKeyEnc" },
   { table: "backup_destination", column: "sftpPasswordEnc" },
@@ -1322,6 +1346,7 @@ function pickResolver(spec: TableSpec, scope: SubgraphScope): ScopeResolver | nu
  * the same rule.
  */
 export function stripInstanceRefsInPlace(tables: DatabaseDump["tables"]): void {
+  for (const row of tables.route_protection ?? []) row.appliedRevision = null;
   for (const [table, columns] of Object.entries(INSTANCE_SCOPED_REFS)) {
     const rows = tables[table];
     if (!rows || rows.length === 0) continue;

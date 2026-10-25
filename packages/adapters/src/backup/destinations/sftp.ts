@@ -27,6 +27,7 @@ import { posix } from "node:path";
 import { PassThrough, Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { randomBytes } from "node:crypto";
+import { resolvePinnedHost } from "../../system/outbound-target";
 import { decryptCredential } from "../common/credentials";
 import { registerDestination } from "../registry";
 import { safeErrorMessage } from "@repo/core";
@@ -122,8 +123,10 @@ class SftpDestinationImpl implements BackupDestination {
 
   private readonly conn: ConnectionConfig;
   private readonly rootPath: string;
+  private readonly publicNetworkOnly: boolean;
 
   constructor(row: BackupDestinationRow) {
+    this.publicNetworkOnly = row.publicNetworkOnly === true;
     this.kind = row.kind === "openship_server" ? "openship_server" : "sftp";
 
     if (!row.sshHost) {
@@ -147,6 +150,7 @@ class SftpDestinationImpl implements BackupDestination {
       host: row.sshHost,
       port: row.sshPort ?? 22,
       username: row.sshUser,
+      ...(row.sshHostKey ? { hostVerifier: (key: Buffer) => key.toString("base64") === row.sshHostKey } : {}),
       ...(password ? { password } : {}),
       ...(privateKey ? { privateKey, ...(passphrase ? { passphrase } : {}) } : {}),
     };
@@ -230,7 +234,16 @@ class SftpDestinationImpl implements BackupDestination {
         .on("error", fail)
         .on("close", () => fail(new Error("SFTP connection closed before the operation completed")));
       try {
-        client.connect(this.conn);
+        if (this.publicNetworkOnly) {
+          void resolvePinnedHost(this.conn.host, false, AbortSignal.any([abort.signal, AbortSignal.timeout(10_000)]))
+            .then(({ ip }) => {
+              abort.signal.throwIfAborted();
+              client.connect({ ...this.conn, host: ip });
+            })
+            .catch(fail);
+        } else {
+          client.connect(this.conn);
+        }
       } catch (error) {
         observeCaughtError(error, "adapters/backup/destinations/sftp");
         fail(error);

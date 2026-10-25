@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   updateDeploymentStatus: vi.fn(),
   updateBuildSession: vi.fn(),
   findDeploymentById: vi.fn(),
+  findProjectById: vi.fn(),
   prepareImage: vi.fn(),
   runReleaseCommand: vi.fn(),
   build: vi.fn(),
@@ -60,6 +61,8 @@ vi.mock("@repo/db", () => ({
   runOutsideAdvisoryLock: <T>(work: () => T) => work(),
   schema: {},
   repos: {
+    pullRequestPreview: { findByProject: vi.fn(async () => undefined) },
+  routeProtection: { readPrivate: vi.fn(async () => null) },
     cloudBuildActivity: { cancelReservation: mocks.cancelReservation },
     cloudDockerWorkspace: { find: (...args: unknown[]) => mocks.findCloudDockerBinding(...args) },
     deployment: {
@@ -87,7 +90,7 @@ vi.mock("@repo/db", () => ({
       listByProject: vi.fn(async () => []),
       remove: vi.fn(async () => undefined),
     },
-    project: { update: vi.fn(async () => undefined) },
+    project: { findById: mocks.findProjectById, update: vi.fn(async () => undefined) },
   },
 }));
 
@@ -238,6 +241,8 @@ vi.mock("@repo/platform/engine/modules/backups/triggers/pre-deploy", () => ({
 }));
 
 vi.mock("@repo/platform/engine/modules/deployments/deployment-lifecycle", () => ({
+  beginBuildTiming: vi.fn(),
+  completeBuildTiming: vi.fn(),
   onFailure: (...args: unknown[]) => mocks.onFailure(...args),
   onSuccess: (...args: unknown[]) => mocks.onSuccess(...args),
   onCancelled: (...args: unknown[]) => mocks.onCancelled(...args),
@@ -338,6 +343,8 @@ function allocatePinnedHostPort(input: {
 import { repos, type Deployment } from "@repo/db";
 import { ensurePortAvailable, isMultiServiceRuntime } from "@repo/adapters";
 import { firePreDeployBackups } from "@repo/platform/engine/modules/backups/triggers/pre-deploy";
+import { ensureEdgeChallengeReady } from "@repo/platform/engine/lib/edge-challenge";
+import { repairEdgeVhosts } from "@repo/platform/engine/lib/edge-vhost-repair";
 import { executeComposePipeline, resolveProjectServicePreflightServices, shouldUseProjectServicePipeline } from "@repo/platform/engine/modules/deployments/compose/index";
 import { CloudBuildAdmissionDeferredError, releaseCloudBuildSlot, runOutsideCloudBuildActivity } from "@repo/platform/engine/lib/cloud-build-activity";
 import { AppError } from "@repo/core";
@@ -373,8 +380,11 @@ function runtime() {
   return {
     name: "docker",
     capabilities: new Set(["prebuiltImage", "deploy", "containerIp", "releaseCommand"]),
-    supports: (capability: string): boolean =>
-      capability === "prebuiltImage" || capability === "deploy" || capability === "containerIp" || capability === "releaseCommand",
+    supports(capability: string): boolean {
+      return capability === "prebuiltImage" || capability === "deploy" || capability === "containerIp" || capability === "releaseCommand" ||
+        (capability === "dockerHost" && this.name === "docker") ||
+        (capability === "clusterStatus" && ["kubernetes", "swarm"].includes(this.name));
+    },
     prepareImage: (...args: unknown[]) => mocks.prepareImage(...args),
     runReleaseCommand: (...args: unknown[]) => mocks.runReleaseCommand(...args),
     build: (...args: unknown[]) => mocks.build(...args),
@@ -454,7 +464,9 @@ function deployment(overrides: Record<string, unknown> = {}): Deployment {
 
 async function run(dep = deployment(), projectOverrides: Record<string, unknown> = {}) {
   mocks.findDeploymentById.mockResolvedValue(dep);
-  const sessionId = await kickoffBuild(project(projectOverrides), dep);
+  const currentProject = project(projectOverrides);
+  mocks.findProjectById.mockResolvedValue(currentProject);
+  const sessionId = await kickoffBuild(currentProject, dep);
   expect(sessionId).toBe("build-session-1");
   return dep;
 }
@@ -757,9 +769,11 @@ describe("single-app prebuilt release-image pipeline", () => {
     }
   });
 
-  it.each(["docker", "kubernetes"])("%s pulls the frozen image, skips source builds, and freezes the digest", async (runtimeName) => {
+  it.each(["docker", "kubernetes", "swarm"].flatMap(runtimeName =>
+    ["update", "manual", "redeploy"].map(trigger => ({ runtimeName, trigger })),
+  ))("$runtimeName $trigger refreshes the registry image, skips source builds, and freezes the digest", async ({ runtimeName, trigger }) => {
     resolvedRuntime.name = runtimeName;
-    await run();
+    await run(deployment({ trigger }));
     await vi.waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledTimes(1));
     await vi.waitFor(() =>
       expect(mocks.acknowledgeBuildExecutionFinished).toHaveBeenCalledWith("build-session-1"),
@@ -772,7 +786,8 @@ describe("single-app prebuilt release-image pipeline", () => {
         slug: "release-app",
         imageRef: SOURCE_IMAGE,
         envVars: { API_TOKEN: "secret", PORT: "8080" },
-        forcePull: true,
+        forcePull: trigger === "update",
+        refreshMutableTag: trigger !== "update",
       }),
       expect.anything(),
     );
@@ -1114,6 +1129,17 @@ describe("single-app prebuilt release-image pipeline", () => {
     expect(mocks.stop).not.toHaveBeenCalled();
   });
 
+  it("does not run release commands or activation when cancellation wins the release transition", async () => {
+    mocks.setDeploymentStatus.mockImplementation(async (_id, status) => status !== "deploying");
+    await run(deployment({ meta: { ...snapshot(), releaseCommands: ["migrate"] } }));
+    await vi.waitFor(() => expect(mocks.onCancelled).toHaveBeenCalledOnce());
+    await waitForDeploymentQuiescence("deployment-1", "project-1");
+    expect(mocks.runReleaseCommand).not.toHaveBeenCalled();
+    expect(mocks.deploy).not.toHaveBeenCalled();
+    expect(mocks.stop).not.toHaveBeenCalled();
+    expect(mocks.reportPipelineError).not.toHaveBeenCalled();
+  });
+
   it("skips commands for an unpinned rollback rebuilt from source on Bare", async () => {
     resolvedRuntime.name = "bare";
     mocks.build.mockResolvedValueOnce({
@@ -1160,10 +1186,53 @@ describe("single-app prebuilt release-image pipeline", () => {
     await vi.waitFor(() => expect(mocks.reportPipelineError).toHaveBeenCalledOnce());
     await waitForDeploymentQuiescence("deployment-1", "project-1");
     expect(mocks.reportPipelineError).toHaveBeenCalledWith(
-      expect.anything(), expect.stringContaining("not supported on multi-service deployments"), expect.anything(), undefined,
+      expect.anything(),
+      "Project release commands are not supported on multi-service deployments. " +
+        "Deployment stopped before activation. " +
+        "To keep the release commands, deploy the app as a new single-app Docker project. " +
+        "Connect separately deployed services through Apps & Services → Add → Connect existing. " +
+        "Connecting services does not convert this project back to single-app. " +
+        "Otherwise remove the release commands.",
+      expect.anything(), undefined,
     );
     expect(repos.service.syncFromCompose).not.toHaveBeenCalled();
+    expect(executeComposePipeline).not.toHaveBeenCalled();
     expect(mocks.runReleaseCommand).not.toHaveBeenCalled();
+    expect(mocks.deploy).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a rollback", { trigger: "rollback" }, {}],
+    ["a service-only action", { trigger: "redeploy" }, { targetServiceIds: ["svc-db"] }],
+  ])("deploys %s of a multi-service project without refusing its release commands", async (_label, dep, meta) => {
+    vi.mocked(shouldUseProjectServicePipeline).mockResolvedValue(true);
+    vi.mocked(isMultiServiceRuntime).mockReturnValue(true);
+    await run(deployment({ ...dep, meta: {
+      ...snapshot(), serviceDeploymentMode: "services", releaseCommands: ["migrate"], ...meta,
+      composeServices: [{ name: "db", image: "postgres:16", ports: [], dependsOn: [], environment: {}, volumes: [] }],
+    } }));
+    await drainDeploymentExecutions();
+    expect(executeComposePipeline).toHaveBeenCalledOnce();
+    expect(mocks.reportPipelineError).not.toHaveBeenCalled();
+    expect(mocks.runReleaseCommand).not.toHaveBeenCalled();
+  });
+
+  it("refuses runtime roles on a multi-service deployment before the build starts", async () => {
+    vi.mocked(shouldUseProjectServicePipeline).mockResolvedValue(true);
+    vi.mocked(isMultiServiceRuntime).mockReturnValue(true);
+    await run(deployment({ meta: {
+      ...snapshot(), serviceDeploymentMode: "services",
+      roles: [{ name: "queue", kind: "worker", command: "php artisan queue:work" }],
+      composeServices: [{ name: "redis", image: "redis:7", ports: [], dependsOn: [], environment: {}, volumes: [] }],
+    } }));
+    await vi.waitFor(() => expect(mocks.reportPipelineError).toHaveBeenCalledOnce());
+    await waitForDeploymentQuiescence("deployment-1", "project-1");
+    expect(mocks.reportPipelineError).toHaveBeenCalledWith(
+      expect.anything(), expect.stringMatching(/^Runtime roles are not supported on multi-service deployments yet\. /), expect.anything(), undefined,
+    );
+    expect(mocks.setDeploymentStatus).not.toHaveBeenCalledWith("deployment-1", "building");
+    expect(executeComposePipeline).not.toHaveBeenCalled();
+    expect(mocks.build).not.toHaveBeenCalled();
     expect(mocks.deploy).not.toHaveBeenCalled();
   });
 
@@ -1411,7 +1480,12 @@ describe("single-app prebuilt release-image pipeline", () => {
     }
   });
 
-  it("inventories migrated edge routes before reserving a loopback host port", async () => {
+  it.each([false, true])("inventories loopback claims with routed=%s, preparing edge only for routes", async (routed) => {
+    vi.mocked(buildProjectRouteDomains).mockReturnValueOnce(routed ? [{
+      hostname: "app.example.com", tls: false, provisionSsl: false,
+      requiresSslTooling: false, terminatesTlsLocally: false, isCloud: false,
+      targetPort: 8080,
+    }] : []);
     mocks.runDeployPipeline.mockImplementationOnce(async (env, input) => {
       await env.preflight(input.config, async () => "migrate");
       const result = await env.activate(input.config, () => undefined);
@@ -1425,12 +1499,16 @@ describe("single-app prebuilt release-image pipeline", () => {
     await run(deployment(), { routeStrategy: "loopback-port" });
     await vi.waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledTimes(1));
 
-    expect(mocks.ensureRoutingReady).toHaveBeenCalledTimes(1);
+    expect(mocks.ensureRoutingReady).toHaveBeenCalledTimes(routed ? 1 : 0);
+    expect(ensureEdgeChallengeReady).toHaveBeenCalledTimes(routed ? 1 : 0);
+    expect(repairEdgeVhosts).toHaveBeenCalledTimes(routed ? 1 : 0);
     expect(mocks.prepareTargetPinnedHostPorts).toHaveBeenCalledTimes(1);
     expect(mocks.allocateAndReservePinnedHostPort).toHaveBeenCalledTimes(1);
-    expect(mocks.ensureRoutingReady.mock.invocationCallOrder[0]).toBeLessThan(
-      mocks.prepareTargetPinnedHostPorts.mock.invocationCallOrder[0]!,
-    );
+    if (routed) {
+      expect(mocks.ensureRoutingReady.mock.invocationCallOrder[0]).toBeLessThan(
+        mocks.prepareTargetPinnedHostPorts.mock.invocationCallOrder[0]!,
+      );
+    }
     expect(mocks.prepareTargetPinnedHostPorts.mock.invocationCallOrder[0]).toBeLessThan(
       mocks.allocateAndReservePinnedHostPort.mock.invocationCallOrder[0]!,
     );

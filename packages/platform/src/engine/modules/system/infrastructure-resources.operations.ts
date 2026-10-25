@@ -75,11 +75,12 @@ export async function presentComputeCluster(
     serverIds: row.serverIds,
     scaling: row.scaling
       ? {
+          provider: row.scaling.provider,
           status: row.scaling.status,
           verifiedAt: row.scaling.verifiedAt?.toISOString() ?? null,
         }
       : null,
-    network: network ?? presentCluster(await repos.serverCluster.get(org, row.networkId)),
+    network: network ?? (row.networkId ? presentCluster(await repos.serverCluster.get(org, row.networkId)) : null),
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };

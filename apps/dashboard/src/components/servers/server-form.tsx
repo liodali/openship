@@ -8,6 +8,7 @@ import type { ServerInfo, SshProbeInput } from "@/lib/api/system";
 import { useToast } from "@/context/ToastContext";
 import { useI18n } from "@/components/i18n-provider";
 import { usePlatform } from "@/context/PlatformContext";
+import { ManagementAccess } from "@/components/billing/ManagementAccess";
 import { SshTransportField } from "./ssh-transport-field";
 import { Input, inputVariants } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -43,10 +44,13 @@ interface ServerFormProps {
 // differs (see `variant`). The surrounding page header and sidebars stay in the
 // pages.
 export function ServerForm(props: ServerFormProps) {
+  const { selfHosted } = usePlatform();
   if (props.server && (props.server.managed || props.server.isLocal)) {
     return <ServerNameForm {...props} server={props.server} />;
   }
-  return <ConnectedServerForm {...props} />;
+  return !selfHosted && !props.migrationSource
+    ? <ManagementAccess serverId={props.server?.id}><ConnectedServerForm {...props} /></ManagementAccess>
+    : <ConnectedServerForm {...props} />;
 }
 
 /** Managed connections and the current host only allow a display-name edit. */
@@ -82,7 +86,8 @@ function ConnectedServerForm({
 }: ServerFormProps) {
   const { showToast } = useToast();
   const { t } = useI18n();
-  const { deployMode } = usePlatform();
+  const { deployMode, selfHosted } = usePlatform();
+  const restrictedConnection = migrationSource || !selfHosted;
   const isEditing = !!server;
 
   const [saving, setSaving] = useState(false);
@@ -131,7 +136,7 @@ function ConnectedServerForm({
    * `sshKeyPath: null` with no material to replace it — a rename would silently
    * strip the only credential the server has.
    */
-  const pathModeOffered = !migrationSource && (deployMode === "desktop" || !!server?.sshKeyPath);
+  const pathModeOffered = !restrictedConnection && (deployMode === "desktop" || !!server?.sshKeyPath);
   /** The mode actually in force — `sshKeyMode` is only meaningful when offered. */
   const keyMode: "paste" | "path" = pathModeOffered ? sshKeyMode : "paste";
   // Whether the server already has an encrypted pasted key stored. Lets edit mode
@@ -448,7 +453,7 @@ function ConnectedServerForm({
           </p>
         </div>
 
-        {!migrationSource && <SshTransportField value={sshTransport} disabled={saving || testing} onChange={(value) => {
+        {!restrictedConnection && <SshTransportField value={sshTransport} disabled={saving || testing} onChange={(value) => {
           setSshTransport(value);
           if (value === "cloudflare") setJumpHost("");
           setTestResult(null);
@@ -519,7 +524,7 @@ function ConnectedServerForm({
               <UiIcon name="key" className="size-3.5" />
               {t.servers.form.sshKey}
             </button>
-            {!migrationSource && <button
+            {!restrictedConnection && <button
               type="button"
               onClick={() => setSshAuthMethod("agent")}
               className={`flex-1 flex items-center justify-center gap-1.5 py-2 px-3 text-[13px] font-medium rounded-lg transition-all ${
@@ -702,7 +707,7 @@ function ConnectedServerForm({
           )}
         </div>
 
-        {!migrationSource && <button
+        {!restrictedConnection && <button
           type="button"
           onClick={() => setShowAdvanced(!showAdvanced)}
           className="text-[13px] font-medium text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1.5"
@@ -713,7 +718,7 @@ function ConnectedServerForm({
           {t.servers.form.advanced}
         </button>}
 
-        {!migrationSource && showAdvanced && (
+        {!restrictedConnection && showAdvanced && (
           <div className="space-y-[18px]">
             <div className={`grid grid-cols-1 gap-3 ${sshTransport === "direct" ? "sm:grid-cols-2" : ""}`}>
               {sshTransport === "direct" && <div>

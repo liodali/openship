@@ -135,7 +135,23 @@
       },
       "cloudConnectTitle": "Benötigen Sie verwaltete Datenbanken oder Objektspeicher?",
       "cloudConnectBody": "Verbinden Sie Openship Cloud, um serverlose Postgres-, Redis- und S3-kompatible Buckets neben diesem Projekt bereitzustellen.",
-      "cloudConnectButton": "Cloud-Add-ons entdecken"
+      "cloudConnectButton": "Cloud-Add-ons entdecken",
+      "repositorySource": {
+        "catalog": "Katalog",
+        "title": "Aus Repository",
+        "subtitle": "Wähle einen fertigen Dienst, baue aus deinem Repository oder verbinde einen vorhandenen Dienst.",
+        "context": "Build-Kontext",
+        "dockerfile": "Dockerfile",
+        "browseContext": "Ordner durchsuchen",
+        "browseDockerfile": "Dateien durchsuchen",
+        "pathHint": "Beide Pfade beginnen im Repository-Stamm. Das Dockerfile muss im Build-Kontext liegen.",
+        "deployHint": "Speichere den Dienst und deploye ihn anschließend, um das Image mit Quelle und Ziel dieses Projekts zu bauen.",
+        "noRepository": "Verbinde ein GitHub-Repository mit diesem Projekt, um einen Dienst aus dessen Code zu bauen.",
+        "connectRepository": "Repository verbinden",
+        "invalidPath": "Gib einen relativen Repository-Pfad ohne „..“, Rückstriche oder führenden Schrägstrich ein.",
+        "outsideContext": "Das Dockerfile muss im Build-Kontext liegen. Wähle einen übergeordneten Ordner.",
+        "noMatches": "Versuche eine andere Suche oder Kategorie oder wähle ein eigenes Image."
+      }
     },
     "detail": {
       "tabs": {
@@ -185,27 +201,29 @@
         "loadFailed": "Die gespeicherte Umgebung konnte nicht geladen werden. Deine Variablen wurden nicht geändert.",
         "checkFailed": "Der Vergleich mit dem laufenden Dienst ist fehlgeschlagen. Gespeicherte Variablen sind weiterhin verfügbar.",
         "checking": "Vergleich mit dem laufenden Dienst…",
-        "check": "Laufenden Dienst prüfen",
+        "check": "Erneut prüfen",
         "reload": "Umgebung neu laden",
         "removeOverride": "Überschreibung entfernen (ein geerbter Wert kann sie ersetzen)",
         "removeAtSource": "Entferne geerbte Variablen in Compose oder den Projekteinstellungen. Lege hier einen dienstspezifischen Wert fest, um den Wert zu ändern.",
         "status": {
           "unchecked": "Die laufende Umgebung wurde noch nicht geprüft.",
           "synced": "Der laufende Dienst entspricht der gespeicherten Umgebung.",
-          "pending": "Diese gespeicherten Umgebungsänderungen wurden noch nicht auf den laufenden Dienst angewendet:",
+          "pending": "Die Änderungen sind gespeichert. Anwenden startet diesen Dienst mit den neuen Werten neu.",
           "unavailable": "Die laufende Umgebung konnte nicht geprüft werden.",
           "not-deployed": "Diese Variablen werden beim Deployment dieses Dienstes verwendet.",
           "unsupported": "Stelle diesen Dienst erneut bereit, um seine gespeicherte Umgebung anzuwenden."
         },
-        "recoveryHint": "Der laufende Container enthält Variablen, die nicht in Openship gespeichert sind. Stelle sie vor dem Anwenden wieder her, wenn du sie behalten möchtest:",
-        "recover": "Aus laufendem Dienst wiederherstellen",
-        "removeRuntime": "Ohne Wiederherstellung dieser Variablen anwenden und sie aus dem laufenden Dienst entfernen.",
-        "recovered": "Aus laufendem Dienst wiederhergestellt — noch nicht gespeichert",
-        "recoveredHint": "Die wiederhergestellten Werte können geprüft werden. Speichere sie, um sie in Openship zu behalten.",
-        "recoveryFailed": "Die Variablen konnten nicht aus dem laufenden Dienst wiederhergestellt werden. Gespeicherte Variablen wurden nicht geändert."
+        "recoveryHint": "Diese Werte werden beim Anwenden entfernt, wenn Sie sie nicht zuerst kopieren und speichern.",
+        "recover": "In den Editor kopieren",
+        "removeRuntime": "Diese Werte beim Anwenden entfernen.",
+        "recovered": "Aus dem Container kopiert — noch nicht gespeichert",
+        "recoveredHint": "In den Editor kopiert. Prüfen Sie die Werte und speichern Sie sie.",
+        "recoveryFailed": "Die Variablen konnten nicht aus dem laufenden Dienst wiederhergestellt werden. Gespeicherte Variablen wurden nicht geändert.",
+        "changedLabel": "Zu ändernde Werte",
+        "recoveryTitle": "Variablen nur im Container"
       },
       "environmentApply": {
-        "title": "Umgebungsänderungen anwenden",
+        "title": "Anwenden & neu starten",
         "applying": "Änderungen werden angewendet…",
         "applied": "Umgebungsänderungen angewendet",
         "hint": "Gespeicherte Variablen ohne erneuten Build auf diesen Dienst anwenden. Der Dienst wird neu gestartet.",
@@ -317,7 +335,20 @@
         "automaticStorage": "Automatisch verwaltet",
         "invalidMount": "Der Pfad innerhalb des Dienstes muss mit / beginnen. Pfade und Volume-Namen dürfen kein : enthalten.",
         "mountTooLong": "Jeder Volume-Eintrag darf höchstens 500 Zeichen enthalten.",
-        "saveAndBackup": "Speichern und sichern"
+        "saveAndBackup": "Speichern und sichern",
+        "emptyVolume": {
+          "menu": "Volume-Aktionen",
+          "title": "Mit leerem Speicher starten",
+          "description": "Dieser Dienst wird mit einem neuen Volume bereitgestellt. Vorherige Daten und Backups bleiben erhalten.",
+          "retained": "Vorheriges Volume — behalten",
+          "newVolume": "Neues leeres Volume",
+          "recoveryHint": "Um die bisherigen Daten wiederherzustellen, tragen Sie hier wieder den vorherigen Volume-Namen ein. Andere Dienste mit dem alten Volume bleiben unverändert.",
+          "confirm": "Geben Sie {name} zur Bestätigung ein",
+          "action": "Speichern & neu bereitstellen",
+          "retry": "Bereitstellung wiederholen",
+          "retryHint": "Die neue Volume-Einstellung ist gespeichert, die Bereitstellung wurde jedoch nicht gestartet. Wiederholen Sie den Vorgang. Der laufende Dienst nutzt weiterhin das bisherige Volume.",
+          "failed": "Leerer Speicher konnte nicht vorbereitet werden. Es wurden keine Daten gelöscht."
+        }
       },
       "internalAddress": "Interne Adresse",
       "internalAddressHint": "Container in diesem Projekt erreichen diesen Dienst hier",

@@ -102,9 +102,9 @@ export function getSetupSession(id: string): SetupSessionState | null {
 }
 
 /** Get the currently active session (status === "running"). */
-export function getActiveSetupSession(): SetupSessionState | null {
+export function getActiveSetupSession(serverId?: string): SetupSessionState | null {
   for (const session of sessions.values()) {
-    if (session.status === "running") return session;
+    if (session.status === "running" && (serverId === undefined || session.serverId === serverId)) return session;
   }
   return null;
 }

@@ -74,8 +74,8 @@ export async function getResources(ctx: ExecutionContext, input: BillingScopeInp
 /* ---------- Subscriptions ---------- */
 
 export async function quoteCustomPlan(_ctx: ExecutionContext, input: Parameters<BillingOperations["quoteCustomPlan"]>[0]) {
-  await getOblienBillingApi().assertMonthlyCapacitySupport();
-  const { quote } = customSubscriptionOffer(input);
+  await getOblienBillingApi().assertMonthlyCapacitySupport(input.interval === "annual" ? "yearly" : "monthly");
+  const { quote } = customSubscriptionOffer(input, input.interval);
   return quote;
 }
 
@@ -244,3 +244,5 @@ export async function getSubscription(ctx: ExecutionContext, input: BillingScope
     };
 }
 function invalidInput(message: string): never { throw new ValidationError(message); }
+
+export { resumeManagementCheckout, cancelManagementChange, getManagement, purchaseManagement, confirmManagementChange, cancelManagementCheckout, cancelManagementSubscription, resumeManagementSubscription, createManagementPortal } from "./management.service";

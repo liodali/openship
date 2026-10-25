@@ -33,6 +33,8 @@ export const SYSTEM = {
 
   // ── Deployments / Builds ─────────────────────────────────────────────
   DEPLOYMENTS: {
+    /** Advisory only; never a timeout or proof of insufficient resources. */
+    SLOW_BUILD_NOTICE_MS: 5 * 60_000,
     /** Max concurrent builds for the same project (prevents duplicate builds) */
     MAX_CONCURRENT_PER_PROJECT: 1,
     /** Max pending/queued sessions before rejecting new deployments */

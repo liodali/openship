@@ -149,6 +149,8 @@ export const EDGE_SHARED_DICTS: ReadonlyArray<{ name: string; size: string }> = 
    *  by rules_guard.lua in the access phase. The DB (route_rule) is the source
    *  of truth, so losing this dict costs a re-push, not a ruleset. */
   { name: "rules", size: "32m" },
+  /** Bounded sign-in attempts only. Policy never lives in this evictable zone. */
+  { name: "route_auth_limits", size: "1m" },
   /** Rate-limit COUNTERS, kept apart from `rules` so a high-cardinality flood (a
    *  fresh key per source IP per second) can't LRU-evict the rulesets and
    *  silently disable enforcement mid-attack.
@@ -983,6 +985,10 @@ const LUA_SCRIPTS = [
   "maxminddb.lua",
   "rules_lib.lua",
   "rules_guard.lua",
+  "route_auth.lua",
+  "route_auth_crypto.lua",
+  "route_auth_login.lua",
+  "route_auth_headers.lua",
 ] as const;
 
 /** Version stamp so the self-heal detects a STALE box (an upgrade shipped new

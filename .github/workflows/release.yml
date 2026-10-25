@@ -30,6 +30,26 @@ jobs:
     if: github.event_name != 'workflow_dispatch' || inputs.npm_release_run == ''
     uses: ./.github/workflows/release-gate.yml
 
+  # Observe the existing parallel image workflow; do not dispatch another build.
+  # Named npm-only resumes retain their separately verified historical source.
+  images-ready:
+    name: Verify published Docker images
+    if: github.event_name == 'push' || inputs.npm_release_run == ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - name: Verify the matching image publication receipt
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bun scripts/docker-images-ready.ts
+
   build-openship:
     name: Build openship release artifact
     if: github.event_name == 'push'
@@ -756,11 +776,11 @@ jobs:
     # checkout and again before publication. It builds the original tested source;
     # only the package verifier comes from this workflow's maintenance revision.
     # An ordinary dispatch still requires a fresh gate.
-    needs: [gate, publish]
+    needs: [gate, publish, images-ready]
     if: >-
       always() &&
       ((needs.gate.result == 'success' &&
-        (github.event_name == 'workflow_dispatch' || needs.publish.result == 'success')) ||
+        ((github.event_name == 'workflow_dispatch' && needs.images-ready.result == 'success') || needs.publish.result == 'success')) ||
        (github.event_name == 'workflow_dispatch' && inputs.npm_release_run != ''))
     env:
       NPM_SOURCE_ROOT: ${{ inputs.npm_release_run != '' && format('{0}/release-source', github.workspace) || github.workspace }}
@@ -836,7 +856,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.26.4'
+          go-version: '1.26.9'
           cache: false
 
       - name: Build SDK and CLI package
@@ -904,7 +924,7 @@ jobs:
   publish:
     name: Publish GitHub release
     if: github.event_name == 'push'
-    needs: [gate, build-openship, build-email, build-dashboard, build-cli-payload, build-desktop, notarize-desktop-macos]
+    needs: [gate, images-ready, build-openship, build-email, build-dashboard, build-cli-payload, build-desktop, notarize-desktop-macos]
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout

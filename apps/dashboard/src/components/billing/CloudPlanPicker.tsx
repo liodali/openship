@@ -90,11 +90,13 @@ function PlanPicker({
     Boolean(workspaceId ?? billingWorkspaceId) ||
     (currentPlan === "free" && !subscription && !complimentary);
   const { payload, loading, error, retry } = useCloudPlans();
-  const [purchaseInterval, setInterval] = useState<"monthly" | "annual">("monthly");
+  // Public pricing links already selected a monthly offer; keep that explicit intent.
+  const [purchaseInterval, setInterval] = useState<"monthly" | "annual">(autoCheckout ? "monthly" : "annual");
   const interval =
-    subscription && subscription.status !== "canceled" ? subscription.interval : purchaseInterval;
+    subscription && subscription.status !== "canceled" ? subscription.interval : !complimentary && payload?.annual.enabled ? purchaseInterval : "monthly";
   const hasPlan = !needsCloudPlan({ tier: currentPlan, subscription, complimentary });
-  const canChooseMode = !hasPlan && purchase.tabs !== "none";
+  const canChooseMode = (!hasPlan || purchase.management) && purchase.tabs !== "none";
+  const managing = canChooseMode && purchase.mode === "manage";
   const payg = canChooseMode && purchase.mode === "payg";
   const choices = serverPlanChoices({
     plans: payload?.plans ?? [],
@@ -104,7 +106,7 @@ function PlanPicker({
   });
   const compareUpgrades = hasPlan && Boolean(currentOffer);
   const canUseCustom = Boolean(
-    payload?.custom && !(hasPlan && subscription?.interval === "annual"),
+    payload?.custom,
   );
   const defaultConfiguration =
     canUseCustom &&
@@ -112,7 +114,7 @@ function PlanPicker({
       (compareUpgrades ? choices.upgrades.length === 0 : choices.available.length === 0))
       ? "custom"
       : "plans";
-  const choiceKey = `${selectedWorkspaceId ?? "new"}:${subscription?.offerReference ?? currentPlan}:${interval}`;
+  const choiceKey = `${selectedWorkspaceId ?? "new"}:${subscription?.offerReference ?? currentPlan}`;
   const [choice, setChoice] = useState<{
     key: string;
     configuration: "plans" | "custom";
@@ -141,7 +143,7 @@ function PlanPicker({
     visiblePlans.length <= 2,
   );
   useSidebarCollapseRequest(
-    !preserveProject &&
+    !preserveProject && !managing &&
       !loading &&
       !error &&
       Boolean(payload) &&
@@ -191,7 +193,7 @@ function PlanPicker({
     dismissUnavailable,
     recovery,
   } = useCloudCheckout({
-    enabled: canPurchase && !purchaseDisabled && !payg,
+    enabled: canPurchase && !purchaseDisabled && !payg && !managing,
     preserveProject,
     onCheckoutStarted,
     workspaceId,
@@ -206,23 +208,24 @@ function PlanPicker({
     // The website click selected this preset. Wait for authenticated scope and
     // live availability, and schedule after effect replay so Strict Mode cannot
     // cancel the only attempt during its initial mount cleanup.
-    if (autoCheckout && requestedPlan && !loading && !error && canPurchase && !purchaseDisabled && !payg && !preserveProject && configuration === "plans") {
+    if (autoCheckout && requestedPlan && !loading && !error && canPurchase && !purchaseDisabled && !payg && !managing && !preserveProject && configuration === "plans") {
       void Promise.resolve().then(() => {
         if (disposed || autoStarted.current) return;
         autoStarted.current = true;
-        void startCheckout(requestedPlan.id, "monthly");
+        void startCheckout(requestedPlan.id, interval);
       });
     }
     return () => { disposed = true; };
-  }, [autoCheckout, requestedPlan?.id, loading, error, canPurchase, purchaseDisabled, payg, preserveProject, configuration, startCheckout]);
+  }, [autoCheckout, requestedPlan?.id, loading, error, canPurchase, purchaseDisabled, payg, managing, preserveProject, configuration, startCheckout, interval]);
   const selectedCurrentPlan =
     hasPlan && subscription?.configuration !== "custom" ? choices.current : null;
   const busy = subscribing !== null || changes.busy;
   const setPurchaseBusy = purchase.setBusy;
   useEffect(() => {
+    if (managing) return;
     setPurchaseBusy(canChooseMode && (busy || Boolean(checkoutUrl)));
     return () => setPurchaseBusy(false);
-  }, [busy, checkoutUrl, canChooseMode, setPurchaseBusy]);
+  }, [busy, checkoutUrl, canChooseMode, managing, setPurchaseBusy]);
 
   const handleSelectPlan = (planTierId: PlanTierId) => {
     if (selectable && planTierId !== selectedCurrentPlan)
@@ -295,6 +298,28 @@ function PlanPicker({
           {showOtherPlans ? copy.backToUpgrades : copy.otherPlans}
         </Button>
       )}
+      {payload.annual.enabled && !complimentary &&
+        (!subscription || subscription.status === "canceled") && (
+          <div
+            className="inline-flex gap-1 rounded-xl bg-muted/40 p-1"
+            role="group"
+            aria-label={t.billing.pricing.billingInterval}
+          >
+            {(["monthly", "annual"] as const).map((value) => (
+              <Button
+                key={value}
+                type="button"
+                size="sm"
+                aria-pressed={interval === value}
+                onClick={() => setInterval(value)}
+                disabled={busy}
+                variant={interval === value ? "secondary" : "ghost"}
+              >
+                {value === "monthly" ? t.billing.pricing.monthly : t.billing.pricing.annual}
+              </Button>
+            ))}
+          </div>
+        )}
       {payload.custom && visiblePlans.length > 0 && (
         <div
           role="group"
@@ -320,29 +345,6 @@ function PlanPicker({
           ))}
         </div>
       )}
-      {configuration === "plans" &&
-        payload.annual.enabled &&
-        (!subscription || subscription.status === "canceled") && (
-          <div
-            className="inline-flex gap-1 rounded-xl bg-muted/40 p-1"
-            role="group"
-            aria-label={t.billing.pricing.billingInterval}
-          >
-            {(["monthly", "annual"] as const).map((value) => (
-              <Button
-                key={value}
-                type="button"
-                size="sm"
-                aria-pressed={interval === value}
-                onClick={() => setInterval(value)}
-                disabled={subscribing !== null}
-                variant={interval === value ? "secondary" : "ghost"}
-              >
-                {value === "monthly" ? t.billing.pricing.monthly : t.billing.pricing.annual}
-              </Button>
-            ))}
-          </div>
-        )}
     </div>
   );
   const details =
@@ -382,14 +384,14 @@ function PlanPicker({
         <div
           className={`min-w-0 space-y-5 ${summaryAside ? "@min-[64rem]/plans:col-start-1 @min-[64rem]/plans:row-start-1" : ""}`}
         >
-          {canChooseMode && purchase.tabs === "inline" && <CloudPurchaseTabs />}
+          {canChooseMode && purchase.tabs === "inline" && !purchase.management && <CloudPurchaseTabs />}
           {canChooseMode ? (
             <CloudPurchaseHeaderContent details={details} controls={controls} />
           ) : (
             details
           )}
           <div
-            hidden={payg}
+            hidden={payg || managing}
             role={canChooseMode ? "tabpanel" : undefined}
             id={canChooseMode ? `${purchase.id}-panel-monthly` : undefined}
             aria-labelledby={canChooseMode ? `${purchase.id}-tab-monthly` : undefined}
@@ -422,13 +424,14 @@ function PlanPicker({
             {configuration === "custom" && payload.custom ? (
               <CustomPlanConfigurator
                 key={`${selectedWorkspaceId}:${currentOffer?.offerReference ?? currentPlan}`}
+                interval={interval}
                 catalog={payload.custom}
                 plans={payload.plans}
                 ui={payload.ui}
                 currentOffer={currentOffer}
                 subscription={subscription}
                 allocatedDiskGb={allocatedDiskGb}
-                disabled={!selectable || purchaseDisabled || payg}
+                disabled={!selectable || purchaseDisabled || payg || managing}
                 busy={busy}
                 actionLabel={canModify ? t.billing.planChange.review : undefined}
                 quoteRevision={quoteRevision}
@@ -436,7 +439,7 @@ function PlanPicker({
                   const custom = { resources: quote.resources, quoteReference: quote.reference };
                   void (canModify
                     ? changes.review(quote.basePlanTierId, custom)
-                    : startCheckout(quote.basePlanTierId, "monthly", custom));
+                    : startCheckout(quote.basePlanTierId, interval, custom));
                 }}
               />
             ) : visiblePlans.length > 0 ? (
@@ -446,7 +449,7 @@ function PlanPicker({
                 currentPlan={selectedCurrentPlan}
                 onSelectPlan={handleSelectPlan}
                 subscribingPlan={subscribing}
-                purchasesDisabled={!selectable || changes.busy || purchaseDisabled || payg}
+                purchasesDisabled={!selectable || changes.busy || purchaseDisabled || payg || managing}
                 selectionLabel={canModify ? t.billing.planChange.review : undefined}
                 interval={interval}
                 workspaceScoped={workspaceScoped}

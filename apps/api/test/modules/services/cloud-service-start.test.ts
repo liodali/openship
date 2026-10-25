@@ -33,6 +33,7 @@ import { db, schema, repos } from "@repo/db";
 import { AppError } from "@repo/core";
 import type { ExecutionContext } from "@repo/platform";
 import { startServiceContainer } from "@repo/platform/engine/modules/services/service.service";
+import { previewEnvironmentInput } from "@repo/platform/engine/modules/projects/pull-request-previews";
 
 let sequence = 0;
 let organizationId: string, projectId: string, deploymentId: string, workspaceId: string, managedWorkspaceId: string, serverId: string;
@@ -95,6 +96,41 @@ beforeEach(async () => {
 });
 
 describe("Cloud service Start placement and recovery", () => {
+  it("starts a previously disabled preview copy without inheriting production namespaces or mounts", async () => {
+    const project = (await repos.project.findById(projectId))!;
+    const original = {
+      ...(await repos.service.findById(addedId))!,
+      enabled: false,
+      namespaceVolumes: false,
+      volumes: ["/srv/production:/data", "cache-data:/cache"],
+      advanced: { networkMode: "container:production-db", pidMode: "container:production-db" },
+    };
+    const copied = previewEnvironmentInput(project, [original], 5, "feature").services[0]!.row;
+    await repos.project.update(projectId, { environmentType: "preview" });
+    await repos.service.update(addedId, copied);
+    expect((await repos.service.findById(addedId))?.enabled).toBe(false);
+
+    await expect(startServiceContainer(ctx(), projectId, addedId)).resolves.toMatchObject({
+      containerId: "cache-container",
+    });
+
+    const started = (await repos.service.findById(addedId))!;
+    expect(started).toMatchObject({
+      enabled: true,
+      namespaceVolumes: true,
+      volumes: ["cache-data:/cache"],
+    });
+    const { resolveServiceNamespaces } = await vi.importActual<
+      typeof import("@repo/platform/engine/modules/deployments/compose/deploy.service")
+    >("@repo/platform/engine/modules/deployments/compose/deploy.service");
+    expect(resolveServiceNamespaces(started, new Map(), new Set([started.name]))).toEqual({});
+    expect(original.advanced).toEqual({
+      networkMode: "container:production-db",
+      pidMode: "container:production-db",
+    });
+    expect(original.volumes).toEqual(["/srv/production:/data", "cache-data:/cache"]);
+  });
+
   it("adds a service to the same managed server without resizing it or changing the active release", async () => {
     const before = await repos.deployment.findById(deploymentId);
     await expect(startServiceContainer(ctx(), projectId, addedId)).resolves.toMatchObject({ containerId: "cache-container" });

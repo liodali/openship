@@ -67,6 +67,8 @@ export function createRemoteProjectOperations(
         path: (id) => path(id) + "/server-logs/stream-token",
       },
       recentServerLogs: { method: "GET", path: (id) => path(id) + "/server-logs/recent" },
+      listRouteProtection: { method: "GET", path: (id) => path(id) + "/route-protection", envelope: "data" },
+      changeRouteProtection: { method: "PUT", path: (id) => path(id) + "/route-protection", envelope: "data" },
       listRouteRules: { method: "GET", path: (id) => path(id) + "/route-rules", envelope: "rules" },
       createRouteRule: {
         method: "POST",

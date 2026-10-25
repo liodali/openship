@@ -3,6 +3,7 @@ import { deploymentBelongsToProject } from "@repo/core";
 import { activeDeploymentForProject } from "../../lib/active-deployment";
 import { isArtifactRef, usableRef } from "../../lib/container-ref";
 import { resolveRollbackWindow, type RollbackWindowProject } from "./release-retention";
+import { artifactReferences, deploymentArtifacts, hasRetryableBuild } from "./deployment-artifacts";
 
 type RetentionProject = Pick<Project, "id" | "organizationId" | "activeDeploymentId"> & RollbackWindowProject;
 type ServiceArtifact = {
@@ -51,11 +52,20 @@ export async function retainedArtifacts(project: RetentionProject, loaders: Rete
   const retained: Deployment[] = [];
   const overflow: Deployment[] = [];
   let pastReleases = 0;
+  let newestSettledBuildSeen = false;
+  let retryableDeploymentId: string | undefined;
   for (const dep of candidates) {
     if (!deploymentBelongsToProject(project, dep)) continue;
+    // One failed completed build is retryable, until a newer release succeeds
+    // or a newer completed attempt fails. It never consumes rollback history.
+    const retryable = hasRetryableBuild(dep) && !newestSettledBuildSeen;
+    if (retryable) retryableDeploymentId = dep.id;
+    if (hasRetryableBuild(dep) || dep.status === "ready" || dep.status === "partial_failure")
+      newestSettledBuildSeen = true;
+    const buildingArtifact = ["building", "deploying"].includes(dep.status) && !!deploymentArtifacts(dep.meta);
     // A disconnected worker may already have activated this release. Preserve
     // it until host verification settles the outcome, without spending history.
-    if (dep.id === project.activeDeploymentId || dep.pinned || dep.status === "reconciling") {
+    if (dep.id === project.activeDeploymentId || dep.pinned || dep.status === "reconciling" || retryable || buildingArtifact) {
       retained.push(dep);
     } else if ((dep.status === "ready" || dep.status === "partial_failure") && pastReleases < window) {
       retained.push(dep);
@@ -69,24 +79,37 @@ export async function retainedArtifacts(project: RetentionProject, loaders: Rete
     if (active) retained.push(active);
   }
 
+  return { ...await retainedArtifactReferences(retained, listServices), retained, overflow,
+    ...(retryableDeploymentId ? { retryableDeploymentId } : {}),
+  };
+}
+
+/** Shared protection inventory for count-based and storage-pressure cleanup. */
+export async function retainedArtifactReferences(
+  retained: Deployment[],
+  listServices: NonNullable<RetentionLoaders["listByDeployment"]> = repos.service.listByDeployment,
+) {
   const images = new Set<string>();
   const containers = new Set<string>();
+  const services = new Map<string, ServiceArtifact[]>();
   for (const dep of retained) {
+    const receipt = deploymentArtifacts(dep.meta);
+    if (receipt) for (const image of artifactReferences(receipt)) images.add(image);
     for (const role of dep.roleContainers ?? []) {
       const container = usableRef(role.containerId);
       if (container) containers.add(container);
     }
-    const artifacts = [dep, ...await effectiveServiceArtifacts(dep, await listServices(dep.id))];
-    for (const artifact of artifacts) {
+    const serviceRows = await effectiveServiceArtifacts(dep, await listServices(dep.id));
+    services.set(dep.id, serviceRows);
+    for (const artifact of [dep, ...serviceRows]) {
       const image = usableRef(artifact.imageRef);
       const container = usableRef(artifact.containerId);
       if (image) images.add(image);
       if (container) containers.add(container);
-      // Static releases use their document root as the container id.
       if (isArtifactRef(container)) images.add(container!);
     }
   }
-  return { images, containers, retained, overflow };
+  return { images, containers, services };
 }
 
 export async function computeKeepSet(project: RetentionProject, loaders?: RetentionLoaders): Promise<Set<string>> {

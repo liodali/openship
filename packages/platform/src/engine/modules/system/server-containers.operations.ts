@@ -7,7 +7,7 @@ import type { ServerDependencies } from "../../../servers";
 import { subscriptionEvents } from "../../../event-stream";
 import { authorization } from "../../lib/authorization";
 import { audit, operationAuditContext } from "../../lib/audit-emitter";
-import { assertSelfHosted, requireSelfHostedServer, assertServerExecution } from "./server-access";
+import { infrastructureServers, requireConnectedServer } from "./server-access";
 import { applyAllContainers, scanOrgContainers, detectServerContainers, loadOrgContainerIssues, runContainerApply } from "./server-containers.service";
 import { getActiveContainerApplySession, listContainerApplySessions, subscribeContainerApplySession } from "../../lib/server-container-session";
 
@@ -15,9 +15,7 @@ const SETTLED_WINDOW_MS = 90_000;
 
 async function authorizedServer(ctx: ExecutionContext, id: string, action: "read" | "write") {
   const context = await authorization.authorize(ctx, { resourceType: "server", resourceId: id, action });
-  const server = await requireSelfHostedServer(context, id);
-  await assertServerExecution(server);
-  return server;
+  return requireConnectedServer(context, id);
 }
 
 function record(ctx: ExecutionContext, id: string, after?: Record<string, unknown>) {
@@ -27,24 +25,21 @@ function record(ctx: ExecutionContext, id: string, after?: Record<string, unknow
 export const serverContainerCollection: Pick<ServerDependencies["collection"],
   "listAllContainers" | "scanAllContainers" | "containersBehind" | "containerIssues" | "applyingContainers" | "applyAllContainers"
 > = {
-  async listAllContainers(ctx) { assertSelfHosted(); return groupedContainers(ctx.organizationId); },
+  async listAllContainers(ctx) { return groupedContainers(ctx.organizationId); },
   async scanAllContainers(ctx) {
-    assertSelfHosted();
-    await scanOrgContainers(ctx.organizationId, server => authorizedServer(ctx, server.id, "write").then(() => {}));
+      await scanOrgContainers(ctx.organizationId, server => authorizedServer(ctx, server.id, "write").then(() => {}));
     const result = await groupedContainers(ctx.organizationId);
     record(ctx, "*");
     return result;
   },
   async containersBehind(ctx) {
-    assertSelfHosted();
-    const rows = await repos.serverContainerStatus.listBehindByOrg(ctx.organizationId);
+      const rows = await repos.serverContainerStatus.listBehindByOrg(ctx.organizationId);
     return { servers: new Set(rows.map(row => row.serverId)).size, components: rows.length };
   },
-  async containerIssues(ctx) { assertSelfHosted(); return loadOrgContainerIssues(ctx.organizationId); },
+  async containerIssues(ctx) { return loadOrgContainerIssues(ctx.organizationId); },
   applyingContainers: listApplyingContainers,
   async applyAllContainers(ctx, input = {}) {
-    assertSelfHosted();
-    const result = await applyAllContainers(ctx.organizationId, input.intents,
+      const result = await applyAllContainers(ctx.organizationId, input.intents,
       server => authorizedServer(ctx, server.id, "write").then(() => {}));
     record(ctx, "*", {
       intents: input.intents ?? ["update", "repair"],
@@ -57,19 +52,18 @@ export const serverContainerCollection: Pick<ServerDependencies["collection"],
 
 export const serverContainerResources: Pick<ServerDependencies["resources"], "listContainers" | "scanContainers" | "containerApplySession"> = {
   async listContainers(ctx, id) {
-    await requireSelfHostedServer(ctx, id);
+    await requireConnectedServer(ctx, id);
     return repos.serverContainerStatus.listByServer(id);
   },
   async scanContainers(ctx, id) {
-    const server = await requireSelfHostedServer(ctx, id);
-    await assertServerExecution(server);
+    const server = await requireConnectedServer(ctx, id);
     const containers = await detectServerContainers(server).catch((error: unknown) => {
       observeCaughtError(error, "platform/engine/modules/system/server-containers.operations"); throw new Error(`scan failed: ${(error as Error).message}`); });
     record(ctx, id);
     return { ok: true, containers };
   },
   async containerApplySession(ctx, id, input) {
-    await requireSelfHostedServer(ctx, id);
+    await requireConnectedServer(ctx, id);
     const session = getActiveContainerApplySession(id, input.component);
     return session ? { active: true, sessionId: session.id, status: "running", serverId: session.serverId, component: session.component } : { active: false };
   },
@@ -88,7 +82,7 @@ export const serverContainerStreams: NonNullable<ServerDependencies["containers"
     return subscriptionEvents(writer => subscribeContainerApplySession(session.id, writer), signal);
   },
   async events(ctx, id, input, signal) {
-    await requireSelfHostedServer(ctx, id);
+    await requireConnectedServer(ctx, id);
     signal?.throwIfAborted();
     const session = getActiveContainerApplySession(id, input.component);
     if (!session) throw new OperationError("No active session", 404, "NOT_FOUND");
@@ -97,18 +91,18 @@ export const serverContainerStreams: NonNullable<ServerDependencies["containers"
 };
 
 async function groupedContainers(organizationId: string) {
-  const [servers, rows, projectCounts] = await Promise.all([
-    repos.server.listByOrganization(organizationId),
+  const [servers, rows, projectCounts, routedCounts] = await Promise.all([
+    infrastructureServers(organizationId),
     repos.serverContainerStatus.listByOrg(organizationId),
     repos.project.countActiveByServer(organizationId),
+    repos.project.countActiveByServer(organizationId, { withRoutes: true }),
   ]);
   const byServer = new Map<string, typeof rows>();
   for (const r of rows) {
     (byServer.get(r.serverId) ?? byServer.set(r.serverId, []).get(r.serverId)!).push(r);
   }
-  // projectCount rides along so the view can tell an ABSENT edge that's a real
-  // issue (this box hosts projects) from one that's just an offer — the same
-  // rule containerIssues uses — without a second round-trip.
+  // Keep workload counts separate from whether those workloads need routing.
+  // Fleet and detail views share the missing-edge policy with containerIssues.
   return servers.map((s) => ({
     server: {
       id: s.id,
@@ -116,15 +110,15 @@ async function groupedContainers(organizationId: string) {
       sshHost: s.sshHost,
       isLocal: s.isLocal,
       projectCount: projectCounts[s.id] ?? 0,
+      edgeRequired: (routedCounts[s.id] ?? 0) > 0,
     },
     components: byServer.get(s.id) ?? [],
   }));
 }
 
 export async function listApplyingContainers(ctx: ExecutionContext) {
-  assertSelfHosted();
   const [servers, rows] = await Promise.all([
-    repos.server.listByOrganization(ctx.organizationId),
+    infrastructureServers(ctx.organizationId),
     repos.serverContainerStatus.listByOrg(ctx.organizationId),
   ]);
   const names = new Map(servers.map((s) => [s.id, s.name ?? s.sshHost]));

@@ -26,6 +26,7 @@ import { checkEdge } from "../checks";
 import { NginxProvider } from "../../infra/nginx";
 import { detectOpenRestyPaths } from "../../infra/openresty-lua";
 import { rootOrDegrade } from "../privilege";
+import { assertNoSwarmEdge } from "./swarm";
 
 const DOMAIN_RE = /^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$/;
 
@@ -268,9 +269,9 @@ export async function runEdgeTakeover(
   opts: EdgeTakeoverOptions,
   onLog: SystemLogCallback,
 ): Promise<EdgeTakeoverResult> {
+  assertNoSwarmEdge(opts.status);
   const warnings: string[] = [];
   const journal = await buildJournal(executor, opts.status, onLog);
-  await writeJournal(executor, journal);
 
   onLog(log(`Migrating ${opts.sites.length} site(s) from the existing proxy, then taking over 80/443...`));
 
@@ -313,8 +314,11 @@ export async function runEdgeTakeover(
       warnings.push(message);
     },
   });
-  const freed = await freeEdgeTargets(stopExecutor, stopTargetsForStatus(opts.status), (m, l) =>
-    onLog(log(m, l)),
+  const freed = await freeEdgeTargets(
+    stopExecutor,
+    stopTargetsForStatus(opts.status),
+    (m, l) => onLog(log(m, l)),
+    { beforeStop: () => writeJournal(executor, journal) },
   );
   if (!freed.freed) {
     // "I stopped its owner" is not ":80 is bindable". Installing anyway starts an

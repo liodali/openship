@@ -1,3 +1,4 @@
+import { infrastructureServers } from "./server-access";
 import { reportCaughtError as observeCaughtError, diagnostics as errorDiagnostics } from "@repo/core/diagnostics";
 import { refreshMailCertificate } from "../mail/mail-certificate.service";
 /**
@@ -554,7 +555,7 @@ const SCAN_CONCURRENCY = 4;
 export async function scanOrgContainers(organizationId: string, beforeScan?: (server: Server) => Promise<void>): Promise<
   { server: Server; views: ServerContainerView[] }[]
 > {
-  const servers = await repos.server.listByOrganization(organizationId);
+  const servers = await infrastructureServers(organizationId);
   // Pre-seeded so the fan-out fills slots in place and the caller still gets the
   // servers in list order (mapWithLimit resolves void, not results).
   const out = servers.map((server) => ({ server, views: [] as ServerContainerView[] }));
@@ -626,7 +627,7 @@ export async function applyAllContainers(
 ): Promise<{ started: BulkApplyStarted[]; skipped: BulkApplySkipped[] }> {
   const wants = new Set(intents);
   const [servers, rows] = await Promise.all([
-    repos.server.listByOrganization(organizationId),
+    infrastructureServers(organizationId),
     repos.serverContainerStatus.listByOrg(organizationId),
   ]);
   const byId = new Map(servers.map((s) => [s.id, s]));
@@ -820,7 +821,7 @@ interface IssueRow {
  * the cached rows + the active-deployment→server project attribution.
  *
  * An edge is an issue when it's `down` (installed, not running) or ABSENT on a box
- * that actually hosts projects (projectCounts > 0) — absent on an empty box is an
+ * that hosts routed projects (projectCounts > 0) — absent on an empty box is an
  * offer, not an alarm. A mail engine is an issue only when a TRACKED row says it's
  * down: mail is optional per box, so no row means no mail here (never an alarm),
  * but a provisioned engine that stopped means mail isn't being delivered.
@@ -888,9 +889,9 @@ export async function loadOrgContainerIssues(
   organizationId: string,
 ): Promise<ContainerIssuesResult> {
   const [servers, rows, projectCounts] = await Promise.all([
-    repos.server.listByOrganization(organizationId),
+    infrastructureServers(organizationId),
     repos.serverContainerStatus.listByOrg(organizationId),
-    repos.project.countActiveByServer(organizationId),
+    repos.project.countActiveByServer(organizationId, { withRoutes: true }),
   ]);
   return classifyContainerIssues(servers, rows, projectCounts);
 }

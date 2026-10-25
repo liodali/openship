@@ -15,8 +15,9 @@ import { healthRoutes } from "../../../src/modules/health/health.routes";
 
 const app = new Hono().onError(handleApiError).route("/api/health", healthRoutes).route("/api/system", serverResourceRoutes).route("/api/system", serverManagementRoutes);
 
-async function clients() {
-  const owner = await seedOwner();
+let foundingOwner: Awaited<ReturnType<typeof seedOwner>> | undefined;
+async function clients(separateWorkspace = false) {
+  const owner = separateWorkspace ? await seedOwner() : (foundingOwner ??= await seedOwner());
   const user = (await repos.user.findById(owner.userId))!;
   const ship = createShip({ platform: getPlatformKernel(), identity: { resolve: async () => ({ user: { id: user.id, email: user.email, name: user.name }, sessionId: "ssh-transport-test" }) } });
   const native = (await ship.scope({ identity: "verified", organizationId: owner.orgId })).servers;
@@ -68,7 +69,7 @@ describe("saved Cloudflare SSH through HTTP and native SDK", () => {
 
   it("keeps Cloudflare servers organization-scoped", async () => {
     const first = await clients();
-    const second = await clients();
+    const second = await clients(true);
     const server = await first.remote.create({ sshHost: "ssh.example.test", sshTransport: "cloudflare" });
     for (const client of [second.native, second.remote]) {
       await expect(client.get(server.id)).rejects.toMatchObject({ code: "NOT_FOUND" });

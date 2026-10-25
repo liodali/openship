@@ -9,6 +9,9 @@ import { Button } from "@/components/ui/button";
 import { servicesApi, type Service, type ServiceVolumeSizes } from "@/lib/api/services";
 import { getApiErrorMessage } from "@/lib/api/client";
 import { formatBytes } from "@/lib/formatBytes";
+import DropdownMenu from "@/components/ui/DropdownMenu";
+import { EmptyVolumeDialog, type EmptyVolumeResult } from "./EmptyVolumeDialog";
+import { emptyVolumePlan, type EmptyVolumePlan } from "./empty-volume-plan";
 import { formatVolumeMount, parseVolumeMount, parseVolumeSpec, type VolumeMount } from "@repo/core";
 
 export function ServiceVolumesPanel({
@@ -19,6 +22,8 @@ export function ServiceVolumesPanel({
   onBackup,
   backupBusy,
   backupFeedback,
+  operationBusy = false,
+  onResetVolumes,
 }: {
   service: Service;
   projectId: string;
@@ -27,6 +32,8 @@ export function ServiceVolumesPanel({
   onBackup?: () => void;
   backupBusy?: boolean;
   backupFeedback?: ReactNode;
+  operationBusy?: boolean;
+  onResetVolumes?: (volumes: string[], configured: boolean) => Promise<EmptyVolumeResult>;
 }) {
   const { t } = useI18n();
   const copy = t.projectDetail.services.detail.storage;
@@ -41,6 +48,7 @@ export function ServiceVolumesPanel({
   const [draft, setDraft] = useState<VolumeMount[]>([]);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [resetPlan, setResetPlan] = useState<EmptyVolumePlan | null>(null);
 
   // Mounted only in Volumes. A failed measurement waits for an explicit retry;
   // request state is deliberately not an effect dependency.
@@ -97,7 +105,7 @@ export function ServiceVolumesPanel({
   };
 
   return (
-    <section className="overflow-hidden rounded-2xl border border-border/50 bg-card">
+    <section className="rounded-2xl border border-border/50 bg-card">
       <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-4">
         <div>
           <h3 className="inline-flex items-center gap-2 text-sm font-semibold text-foreground">
@@ -108,7 +116,7 @@ export function ServiceVolumesPanel({
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {onBackup && mounts.length > 0 && !editing && (
-            <Button variant="outline" size="sm" disabled={backupBusy} onClick={onBackup}>
+            <Button variant="outline" size="sm" disabled={backupBusy || operationBusy} onClick={onBackup}>
               {backupBusy ? (
                 <UiIcon name="spinner" className="size-4 animate-spin" />
               ) : (
@@ -118,7 +126,7 @@ export function ServiceVolumesPanel({
             </Button>
           )}
           {!editing && (
-            <Button variant="outline" size="sm" onClick={startEditing}>
+            <Button variant="outline" size="sm" disabled={operationBusy} onClick={startEditing}>
               {mounts.length ? <UiIcon name="edit" className="size-4" /> : <UiIcon name="plus" className="size-4" />}
               {mounts.length ? copy.edit : copy.add}
             </Button>
@@ -128,7 +136,7 @@ export function ServiceVolumesPanel({
 
       {editing ? (
         <form onSubmit={save} className="space-y-4 border-t border-border/40 p-5">
-          <fieldset disabled={saving} className="space-y-3">
+          <fieldset disabled={saving || operationBusy} className="space-y-3">
             {draft.map((mount, index) => {
               const label = interpolate(copy.mountLabel, { n: String(index + 1) });
               return (
@@ -302,6 +310,14 @@ export function ServiceVolumesPanel({
                       "—"
                     )}
                   </span>
+                  {onResetVolumes && parsed.kind === "named" && !parsed.readOnly && (
+                    <DropdownMenu triggerLabel={copy.emptyVolume.menu} disabled={operationBusy}
+                      menuClassName="w-[min(22rem,calc(100vw-2rem))] min-w-0 [&_button>span]:whitespace-normal"
+                      actions={[{ id: "empty-volume", label: copy.emptyVolume.title,
+                        icon: <UiIcon name="refresh" className="size-4" />,
+                        onClick: () => setResetPlan(emptyVolumePlan(mounts, mount)),
+                      }]} />
+                  )}
                 </li>
               );
             })}
@@ -313,6 +329,9 @@ export function ServiceVolumesPanel({
           <p className="text-sm font-medium text-foreground">{copy.emptyTitle}</p>
           <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">{copy.emptyDescription}</p>
         </div>
+      )}
+      {resetPlan && onResetVolumes && (
+        <EmptyVolumeDialog name={service.name} plan={resetPlan} onReset={onResetVolumes} onClose={() => setResetPlan(null)} />
       )}
       {backupFeedback && (
         <div className="space-y-3 border-t border-border/40 p-5">{backupFeedback}</div>

@@ -38,7 +38,7 @@ const c = baseDictionary.servers.runtime;
 function cluster(): ComputeCluster {
   const runtime = clusterRuntimeFixture();
   const network = serverClusterFixture();
-  network.id = runtime.plan.networkId;
+  network.id = runtime.plan.networkId!;
   network.members = runtime.plan.hosts.map((host) => ({
     serverId: host.serverId,
     name: host.name,

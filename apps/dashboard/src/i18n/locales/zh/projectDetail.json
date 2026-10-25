@@ -135,7 +135,23 @@
       },
       "cloudConnectTitle": "需要托管数据库或对象存储吗？",
       "cloudConnectBody": "连接 Openship Cloud，在此项目旁配置无服务器 Postgres、Redis 和兼容 S3 的存储桶。",
-      "cloudConnectButton": "浏览 Cloud 附加组件"
+      "cloudConnectButton": "浏览 Cloud 附加组件",
+      "repositorySource": {
+        "catalog": "目录",
+        "title": "从仓库构建",
+        "subtitle": "选择现成的服务、从仓库构建或连接已有服务。",
+        "context": "构建上下文",
+        "dockerfile": "Dockerfile",
+        "browseContext": "浏览文件夹",
+        "browseDockerfile": "浏览文件",
+        "pathHint": "两个路径均从仓库根目录开始。Dockerfile 必须位于构建上下文内。",
+        "deployHint": "保存服务后部署，使用此项目的源代码和目标构建镜像。",
+        "noRepository": "将 GitHub 仓库连接到此项目，以从代码构建服务。",
+        "connectRepository": "连接仓库",
+        "invalidPath": "请输入不含“..”、反斜杠或开头斜杠的仓库相对路径。",
+        "outsideContext": "Dockerfile 必须位于构建上下文内。请选择包含它的上级文件夹。",
+        "noMatches": "尝试其他搜索或分类，或选择自定义镜像。"
+      }
     },
     "detail": {
       "tabs": {
@@ -185,27 +201,29 @@
         "loadFailed": "无法加载已保存的环境变量。你的变量未被更改。",
         "checkFailed": "无法与运行中的服务比较。已保存的变量仍然可用。",
         "checking": "正在与运行中的服务比较…",
-        "check": "检查运行中的服务",
+        "check": "重新检查",
         "reload": "重新加载环境变量",
         "removeOverride": "删除覆盖值（可能恢复为继承的值）",
         "removeAtSource": "请在 Compose 或项目设置中删除继承的变量。在此设置服务覆盖值以更改其值。",
         "status": {
           "unchecked": "尚未检查运行中的环境变量。",
           "synced": "运行中的服务与已保存的环境变量一致。",
-          "pending": "以下已保存的环境变量更改尚未应用到运行中的服务：",
+          "pending": "更改已保存。应用后将使用新值重启此服务。",
           "unavailable": "无法检查运行中的环境变量。",
           "not-deployed": "这些变量将在此服务部署时使用。",
           "unsupported": "请重新部署此服务以应用已保存的环境变量。"
         },
-        "recoveryHint": "运行中的容器包含尚未保存在 Openship 中的变量。如果希望保留它们，请在应用前恢复：",
-        "recover": "从运行中的服务恢复",
-        "removeRuntime": "不恢复这些变量并直接应用；从运行中的服务中删除它们。",
-        "recovered": "已从运行中的服务恢复 — 尚未保存",
-        "recoveredHint": "恢复的值已准备好供你检查。请保存以将其保留在 Openship 中。",
-        "recoveryFailed": "无法从运行中的服务恢复变量。已保存的变量未被更改。"
+        "recoveryHint": "如果不先复制并保存，这些值将在应用时移除。",
+        "recover": "复制到编辑器",
+        "removeRuntime": "应用时移除这些值。",
+        "recovered": "已从容器复制 — 请保存以保留",
+        "recoveredHint": "已复制到编辑器。请检查这些值，然后保存。",
+        "recoveryFailed": "无法从运行中的服务恢复变量。已保存的变量未被更改。",
+        "changedLabel": "将更新的值",
+        "recoveryTitle": "仅存在于容器中的变量"
       },
       "environmentApply": {
-        "title": "应用环境更改",
+        "title": "应用并重启",
         "applying": "正在应用更改…",
         "applied": "环境变量更改已应用",
         "hint": "无需重新构建即可将已保存的变量应用到此服务。服务将重新启动。",
@@ -317,7 +335,20 @@
         "automaticStorage": "自动管理",
         "invalidMount": "服务内的路径必须以 / 开头。路径和存储卷名称不能包含 :。",
         "mountTooLong": "每个存储卷条目不得超过 500 个字符。",
-        "saveAndBackup": "保存并备份"
+        "saveAndBackup": "保存并备份",
+        "emptyVolume": {
+          "menu": "卷操作",
+          "title": "使用空存储启动",
+          "description": "此服务将使用新卷重新部署。原有数据和备份将保留。",
+          "retained": "原有卷 — 保留",
+          "newVolume": "新的空卷",
+          "recoveryHint": "如需恢复原有数据，请编辑此挂载并改回原有卷名。使用旧卷的其他服务不受影响。",
+          "confirm": "输入 {name} 以确认",
+          "action": "保存并重新部署",
+          "retry": "重试部署",
+          "retryHint": "新卷设置已保存，但部署尚未开始。请重试。运行中的服务仍使用原有卷。",
+          "failed": "无法准备空存储。未删除任何数据。"
+        }
       },
       "internalAddress": "内部地址",
       "internalAddressHint": "此项目中的容器在此处访问此服务",

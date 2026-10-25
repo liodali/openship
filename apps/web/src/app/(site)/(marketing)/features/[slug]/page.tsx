@@ -1,4 +1,5 @@
-import type { Metadata } from "next";
+import type { Metadata, ResolvingMetadata } from "next";
+import { inheritSocialImages } from "@/lib/social-metadata";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ArrowLeft, ArrowRight, Check } from "lucide-react";
@@ -13,12 +14,15 @@ export function generateStaticParams() {
   return FEATURES.map((f) => ({ slug: f.slug }));
 }
 
-export async function generateMetadata({ params }: { params: Params }): Promise<Metadata> {
+export async function generateMetadata(
+  { params }: { params: Params },
+  parent: ResolvingMetadata,
+): Promise<Metadata> {
   const { slug } = await params;
   const f = getFeature(slug);
   if (!f) return { title: "Feature — Openship" };
   const title = `${f.title} — Features`;
-  return {
+  const metadata: Metadata = {
     title,
     description: f.summary,
     alternates: { canonical: `/features/${f.slug}` },
@@ -34,6 +38,7 @@ export async function generateMetadata({ params }: { params: Params }): Promise<
       description: f.summary,
     },
   };
+  return inheritSocialImages(metadata, parent);
 }
 
 export default async function FeatureDetailPage({ params }: { params: Params }) {

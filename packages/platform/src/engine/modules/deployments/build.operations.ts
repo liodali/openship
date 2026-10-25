@@ -1,4 +1,5 @@
 import { reportCaughtError as observeCaughtError } from "@repo/core/diagnostics";
+import { join } from "node:path";
 import { assertCloudProxyScope } from "../../lib/cloud/scope";
 import { AppError, NotFoundError, ValidationError, CLOUD_UNREACHABLE_CODE } from "@repo/core";
 import { isAcceptedDeploymentResult, type PrepareDeploymentInput } from "@repo/contracts";
@@ -25,13 +26,25 @@ async function preparationSource(ctx: ExecutionContext, body: PrepareDeploymentI
       const { ok } = await checkSourceTier(ctx, { owner: body.owner, repo: body.repo }, "content-whole", "");
       if (!ok) throw new NotFoundError("github", `${body.owner}/${body.repo}`);
     }
-    return { source, owner: body.owner, repo: body.repo, branch: body.branch, ctx, composePath, env: envVars };
+    return {
+      source,
+      owner: body.owner,
+      repo: body.repo,
+      branch: body.branch,
+      ctx,
+      composePath,
+      rootDirectory: body.rootDirectory,
+      env: envVars,
+    };
   }
   if (source === "local") {
     if (env.CLOUD_MODE) throw new AppError("Local projects are not available in cloud mode", 403);
     if (!body.path) throw new ValidationError("path is required");
-    const path = process.env.OPENSHIP_NATIVE === "true" ? await assertNativeSourcePath(body.path) : body.path;
-    return { source, path, composePath, env: envVars };
+    const native = process.env.OPENSHIP_NATIVE === "true";
+    const path = native ? await assertNativeSourcePath(body.path) : body.path;
+    // A relative folder can resolve through a symlink beyond the approved roots.
+    if (native && body.rootDirectory) await assertNativeSourcePath(join(path, body.rootDirectory));
+    return { source, path, composePath, rootDirectory: body.rootDirectory, env: envVars };
   }
   throw new ValidationError("source must be 'github' or 'local'");
 }

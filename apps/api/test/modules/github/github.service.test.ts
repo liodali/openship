@@ -73,6 +73,14 @@ describe("listRepositoryTree", () => {
     githubFetch.mockReset();
   });
 
+  it("refuses truncated catalogs when an impact decision requires a complete tree", async () => {
+    githubFetch.mockResolvedValue({ tree: [{ path: "apps/admin/package.json", type: "blob" }], truncated: true });
+    const signal = new AbortController().signal;
+    await expect(listRepositoryTree(ctx, "acme", "shop", { branch: "a".repeat(40), requireComplete: true, signal })).rejects.toThrow("incomplete repository tree");
+    expect(githubFetch).toHaveBeenCalledOnce();
+    expect(githubFetch.mock.calls[0]![0]).toMatchObject({ signal });
+  });
+
   it("falls back to repository contents when the recursive git tree is truncated", async () => {
     githubFetch.mockImplementation(async ({ url }: { url: string }) => {
       if (url.includes("/git/trees/")) {

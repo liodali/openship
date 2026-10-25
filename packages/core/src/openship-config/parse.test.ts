@@ -92,6 +92,55 @@ describe("parseOpenshipConfig", () => {
     expect(config?.services?.[0]?.resources).toMatchObject({ memoryMb: 4096 });
   });
 
+  it("accepts a per-service swap opt-in with a memory limit", () => {
+    const { errors, config } = parseOpenshipConfig({
+      services: [{ name: "api", image: "x", resources: { memoryMb: 1024, swapDisabled: true } }],
+    });
+    expect(errors).toEqual([]);
+    expect(config?.services?.[0]?.resources).toMatchObject({
+      memoryMb: 1024,
+      swapDisabled: true,
+    });
+  });
+
+  it("accepts a per-service swap opt-in inheriting the project memory limit", () => {
+    const { errors, config } = parseOpenshipConfig({
+      resources: { memoryMb: 2048 },
+      services: [{ name: "api", image: "x", resources: { swapDisabled: true } }],
+    });
+    expect(errors).toEqual([]);
+    expect(config?.services?.[0]?.resources?.swapDisabled).toBe(true);
+  });
+
+  it("preserves an explicit swap opt-out without requiring memory", () => {
+    const { errors, config } = parseOpenshipConfig({
+      services: [{ name: "api", image: "x", resources: { swapDisabled: false } }],
+    });
+    expect(errors).toEqual([]);
+    expect(config?.services?.[0]?.resources?.swapDisabled).toBe(false);
+  });
+
+  it("rejects swap-disabled services with an explicit zero memory limit", () => {
+    const { errors } = parseOpenshipConfig({
+      services: [{ name: "api", image: "x", resources: { memoryMb: 0, swapDisabled: true } }],
+    });
+    expect(errors.some((e) => e.includes("resources.swapDisabled"))).toBe(true);
+  });
+
+  it("rejects swap-disabled services with no effective memory limit", () => {
+    const { errors } = parseOpenshipConfig({
+      services: [{ name: "api", image: "x", resources: { swapDisabled: true } }],
+    });
+    expect(errors.some((e) => e.includes("resources.swapDisabled"))).toBe(true);
+  });
+
+  it("rejects swapDisabled at the project level (it is per-service)", () => {
+    const { errors } = parseOpenshipConfig({
+      resources: { memoryMb: 1024, swapDisabled: true },
+    });
+    expect(errors.some((e) => e.includes("resources.swapDisabled"))).toBe(true);
+  });
+
   it("coerces a string port and validates env value shape", () => {
     const ok = parseOpenshipConfig({ port: "8080", env: { A: "1" } });
     expect(ok.errors).toEqual([]);
@@ -777,5 +826,28 @@ describe("parseOpenshipConfig", () => {
       const { errors } = parseOpenshipConfig({ optimize: "yes" });
       expect(errors.some((e) => e.startsWith("optimize:"))).toBe(true);
     });
+  });
+});
+
+
+describe("automatic deploy path overrides", () => {
+  it("accepts repo-relative includes and exclusions", () => {
+    const parsed = parseOpenshipConfig({
+      autoDeployPaths: { include: ["apps/web/**", "shared/**"], exclude: ["**/*.md"] },
+    });
+    expect(parsed.errors).toEqual([]);
+    expect(parsed.warnings).toEqual([]);
+    expect(parsed.config?.autoDeployPaths).toEqual({
+      include: ["apps/web/**", "shared/**"],
+      exclude: ["**/*.md"],
+    });
+  });
+  it("bounds pattern counts and rejects wrong types", () => {
+    for (const autoDeployPaths of [
+      { include: Array(51).fill("src/**") },
+      { exclude: "src/**" },
+      [],
+    ])
+      expect(parseOpenshipConfig({ autoDeployPaths }).errors.length).toBeGreaterThan(0);
   });
 });

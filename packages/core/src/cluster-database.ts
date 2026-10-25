@@ -20,20 +20,31 @@ export const CLUSTER_DATABASE_TEMPLATES = [
     operator: "Redis Operator",
     port: 6379,
     envKey: "REDIS_URL",
-    modes: ["standalone", "cluster"],
+    modes: ["standalone", "replication", "cluster"],
+    replicationDescription:
+      "One primary with replicas and three Sentinel voters for automatic failover.",
     clusterDescription:
       "Three or more shards, each with a replica. Requires a Redis Cluster client.",
     clusterAwareClient: true,
   },
 ] as const;
 
+/** Operator-managed databases require the Kubernetes control and storage APIs. */
+export function clusterDatabaseUnsupportedReason(
+  provider: "k3s" | "swarm" | undefined,
+): string | null {
+  return provider === "swarm"
+    ? "Managed database replication requires Kubernetes. Swarm application replicas do not synchronize database data. Choose a Kubernetes cluster for this database."
+    : null;
+}
+
 export type ClusterDatabaseEngine = "postgres" | "redis";
 export interface ClusterDatabaseConfig {
   engine: ClusterDatabaseEngine;
   /** Omitted on existing databases; their PostgreSQL major remains 17. */
   version?: "17" | "18";
-  mode: "standalone" | "cluster";
-  /** PostgreSQL instances, or Redis shards (one follower per shard). */
+  mode: "standalone" | "replication" | "cluster";
+  /** Data members for PostgreSQL/Redis replication, or Redis Cluster shards (one follower each). */
   instances: number;
   storageGiB: number;
   storageClass: string;
@@ -45,6 +56,20 @@ export interface ClusterDatabaseConfig {
     schedule: "daily" | "hourly" | "manual";
     retentionDays: number;
   };
+}
+/** A reader connection routes to replicas; it does not make its credentials read-only. */
+export type ClusterDatabaseConnectionTarget = "write" | "read";
+export const clusterDatabaseConnectionOutputId = (
+  id: string,
+  target: ClusterDatabaseConnectionTarget = "write",
+) => `cluster-database:${id}${target === "read" ? ":read" : ""}`;
+export function clusterDatabaseConnectionTarget(id: string, outputId: string) {
+  if (outputId === clusterDatabaseConnectionOutputId(id)) return "write" as const;
+  if (outputId === clusterDatabaseConnectionOutputId(id, "read")) return "read" as const;
+  return null;
+}
+export function clusterDatabaseHasReaders(config: ClusterDatabaseConfig) {
+  return config.engine === "postgres" && config.mode === "cluster" && config.instances > 1;
 }
 /** Server-derived restore identity; the client never supplies archive paths. */
 export interface ClusterDatabaseRestoreSource {
@@ -156,6 +181,7 @@ export const clusterDatabaseRunning = (status: string) =>
   status === "provisioning" || status === "deleting";
 export const CLUSTER_DATABASE_LEASE_MS = 90_000;
 
+/** Persistent data pods. Redis replication also has three small Sentinel voters. */
 export function clusterDatabasePodCount(config: ClusterDatabaseConfig): number {
   return config.instances * (config.engine === "redis" && config.mode === "cluster" ? 2 : 1);
 }
@@ -171,15 +197,20 @@ export function validateClusterDatabase(config: ClusterDatabaseConfig): void {
     (config.engine !== "postgres" || !["17", "18"].includes(config.version))
   )
     invalid("Choose PostgreSQL 17 or 18. Redis uses the supported version supplied by OpenShip.");
-  if (!["standalone", "cluster"].includes(config.mode)) invalid("Choose standalone or cluster.");
+  if (
+    !["standalone", "cluster", ...(config.engine === "redis" ? ["replication"] : [])].includes(
+      config.mode,
+    )
+  )
+    invalid("Choose a supported database topology.");
   if (
     !Number.isInteger(config.instances) ||
     (config.mode === "standalone"
       ? config.instances !== 1
-      : config.instances < 3 || config.instances > 9)
+      : config.instances < (config.engine === "postgres" ? 2 : 3) || config.instances > 9)
   )
     invalid(
-      "Standalone databases use one instance. Clusters need between 3 and 9 instances or shards.",
+      "Standalone databases use one instance. PostgreSQL needs 2–9 instances; Redis replication needs 3–9 data members; Redis Cluster needs 3–9 shards.",
     );
   if (!Number.isInteger(config.storageGiB) || config.storageGiB < 1 || config.storageGiB > 16384)
     invalid("Choose between 1 and 16384 GiB of storage per instance.");
@@ -213,7 +244,7 @@ export function validateClusterDatabase(config: ClusterDatabaseConfig): void {
   }
 }
 
-/** No silent topology conversion or data redistribution. */
+/** PostgreSQL keeps the same operator resource; Redis topology conversion needs data migration. */
 export function validateClusterDatabaseUpdate(
   before: ClusterDatabaseConfig,
   after: ClusterDatabaseConfig,
@@ -230,7 +261,7 @@ export function validateClusterDatabaseUpdate(
       "CLUSTER_DATABASE_IMMUTABLE",
     );
   if (
-    ["engine", "mode", "storageClass", "databaseName"].some(
+    ["engine", "storageClass", "databaseName", ...(before.engine === "redis" ? ["mode"] : [])].some(
       (key) =>
         before[key as keyof ClusterDatabaseConfig] !== after[key as keyof ClusterDatabaseConfig],
     )
@@ -248,13 +279,27 @@ export function validateClusterDatabaseUpdate(
       422,
       "CLUSTER_DATABASE_IMMUTABLE",
     );
+  if (
+    before.engine === "redis" &&
+    before.mode === "replication" &&
+    after.instances < before.instances
+  )
+    throw new AppError(
+      "Redis replication members cannot be removed in place yet. Create a smaller verified copy and switch its connection after review.",
+      422,
+      "CLUSTER_DATABASE_IMMUTABLE",
+    );
   if (after.engine === "redis" && after.storageGiB !== before.storageGiB)
     throw new AppError(
       "Redis volume resizing is not supported by this template yet. Keep the existing storage size.",
       422,
       "CLUSTER_DATABASE_IMMUTABLE",
     );
-  if (after.engine === "redis" && after.instances !== before.instances) {
+  if (
+    after.engine === "redis" &&
+    after.mode === "cluster" &&
+    after.instances !== before.instances
+  ) {
     if (!review?.confirmRedisRebalance)
       throw new AppError(
         "Review and confirm the Redis data migration before changing its shard count.",

@@ -4,6 +4,7 @@ import {
   decodeResources,
   encodeResources,
   resolveBuildResources,
+  resolveInheritedResources,
   resolveRuntimeResources,
   withDefaults,
 } from "@repo/platform/engine/lib/resources";
@@ -175,5 +176,16 @@ describe("withDefaults", () => {
       memoryMb: 0,
       diskMb: 0,
     });
+  });
+});
+
+
+describe("service swap inheritance", () => {
+  const project = { cpuCores: 1, memoryMb: 1024, diskMb: 0, swapDisabled: true };
+  it.each([null, undefined, {}])("never inherits a project-level swap setting (%j)", own => {
+    expect(resolveInheritedResources(own, project)).toEqual({ cpuCores: 1, memoryMb: 1024, diskMb: 0 });
+  });
+  it("keeps an explicit service opt-in while inheriting numeric limits", () => {
+    expect(resolveInheritedResources({ swapDisabled: true }, project)).toEqual({ ...project });
   });
 });

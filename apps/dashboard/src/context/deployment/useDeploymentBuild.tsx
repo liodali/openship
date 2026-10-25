@@ -1,5 +1,8 @@
 "use client";
 
+import { serializeMonorepoApp } from "./monorepo-config";
+import { persistRouteProtectionDrafts, clearRouteProtectionDrafts } from "./route-protection-drafts";
+
 import { actionsApi } from "@/lib/api/actions";
 import { reportCaughtError as observeCaughtError, diagnostics as errorDiagnostics } from "@repo/core/diagnostics";
 import type { IconName } from "@repo/ui/icons";
@@ -14,7 +17,9 @@ import { useModal } from "@/context/ModalContext";
 import { useGitHub } from "@/context/GitHubContext";
 import type { BuildLog } from "@/utils/deploymentPhaseDetector";
 import { useBuildStream } from "@/hooks/useSSEConnection";
-import { deployApi, projectsApi } from "@/lib/api";
+import { deployApi, projectsApi, servicesApi } from "@/lib/api";
+import { serializeComposeService } from "./compose-service-payload";
+import { serviceEnvironmentChanges } from "@/lib/service-environment-editor";
 import { randomUUID } from "@/lib/random-uuid";
 import { redirectPayloadFields } from "@/lib/public-endpoint-payload";
 import { invalidateProjectCaches } from "@/hooks/useProjectEndpoints";
@@ -228,6 +233,17 @@ const STEPS: { label: string; icon: IconName }[] = [
  * Receives `config` (read-only) and `setConfig` (for loadBuildSession which
  * restores config from the API).
  */
+async function persistServiceEnvironmentDrafts(projectId: string, services: DeploymentConfig["services"]) {
+  for (const service of services) {
+    const draft = service.environmentDraft;
+    if (!draft || !service.serviceId) continue;
+    const changes = serviceEnvironmentChanges(draft.baseline, draft.rows);
+    if (!changes.upserts.length && !changes.deletes.length) continue;
+    const result = await servicesApi.mergeEnv(projectId, service.serviceId, { environment: draft.environment, ...changes });
+    if (!result.success) throw new Error("Failed to save service environment");
+  }
+}
+
 export function useDeploymentBuild(
   config: DeploymentConfig,
   setConfig: React.Dispatch<React.SetStateAction<DeploymentConfig>>,
@@ -354,6 +370,8 @@ export function useDeploymentBuild(
         queue: null,
         failureMessage: "",
         warningMessage,
+        errorCode: data?.errorCode || "",
+        errorDetails: data?.errorDetails ?? null,
         // THE SERVER'S FLAG ONLY. Never inferred from the presence of a warning.
         //
         // This used to read `?? !!warningMessage`, on the premise that "a warning on success means
@@ -686,6 +704,16 @@ export function useDeploymentBuild(
       return null;
     }
 
+    if (
+      !saveConfigOnly &&
+      config.projectType === "monorepo" &&
+      config.serviceDeploymentMode !== "single" &&
+      !config.monorepoApps?.some((app) => app.enabled)
+    ) {
+      showToast("Choose at least one app to deploy", "error", "Apps");
+      return null;
+    }
+
     const envPlan = planDeploymentEnvPersistence({
       projectId: config.projectId,
       envVars: config.envVars,
@@ -719,6 +747,8 @@ export function useDeploymentBuild(
         deploymentFailed: false,
         deploymentCanceled: false,
         cancellationPending: false,
+        completionPending: false,
+        canRetryDeployment: false,
         failureMessage: "",
         warningMessage: "",
         decisionPending: false,
@@ -749,9 +779,9 @@ export function useDeploymentBuild(
 
     try {
       // ── Save-only (Edit from the Runtime page): the project ALREADY exists,
-      // so persist build + runtime config through POST /:id/options and STOP.
-      // Deliberately does NOT call `ensure` (which would resend git + routes + a
-      // re-detected framework). Env uses the shared per-key merge contract:
+      // so persist build + runtime config through POST /:id/options. Monorepo
+      // app settings use the existing ensure contract with only those fields;
+      // no repository rescan or deployment. Env uses the shared per-key merge contract:
       // untouched masked secrets are omitted and explicit edits are persisted
       // before success is reported. No deploy. ────────────────────────────────
       if (saveConfigOnly) {
@@ -761,6 +791,8 @@ export function useDeploymentBuild(
           return null;
         }
         try {
+          const savedProtection = await persistRouteProtectionDrafts(projectId, config);
+          if (savedProtection.size) setConfig(prev => syncActiveModeSnapshot(clearRouteProtectionDrafts(prev, savedProtection)));
           await projectsApi.setOptions(projectId, {
             ...(!isSourceless ? { gitBranch: config.branch } : {}),
             framework: config.framework,
@@ -791,7 +823,22 @@ export function useDeploymentBuild(
               ? { runtimeMode: config.runtimeMode }
               : {}),
           });
+          if (config.projectType === "monorepo") {
+            const saved = await projectsApi.ensure({
+              projectId,
+              name: config.projectName,
+              projectType: "monorepo",
+              monorepoApps: (config.monorepoApps ?? []).map(serializeMonorepoApp),
+              monorepoWorkspace: config.monorepoWorkspace,
+            });
+            if (!saved.success) throw new Error("Failed to save app configuration");
+          }
           await persistProjectEnvDiff(projectId, envPlan.merge);
+          if (usesServiceDeployment(config)) {
+            const synced = await servicesApi.sync(projectId, config.services.map(serializeComposeService));
+            if (!synced.success) throw new Error("Failed to save service configuration");
+            await persistServiceEnvironmentDrafts(projectId, config.services);
+          }
           if (config.actions) await actionsApi.updateProjectPolicy({ ...config.actions, projectId });
           showToast("Configuration saved", "success", "Saved");
           return projectId;
@@ -804,6 +851,11 @@ export function useDeploymentBuild(
 
       const isServiceDeployment = usesServiceDeployment(config);
       const isMonorepoDeployment = config.projectType === "monorepo";
+      // Single-app mode keeps the monorepo source type, but owns project routes.
+      // Omission delegates routing to service rows; [] explicitly stays private.
+      const usesProjectRoutes =
+        !isServiceDeployment &&
+        (!isMonorepoDeployment || config.serviceDeploymentMode === "single");
 
       // Step 1: Ensure project exists
       const projectData = await projectsApi.ensure({
@@ -841,7 +893,7 @@ export function useDeploymentBuild(
         // "None" routing → explicit [] so ensure() doesn't PERSIST a stale free
         // subdomain onto the project row (this runs before the buildAccess
         // payload below, which already handles None the same way).
-        publicEndpoints: !isServiceDeployment && !isMonorepoDeployment
+        publicEndpoints: usesProjectRoutes
           ? config.noPublicRoute
             ? []
             : config.publicEndpoints.map((endpoint) => (
@@ -859,20 +911,7 @@ export function useDeploymentBuild(
         // Monorepo: persist the per-sub-app slices + shared workspace install.
         projectType: isMonorepoDeployment ? "monorepo" : undefined,
         monorepoApps: isMonorepoDeployment
-          ? (config.monorepoApps ?? []).map((app) => ({
-              name: app.name,
-              rootDirectory: app.rootDirectory,
-              framework: app.framework,
-              packageManager: app.packageManager,
-              buildImage: app.buildImage,
-              installCommand: app.installCommand || undefined,
-              buildCommand: app.buildCommand || undefined,
-              startCommand: app.startCommand || undefined,
-              outputDirectory: app.outputDirectory || undefined,
-              port: app.port ? Number(app.port) : undefined,
-              enabled: app.enabled,
-              exposed: true,
-            }))
+          ? (config.monorepoApps ?? []).map(serializeMonorepoApp)
           : undefined,
         monorepoWorkspace: isMonorepoDeployment && config.monorepoWorkspace
           ? {
@@ -904,6 +943,8 @@ export function useDeploymentBuild(
       ensuredDraftRef.current = { key: draftKey, id: projectData.project_id };
       // Configure automation before any build is started. A failed setup keeps
       // the draft project recoverable through the existing deployment error path.
+      const savedProtection = await persistRouteProtectionDrafts(projectData.project_id!, config);
+      if (savedProtection.size) setConfig(prev => syncActiveModeSnapshot(clearRouteProtectionDrafts(prev, savedProtection)));
       if (config.actions) await actionsApi.updateProjectPolicy({ ...config.actions, projectId: projectData.project_id! });
 
       let resolvedEnvPlan = envPlan;
@@ -929,6 +970,7 @@ export function useDeploymentBuild(
       // the endpoint's legacy full-replace behavior. A genuinely new project
       // still sends its initial values through build/access to create the store.
       await persistProjectEnvDiff(projectData.project_id, resolvedEnvPlan.merge);
+      if (usesServiceDeployment(config) && config.projectId === projectData.project_id) await persistServiceEnvironmentDrafts(projectData.project_id, config.services);
 
       // Step 2: Create deployment with config snapshot + env vars
       const data = await deployApi.buildAccess({
@@ -940,7 +982,7 @@ export function useDeploymentBuild(
         sourceEnvKeys: resolvedEnvPlan.sourceEnvKeys,
         // "None" routing → explicit [] (no public URL). Must be [], not
         // undefined: undefined makes the backend auto-derive a free subdomain.
-        publicEndpoints: !isServiceDeployment
+        publicEndpoints: usesProjectRoutes
           ? config.noPublicRoute
             ? []
             : config.publicEndpoints.map((endpoint) => (
@@ -990,33 +1032,7 @@ export function useDeploymentBuild(
             ? config.cloudResourceCustom
             : undefined,
         services: isServiceDeployment
-          ? config.services.map((service) => ({
-              name: service.name,
-              image: service.image,
-              build: service.build,
-              dockerfile: service.dockerfile,
-              buildArgs: service.buildArgs,
-              advanced: service.advanced,
-              ports: service.ports,
-              dependsOn: service.dependsOn,
-              environment: service.environment,
-              volumes: service.volumes,
-              command: service.command,
-              restart: service.restart,
-              exposed: service.exposed,
-              exposedPort: service.exposedPort,
-              domain: service.domain,
-              customDomain: service.customDomain,
-              domainType: service.domainType,
-              // Multi-route: one entry per public port. Drop the UI-only id/
-              // targetPath; the backend mirrors entry[0] → the scalar fields.
-              publicEndpoints: service.publicEndpoints?.map((endpoint) => ({
-                port: endpoint.port,
-                domain: endpoint.domainType === "custom" ? undefined : endpoint.domain,
-                customDomain: endpoint.domainType === "custom" ? endpoint.customDomain : undefined,
-                domainType: endpoint.domainType,
-              })),
-            }))
+          ? config.services.map(serializeComposeService)
           : undefined,
       });
 
@@ -1100,9 +1116,11 @@ export function useDeploymentBuild(
       !state.deploymentCanceled;
     const waitingCancellation = state.deploymentCanceled && state.cancellationPending;
     const terminal = state.deploymentSuccess || state.deploymentFailed || state.deploymentCanceled;
+    const waitingCompletion = terminal && state.completionPending;
     const needsTerminalStatus = terminal && settledBuildStatusRef.current !== deploymentId;
     const needsStatus =
       waitingCancellation ||
+      waitingCompletion ||
       needsTerminalStatus ||
       (active && (!buildStream.isConnected || !!state.queue || !state.buildStartedAt || !!state.pendingPrompt));
     if (!deploymentId || !needsStatus) return;
@@ -1153,6 +1171,8 @@ export function useDeploymentBuild(
             deploymentFailed: !isLive && status === "failed",
             deploymentCanceled: !isLive && status === "cancelled",
             cancellationPending: !!data.cancellationPending,
+            completionPending: !!data.completionPending,
+            canRetryDeployment: !!data.canRetryDeployment,
             pendingPrompt: isLive
               ? data.pendingPrompt?.promptId === prev.pendingPrompt?.promptId
                 ? prev.pendingPrompt
@@ -1172,6 +1192,7 @@ export function useDeploymentBuild(
                   portCheck: data.portCheck ?? prev.portCheck,
                   portCheckSkipped: data.portCheckSkipped ?? prev.portCheckSkipped,
                   errorCode: data.errorCode || prev.errorCode,
+                  errorDetails: data.errorDetails ?? null,
                 }
               : {}),
           };
@@ -1179,7 +1200,7 @@ export function useDeploymentBuild(
         // Deploy settled while the stream was detached — stop reconnect churn.
         if (!isLive) {
           buildStream.disconnect();
-          if (!data.cancellationPending) clearInterval(interval);
+          if (!data.cancellationPending && !data.completionPending) clearInterval(interval);
         }
       } catch (diagnosticFailure) {
         observeCaughtError(diagnosticFailure, "dashboard/context/deployment/useDeploymentBuild");
@@ -1208,6 +1229,7 @@ export function useDeploymentBuild(
     state.deploymentFailed,
     state.deploymentCanceled,
     state.cancellationPending,
+    state.completionPending,
     state.pendingPrompt,
     state.buildStartedAt,
     state.queue,
@@ -1387,6 +1409,8 @@ export function useDeploymentBuild(
           deploymentFailed: !isActive && status === "failed",
           deploymentCanceled: !isActive && status === "cancelled",
           cancellationPending: !!data.cancellationPending,
+          completionPending: !!data.completionPending,
+          canRetryDeployment: !!data.canRetryDeployment,
           pendingPrompt: isActive ? (data.pendingPrompt ?? null) : null,
           isDeploying: isLive,
           queue: status === "queued" ? (data.queue ?? null) : null,
@@ -1405,7 +1429,7 @@ export function useDeploymentBuild(
           portCheck: !isActive ? (data.portCheck ?? []) : [],
           portCheckSkipped: !isActive ? (data.portCheckSkipped ?? []) : [],
           errorCode: !isActive ? (data.errorCode || "") : "",
-          errorDetails: null,
+          errorDetails: !isActive ? (data.errorDetails ?? null) : null,
           buildLogs,
           // Authoritative per-phase durations computed server-side from the
           // step events (live tracking is best-effort until this lands).
@@ -1530,7 +1554,7 @@ export function useDeploymentBuild(
   ]);
 
   const redeploy = useCallback(
-    async (deploymentId: string): Promise<string | null> => {
+    async (deploymentId: string, options?: { reuseBuild?: boolean }): Promise<string | null> => {
       if (!deploymentId) {
         showToast("Deployment ID not provided", "error", "Error");
         return null;
@@ -1541,7 +1565,7 @@ export function useDeploymentBuild(
 
       try {
         const localBuildStartedAt = new Date().toISOString();
-        const response = await deployApi.buildRedeploy(deploymentId);
+        const response = await deployApi.buildRedeploy(deploymentId, options);
         if (generation !== buildViewGenerationRef.current) return null;
         if (!response.success || !response.deployment_id) {
           showToast(response.error || "Failed to redeploy", "error", "Error");
@@ -1586,7 +1610,7 @@ export function useDeploymentBuild(
         // wizard (never a bare toast) — one shared handler, one source of truth.
         const openedModal =
           showCloudPricing(error, async () => {
-            const id = await redeploy(deploymentId);
+            const id = await redeploy(deploymentId, options);
             if (id) window.location.assign(`/build/${encodeURIComponent(id)}`);
           }) || maybeOpenCredentialModal(extractErrorCode(error) ?? undefined);
         if (!openedModal) showToast(msg, "error", "Error");

@@ -101,7 +101,7 @@ describeDockerE2E.sequential(
         if (!["provisioning", "deleting"].includes(current.status)) {
           if (current.status === "failed") expect(current.error).toBeTruthy();
           else expect(current.error).toBeNull();
-          expect(accepted).toContain(current.status);
+          expect(accepted, current.error ?? undefined).toContain(current.status);
           return current;
         }
       }
@@ -152,7 +152,11 @@ describeDockerE2E.sequential(
         }),
       );
     }
-    async function query(row: ClusterDatabase, command: string) {
+    async function query(
+      row: ClusterDatabase,
+      command: string,
+      target: "write" | "read" = "write",
+    ) {
       const namespace = kubernetesProjectNamespace(row.projectId);
       const name = `data-check-${randomUUID().slice(0, 8)}`;
       const password = await lab.api.request(
@@ -170,7 +174,9 @@ describeDockerE2E.sequential(
         metadata: { name, namespace, labels },
         data: { password: password.data.password },
       });
-      const host = clusterDatabaseHosts(row.id, row.config).internalHost;
+      const hosts = clusterDatabaseHosts(row.id, row.config);
+      const host = target === "read" ? hosts.readOnlyHost : hosts.internalHost;
+      if (!host) throw new Error("This database has no reader endpoint.");
       const credential = { secretKeyRef: { name, key: "password" } };
       const env =
         row.config.engine === "postgres"
@@ -504,6 +510,75 @@ done
       );
     }, 1800000);
 
+    it("enables PostgreSQL read replicas in place and keeps writer and reader bindings distinct", async () => {
+      let row = await create("quick-scale-postgres", config("postgres", 1));
+      const id = row.id;
+      const writeHost = clusterDatabaseHosts(row.id, row.config).internalHost;
+      await query(
+        row,
+        "psql -X -v ON_ERROR_STOP=1 -c \"CREATE TABLE quick_scale (id integer PRIMARY KEY, value text NOT NULL); INSERT INTO quick_scale VALUES (1, 'before-replication');\"",
+      );
+      row = await finish(
+        await client.projects.updateClusterDatabase(project.id, {
+          databaseId: row.id,
+          expectedSequence: row.sequence,
+          config: { ...row.config, mode: "cluster", instances: 3 },
+        }),
+      );
+      expect(row.id).toBe(id);
+      expect(clusterDatabaseHosts(row.id, row.config).internalHost).toBe(writeHost);
+      expect(
+        await query(
+          row,
+          "psql -X -A -t -v ON_ERROR_STOP=1 -c 'SELECT pg_is_in_recovery()'",
+          "read",
+        ),
+      ).toBe("t");
+      expect(
+        await query(
+          row,
+          "psql -X -A -t -v ON_ERROR_STOP=1 -c 'SELECT value FROM quick_scale WHERE id=1'",
+          "read",
+        ),
+      ).toBe("before-replication");
+      row = await client.projects.connectClusterDatabase(project.id, {
+        databaseId: row.id,
+        expectedSequence: row.sequence,
+        envKey: "QUICK_SCALE_DATABASE_URL",
+        readEnvKey: "QUICK_SCALE_DATABASE_READ_URL",
+      });
+      expect(row.envKey).toBe("QUICK_SCALE_DATABASE_URL");
+      expect(row.readEnvKey).toBe("QUICK_SCALE_DATABASE_READ_URL");
+      await expect(
+        client.projects.updateClusterDatabase(project.id, {
+          databaseId: row.id,
+          expectedSequence: row.sequence,
+          config: { ...row.config, mode: "standalone", instances: 1 },
+        }),
+      ).rejects.toThrow();
+      row = await client.projects.connectClusterDatabase(project.id, {
+        databaseId: row.id,
+        expectedSequence: row.sequence,
+        envKey: null,
+        readEnvKey: null,
+      });
+      row = await finish(
+        await client.projects.updateClusterDatabase(project.id, {
+          databaseId: row.id,
+          expectedSequence: row.sequence,
+          config: { ...row.config, mode: "standalone", instances: 1 },
+        }),
+      );
+      expect(row.id).toBe(id);
+      expect(
+        await query(
+          row,
+          "psql -X -A -t -v ON_ERROR_STOP=1 -c 'SELECT value FROM quick_scale WHERE id=1'",
+        ),
+      ).toBe("before-replication");
+      await remove(row, true);
+    }, 1800000);
+
     it("upgrades a PostgreSQL copy, verifies its data and switches the saved connection only after review", async () => {
       postgres = await observe(postgres);
       const input = {
@@ -595,6 +670,144 @@ done
       expect((await remove(postgres, true)).status).toBe("deleted");
       expect((await store.keys()).length).toBeGreaterThan(0);
     }, 1800000);
+
+    it("replicates Redis without sharding, preserves numbered databases and fails over through Sentinel", async () => {
+      let original = await create("sessions-original", config("redis", 1));
+      await query(
+        original,
+        'redis-cli --raw -h "$REDIS_HOST" -n 1 SET session:accepted original-value; redis-cli --raw -h "$REDIS_HOST" SET session:main main-value',
+      );
+      // Redis uses different operator resources for standalone and replication.
+      // Conversion must preserve the original and use a verified copy.
+      await expect(
+        client.projects.updateClusterDatabase(project.id, {
+          databaseId: original.id,
+          expectedSequence: original.sequence,
+          config: { ...original.config, mode: "replication", instances: 3 },
+        }),
+      ).rejects.toMatchObject({ code: "CLUSTER_DATABASE_IMMUTABLE" });
+      original = await finish(
+        await client.projects.backupClusterDatabase(project.id, {
+          databaseId: original.id,
+          expectedSequence: original.sequence,
+        }),
+      );
+      const firstBackup = original.observation!.backups!.find(
+        (item) => item.phase === "completed",
+      )!;
+      let replicated = await create(
+        "sessions-replicated",
+        { ...config("redis"), mode: "replication" },
+        {
+          databaseId: original.id,
+          backupName: firstBackup.name,
+        },
+      );
+      expect(replicated.observation?.pods.filter((pod) => pod.role === "primary")).toHaveLength(1);
+      expect(replicated.observation?.pods.filter((pod) => pod.role === "replica")).toHaveLength(2);
+      expect(replicated.observation?.pods.filter((pod) => pod.role === "sentinel")).toHaveLength(3);
+      expect(
+        await query(replicated, 'redis-cli --raw -h "$REDIS_HOST" -n 1 GET session:accepted'),
+      ).toBe("original-value");
+      expect(
+        await query(
+          replicated,
+          'redis-cli --raw -h "$REDIS_HOST" -n 1 GET session:accepted',
+          "read",
+        ),
+      ).toBe("original-value");
+      expect(
+        await query(replicated, 'redis-cli --raw -h "$REDIS_HOST" SET forbidden:reader 1', "read"),
+      ).toContain("READONLY");
+      expect(
+        await query(
+          replicated,
+          'printf "SELECT 1\\nSET session:after-recovery new-live-value\\nWAIT 2 10000\\n" | redis-cli --raw -h "$REDIS_HOST"',
+        ),
+      ).toBe("OK\nOK\n2");
+      expect((await remove(original, true)).status).toBe("deleted");
+      replicated = await finish(
+        await client.projects.updateClusterDatabase(project.id, {
+          databaseId: replicated.id,
+          expectedSequence: replicated.sequence,
+          config: { ...replicated.config, instances: 4 },
+        }),
+      );
+      expect(replicated.observation?.pods.filter((pod) => pod.role === "replica")).toHaveLength(3);
+      expect(
+        await query(replicated, 'redis-cli --raw -h "$REDIS_HOST" -n 1 GET session:accepted'),
+      ).toBe("original-value");
+      expect(
+        await query(replicated, 'redis-cli --raw -h "$REDIS_HOST" -n 1 GET session:after-recovery'),
+      ).toBe("new-live-value");
+      await expect(
+        client.projects.updateClusterDatabase(project.id, {
+          databaseId: replicated.id,
+          expectedSequence: replicated.sequence,
+          config: { ...replicated.config, instances: 3 },
+        }),
+      ).rejects.toMatchObject({ code: "CLUSTER_DATABASE_IMMUTABLE" });
+      const primary = replicated.observation!.pods.find(
+        (pod) => pod.name === replicated.observation!.primary,
+      )!;
+      const index = await pauseNode(primary.nodeName!);
+      try {
+        replicated = await eventually(
+          "Redis Sentinel to elect a surviving primary",
+          () => observe(replicated),
+          (row) => !!row.observation?.primary && row.observation.primary !== primary.name,
+          360000,
+        );
+        expect(
+          await query(replicated, 'redis-cli --raw -h "$REDIS_HOST" -n 1 GET session:accepted'),
+        ).toBe("original-value");
+        expect(
+          await query(
+            replicated,
+            'redis-cli --raw -h "$REDIS_HOST" -n 1 GET session:after-recovery',
+          ),
+        ).toBe("new-live-value");
+        expect(
+          await query(
+            replicated,
+            'test "$(redis-cli --raw -h "$REDIS_HOST" SET session:after-failover survived)" = OK; test "$(redis-cli --raw -h "$REDIS_HOST" WAIT 1 10000)" -ge 1; redis-cli --raw -h "$REDIS_HOST" GET session:after-failover',
+          ),
+        ).toBe("survived");
+      } finally {
+        await resume(index);
+      }
+      replicated = await eventually(
+        "all Redis replication members and Sentinel voters to recover",
+        () => observe(replicated),
+        (row) => !!row.observation?.ready,
+        600000,
+      );
+      replicated = await finish(
+        await client.projects.backupClusterDatabase(project.id, {
+          databaseId: replicated.id,
+          expectedSequence: replicated.sequence,
+        }),
+      );
+      const replicatedBackup = replicated.observation!.backups!.find(
+        (item) => item.phase === "completed",
+      )!;
+      const recovered = await create("sessions-recovered", config("redis", 1), {
+        databaseId: replicated.id,
+        backupName: replicatedBackup.name,
+      });
+      expect(
+        await query(recovered, 'redis-cli --raw -h "$REDIS_HOST" -n 1 GET session:accepted'),
+      ).toBe("original-value");
+      expect(
+        await query(recovered, 'redis-cli --raw -h "$REDIS_HOST" -n 1 GET session:after-recovery'),
+      ).toBe("new-live-value");
+      expect(
+        await query(recovered, 'redis-cli --raw -h "$REDIS_HOST" GET session:after-failover'),
+      ).toBe("survived");
+      expect((await remove(recovered, true)).status).toBe("deleted");
+      expect((await remove(replicated, false)).status).toBe("retained");
+      expect((await remove(replicated, true)).status).toBe("deleted");
+    }, 2400000);
 
     it("scales Redis data partitions in both directions without losing keys, then recovers a failed primary", async () => {
       redis = await create("cache", config("redis"));

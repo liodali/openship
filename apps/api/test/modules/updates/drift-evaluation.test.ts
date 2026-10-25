@@ -30,6 +30,7 @@ const deploymentRepo = vi.hoisted(() => ({
 }));
 const serviceRepo = vi.hoisted(() => ({ listByProject: vi.fn(), listByDeployment: vi.fn() }));
 const compareCommits = vi.hoisted(() => vi.fn());
+const impactIO = vi.hoisted(() => ({ read: vi.fn(), tree: vi.fn() }));
 
 vi.mock("@repo/db", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@repo/db")>();
@@ -41,7 +42,7 @@ vi.mock("@repo/db", async (importOriginal) => {
 
 vi.mock("@repo/platform/engine/modules/github/github.service", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  compareCommits,
+  compareCommits, getFileContent: impactIO.read, listRepositoryTree: impactIO.tree,
 }));
 
 import {
@@ -53,7 +54,7 @@ import {
 import type { Project } from "@repo/db";
 
 const SHIPPED = "13140747f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6";
-const NEWER = "282619c7aabbccddeeff00112233445566778899";
+const NEWER = "282619c7aabbccddeeff00112233445566778899".padEnd(40, "0");
 
 const gitProject = (over: Partial<Project> = {}) =>
   ({
@@ -86,6 +87,16 @@ beforeEach(() => {
   serviceRepo.listByProject.mockResolvedValue([]);
   serviceRepo.listByDeployment.mockResolvedValue([]);
   compareCommits.mockReset();
+  const manifests: Record<string, unknown> = {
+    "package.json": { workspaces: ["services/*"] },
+    "services/backend/package.json": { name: "backend" },
+    "services/client/package.json": { name: "client" },
+  };
+  impactIO.read.mockReset().mockImplementation(async (_ctx, _owner, _repo, path) => {
+    if (!(path in manifests)) throw Object.assign(new Error("Not found"), { status: 404 });
+    return { content: JSON.stringify(manifests[path]), size: 100 };
+  });
+  impactIO.tree.mockReset().mockResolvedValue(Object.keys(manifests).map(path => ({ path, type: "file" })));
 });
 
 describe("commit drift — the deployed side is live", () => {

@@ -5,6 +5,8 @@ import {
   NotFoundError,
   CLUSTER_DATABASE_LEASE_MS,
   clusterDatabaseRunning,
+  clusterDatabaseHasReaders,
+  clusterDatabaseConnectionOutputId,
   validateClusterDatabase,
   validateClusterDatabaseUpdate,
   type ClusterDatabaseConfig,
@@ -252,7 +254,7 @@ export function createClusterDatabaseRepo(db: Database) {
           throw conflict("Finish or retry database setup before changing its settings.");
         if (action === "backup" && (current.status !== "ready" || !current.config.backup))
           throw conflict("Configure database backups and finish setup first.");
-        if (action === "remove" && current.envKey)
+        if (action === "remove" && (current.envKey || current.readEnvKey))
           throw conflict("Disconnect this database from the application before removing it.");
         if (action === "remove") {
           const [consumer] = await tx
@@ -272,7 +274,31 @@ export function createClusterDatabaseRepo(db: Database) {
           throw conflict(
             "Permanent data deletion has already started. Retry that removal to finish cleanup.",
           );
-        if (options.config) validateClusterDatabaseUpdate(current.config, options.config, options);
+        if (options.config) {
+          validateClusterDatabaseUpdate(current.config, options.config, options);
+          if (
+            clusterDatabaseHasReaders(current.config) &&
+            !clusterDatabaseHasReaders(options.config)
+          ) {
+            const [reader] = await tx
+              .select({ id: projectConnection.id })
+              .from(projectConnection)
+              .where(
+                and(
+                  eq(projectConnection.sourceDatabaseId, current.id),
+                  eq(
+                    projectConnection.outputId,
+                    clusterDatabaseConnectionOutputId(current.id, "read"),
+                  ),
+                ),
+              )
+              .limit(1);
+            if (current.readEnvKey || reader)
+              throw conflict(
+                "Disconnect applications using the reader endpoint before removing the final read replica.",
+              );
+          }
+        }
         if (options.config?.backup)
           await lockClusterBackupDestinations(tx, org, [options.config.backup.destinationId]);
         const intent = action === "retry" ? current.intent : action;
@@ -304,6 +330,7 @@ export function createClusterDatabaseRepo(db: Database) {
       envKey: string | null,
       encryptedValue: string | null,
       replace?: { databaseId: string; expectedSequence: number },
+      reader?: { envKey: string | null; encryptedValue: string | null },
     ) {
       return db.transaction(async (tx) => {
         const [p] = await tx
@@ -319,7 +346,16 @@ export function createClusterDatabaseRepo(db: Database) {
         if (!p || p.deletionInProgress || !row) throw new NotFoundError("Database", id);
         if (row.sequence !== expectedSequence || clusterDatabaseRunning(row.status))
           throw conflict("Database setup changed. Refresh before connecting it.");
-        if (envKey && (row.status !== "ready" || row.clusterId !== p.clusterId))
+        const readEnvKey = reader === undefined ? row.readEnvKey : reader.envKey;
+        const readEncryptedValue =
+          reader === undefined ? row.readEnvValueEncrypted : reader.encryptedValue;
+        if (readEnvKey && (!clusterDatabaseHasReaders(row.config) || !readEncryptedValue))
+          throw conflict("Add PostgreSQL read replicas before connecting the reader endpoint.");
+        if (envKey && readEnvKey === envKey)
+          throw conflict(
+            "Choose different environment variables for write and reader connections.",
+          );
+        if ((envKey || readEnvKey) && (row.status !== "ready" || row.clusterId !== p.clusterId))
           throw conflict("The database must be ready on the project's cluster before connecting.");
         let previous: ClusterDatabaseRecord | undefined;
         if (replace) {
@@ -348,52 +384,80 @@ export function createClusterDatabaseRepo(db: Database) {
             eq(envVar.environment, "production"),
             isNull(envVar.serviceId),
           );
-        if (envKey) {
-          const existing = await tx.select().from(envVar).where(scope(envKey)).for("update");
+        const nextBindings = [
+          { key: envKey, value: encryptedValue, previousValue: previous?.envValueEncrypted },
+          {
+            key: readEnvKey,
+            value: readEncryptedValue,
+            previousValue:
+              reader && previous?.readEnvKey === readEnvKey
+                ? previous.readEnvValueEncrypted
+                : undefined,
+          },
+        ];
+        for (const binding of nextBindings) {
+          if (!binding.key) continue;
+          if (!binding.value) throw conflict("The database connection could not be resolved.");
+          const existing = await tx.select().from(envVar).where(scope(binding.key)).for("update");
+          const ownedValues = [
+            ...(row.envKey === binding.key ? [row.envValueEncrypted] : []),
+            ...(row.readEnvKey === binding.key ? [row.readEnvValueEncrypted] : []),
+            ...(binding.previousValue ? [binding.previousValue] : []),
+          ];
           if (
-            existing.some(
-              (item) =>
-                (row.envKey !== envKey || item.value !== row.envValueEncrypted) &&
-                item.value !== previous?.envValueEncrypted,
-            ) ||
-            (previous && existing.length !== 1)
+            existing.some((item) => !ownedValues.includes(item.value)) ||
+            (binding.previousValue && existing.length !== 1)
           )
             throw conflict(
-              `Environment variable ${envKey} already exists. Choose another name or remove the existing variable first.`,
+              `Environment variable ${binding.key} already exists. Choose another name or remove the existing variable first.`,
             );
         }
         if (previous) {
-          await tx
-            .delete(envVar)
-            .where(and(scope(envKey!), eq(envVar.value, previous.envValueEncrypted!)));
+          const replaceReader = !!reader && previous.readEnvKey === readEnvKey;
+          for (const binding of [
+            { key: envKey, value: previous.envValueEncrypted },
+            ...(replaceReader
+              ? [{ key: previous.readEnvKey, value: previous.readEnvValueEncrypted }]
+              : []),
+          ])
+            if (binding.key && binding.value)
+              await tx
+                .delete(envVar)
+                .where(and(scope(binding.key), eq(envVar.value, binding.value)));
           await tx
             .update(table)
             .set({
               envKey: null,
               envValueEncrypted: null,
+              ...(replaceReader ? { readEnvKey: null, readEnvValueEncrypted: null } : {}),
               sequence: previous.sequence + 1,
               updatedAt: new Date(),
             })
             .where(eq(table.id, previous.id));
         }
-        if (row.envKey && row.envValueEncrypted)
-          await tx
-            .delete(envVar)
-            .where(and(scope(row.envKey), eq(envVar.value, row.envValueEncrypted)));
-        if (envKey && encryptedValue)
-          await tx.insert(envVar).values({
-            id: crypto.randomUUID(),
-            projectId,
-            key: envKey,
-            value: encryptedValue,
-            environment: "production",
-            isSecret: true,
-          });
+        for (const binding of [
+          { key: row.envKey, value: row.envValueEncrypted },
+          { key: row.readEnvKey, value: row.readEnvValueEncrypted },
+        ])
+          if (binding.key && binding.value)
+            await tx.delete(envVar).where(and(scope(binding.key), eq(envVar.value, binding.value)));
+        for (const binding of nextBindings)
+          if (binding.key && binding.value)
+            await tx.insert(envVar).values({
+              id: crypto.randomUUID(),
+              projectId,
+              key: binding.key,
+              value: binding.value,
+              environment: "production",
+              isSecret: true,
+            });
         const [updated] = await tx
           .update(table)
           .set({
             envKey,
             envValueEncrypted: encryptedValue,
+            readEnvKey,
+            readEnvValueEncrypted: readEncryptedValue,
             sequence: row.sequence + 1,
             updatedAt: new Date(),
           })

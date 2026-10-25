@@ -1152,6 +1152,33 @@ describe("discoverMonorepoApps - formal workspace monorepo with per-app Dockerfi
     fileContents: {},
   });
 
+  it("does not recommend CLI and mobile packages as servers", () => {
+    const result = discoverMonorepoApps(root(), [
+      dockerSubApp("apps/api"),
+      {
+        rootDirectory: "apps/cli",
+        source: "workspace",
+        files: [{ name: "package.json", type: "file" }],
+        packageJson: { name: "cli", bin: { cli: "dist/index.js" }, scripts: { build: "tsc" } },
+      },
+      {
+        rootDirectory: "apps/mobile",
+        source: "workspace",
+        files: [{ name: "package.json", type: "file" }],
+        packageJson: {
+          name: "mobile",
+          dependencies: { expo: "*" },
+          scripts: { start: "expo start" },
+        },
+      },
+    ]);
+    expect(result?.apps.map((app) => [app.rootDirectory, app.suggested])).toEqual([
+      ["apps/api", true],
+      ["apps/cli", false],
+      ["apps/mobile", false],
+    ]);
+  });
+
   it("detects a monorepo whose sub-apps each have their own Dockerfile", () => {
     const result = discoverMonorepoApps(root(), [
       dockerSubApp("apps/api"),

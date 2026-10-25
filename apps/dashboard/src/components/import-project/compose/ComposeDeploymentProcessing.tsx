@@ -10,6 +10,7 @@ import BuildTerminal from "../BuildTerminal";
 import { DeploymentHeader } from "../DeploymentHeader";
 import { DeploymentHealthWarning } from "../DeploymentHealthWarning";
 import { CloudBuildQueueNotice } from "../CloudBuildQueueNotice";
+import { CloudDeploymentResourceNotice } from "../CloudDeploymentResourceNotice";
 import { DeploymentLayout } from "../DeploymentLayout";
 import { DeploymentLogsPanel } from "../DeploymentLogsPanel";
 import { PageContainer } from "@/components/ui/PageContainer";
@@ -41,7 +42,7 @@ const PREPARE_TAB = "__prepare__";
 
 interface Props {
   // Resolves to the new deployment id (navigates on success) or null on failure.
-  onRedeploy: () => void | Promise<string | null>;
+  onRedeploy: (options?: { reuseBuild?: boolean }) => void | Promise<string | null>;
 }
 
 const ComposeDeploymentProcessing: React.FC<Props> = ({ onRedeploy }) => {
@@ -572,6 +573,7 @@ function ComposeDeploymentBody({
 
   return (
     <DeploymentLayout
+      notice={<CloudDeploymentResourceNotice />}
       details={<DeploymentDetails />}
       navigation={
         <div className="rounded-2xl bg-card p-3">

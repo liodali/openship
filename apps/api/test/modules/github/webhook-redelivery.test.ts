@@ -2,8 +2,10 @@ import { createHmac } from "node:crypto";
 import { Hono } from "hono";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { db, eq, repos, schema } from "@repo/db";
-import { seedOrg, seedProject } from "../../helpers/seed";
+import { seedOrg, seedProject, seedDeployment } from "../../helpers/seed";
 import { encrypt } from "@repo/platform/engine/lib/encryption";
+import { notification } from "@repo/platform/engine/lib/notification-dispatcher";
+import { env } from "@repo/platform/engine/config/env";
 import { registerWebhookProvider } from "@repo/platform/engine/modules/webhooks/webhook.service";
 import { githubWebhookProvider } from "../../../src/modules/github/github.webhook";
 import { webhookRoutes } from "../../../src/modules/webhooks/webhook.routes";
@@ -11,6 +13,7 @@ import { handleApiError } from "../../../src/middleware/error-handler";
 
 const dispatch = vi.hoisted(() => vi.fn());
 const getRepository = vi.hoisted(() => vi.fn());
+const impactIO = vi.hoisted(() => ({ compare: vi.fn(), read: vi.fn(), tree: vi.fn() }));
 vi.mock("@repo/platform/engine/modules/deployments/build.service", async (original) => ({
   ...(await original<typeof import("@repo/platform/engine/modules/deployments/build.service")>()),
   triggerDeployment: dispatch,
@@ -18,6 +21,7 @@ vi.mock("@repo/platform/engine/modules/deployments/build.service", async (origin
 vi.mock("@repo/platform/engine/modules/github/github.service", async (original) => ({
   ...(await original<typeof import("@repo/platform/engine/modules/github/github.service")>()),
   getRepository,
+  compareCommits: impactIO.compare, getFileContent: impactIO.read, listRepositoryTree: impactIO.tree,
 }));
 vi.mock("@repo/platform/engine/lib/notification-dispatcher", () => ({
   notification: { emit: vi.fn() },
@@ -108,11 +112,7 @@ describe("GitHub blocked deployment redelivery (#847)", () => {
     // Neither a different branch nor a disabled sibling should be dispatched.
     await seedProject(f.organizationId, { ...f.fields, gitBranch: "develop" });
     await seedProject(f.organizationId, { ...f.fields, autoDeploy: false });
-    dispatch.mockRejectedValueOnce(
-      new Error(
-        "A deployment is already in progress (dep_busy). Cancel it first or wait for it to complete.",
-      ),
-    );
+    dispatch.mockRejectedValueOnce(new Error("Clone credential unavailable"));
     const rejected = await f.send(f.deliveryId);
     expect(rejected.status).toBe(500);
     expect(await rejected.json()).toMatchObject({
@@ -125,7 +125,7 @@ describe("GitHub blocked deployment redelivery (#847)", () => {
       processedAt: expect.any(Date),
     });
     expect((await repos.webhookDelivery.listByProject(f.project.id)).rows).toEqual([
-      expect.objectContaining({ outcome: "failed", error: expect.stringContaining("dep_busy") }),
+      expect.objectContaining({ outcome: "failed", error: "Clone credential unavailable" }),
     ]);
     expect(dispatch).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ userId: f.userId, organizationId: f.organizationId }),
@@ -149,7 +149,7 @@ describe("GitHub blocked deployment redelivery (#847)", () => {
     const f = await fixture();
     const other = await seedProject(f.organizationId, f.fields);
     dispatch.mockImplementation(async (_ctx, input) => {
-      if (input.projectId === other.id) throw new Error("A deployment is already in progress");
+      if (input.projectId === other.id) throw new Error("Clone credential unavailable");
       return { deployment: { id: "successful-sibling" } };
     });
     const response = await f.send(f.deliveryId);
@@ -250,6 +250,121 @@ describe("GitHub blocked deployment redelivery (#847)", () => {
         expect.objectContaining({ projectId: f.project.id, branch: "master" }),
       );
       expect(getRepository).toHaveBeenCalledTimes(payloadHasDefault ? 0 : 1);
+    },
+  );
+});
+
+
+describe("pushes queued by deployment admission", () => {
+  it("acknowledges a durable queued push without a failure notice or duplicate delivery", async () => {
+    const f = await fixture();
+    dispatch.mockResolvedValue({ deployment: undefined, skipped: true, queuedPush: true,
+      awaitingActions: { id: "queued-request", projectId: f.project.id } });
+    vi.mocked(notification.emit).mockClear();
+    const response = await f.send(f.deliveryId);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ success: true,
+      message: expect.stringContaining("1 queued behind a running deployment") });
+    expect(notification.emit).not.toHaveBeenCalled();
+    expect((await f.send(f.deliveryId)).status).toBe(200);
+    expect(dispatch).toHaveBeenCalledOnce();
+  });
+});
+
+describe("single-root workspace push decisions (#1339)", () => {
+  const manifests: Record<string, unknown> = {
+    "package.json": { workspaces: ["apps/*", "packages/*"] },
+    "apps/storefront/package.json": { name: "storefront", dependencies: { ui: "workspace:*" } },
+    "apps/admin/package.json": { name: "admin" },
+    "packages/ui/package.json": { name: "ui" },
+  };
+  async function workspace() {
+    const f = await fixture();
+    const active = await seedDeployment(f.project, { commitSha: "1".repeat(40) });
+    await repos.project.update(f.project.id, {
+      rootDirectory: "apps/storefront",
+      activeDeploymentId: active.id,
+    });
+    f.body.commits[0]!.modified = ["apps/admin/page.tsx"];
+    impactIO.compare
+      .mockReset()
+      .mockResolvedValue({ files: ["apps/admin/page.tsx"], truncated: false });
+    impactIO.read.mockReset().mockImplementation(async (_ctx, _owner, _repo, path, options) => {
+      expect(options.branch).toBe("2".repeat(40));
+      if (!(path in manifests)) throw Object.assign(new Error("Not found"), { status: 404 });
+      return { content: JSON.stringify(manifests[path]), size: 100 };
+    });
+    impactIO.tree
+      .mockReset()
+      .mockResolvedValue(Object.keys(manifests).map((path) => ({ path, type: "file" })));
+    return f;
+  }
+  it.each([false, true])(
+    "skips an unrelated app and records why with Cloud mode=%s",
+    async (cloud) => {
+      const previous = env.CLOUD_MODE;
+      env.CLOUD_MODE = cloud;
+      try {
+        const f = await workspace();
+        expect((await f.send(f.deliveryId)).status).toBe(200);
+        expect(dispatch).not.toHaveBeenCalled();
+        expect((await repos.webhookDelivery.listByProject(f.project.id)).rows).toContainEqual(
+          expect.objectContaining({
+            outcome: "skipped",
+            summary: expect.objectContaining({ reason: "unrelated-workspaces" }),
+          }),
+        );
+      } finally {
+        env.CLOUD_MODE = previous;
+      }
+    },
+  );
+  it("builds a dependent shared package", async () => {
+    const f = await workspace();
+    impactIO.compare.mockResolvedValue({ files: ["packages/ui/index.ts"], truncated: false });
+    expect((await f.send(f.deliveryId)).status).toBe(200);
+    expect(dispatch).toHaveBeenCalledOnce();
+    expect((await repos.webhookDelivery.listByProject(f.project.id)).rows).toContainEqual(
+      expect.objectContaining({
+        outcome: "dispatched",
+        summary: expect.objectContaining({ reason: "workspace-dependency" }),
+      }),
+    );
+  });
+  it("includes app changes since the active release even if this push only touched another app", async () => {
+    const f = await workspace();
+    // An intermediate app commit failed. Its app file is absent from THIS push.
+    f.body.before = "3".repeat(40);
+    impactIO.compare.mockResolvedValue({
+      files: ["apps/admin/page.tsx", "apps/storefront/page.tsx"],
+      truncated: false,
+    });
+    expect((await f.send(f.deliveryId)).status).toBe(200);
+    expect(impactIO.compare).toHaveBeenCalledWith(
+      expect.anything(),
+      "acme",
+      f.fields.gitRepo,
+      "1".repeat(40),
+      "2".repeat(40),
+    );
+    expect(dispatch).toHaveBeenCalledOnce();
+  });
+  it.each(["first-deploy", "unknown-diff", "truncated-diff", "force-token", "force-next"])(
+    "does not suppress %s",
+    async (reason) => {
+      const f = await workspace();
+      if (reason === "first-deploy")
+        await repos.project.update(f.project.id, { activeDeploymentId: null });
+      if (reason === "unknown-diff") impactIO.compare.mockResolvedValue(null);
+      if (reason === "truncated-diff")
+        impactIO.compare.mockResolvedValue({ files: ["apps/admin/page.tsx"], truncated: true });
+      if (reason === "force-token") f.body.head_commit.message = "[force-deploy]";
+      if (reason === "force-next")
+        await repos.project.update(f.project.id, { forceDeployNext: true });
+      expect((await f.send(f.deliveryId)).status).toBe(200);
+      expect(dispatch).toHaveBeenCalledOnce();
+      if (reason.startsWith("force"))
+        expect(dispatch.mock.calls[0]![1]).toMatchObject({ forceAll: true });
     },
   );
 });

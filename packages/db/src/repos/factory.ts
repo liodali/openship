@@ -1,3 +1,4 @@
+import { createManagementBillingRepo } from "./management-billing.repo";
 import { createPullRequestPreviewRepo } from "./pull-request-preview.repo";
 import { createIngressRepo } from "./ingress.repo";
 export { createIngressRepo, type IngressConnection, type IngressHostname } from "./ingress.repo";
@@ -336,11 +337,13 @@ import { createDomainRepo } from "./domain.repo";
 import { createDomainDnsChallengeRepo } from "./domain-dns-challenge.repo";
 import { createDnsCredentialRepo } from "./dns-credential.repo";
 import { createCredentialRepo } from "./credential.repo";
+import { createRouteProtectionRepo } from "./route-protection.repo";
 import { createRouteRuleRepo } from "./route-rule.repo";
 import { createWebhookSourceRepo } from "./webhook-source.repo";
 import { createIncomingWebhookRepo } from "./incoming-webhook.repo";
 import { createSystemNoticeRepo } from "./system-notice.repo";
 import { createUpdateStatusRepo } from "./update-status.repo";
+import { createSecurityAdvisoryRepo } from "./security-advisory.repo";
 import { createServerModuleStatusRepo } from "./server-module-status.repo";
 import { createServerContainerStatusRepo } from "./server-container-status.repo";
 import { createEdgeTargetVerificationRepo } from "./edge-target-verification.repo";
@@ -427,10 +430,12 @@ export function createRepositories(db: Database, encryption: ConfigurationEncryp
     credential: createCredentialRepo(db),
     ingress: createIngressRepo(db),
     routeRule: createRouteRuleRepo(db),
+    routeProtection: createRouteProtectionRepo(db, encryption),
     webhookSource: createWebhookSourceRepo(db),
     incomingWebhook: createIncomingWebhookRepo(db),
     notice: createSystemNoticeRepo(db),
     updateStatus: createUpdateStatusRepo(db),
+    securityAdvisory: createSecurityAdvisoryRepo(db),
     serverModuleStatus: createServerModuleStatusRepo(db),
     serverContainerStatus: createServerContainerStatusRepo(db),
     edgeTargetVerification: createEdgeTargetVerificationRepo(db),
@@ -481,6 +486,7 @@ export function createRepositories(db: Database, encryption: ConfigurationEncryp
     actionOidc: createActionOidcRepo(db),
     actionStorage: createActionStorageRepo(db),
     actionBilling: createActionBillingRepo(db),
+    managementBilling: createManagementBillingRepo(db),
     orphanedResource: createOrphanedResourceRepo(db),
     hostPortClaim: createHostPortClaimRepo(db),
     resourceGrant: createResourceGrantRepo(db),

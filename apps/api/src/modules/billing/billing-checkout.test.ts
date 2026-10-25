@@ -54,6 +54,7 @@ vi.mock("@repo/platform/engine/modules/billing/billing-oblien-quota", () => ({
     work((options: unknown) => h.sync(orgId, options)),
 }));
 import { createCheckoutSession, createTopupCheckoutSession, createPortalSession, cancelSubscription, resumeSubscription, listActiveCreditPacks } from "@repo/platform/engine/modules/billing/billing.service";
+import { customSubscriptionOffer, validCustomOffer } from "@repo/platform/engine/modules/billing/billing-custom-offer";
 import { presentCloudPlans, subscriptionPlan } from "@repo/platform/engine/modules/billing/billing-catalog";
 
 const ctx = (organizationId = "org-a") => ({ organizationId }) as never;
@@ -97,10 +98,10 @@ describe("Cloud customer checkout", () => {
       (plan) => !["free", "enterprise"].includes(plan.id),
     );
     expect(plans.map((plan) => [plan.id, plan.price.monthly, plan.monthlyCredits])).toEqual([
-      ["hobby", 500, null],
-      ["starter", 2000, null],
-      ["pro", 3900, null],
-      ["team", 9900, null],
+      ["hobby", 1200, null],
+      ["starter", 2400, null],
+      ["pro", 4700, null],
+      ["team", 11900, null],
     ]);
     expect(presentCloudPlans().annual.enabled).toBe(false);
   });
@@ -112,8 +113,8 @@ describe("Cloud customer checkout", () => {
       kind: "subscription",
       billingInterval: "monthly",
       offer: {
-        reference: "openship:starter:v11",
-        unitAmount: 2000,
+        reference: "openship:starter:v13",
+        unitAmount: 2400,
         credits: 0, billingMode: "monthly",
         capacity: { vcpus: 2, memoryMb: 8192, diskGb: 128, workspaces: 1 },
         resourceLimits: { max_workspaces: 1, max_disk_gb: 128, max_total_vcpus: 2, max_total_ram_mb: 8192, max_total_disk_gb: 128 },
@@ -134,35 +135,71 @@ describe("Cloud customer checkout", () => {
       concurrentBuilds: 4,
     });
   });
-  it("sells the new Hobby offer as a namespace contract with finite capacity", async () => {
-    expect(parseInput(CreateSubscriptionBody, { planTierId: "hobby", interval: "monthly" })).toMatchObject({ planTierId: "hobby" });
+  it("checks out the $12 entry plan with the exact advertised capacity", async () => {
     await createCheckoutSession(ctx(), "hobby", "monthly", "hobby-attempt-001");
-    expect(h.checkout).toHaveBeenCalledWith(expect.objectContaining({
+    expect(h.checkout).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
       namespace: "ns-org-a",
       offer: expect.objectContaining({
-        reference: "openship:hobby:v11", unitAmount: 500, credits: 0, billingMode: "monthly",
-        resourceLimits: { max_workspaces: 1, max_vcpus: 1, max_ram_mb: 2048, max_disk_gb: 40,
-          max_total_vcpus: 1, max_total_ram_mb: 2048, max_total_disk_gb: 40 },
+        reference: "openship:hobby:v13", unitAmount: 1200, billingMode: "monthly", credits: 0,
+        capacity: { vcpus: 1, memoryMb: 4096, diskGb: 50, workspaces: 1 },
+        resourceLimits: { max_workspaces: 1, max_vcpus: 1, max_total_vcpus: 1,
+          max_ram_mb: 4096, max_total_ram_mb: 4096, max_disk_gb: 50, max_total_disk_gb: 50 },
       }),
     }));
-    expect(h.checkout.mock.calls[0]![0]).not.toHaveProperty("planTierId");
-    expect(h.quota).not.toHaveBeenCalled();
+  });
+  it("refuses a retired offer before creating a checkout", async () => {
+    const plan = PRICING.plans.find(plan => plan.id === "hobby")!;
+    const previous = plan.availableForPurchase;
+    try {
+      plan.availableForPurchase = false;
+      await expect(createCheckoutSession(ctx(), "hobby", "monthly", "hobby-attempt-001")).rejects.toMatchObject({ code: "BILLING_PLAN_RETIRED" });
+      expect(h.checkout).not.toHaveBeenCalled();
+    } finally {
+      plan.availableForPurchase = previous;
+    }
   });
   it("keeps an old provider Hobby subscription mapped to its original Openship Starter tier", () => {
     expect(subscriptionPlan(subscription, "org-a", "ns-org-a").tier).toBe("starter");
   });
-  it("does not invent yearly prices or grants while annual checkout is disabled", async () => {
-    await expect(createCheckoutSession(ctx(), "starter", "annual")).rejects.toMatchObject({
-      code: "BILLING_PLAN_NOT_PURCHASABLE",
-    });
+  it.each([["hobby", 12000], ["starter", 24000], ["pro", 46800], ["team", 118800]] as const)(
+    "charges the full year for %s without creating a compute-credit allowance", async (tier, unitAmount) => {
+      await createCheckoutSession(ctx(), tier, "annual", `annual-${tier}-checkout`);
+      expect(h.monthlySupport).toHaveBeenCalledWith("yearly");
+      expect(h.checkout).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        namespace: "ns-org-a", kind: "subscription", billingInterval: "yearly",
+        offer: expect.objectContaining({ reference: `openship:${tier}:v13`, unitAmount, credits: 0, billingMode: "monthly" }),
+        metadata: expect.objectContaining({ openship_organization: "org-a", openship_namespace: "ns-org-a" }),
+      }));
+    },
+  );
+  it("blocks annual checkout when the provider has not enabled annual capacity", async () => {
+    h.monthlySupport.mockRejectedValueOnce(Object.assign(new Error("Annual purchases unavailable"), { code: "OBLIEN_CAPACITY_UNAVAILABLE" }));
+    await expect(createCheckoutSession(ctx(), "starter", "annual")).rejects.toMatchObject({ code: "OBLIEN_CAPACITY_UNAVAILABLE" });
     expect(h.checkout).not.toHaveBeenCalled();
+    expect(h.pending.size).toBe(0);
+  });
+  it("binds a custom quote to its billing interval before opening checkout", async () => {
+    const resources = { cpuCores: 1, memoryMb: 4096, diskGb: 50 };
+    const monthly = customSubscriptionOffer(resources), annual = customSubscriptionOffer(resources, "annual");
+    expect(annual.quote).toMatchObject({ interval: "annual", priceCents: 12000 });
+    expect(monthly.quote.reference).not.toBe(annual.quote.reference);
+    expect(validCustomOffer(annual.quote.basePlanTierId, annual.limits, annual.offer, "annual")).toBe(true);
+    expect(validCustomOffer(annual.quote.basePlanTierId, annual.limits, annual.offer, "monthly")).toBe(false);
+    await expect(createCheckoutSession(ctx(), monthly.quote.basePlanTierId, "annual", "custom-wrong-interval", undefined,
+      { resources, quoteReference: monthly.quote.reference })).rejects.toMatchObject({ code: "BILLING_QUOTE_CHANGED" });
+    expect(h.checkout).not.toHaveBeenCalled();
+    await createCheckoutSession(ctx(), annual.quote.basePlanTierId, "annual", "custom-annual-correct", undefined,
+      { resources, quoteReference: annual.quote.reference });
+    expect(h.checkout).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      billingInterval: "yearly", offer: expect.objectContaining({ reference: annual.quote.reference, unitAmount: 12000, credits: 0 }),
+    }));
   });
   it("submits the Scale pool without calculating provider prices or changing customer terms", async () => {
     h.quota.mockImplementation(() => { throw new Error("Client capacity reads are forbidden"); });
     await createCheckoutSession(ctx(), "team", "monthly", "team-attempt-001");
     const input = h.checkout.mock.calls[0]![0];
     expect(input.offer).toMatchObject({
-      unitAmount: 9900, credits: 0, billingMode: "monthly",
+      unitAmount: 11900, credits: 0, billingMode: "monthly",
       capacity: { vcpus: 8, memoryMb: 32768, diskGb: 600, workspaces: 1 },
       resourceLimits: { max_workspaces: 1, max_vcpus: 8, max_ram_mb: 32768, max_disk_gb: 600, max_total_vcpus: 8, max_total_ram_mb: 32768, max_total_disk_gb: 600 },
     });
@@ -196,12 +233,12 @@ describe("Cloud customer checkout", () => {
   });
   it("does not start a purchase when monthly capacity is unavailable at the provider", async () => {
     h.monthlySupport.mockRejectedValue(new Error("Monthly purchases unavailable"));
-    await expect(createCheckoutSession(ctx(), "hobby", "monthly")).rejects.toThrow("Monthly purchases unavailable");
+    await expect(createCheckoutSession(ctx(), "starter", "monthly")).rejects.toThrow("Monthly purchases unavailable");
     expect(h.checkout).not.toHaveBeenCalled();
     expect(h.pending.size).toBe(0);
   });
   it("does not start a competing checkout when the customer selects another plan", async () => {
-    await createCheckoutSession(ctx(), "hobby", "monthly", "attempt-hobby-001");
+    await createCheckoutSession(ctx(), "starter", "monthly", "attempt-starter-001");
     await expect(createCheckoutSession(ctx(), "pro", "monthly", "attempt-pro-001"))
       .rejects.toMatchObject({ code: "CLOUD_WORKSPACE_CHECKOUT_PENDING" });
     expect(h.checkout).toHaveBeenCalledOnce();
@@ -248,7 +285,7 @@ describe("Cloud customer checkout", () => {
   });
   it("does not replace a subscription that is scheduled to cancel at renewal", async () => {
     h.subscription.mockImplementation(async namespace => ({ success: true, namespace, subscription: { ...subscription, cancelAtPeriodEnd: true } }));
-    await expect(createCheckoutSession(ctx(), "hobby", "monthly")).rejects.toMatchObject({ code: "BILLING_PLAN_CHANGE_UNAVAILABLE" });
+    await expect(createCheckoutSession(ctx(), "starter", "monthly")).rejects.toMatchObject({ code: "BILLING_PLAN_CHANGE_UNAVAILABLE" });
     expect(h.checkout).not.toHaveBeenCalled();
     expect(h.cancel).not.toHaveBeenCalled();
   });

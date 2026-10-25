@@ -2,12 +2,19 @@ import net from "node:net";
 import { parse } from "yaml";
 import {
   AppError,
-  clusterWorkloadNeedsOperator,
+  clusterWorkloadUnsupportedReason,
   infrastructureCidr,
   validateClusterWorkload,
+  type ComposeAdvanced,
 } from "@repo/core";
 import { repos } from "@repo/db";
-import { KubernetesRuntime, createKubernetesApi, privilegedExecutor } from "@repo/adapters";
+import {
+  KubernetesRuntime,
+  SwarmRuntime,
+  assertSwarmServiceConfig,
+  createKubernetesApi,
+  privilegedExecutor,
+} from "@repo/adapters";
 import { env } from "../config";
 import { inspectHostIssuedIdentity } from "./host-port-target";
 import { resolveHostPortTargetIdentity } from "./host-port-target";
@@ -66,24 +73,45 @@ export async function assertClusterWorkloadSupported(input: {
   framework?: string | null;
   image?: string;
   imageRepository?: string;
+  provider?: "k3s" | "swarm";
 }) {
-  if (
-    input.workload === "static" ||
-    input.volumes?.length ||
-    input.services?.length ||
-    clusterWorkloadNeedsOperator(input.framework, input.image)
-  )
-    throw new AppError(
-      "Scaling currently supports applications and workers that can run independently. Databases and applications with persistent storage need a separate replication and storage setup. Compose stacks must stay on their current target.",
-      422,
-      "CLUSTER_WORKLOAD_UNSUPPORTED",
-    );
-  if (!input.image && !input.imageRepository)
-    throw new AppError(
-      "Choose a registry repository for this project's source builds. Cluster nodes need a shared image to pull.",
-      422,
-      "CLUSTER_REGISTRY_REQUIRED",
-    );
+  if (input.provider === "swarm") {
+    if (input.workload === "static")
+      throw new AppError(
+        "Use a web container image to serve static files on Swarm.",
+        422,
+        "CLUSTER_WORKLOAD_UNSUPPORTED",
+      );
+    const services = (input.services ?? []) as Array<{
+      image?: string | null;
+      advanced?: ComposeAdvanced;
+      ports?: string[];
+      volumes?: string[];
+      restart?: string;
+    }>;
+    for (const service of services)
+      assertSwarmServiceConfig({ advanced: service.advanced, ports: service.ports ?? [] });
+    if (
+      !input.imageRepository &&
+      (services.length
+        ? services.some((service) => !service.image || service.advanced?.build)
+        : !input.image)
+    )
+      throw new AppError(
+        "Choose a registry repository for source builds so every Swarm node can pull the release.",
+        422,
+        "CLUSTER_REGISTRY_REQUIRED",
+      );
+  } else {
+    const reason = clusterWorkloadUnsupportedReason(input);
+    if (reason) throw new AppError(reason, 422, "CLUSTER_WORKLOAD_UNSUPPORTED");
+    if (!input.image && !input.imageRepository)
+      throw new AppError(
+        "Choose a registry repository for this project's source builds. Cluster nodes need a shared image to pull.",
+        422,
+        "CLUSTER_REGISTRY_REQUIRED",
+      );
+  }
   const links = [
     ...(await repos.projectConnection.listBySource(input.projectId)),
     ...(await repos.projectConnection.listByTarget(input.projectId)),
@@ -102,11 +130,13 @@ export async function openClusterApi(
   clusterId: string,
   runtimeId?: string,
 ) {
-  const { runtime } = await requireClusterDeploymentTarget(
-    organizationId,
-    clusterId,
-    runtimeId,
-  );
+  const { runtime } = await requireClusterDeploymentTarget(organizationId, clusterId, runtimeId);
+  if (runtime.provider !== "k3s")
+    throw new AppError(
+      "This operation requires a Kubernetes cluster.",
+      422,
+      "CLUSTER_PROVIDER_UNSUPPORTED",
+    );
   const gateway = runtime.plan.hosts.find((host) => host.role === "server")!;
   const target = await resolveServerExecutor(gateway.serverId, organizationId);
   if ((await inspectHostIssuedIdentity(target.executor)) !== gateway.hostIdentity)
@@ -188,12 +218,63 @@ export async function resolveClusterDeploymentRuntime(
   snapshot: DeploymentMeta,
   organizationId?: string,
 ) {
-  if (!organizationId || !snapshot.clusterId || !snapshot.clusterRuntimeId || !snapshot.clusterProjectId || !snapshot.clusterConfig)
-    throw new AppError("This deployment is missing its saved cluster target.", 409, "CLUSTER_TARGET_REQUIRED");
+  if (
+    !organizationId ||
+    !snapshot.clusterId ||
+    !snapshot.clusterRuntimeId ||
+    !snapshot.clusterProjectId ||
+    !snapshot.clusterConfig
+  )
+    throw new AppError(
+      "This deployment is missing its saved cluster target.",
+      409,
+      "CLUSTER_TARGET_REQUIRED",
+    );
   validateClusterWorkload(snapshot.clusterConfig);
-  const project = await repos.project.findByIdInOrganization(snapshot.clusterProjectId, organizationId);
+  const project = await repos.project.findByIdInOrganization(
+    snapshot.clusterProjectId,
+    organizationId,
+  );
   if (!project) throw new AppError("Cluster project not found.", 404, "PROJECT_NOT_FOUND");
-  const { api, runtime, gateway, target, edgeSourceIps } = await openClusterApi(organizationId, snapshot.clusterId, snapshot.clusterRuntimeId);
+  const selected = await requireClusterDeploymentTarget(
+    organizationId,
+    snapshot.clusterId,
+    snapshot.clusterRuntimeId,
+  );
+  if (selected.runtime.provider === "swarm") {
+    const gateway = selected.runtime.plan.hosts[0]!;
+    const target = await resolveServerExecutor(gateway.serverId, organizationId);
+    if (
+      !gateway.hostIdentity ||
+      (await inspectHostIssuedIdentity(target.executor)) !== gateway.hostIdentity
+    )
+      throw new AppError(
+        "The Swarm manager's machine identity changed.",
+        409,
+        "CLUSTER_HOST_CHANGED",
+      );
+    const runtime = new SwarmRuntime({
+      projectId: snapshot.clusterProjectId,
+      runtimeId: selected.runtime.id,
+      clusterUid: selected.runtime.plan.clusterUid!,
+      managerNodeId: gateway.nodeName,
+      config: snapshot.clusterConfig,
+      builder: () => createServerDockerRuntime(gateway.serverId, organizationId),
+      resolveRegistryAuth: registryAuthResolver(organizationId),
+    });
+    const hostPortTarget = await resolveHostPortTargetIdentity({
+      localHost: target.isLocal,
+      serverId: target.id,
+      executor: target.executor,
+      connection: target.hostPortConnection,
+    });
+    return { runtime, serverId: gateway.serverId, hostPortTarget };
+  }
+  const { api, runtime, gateway, target, edgeSourceIps } = await openClusterApi(
+    organizationId,
+    snapshot.clusterId,
+    snapshot.clusterRuntimeId,
+  );
   try {
     const workload = new KubernetesRuntime({
       api,

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { fetchRemoteUncached } from "./useUpdates";
+import { releaseDocuments } from "../src/updates/release-documents";
 
 const RELEASE_URL = "https://api.github.com/repos/oblien/openship/releases/latest";
 const CHANGELOG_URL = "https://raw.githubusercontent.com/oblien/openship/v0.6.9/CHANGELOG.md";
@@ -11,7 +11,7 @@ function response(body: BodyInit, init?: ResponseInit): Response {
   return new Response(body, { status: 200, ...init });
 }
 
-describe("fetchRemoteUncached", () => {
+describe("releaseDocuments", () => {
   it("uses the tagged changelog instead of the GitHub release body", async () => {
     const fetcher = vi.fn(async (input: string | URL | Request) => {
       const url = String(input);
@@ -33,14 +33,14 @@ Older notes.`);
       return response("", { status: 404 });
     });
 
-    const result = await fetchRemoteUncached(fetcher as typeof fetch);
+    const result = await releaseDocuments("v0.6.9", fetcher as typeof fetch);
 
     expect(result.latest).toEqual({
       version: "0.6.9",
       tag: "v0.6.9",
       notes: "The real product notes.",
     });
-    expect(fetcher).toHaveBeenCalledTimes(3);
+    expect(fetcher).toHaveBeenCalledTimes(2);
   });
 
   it("keeps advisories when changelog body reading fails", async () => {
@@ -69,7 +69,7 @@ Older notes.`);
       return response("", { status: 404 });
     });
 
-    const result = await fetchRemoteUncached(fetcher as typeof fetch);
+    const result = await releaseDocuments("v0.6.9", fetcher as typeof fetch);
 
     expect(result.latest?.notes).toBe("");
     expect(result.manifest?.advisories[0]?.id).toBe("critical-update");
@@ -86,7 +86,7 @@ Older notes.`);
       return response("", { status: 404 });
     });
 
-    const result = await fetchRemoteUncached(fetcher as typeof fetch);
+    const result = await releaseDocuments("v0.6.9", fetcher as typeof fetch);
 
     expect(result.latest?.notes).toBe("Still visible.");
     expect(result.manifest).toBeNull();

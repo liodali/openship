@@ -142,7 +142,9 @@ jobs:
       # coverage for "the update crash-looped on migrations".
       - name: Run tests
         if: steps.resume.outputs.reused != 'true'
-        run: bun run test
+        run: |
+          bun run test
+          bun run test:scripts
 
       - name: Verify Cloud build coordination on PostgreSQL
         if: steps.resume.outputs.reused != 'true'
@@ -201,15 +203,24 @@ jobs:
   # real images and extensions; scaling has its own reusable job above.
   # See E2E_SCOPE in apps/api/vitest.e2e.config.ts.
   e2e-docker:
-    name: E2E (real Docker, ${{ matrix.scope }})
+    name: E2E (real Docker, ${{ matrix.label }})
     runs-on: ubuntu-latest
-    # The ordinary suite shares one daemon and runs files serially. Allow cold
-    # pulls and the full lifecycle cases without changing individual test limits.
+    # Files remain serial within each disposable daemon. Split the growing
+    # ordinary suite across two hosts so it fits the gate without relaxing tests.
     timeout-minutes: ${{ matrix.scope == 'fast' && 45 || 30 }}
     strategy:
       fail-fast: false
       matrix:
-        scope: [fast, heavy]
+        include:
+          - scope: fast
+            label: fast 1/2
+            shard: 1/2
+          - scope: fast
+            label: fast 2/2
+            shard: 2/2
+          - scope: heavy
+            label: heavy
+            shard: ""
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -221,7 +232,7 @@ jobs:
         uses: ./.github/actions/release-resume
         with:
           scope: ${{ matrix.scope }}
-          job-name: E2E (real Docker, ${{ matrix.scope }})
+          job-name: E2E (real Docker, ${{ matrix.label }})
           workflow: .github/workflows/release-gate.yml
           job-id: e2e-docker
 
@@ -229,7 +240,7 @@ jobs:
         if: steps.resume.outputs.reused != 'true'
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version-file: .bun-version
 
       - name: Cache bun install
         if: steps.resume.outputs.reused != 'true'
@@ -257,4 +268,8 @@ jobs:
         env:
           RUN_DOCKER_E2E: "1"
           E2E_SCOPE: ${{ matrix.scope }}
-        run: bun run --cwd apps/api test:e2e
+          E2E_SHARD: ${{ matrix.shard }}
+        run: |
+          args=()
+          if [ -n "$E2E_SHARD" ]; then args+=("--shard=$E2E_SHARD"); fi
+          bun run --cwd apps/api test:e2e "${args[@]}"

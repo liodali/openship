@@ -264,7 +264,7 @@ describe("existing server billing", () => {
     await render(<BillingWorkspaceProvider workspaceId="cws-production"><BillingPaymentsPanel portalAvailable /></BillingWorkspaceProvider>);
     expect(container.textContent).toContain(copy.paymentPanel.title);
     expect([...container.querySelectorAll("button")].filter(item => item.textContent === copy.paymentPanel.openStripe)).toHaveLength(1);
-    expect(mocks.get).toHaveBeenCalledExactlyOnceWith("billing/checkouts", { params: { workspaceId: "cws-production" } });
+    expect(mocks.get).toHaveBeenCalledExactlyOnceWith("billing/checkouts", { params: { workspaceId: undefined } });
     await act(async () => button(copy.paymentPanel.openStripe).click());
     expect(mocks.post).toHaveBeenCalledExactlyOnceWith("billing/portal", { workspaceId: "cws-production" });
     expect(container.querySelector('[role="alert"]')?.textContent).toContain("Portal temporarily unavailable");
@@ -571,7 +571,7 @@ describe("complimentary Cloud plans", () => {
     expect(choose.disabled).toBe(true);
     await act(async () => choose.click());
     expect(mocks.post).not.toHaveBeenCalled();
-    await act(async () => button(copy.pricing.annual).click());
+    expect(container.querySelector(`[aria-label="${copy.pricing.billingInterval}"]`)).toBeNull();
     expect(current.textContent).toContain(copy.complimentary.label);
   });
 

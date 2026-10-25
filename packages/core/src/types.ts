@@ -345,8 +345,12 @@ export type ComposeAdvanced = {
    * value — so a service that declares its own limit now overrides the project
    * default at deploy time. `0`/absent = inherit the project (see
    * UNLIMITED_RESOURCES in ./resources).
+   *
+   * `swapDisabled` is a Docker-only opt-in (HostConfig.MemorySwap = Memory)
+   * that requires a positive effective memory limit. It is NOT compose-owned:
+   * compose has no equivalent, so imported services leave it alone.
    */
-  resources?: { cpuCores?: number; memoryMb?: number };
+  resources?: { cpuCores?: number; memoryMb?: number; swapDisabled?: boolean };
   /**
    * GPU this service asks for (compose `deploy.resources.reservations.devices` / `gpus`). Absent = no GPU.
    * Compose-owned: dropping it from the file must release the GPU, so it is swept in

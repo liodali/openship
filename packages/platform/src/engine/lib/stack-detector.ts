@@ -504,12 +504,17 @@ export function detectStack(
   // The Docker builder uses a repository Dockerfile when present. Classify it
   // before deriving language commands, otherwise an inferred package-manager
   // command overrides an image whose runtime may not contain that tool.
-  // Keep Compose's existing selection and apply explicit metadata below.
+  // A root Compose file alongside that Dockerfile owns the service topology,
+  // even when a framework matched first. Without a Dockerfile, keep framework
+  // detection: the Compose file may only provide local-development dependencies.
+  // Explicit metadata is applied below.
   if (
     matched !== "docker-compose" &&
     files.some((file) => file.type === "file" && file.name === "Dockerfile")
   ) {
-    matched = "docker";
+    matched = hasAnyRootMarker(STACKS["docker-compose"].detection, fileSet)
+      ? "docker-compose"
+      : "docker";
   }
 
   const pm = detectPackageManager(files, packageJson as Record<string, unknown> & {

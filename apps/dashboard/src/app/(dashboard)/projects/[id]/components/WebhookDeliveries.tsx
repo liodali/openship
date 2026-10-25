@@ -1,6 +1,7 @@
 "use client";
 
 import { reportCaughtError as observeCaughtError } from "@repo/core/diagnostics";
+import { useI18n } from "@/components/i18n-provider";
 import { Icon as UiIcon } from "@repo/ui/icons";
 
 import { useCallback, useEffect, useState } from "react";
@@ -98,6 +99,7 @@ const OUTCOME_TONE: Record<string, string> = {
   dispatched: "text-success border-success/40",
   forwarded: "text-info border-info/40",
   skipped: "text-muted-foreground border-border/60",
+  queued: "text-warning border-warning/40",
   ignored: "text-muted-foreground border-border/60",
   received: "text-muted-foreground border-border/60",
   failed: "text-danger border-danger/40",
@@ -109,6 +111,18 @@ function sourceIcon(source: string) {
 }
 
 function DeliveryRow({ d }: { d: WebhookDelivery }) {
+  const { t } = useI18n();
+  const reasons = t.projects.incomingWebhooks.changeReasons;
+  const reasonKeys: Record<string, keyof typeof reasons> = {
+    "unrelated-workspaces": "unrelated", "project-files": "application", "project-config": "application",
+    "workspace-dependency": "shared", "shared-package": "shared", "root-config": "shared",
+    "turbo-global-input": "shared", "shared-or-unknown-file": "shared",
+    "explicitly-included": "included", "explicitly-excluded": "excluded", "outside-explicit-includes": "excluded",
+    "custom-build-context": "unknown", "analysis-unavailable": "unknown", "unknown-deployed-diff": "unknown", "unknown-changes": "unknown", "unknown-revision": "unknown",
+    "first-deployment": "initial", "force-push": "forced", "commit-token": "forced", "force-deploy-next": "forced",
+  };
+  const reasonKey = d.summary?.reason ? reasonKeys[d.summary.reason] : undefined;
+  const reason = reasonKey ? reasons[reasonKey] : null;
   const tone = OUTCOME_TONE[d.outcome] ?? "text-muted-foreground border-border/60";
   const when = new Date(d.receivedAt);
   const label =
@@ -127,11 +141,14 @@ function DeliveryRow({ d }: { d: WebhookDelivery }) {
         {d.outcome === "forwarded" ? <UiIcon name="forward" className="size-3" /> : d.outcome === "ignored" ? <UiIcon name="ban" className="size-3" /> : null}
         {d.outcome}
       </span>
-      <span className="flex min-w-0 flex-1 items-center gap-1.5 text-sm text-foreground">
-        <span className="text-muted-foreground/60">{sourceIcon(d.source)}</span>
-        <span className="truncate">{label}</span>
-        {commit && <code className="shrink-0 font-mono text-[11px] text-muted-foreground/70">{commit}</code>}
-      </span>
+      <div className="min-w-0 flex-1">
+        <span className="flex min-w-0 items-center gap-1.5 text-sm text-foreground">
+          <span className="text-muted-foreground/60">{sourceIcon(d.source)}</span>
+          <span className="truncate">{label}</span>
+          {commit && <code className="shrink-0 font-mono text-[11px] text-muted-foreground/70">{commit}</code>}
+        </span>
+        {reason && <p className="mt-1 text-xs text-muted-foreground">{reason}</p>}
+      </div>
       <span className="shrink-0 text-[11px] text-muted-foreground/60" title={when.toLocaleString()}>
         {when.toLocaleDateString(undefined, { month: "short", day: "numeric" })}{" "}
         {when.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}

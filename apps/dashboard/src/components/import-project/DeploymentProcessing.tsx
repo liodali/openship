@@ -3,6 +3,7 @@
 import React, { useCallback } from "react";
 import type { Terminal } from "@xterm/xterm";
 import { CloudBuildQueueNotice } from "./CloudBuildQueueNotice";
+import { CloudDeploymentResourceNotice } from "./CloudDeploymentResourceNotice";
 import BuildTerminal from "./BuildTerminal";
 import { DeploymentHeader } from "./DeploymentHeader";
 import { DeploymentLayout } from "./DeploymentLayout";
@@ -18,7 +19,7 @@ import { useI18n } from "@/components/i18n-provider";
 
 interface DeploymentProcessingProps {
   // Resolves to the new deployment id (navigates on success) or null on failure.
-  onRedeploy: () => void | Promise<string | null>;
+  onRedeploy: (options?: { reuseBuild?: boolean }) => void | Promise<string | null>;
 }
 
 const DeploymentProcessing: React.FC<DeploymentProcessingProps> = ({ onRedeploy }) => {
@@ -54,7 +55,11 @@ const DeploymentProcessing: React.FC<DeploymentProcessingProps> = ({ onRedeploy 
   return (
     <PageContainer>
       <DeploymentHeader onRedeploy={onRedeploy} />
-      <DeploymentLayout details={<DeploymentDetails />} navigation={<DeploymentStepper />}>
+      <DeploymentLayout
+        details={<DeploymentDetails />}
+        navigation={<DeploymentStepper />}
+        notice={<CloudDeploymentResourceNotice />}
+      >
         {state.queue && state.isDeploying && <CloudBuildQueueNotice queue={state.queue} />}
         {hasWarning && (
           <div className="rounded-2xl border border-warning-border bg-warning-bg px-4 py-3">

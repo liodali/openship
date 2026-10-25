@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Hono } from "hono";
-import { repos, seedOwner, type SeededOwner } from "../jobs/_harness";
+import { eq } from "drizzle-orm";
+import { db, schema, repos, seedOwner, type SeededOwner } from "../jobs/_harness";
 import { createShip } from "@repo/sdk/native";
 import { OpenshipClient } from "@repo/sdk/client";
 import { getPlatformKernel } from "@repo/platform/engine/lib/platform";
@@ -11,6 +12,7 @@ import { healthRoutes } from "../../../src/modules/health/health.routes";
 import { handleApiError } from "../../../src/middleware/error-handler";
 import { seedClusterProject } from "../../helpers/cluster-project";
 import type { ClusterDatabaseObservation } from "@repo/core";
+import { decrypt } from "@repo/platform/engine/lib/encryption";
 import { encryptSecretField } from "@repo/platform/engine/lib/credential-encryption";
 
 const app = new Hono()
@@ -49,6 +51,239 @@ async function clients(owner: SeededOwner) {
 afterEach(() => vi.restoreAllMocks());
 
 describe("project databases through real HTTP and native operations", () => {
+  it("preserves ordinary Swarm database placement without advertising it as managed replication", async () => {
+    const owner = await seedOwner();
+    const target = await seedClusterProject(owner);
+    await db
+      .update(schema.clusterRuntime)
+      .set({ provider: "swarm" })
+      .where(eq(schema.clusterRuntime.id, target.runtime.id));
+    await db
+      .update(schema.project)
+      .set({
+        framework: "postgres",
+        releaseSource: { mode: "url", artifactKind: "image", imageTemplate: "postgres:17" },
+      })
+      .where(eq(schema.project.id, target.id));
+    const project = (await repos.project.findById(target.id))!;
+    const { native } = await clients(owner);
+    const result = await native.setClusterTarget(target.id, {
+      clusterId: target.clusterId,
+      config: { replicas: 1 },
+      expectedUpdatedAt: project.updatedAt.toISOString(),
+      acknowledgePlacement: true,
+    });
+    expect(result).toMatchObject({ clusterId: target.clusterId, config: { replicas: 1 } });
+    expect(result.unavailableReason).toContain("Database replication");
+    expect(await repos.clusterDatabase.list(owner.orgId, target.id)).toEqual([]);
+  });
+  it("rejects operator databases on Swarm before saving or scheduling an operation", async () => {
+    const worker = vi.spyOn(lifecycle, "deferNetworkSetupWork").mockResolvedValue(undefined);
+    const owner = await seedOwner();
+    const target = await seedClusterProject(owner);
+    await db
+      .update(schema.clusterRuntime)
+      .set({ provider: "swarm" })
+      .where(eq(schema.clusterRuntime.id, target.runtime.id));
+    const { native, remote } = await clients(owner);
+    for (const api of [native, remote]) {
+      await expect(
+        api.createClusterDatabase(target.id, {
+          requestId: crypto.randomUUID(),
+          name: "postgres",
+          config: {
+            engine: "postgres",
+            mode: "standalone",
+            instances: 1,
+            storageClass: "openship-local",
+            storageGiB: 5,
+            cpuMillis: 250,
+            memoryMiB: 256,
+            databaseName: "app",
+          },
+        }),
+      ).rejects.toMatchObject({ code: "CLUSTER_PROVIDER_UNSUPPORTED" });
+    }
+    expect(await repos.clusterDatabase.list(owner.orgId, target.id)).toEqual([]);
+    expect(worker).not.toHaveBeenCalled();
+  });
+  it("scales PostgreSQL in place and atomically binds separate write and reader endpoints", async () => {
+    vi.spyOn(lifecycle, "deferNetworkSetupWork").mockResolvedValue(undefined);
+    const owner = await seedOwner(),
+      target = await seedClusterProject(owner);
+    const { native, remote } = await clients(owner);
+    const original = await native.createClusterDatabase(target.id, {
+      requestId: crypto.randomUUID(),
+      name: "postgres-readers",
+      config: {
+        engine: "postgres",
+        version: "18",
+        mode: "standalone",
+        instances: 1,
+        storageClass: "openship-local",
+        storageGiB: 5,
+        cpuMillis: 250,
+        memoryMiB: 256,
+        databaseName: "app",
+      },
+    });
+    await repos.clusterDatabase.finish(original.id, original.generation, "ready", verified, null);
+    let current = await remote.getClusterDatabase(target.id, { databaseId: original.id });
+    const before = await repos.clusterDatabase.get(owner.orgId, target.id, original.id);
+    await expect(
+      remote.connectClusterDatabase(target.id, {
+        databaseId: current.id,
+        expectedSequence: current.sequence,
+        envKey: "DATABASE_URL",
+        readEnvKey: "DATABASE_READ_URL",
+      }),
+    ).rejects.toMatchObject({ code: "CLUSTER_DATABASE_READERS_REQUIRED" });
+    expect(await repos.project.getEnvMap(target.id, "production")).toEqual({});
+    current = await remote.updateClusterDatabase(target.id, {
+      databaseId: current.id,
+      expectedSequence: current.sequence,
+      config: { ...current.config, mode: "cluster", instances: 2 },
+    });
+    await expect(
+      native.updateClusterDatabase(target.id, {
+        databaseId: original.id,
+        expectedSequence: before.sequence,
+        config: { ...current.config, instances: 3 },
+      }),
+    ).rejects.toMatchObject({ code: "CLUSTER_DATABASE_CONFLICT" });
+    await repos.clusterDatabase.finish(current.id, current.generation, "ready", verified, null);
+    current = await native.getClusterDatabase(target.id, { databaseId: current.id });
+    await expect(
+      remote.connectClusterDatabase(target.id, {
+        databaseId: current.id,
+        expectedSequence: current.sequence,
+        envKey: "DATABASE_URL",
+        readEnvKey: "DATABASE_URL",
+      }),
+    ).rejects.toMatchObject({ code: "CLUSTER_DATABASE_CONFLICT" });
+    expect(await repos.project.getEnvMap(target.id, "production")).toEqual({});
+    current = await remote.connectClusterDatabase(target.id, {
+      databaseId: current.id,
+      expectedSequence: current.sequence,
+      envKey: "DATABASE_URL",
+      readEnvKey: "DATABASE_READ_URL",
+    });
+    expect(current).toMatchObject({ envKey: "DATABASE_URL", readEnvKey: "DATABASE_READ_URL" });
+    const env = await repos.project.getEnvMap(target.id, "production");
+    expect(env.DATABASE_URL).not.toContain("postgresql://");
+    expect(decrypt(env.DATABASE_URL)).toContain("@database-rw.");
+    expect(decrypt(env.DATABASE_READ_URL)).toContain("@database-ro.");
+    expect(JSON.stringify(current)).not.toMatch(/readEnvValueEncrypted|secretEncrypted/);
+    await expect(
+      native.updateClusterDatabase(target.id, {
+        databaseId: current.id,
+        expectedSequence: current.sequence,
+        config: { ...current.config, mode: "standalone", instances: 1 },
+      }),
+    ).rejects.toThrow("Disconnect applications using the reader endpoint");
+    current = await native.connectClusterDatabase(target.id, {
+      databaseId: current.id,
+      expectedSequence: current.sequence,
+      envKey: "DATABASE_URL",
+    });
+    expect(current.readEnvKey).toBe("DATABASE_READ_URL");
+    current = await remote.connectClusterDatabase(target.id, {
+      databaseId: current.id,
+      expectedSequence: current.sequence,
+      envKey: "DATABASE_URL",
+      readEnvKey: null,
+    });
+    expect(
+      (await repos.project.getEnvMap(target.id, "production")).DATABASE_READ_URL,
+    ).toBeUndefined();
+    current = await native.updateClusterDatabase(target.id, {
+      databaseId: current.id,
+      expectedSequence: current.sequence,
+      config: { ...current.config, mode: "standalone", instances: 1 },
+    });
+    const after = await repos.clusterDatabase.get(owner.orgId, target.id, original.id);
+    expect(after).toMatchObject({
+      id: before.id,
+      secretEncrypted: before.secretEncrypted,
+      runtimeId: before.runtimeId,
+      clusterId: before.clusterId,
+      requestId: before.requestId,
+    });
+    expect(current.config).toMatchObject({
+      version: "18",
+      storageGiB: 5,
+      storageClass: "openship-local",
+    });
+  });
+
+  it("retains unrelated secrets and rolls back both bindings when reader ownership conflicts", async () => {
+    vi.spyOn(lifecycle, "deferNetworkSetupWork").mockResolvedValue(undefined);
+    const owner = await seedOwner(),
+      target = await seedClusterProject(owner);
+    const { native, remote } = await clients(owner);
+    let database = await native.createClusterDatabase(target.id, {
+      requestId: crypto.randomUUID(),
+      name: "postgres-ownership",
+      config: {
+        engine: "postgres",
+        mode: "cluster",
+        instances: 3,
+        storageClass: "openship-local",
+        storageGiB: 1,
+        cpuMillis: 250,
+        memoryMiB: 256,
+        databaseName: "app",
+      },
+    });
+    await repos.clusterDatabase.finish(database.id, database.generation, "ready", verified, null);
+    database = await native.getClusterDatabase(target.id, { databaseId: database.id });
+    const custom = await repos.project.setEnvVar({
+      projectId: target.id,
+      key: "DATABASE_READ_URL",
+      value: "user-managed-secret",
+      environment: "production",
+      isSecret: true,
+    });
+    await expect(
+      remote.connectClusterDatabase(target.id, {
+        databaseId: database.id,
+        expectedSequence: database.sequence,
+        envKey: "DATABASE_URL",
+        readEnvKey: "DATABASE_READ_URL",
+      }),
+    ).rejects.toMatchObject({ code: "CLUSTER_DATABASE_CONFLICT" });
+    expect(await repos.project.getEnvMap(target.id, "production")).toEqual({
+      DATABASE_READ_URL: "user-managed-secret",
+    });
+    expect(await remote.getClusterDatabase(target.id, { databaseId: database.id })).toMatchObject({
+      sequence: database.sequence,
+      envKey: null,
+      readEnvKey: null,
+    });
+    await repos.project.deleteEnvVar(custom.id);
+    database = await native.connectClusterDatabase(target.id, {
+      databaseId: database.id,
+      expectedSequence: database.sequence,
+      envKey: "DATABASE_URL",
+      readEnvKey: "DATABASE_READ_URL",
+    });
+    const saved = await repos.project.listEnvVars(target.id, "production", null);
+    await repos.project.updateEnvVar(
+      saved.find((env) => env.key === "DATABASE_READ_URL")!.id,
+      "replacement-user-secret",
+    );
+    database = await remote.connectClusterDatabase(target.id, {
+      databaseId: database.id,
+      expectedSequence: database.sequence,
+      envKey: null,
+      readEnvKey: null,
+    });
+    expect(database).toMatchObject({ envKey: null, readEnvKey: null });
+    expect(await repos.project.getEnvMap(target.id, "production")).toEqual({
+      DATABASE_READ_URL: "replacement-user-secret",
+    });
+  });
+
   it("prepares an imported database before moving its Docker project and pins its source backup", async () => {
     vi.spyOn(lifecycle, "deferNetworkSetupWork").mockResolvedValue(undefined);
     const owner = await seedOwner(),

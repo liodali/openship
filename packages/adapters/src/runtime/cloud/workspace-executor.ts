@@ -22,21 +22,21 @@ export class CloudWorkspaceExecutor implements CommandExecutor {
   private readonly shells = new Set<ShellSession>();
   private disposed = false;
 
-  constructor(private readonly runtime: () => Promise<Runtime>, private readonly workspaceId?: string) {}
+  constructor(private readonly runtime: (options?: { force?: boolean }) => Promise<Runtime>, private readonly workspaceId?: string) {}
 
   async recoverCommand(command: ManagedCommandRef) {
     if (command.workspaceId !== this.workspaceId) throw new Error("Command belongs to another server");
-    await recoverManagedCommand(await this.rt(), command);
+    await recoverManagedCommand(await this.rt({ force: true }), command);
   }
 
   runWithAbortSignal<T>(signal: AbortSignal, fn: () => Promise<T>): Promise<T> {
     return this.abortScope.run(signal, fn);
   }
 
-  private async rt(): Promise<Runtime> {
+  private async rt(options?: { force?: boolean }): Promise<Runtime> {
     if (this.disposed) throw new Error("Cloud workspace connection is closed");
     this.abortScope.getStore()?.throwIfAborted();
-    return this.runtime();
+    return this.runtime(options);
   }
 
   async exec(command: string, opts?: { timeout?: number }): Promise<string> {
@@ -45,7 +45,7 @@ export class CloudWorkspaceExecutor implements CommandExecutor {
     const abort = () => controller.abort(outer?.reason);
     outer?.addEventListener("abort", abort, { once: true });
     if (outer?.aborted) abort();
-    const timer = setTimeout(() => controller.abort(new Error("Cloud command timed out")), opts?.timeout ?? 120_000);
+    const timer = setTimeout(() => controller.abort(new DOMException("Cloud command timed out", "TimeoutError")), opts?.timeout ?? 120_000);
     try {
       const result = await this.streamExec(command, () => {}, { signal: controller.signal });
       controller.signal.throwIfAborted();
@@ -88,7 +88,7 @@ export class CloudWorkspaceExecutor implements CommandExecutor {
     };
     const kill = () => {
       killed = true;
-      const error = new Error("Cloud command cancelled");
+      const error = new AppError("Cloud command cancelled", 499, "CLOUD_COMMAND_CANCELLED");
       cancellation.abort(error);
       // Keep the caller's operation lock until the provider acknowledges the
       // stop. An ID arriving after cancellation must be stopped as well.
@@ -142,7 +142,7 @@ export class CloudWorkspaceExecutor implements CommandExecutor {
             if (killed) {
               await stopTask();
               await releaseTask(runtime, taskId);
-              throw new Error("Cloud command cancelled");
+              throw new AppError("Cloud command cancelled", 499, "CLOUD_COMMAND_CANCELLED");
             }
             await tracking?.record(identity());
             if (killed || signal?.aborted) kill();
@@ -217,6 +217,12 @@ export class CloudWorkspaceExecutor implements CommandExecutor {
       opts?.signal?.throwIfAborted();
       flush();
       return { code, output };
+    } catch (error) {
+      // Preserve the caller's timeout/cancellation reason only after the owned
+      // command has confirmed exit. Recovery failures must keep their own error.
+      if (opts?.signal?.aborted && error instanceof AppError && error.code === "CLOUD_COMMAND_CANCELLED")
+        throw opts.signal.reason;
+      throw error;
     } finally {
       flush();
       opts?.signal?.removeEventListener("abort", child.kill);
@@ -258,7 +264,8 @@ export class CloudWorkspaceExecutor implements CommandExecutor {
     await transferLocalDirectory(localPath, { kind: "cloud-runtime", runtime: await this.rt(), path: remotePath }, logger, options);
   }
   async openShell(options?: ShellOptions): Promise<ShellSession> {
-    const shell = await openCloudShell(await this.rt(), options, this.workspaceId);
+    // Teardown must still acquire credentials after dispose or caller abort.
+    const shell = await openCloudShell(await this.rt(), options, this.workspaceId, () => this.runtime({ force: true }));
     if (this.disposed) { await shell.close(); throw new Error("Cloud workspace connection is closed"); }
     this.shells.add(shell);
     shell.onClose(() => this.shells.delete(shell));

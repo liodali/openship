@@ -36,7 +36,7 @@ export interface RollbackRetentionCardsProps {
   capacity: RollbackCapacityUI | null;
   onToggleStrategy?: () => void;
   /** Called with the new explicit window. Absent → the stepper is hidden. */
-  onChangeWindow?: (next: number) => void;
+  onChangeWindow?: (next: number | null) => void;
   togglingStrategy?: boolean;
   savingWindow?: boolean;
   /** No project row yet (a first deploy): show what WILL apply, no controls. */
@@ -61,6 +61,7 @@ export function RollbackRetentionCards({
   const maxWindow = capacity?.maxWindow ?? MAX_ROLLBACK_WINDOW;
   const canEdit = !readOnly && !!capacity && !!onChangeWindow;
   const busy = savingWindow || togglingStrategy;
+  const automatic = capacity?.explicit === null;
 
   /** Show the artifact kind, then only measurements the host supplied. */
   const measured: string[] = [
@@ -76,14 +77,14 @@ export function RollbackRetentionCards({
       interpolate(g.rollbackHistory.diskFree, { size: formatBytes(capacity.diskFreeBytes) }),
     );
   }
-  if (capacity?.source === "instance-default") measured.push(g.rollbackHistory.defaultBadge);
+  if (capacity?.source === "instance-default") measured.push(g.rollbackHistory.autoBadge, g.rollbackHistory.defaultBadge);
   if (capacity?.source === "explicit") measured.push(g.rollbackHistory.manualBadge);
 
   // Description and MEASUREMENTS stay separate. Joining them with " — " produced
   // one long paragraph that, in the deploy wizard's narrow two-column layout,
   // wrapped into ~8 lines and blew out the card height. The numbers go in the
   // card's footer slot instead, where they read as metadata.
-  const historyDescription = g.rollbackHistory.retentionDescription;
+  const historyDescription = automatic ? g.rollbackHistory.automaticDescription : g.rollbackHistory.retentionDescription;
 
   return (
     // Stacked cards fit both Advanced settings and the narrow deploy wizard.
@@ -129,7 +130,7 @@ export function RollbackRetentionCards({
         icon={"rotate-left"}
         title={g.rollbackHistory.title}
         value={capacity ? interpolate(
-          windowVal === 1 ? g.rollbackHistory.valueOne : g.rollbackHistory.valueOther,
+          automatic ? g.rollbackHistory.automaticValue : windowVal === 1 ? g.rollbackHistory.valueOne : g.rollbackHistory.valueOther,
           { count: String(windowVal) },
         ) : "—"}
         description={historyDescription}
@@ -140,7 +141,13 @@ export function RollbackRetentionCards({
         }
         action={
           canEdit ? (
-            <div className="flex items-center gap-1.5">
+            <div className="flex flex-wrap items-center justify-end gap-1.5">
+              {!automatic && (
+                <button type="button" disabled={busy} onClick={() => onChangeWindow?.(null)}
+                  className="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40">
+                  {g.rollbackHistory.autoBadge}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => onChangeWindow?.(windowVal - 1)}

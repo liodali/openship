@@ -150,6 +150,25 @@ jsonCommand(projectLocalCommand.command("import").description("Register a folder
   ImportLocalProjectBody, input => getShipClient().projects.importLocal(input));
 
 export const projectRoutingCommand = new Command("routing").description("Manage project routing rules and retry route synchronization");
+const routeProtection = projectRoutingCommand.command("protection")
+  .description("Protect self-hosted HTTPS hostnames with an edge password");
+routeProtection.command("list").argument("<id>", "Project ID")
+  .description("Read protection status without credentials")
+  .action((id: string) => printResult(() => getShipClient().projects.listRouteProtection(id)));
+routeProtection.command("protect").argument("<id>", "Project ID").argument("<hostname>", "Exact custom hostname")
+  .requiredOption("--password-file <file>", "Password file, or - for stdin (never a command-line password)")
+  .description("Set or change the password; existing browser sessions expire")
+  .action((id: string, hostname: string, opts) => printResult(() =>
+    getShipClient().projects.changeRouteProtection(id, { hostname, action: "protect", password: readSecret(opts.passwordFile, { preserveWhitespace: true }) })));
+for (const action of ["retry", "revoke", "unlock"] as const) {
+  routeProtection.command(action).argument("<id>", "Project ID").argument("<hostname>", "Exact custom hostname")
+    .option("-y, --yes", "Confirm making the hostname public (unlock only)")
+    .description({ retry: "Retry the saved edge update", revoke: "Sign out all browsers", unlock: "Remove password protection and make this hostname public" }[action])
+    .action((id: string, hostname: string, opts) => printResult(async () => {
+      if (action === "unlock") await confirmOrExit(opts.yes, `Make ${hostname} public without a password?`);
+      return getShipClient().projects.changeRouteProtection(id, { hostname, action });
+    }));
+}
 projectRoutingCommand.command("list").argument("<id>", "Project ID").description("Read saved routing rules")
   .action((id: string) => printResult(() => getShipClient().projects.listRouteRules(id)));
 jsonResourceCommand(projectRoutingCommand.command("create").description("Create a project or domain routing rule"),

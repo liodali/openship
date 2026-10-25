@@ -256,7 +256,7 @@ beforeAll(async () => {
       executor,
       runtime: {
         name: "docker",
-        supports: () => true,
+        supports: (cap: string) => ["containerInfo", "containerIp"].includes(cap),
         getContainerInfo: async (id: string) => {
           const route = routes.find((r) => `container-${r.name}` === id);
           return route

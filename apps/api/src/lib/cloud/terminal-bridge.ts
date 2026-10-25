@@ -3,12 +3,14 @@ import WebSocket from "ws";
 import type { WSContext, WSEvents } from "hono/ws";
 import { AppError } from "@repo/core";
 import type { ExecutionContext } from "@repo/platform";
-import { authorization, checkPermission } from "@repo/platform/engine/lib/authorization";
+import { authorization } from "@repo/platform/engine/lib/authorization";
 import { cloudRuntimeTarget, env } from "@repo/platform/engine/config/env";
 import { resolveResourceAuthority } from "@repo/platform/engine/lib/cloud/resource-authority";
 import { assertCloudProxyScope } from "@repo/platform/engine/lib/cloud/scope";
 import { linkedCloudIdentity } from "@repo/platform/engine/lib/cloud/server-link";
 import { cloudFetchAsOrgOwner, sameCloudIdentity, type CloudIdentity } from "@repo/platform/engine/lib/cloud/transport";
+
+import { refreshTerminalContext } from "../terminal-authorization";
 
 type TerminalKind = "server" | "service";
 export interface CloudTerminalTicket {
@@ -43,7 +45,7 @@ export async function prepareCloudTerminal(ctx: ExecutionContext, kind: Terminal
 /** Relay the existing terminal protocol. PTY ownership, admission, audit,
  * resume and idle limits remain in Cloud's normal terminal implementation. */
 export function cloudTerminalHandlers(input: {
-  kind: TerminalKind; id: string; userId: string; organizationId: string;
+  kind: TerminalKind; id: string; context: ExecutionContext;
   cloud: CloudTerminalTicket; resumeToken: string;
 }): WSEvents {
   let upstream: WebSocket | null = null;
@@ -54,7 +56,7 @@ export function cloudTerminalHandlers(input: {
   let timer: ReturnType<typeof setInterval> | undefined;
   let pending: Array<string | Uint8Array> = [];
   let pendingBytes = 0;
-  const owner = `${input.organizationId}:${input.userId}:${input.kind}`;
+  const owner = `${input.context.organizationId}:${input.context.userId}:${input.kind}`;
 
   function close(code = 1000, reason = "", terminateShell = false) {
     if (closed) return;
@@ -81,8 +83,9 @@ export function cloudTerminalHandlers(input: {
     close(code, message, terminateShell);
   }
   async function stillAuthorized() {
-    const current = await linkedCloudIdentity(input.organizationId);
-    return sameCloudIdentity(current, input.cloud.identity) && await checkPermission(input.userId, input.organizationId, {
+    const current = await linkedCloudIdentity(input.context.organizationId);
+    const ctx = await refreshTerminalContext(input.context);
+    return sameCloudIdentity(current, input.cloud.identity) && await authorization.checkPermissionOnResource(ctx, {
       resourceType: input.kind, resourceId: input.id, action: "admin",
     });
   }

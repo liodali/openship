@@ -17,7 +17,7 @@ projectClusterCommand
 jsonResourceCommand(
   projectClusterCommand
     .command("set")
-    .description("Set or clear cluster placement with explicit stateless-workload acknowledgement"),
+    .description("Set or clear cluster placement: acknowledgePlacement for Swarm, stateless for Kubernetes"),
   schemas.setClusterTarget.input,
   (id, input) => getShipClient().projects.setClusterTarget(id, input),
   "Change this project's deployment target?",

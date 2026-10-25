@@ -40,12 +40,16 @@ afterAll(() => {
 afterEach(() => mock.restore());
 
 type Reply = "success" | "AUTHENTICATIONFAILED" | "UNAVAILABLE" | "disconnect";
-async function localImap(mode: "tls" | "starttls" | "plaintext", reply: Reply = "success") {
+async function localImap(
+  mode: "tls" | "starttls" | "plaintext",
+  reply: Reply = "success",
+  commandLogDelayMs = 0,
+) {
   // Node supplies the fixture server so Bun's server-side STARTTLS emulation
   // cannot hide a problem in the production Bun IMAP client.
   const child = spawn(
     "node",
-    [join(import.meta.dir, "fixtures/imap-server.mjs"), mode, reply, dir],
+    [join(import.meta.dir, "fixtures/imap-server.mjs"), mode, reply, dir, String(commandLogDelayMs)],
     { stdio: ["pipe", "pipe", "pipe"] },
   );
   const credentials: string[] = [];
@@ -167,7 +171,7 @@ describe("webmail over real local IMAP sockets", () => {
   it.each(["tls", "starttls"] as const)(
     "authenticates and opens the inbox using %s",
     async (mode) => {
-      const server = await localImap(mode);
+      const server = await localImap(mode, "success", 50);
       try {
         routeTo(server.port);
         const exists = await withImap(
@@ -176,6 +180,9 @@ describe("webmail over real local IMAP sockets", () => {
         );
         expect(exists).toBe(1);
         expect(server.credentials).toEqual(["\0user@example.test\0test-only-password"]);
+        // A successful socket response does not flush the child's stdout pipe.
+        const deadline = Date.now() + 1000;
+        while (!server.commands.includes("LOGOUT") && Date.now() < deadline) await Bun.sleep(5);
         expect(server.commands).toContain("LOGOUT");
         if (mode === "starttls")
           expect(server.commands.indexOf("STARTTLS")).toBeLessThan(

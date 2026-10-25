@@ -105,7 +105,11 @@ export function collectComposeRoutePortDemands(opts: {
   const composite = planCompositeRoute(services, {
     rewrites: project.routingConfig?.rewrites,
   });
-  if (composite) {
+  const frontend = composite && services.find(service => service.id === composite.frontendServiceId);
+  const hasCompositeHostname = frontend && (projectRoutes.length > 0 || buildServiceRouteDomains({
+    project, service: frontend, runtimeName, usesManagedRouting, domainByHostname,
+  }).length > 0);
+  if (composite && hasCompositeHostname) {
     const backend = services.find((service) => service.id === composite.backendServiceId);
     if (backend) add(backend.id, resolveServicePort(backend, project.port));
   }

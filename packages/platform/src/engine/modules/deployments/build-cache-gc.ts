@@ -61,7 +61,7 @@ export interface BuildCacheGcDependencies {
 }
 
 const defaultDependencies: BuildCacheGcDependencies = {
-  listServers: () => env.CLOUD_MODE ? Promise.resolve([]) : repos.server.list(),
+  listServers: async () => (await repos.server.list()).filter(server => !server.workspaceId && server.purpose !== "migration_source" && (!env.CLOUD_MODE || !server.isLocal)),
   listManagedTargets: async () => {
     if (!env.CLOUD_MODE) return [];
     const targets = new Map<string, BuildCacheTarget>();

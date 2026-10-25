@@ -3,12 +3,15 @@ import type { EdgeProviderOptions } from "@repo/adapters";
 import { resolveAcmeProviderOptions } from "./acme-config";
 import { isLocalHostRow } from "./box-org";
 import { createProvisionLock } from "./provision-lock";
+import { env } from "../config/env";
 
 /** One lock per edge, shared by deploys, verification, TLS and server settings.
  * Separate from provisioning: setup may already hold the provisioning lock. */
 export function edgeProviderOptions(remoteServerId?: string): EdgeProviderOptions {
   return {
-    ...resolveAcmeProviderOptions(),
+    // Instance certificate credentials belong to its operator. SaaS manages
+    // untrusted customer hosts, which must use their own certificate accounts.
+    ...(!env.CLOUD_MODE ? resolveAcmeProviderOptions() : {}),
     configLock: createProvisionLock(
       remoteServerId ? `edge-config:server:${remoteServerId}` : "edge-config:local",
     ),

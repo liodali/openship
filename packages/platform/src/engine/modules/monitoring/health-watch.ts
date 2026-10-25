@@ -350,6 +350,7 @@ interface Workload {
   serviceKey: string;
   serviceName: string;
   containerId: string;
+  trackedContainerId?: string | null;
   /** False when the operator stopped this specific service. */
   expectRunning: boolean;
 }
@@ -1472,6 +1473,7 @@ async function resolveWorkloads(
       serviceKey: service.id,
       serviceName: service.name,
       containerId,
+      trackedContainerId: hint.containerId,
       // Gate 2. `service_deployment.status` is never read for LIVENESS — but it
       // is the only record of INTENT, written by stopServiceContainer.
       expectRunning: service.enabled !== false && hint.status !== "stopped",
@@ -1721,6 +1723,8 @@ async function evaluate(args: {
         exitCode: sample?.exitCode ?? null,
         restartCount: sample?.restartCount ?? existing.restartCount,
         containerId: workload.containerId,
+        deploymentId: candidate.dep.id,
+        trackedContainerId: workload.trackedContainerId ?? null,
       });
     }
     return;
@@ -1735,6 +1739,8 @@ async function evaluate(args: {
     serviceName: workload.serviceName,
     serverId: candidate.serverId,
     containerId: workload.containerId,
+    deploymentId: candidate.dep.id,
+    trackedContainerId: workload.trackedContainerId ?? null,
   };
 
   // Read the log tail ONLY when this will produce a message. Otherwise a box full

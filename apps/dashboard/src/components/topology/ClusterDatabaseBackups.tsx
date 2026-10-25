@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { CustomSelect } from "@/components/ui/CustomSelect";
 import { BackupDestinationSelect } from "@/components/backup/BackupDestinationSelect";
 import { randomUUID } from "@/lib/random-uuid";
+import { useI18n } from "@/components/i18n-provider";
 
 export function ClusterDatabaseBackupSettings({
   value,
@@ -115,9 +116,19 @@ export function ClusterDatabaseBackups({
     clusterAwareClient?: true;
   }) => void;
 }) {
+  const { t } = useI18n();
+  const text = t.projects.quickScale;
   const [selected, setSelected] = useState<string | null>(null);
   const [name, setName] = useState(`${database.name.slice(0, 54)}-restored`);
   const [storageGiB, setStorageGiB] = useState(database.config.storageGiB);
+  const [restoreMode, setRestoreMode] = useState(database.config.mode);
+  const [restoreInstances, setRestoreInstances] = useState(database.config.instances);
+  const canChooseReplication =
+    database.config.engine === "redis" && database.config.mode !== "cluster";
+  const validInstances =
+    !canChooseReplication ||
+    restoreMode === "standalone" ||
+    (Number.isInteger(restoreInstances) && restoreInstances >= 3 && restoreInstances <= 9);
   const request = useRef(randomUUID());
   const backups = database.observation?.backups ?? [];
   const archive = database.observation?.archive;
@@ -194,7 +205,16 @@ export function ClusterDatabaseBackups({
               requestId: request.current,
               name,
               clusterId: database.clusterId,
-              config: { ...database.config, storageGiB },
+              config: {
+                ...database.config,
+                storageGiB,
+                ...(canChooseReplication
+                  ? {
+                      mode: restoreMode,
+                      instances: restoreMode === "standalone" ? 1 : restoreInstances,
+                    }
+                  : {}),
+              },
               restoreFrom: { databaseId: database.id, backupName: selected },
               ...(database.config.engine === "redis" && database.config.mode === "cluster"
                 ? { clusterAwareClient: true }
@@ -222,6 +242,53 @@ export function ClusterDatabaseBackups({
               onChange={(event) => setName(event.target.value)}
             />
           </label>
+          {canChooseReplication && (
+            <div className="space-y-3">
+              <label className="block space-y-1.5 text-sm">
+                <span>{text.restoreDeployment}</span>
+                <CustomSelect
+                  variant="filled"
+                  aria-label={text.restoreDeployment}
+                  value={restoreMode}
+                  disabled={disabled}
+                  options={[
+                    { value: "standalone", label: text.singleInstance },
+                    { value: "replication", label: text.replication, description: text.redisHint },
+                  ]}
+                  onChange={(value) => {
+                    setRestoreMode(value as "standalone" | "replication");
+                    setRestoreInstances(
+                      value === "standalone" ? 1 : Math.max(3, database.config.instances),
+                    );
+                  }}
+                />
+              </label>
+              {restoreMode === "replication" && (
+                <label className="block space-y-1.5 text-sm">
+                  <span>{text.instancesIncludingPrimary}</span>
+                  <Input
+                    variant="filled"
+                    type="number"
+                    min={3}
+                    max={9}
+                    step={1}
+                    required
+                    value={restoreInstances}
+                    disabled={disabled}
+                    onChange={(event) => setRestoreInstances(Number(event.target.value))}
+                  />
+                </label>
+              )}
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                {text.restoreReplicationHint}
+              </p>
+              {!validInstances && (
+                <p role="alert" className="text-xs text-danger">
+                  {text.invalidCount}
+                </p>
+              )}
+            </div>
+          )}
           <label className="block space-y-1.5 text-sm">
             <span>Storage per instance (GiB)</span>
             <Input
@@ -240,7 +307,10 @@ export function ClusterDatabaseBackups({
             </span>
           </label>
           <div className="flex gap-2">
-            <Button type="submit" disabled={disabled || !name.trim() || name === database.name}>
+            <Button
+              type="submit"
+              disabled={disabled || !name.trim() || name === database.name || !validInstances}
+            >
               Restore database
             </Button>
             <Button

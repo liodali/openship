@@ -46,6 +46,7 @@ export type {
 // The one clone-command assembler (token / relay / ssh / ambient) + its shell
 // quoting, shared with the API so a probe and the clone it predicts can't drift.
 export { projectBuildKitWorker, removeProjectBuildKitWorker } from "./runtime/docker-buildkit-worker";
+export { setDefaultBuildKitImage, resolveBuildKitImage } from "./runtime/docker-buildkit-image";
 export {
   sq,
   assembleGitClone,
@@ -92,7 +93,7 @@ export {
   type DockerConnectionOptions,
 } from "./runtime/docker";
 export { containerInfoFromDockerSummary } from "./runtime/docker-container-info";
-export { DEFAULT_BUILD_CACHE_KEEP_BYTES } from "./runtime/docker-build-cache";
+export { DEFAULT_BUILD_CACHE_KEEP_BYTES, BUILD_STORAGE_GC_FREE_FRACTION } from "./runtime/docker-build-cache";
 // The pull-auth shape, so the API can type the credential resolver it injects (#581).
 export type { DockerRegistryAuth } from "./runtime/docker-auth";
 export {
@@ -198,6 +199,7 @@ export type {
   ProvisionCertOptions,
   DnsCertificateProvider,
 } from "./infra/types";
+export { createRouteProtection, revokeRouteSessions, assertRouteProtection, type RouteProtection } from "./infra/route-protection";
 export { NginxProvider, type NginxProviderOptions, type RateLimitConfig } from "./infra/nginx";
 // For the upstream-down e2e in apps/api: it asserts on the real marker rather than a copy of
 // the string, which could drift from the page it is checking for.
@@ -654,3 +656,7 @@ export {
   probeDockerExecutionPlatforms,
   DOCKER_BINFMT_IMAGE,
 } from "./runtime/docker-platforms";
+export { inspectDockerSwarm } from "./runtime/swarm/inspect";
+export { SwarmRuntime } from "./runtime/swarm/runtime";
+export { assertSwarmServiceConfig } from "./runtime/swarm/spec";
+export { prepareRemoteSource } from "./runtime/remote-source";

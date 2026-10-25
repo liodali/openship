@@ -6,6 +6,7 @@ import babel from 'vite-plugin-babel';
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from 'vite';
 import dedent from 'dedent';
+import { editorSharedPackages } from './lib/editor-dependencies';
 
 const ReactCompilerConfig = {
   /* ... */
@@ -67,7 +68,7 @@ export default defineConfig({
   },
   resolve: {
     // Editor transactions require one ProseMirror instance across TipTap and direct imports.
-    dedupe: ['prosemirror-model', 'prosemirror-state', 'prosemirror-view'],
+    dedupe: [...editorSharedPackages],
     alias: {
       tslib: 'tslib/tslib.es6.js',
       'react-tweet': new URL('./lib/react-tweet-stub.ts', import.meta.url).pathname,

@@ -54,7 +54,10 @@ export function softwareImageCandidates(raw: string): Array<SoftwareImage & { re
   const normalize = (reference: string) =>
     reference.replace(/^(?:docker\.io\/|index\.docker\.io\/)/, "").replace(/^library\//, "");
   return [...references].flatMap((reference) => {
-    const entry = pack.images!.find((image) => normalize(image.image) === normalize(reference));
+    const [ref, pinnedDigest] = reference.split("@");
+    const entry = pack.images!.find((image) =>
+      normalize(image.image) === normalize(ref!) && (!pinnedDigest || pinnedDigest === image.sourceDigest),
+    );
     return entry ? [{ ...entry, reference }] : [];
   });
 }

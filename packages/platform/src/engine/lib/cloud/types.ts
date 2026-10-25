@@ -104,7 +104,7 @@ export type CloudClientScope = { userId: string } | { organizationId: string };
 export interface CloudClient {
   github: {
     installUrl(): Promise<{ url: string; state: string } | null>;
-    oauthHandoff(): Promise<{ url: string } | null>;
+    oauthHandoff(state?: string): Promise<{ url: string } | null>;
     userStatus(): Promise<CloudGithubUserStatus | null>;
     installations(): Promise<CloudGithubInstallation[] | null>;
     installationToken(

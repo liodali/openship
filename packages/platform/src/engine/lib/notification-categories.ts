@@ -26,6 +26,7 @@
  * than a category that quietly belongs to no tab.
  */
 export const CATEGORY_GROUPS = [
+  { id: "security", label: "Security" },
   { id: "deployment", label: "Deployment" },
   { id: "app_health", label: "App health" },
   { id: "backups", label: "Backups" },
@@ -58,9 +59,21 @@ export interface NotificationCategory {
   description: string;
   /** Default enabled state when a brand-new user joins an org. */
   defaultEnabled: boolean;
+  /** New channels inherit defaults independently; explicit per-channel opt-outs win. */
+  defaultPerChannel?: boolean;
+  defaultChannelKinds?: string[];
 }
 
 export const CATEGORIES: readonly NotificationCategory[] = [
+  {
+    id: "security.advisory",
+    group: "security",
+    label: "Security advisory",
+    description: "A published security advisory affects Openship or one of your deployed services. Includes the cause and the available update.",
+    defaultEnabled: true,
+    defaultPerChannel: true,
+    defaultChannelKinds: ["email", "webhook", "in_app", "slack", "discord", "msteams", "telegram"],
+  },
   {
     id: "deploy.failed",
     group: "deployment",
@@ -291,6 +304,8 @@ export const CATEGORIES: readonly NotificationCategory[] = [
  * cares about).
  */
 const EVENT_TYPE_TO_CATEGORY: Record<string, string> = {
+  "security.advisory": "security.advisory",
+  "security.refresh_failed": "security.advisory",
   // Deploy
   "deployment.failed": "deploy.failed",
   "deployment.succeeded": "deploy.succeeded",

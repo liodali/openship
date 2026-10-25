@@ -10,3 +10,7 @@ export function cloudPlanHref(planId?: string): string {
   }
   return url.toString();
 }
+
+export function managePlanHref(): string {
+  return new URL("/billing/manage", CLOUD_DASHBOARD_URL).toString();
+}

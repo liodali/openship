@@ -104,7 +104,7 @@ function OpenDeploymentSite({ sites }: { sites: DeploymentSite[] }) {
 export function DeploymentActions({
   onRedeploy,
 }: {
-  onRedeploy: () => void | Promise<string | null>;
+  onRedeploy: (options?: { reuseBuild?: boolean }) => void | Promise<string | null>;
 }) {
   const { config, state, deploymentStatus, stopDeployment } = useDeployment();
   const { baseDomain } = usePlatform();
@@ -120,12 +120,13 @@ export function DeploymentActions({
       ? getDeploymentSites(config, state.serviceStatuses, baseDomain)
       : [];
 
-  const retry = async () => {
+  const retry = async (reuseBuild = false) => {
     if (retryInFlight.current) return;
     retryInFlight.current = true;
     setRedeploying(true);
     try {
-      await onRedeploy();
+      if (reuseBuild) await onRedeploy({ reuseBuild: true });
+      else await onRedeploy();
     } finally {
       retryInFlight.current = false;
       setRedeploying(false);
@@ -166,6 +167,12 @@ export function DeploymentActions({
             {copy.openProject}
             <UiIcon name="arrow-right" className="rtl:rotate-180" />
           </Button>
+          {deploymentStatus === "failed" && state.canRetryDeployment && (
+            <Button type="button" disabled={redeploying} onClick={() => void retry(true)}>
+              <UiIcon name={redeploying ? "spinner" : "play"} className={redeploying ? "animate-spin" : undefined} />
+              {t.billing.workspaces.retryDeployment}
+            </Button>
+          )}
           {deploymentStatus === "ready" ? (
             <OpenDeploymentSite sites={sites} />
           ) : (
@@ -173,7 +180,7 @@ export function DeploymentActions({
               type="button"
               className="w-full sm:w-auto"
               disabled={redeploying}
-              onClick={retry}
+              onClick={() => void retry()}
             >
               {redeploying ? (
                 <UiIcon name="spinner" className="animate-spin" />

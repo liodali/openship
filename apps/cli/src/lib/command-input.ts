@@ -30,8 +30,9 @@ export function readJsonInput(file: string): unknown {
 }
 
 /** Read secrets without putting them in process arguments or shell history. */
-export function readSecret(file: string): string {
-  const value = readFileSync(file === "-" ? 0 : file, "utf8").trim();
+export function readSecret(file: string, options?: { preserveWhitespace?: boolean }): string {
+  const input = readFileSync(file === "-" ? 0 : file, "utf8");
+  const value = options?.preserveWhitespace ? input.replace(/\r?\n$/, "") : input.trim();
   if (!value) throw new Error("The secret input is empty.");
   return value;
 }

@@ -19,6 +19,8 @@ const mocks = vi.hoisted(() => ({
   showToast: vi.fn(),
   applyUpdate: vi.fn(),
   refreshUpdate: vi.fn(),
+  runtimeUpdate: vi.fn(),
+  push: vi.fn(),
 }));
 vi.mock("@/context/ProjectSettingsContext", () => ({ useProjectSettings: mocks.context }));
 vi.mock("@/context/ToastContext", () => ({ useToast: () => ({ showToast: mocks.showToast }) }));
@@ -34,9 +36,9 @@ vi.mock("@/lib/api", async () => {
     getApiErrorMessage,
   };
 });
-vi.mock("@/lib/api/updates", () => ({ updatesApi: { apply: mocks.applyUpdate } }));
+vi.mock("@/lib/api/updates", () => ({ updatesApi: { apply: mocks.applyUpdate, updateRuntime: mocks.runtimeUpdate } }));
 vi.mock("@/lib/deploy-nav", () => ({ openTriggeredBuild: mocks.openBuild }));
-vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push: mocks.push }) }));
 vi.mock("@/components/i18n-provider", () => ({
   useI18n: () => ({ t: baseDictionary }),
   interpolate: (text: string, values: Record<string, string>) =>
@@ -71,7 +73,8 @@ let root: Root;
 let container: HTMLDivElement;
 let context: {
   id: string;
-  projectData: { id: string; name: string; port: number };
+  projectData: { id: string; name: string; port: number; activeDeploymentId?: string; runtimeMode?: string;
+    options?: { hasServer?: boolean; workloadType?: "static" | "web" | "worker" } };
   hasMultipleServices: boolean;
   servicesData: { services: Service[] };
   domainsData: { domains: Array<{ hostname: string; serviceId?: string; targetPort?: number }> };
@@ -101,6 +104,7 @@ beforeEach(() => {
   mocks.context.mockImplementation(() => context);
   mocks.trigger.mockResolvedValue({ data: { deploymentId: "deployment" } });
   mocks.applyUpdate.mockResolvedValue({ data: { deployment_id: "image-update" } });
+  mocks.runtimeUpdate.mockResolvedValue({ data: { deployment_id: "runtime-update", project_id: "project" } });
   mocks.refreshUpdate.mockResolvedValue(undefined);
   mocks.showModal.mockReturnValue("warning");
 });
@@ -121,6 +125,25 @@ async function redeploy() {
   await act(async () => root.render(<Deployments />));
   await act(async () => button(baseDictionary.projects.redeploy.redeployProject).click());
 }
+
+it("offers an explicit all-services runtime update without changing source", async () => {
+  context.projectData.activeDeploymentId = "active";
+  await act(async () => root.render(<Deployments />));
+  await act(async () => container.querySelector<HTMLButtonElement>('button[aria-expanded]')!.click());
+  await act(async () => button(baseDictionary.projectSettings.runtimeUpdates.refresh).click());
+  expect(mocks.runtimeUpdate).toHaveBeenCalledExactlyOnceWith("project", {});
+  expect(mocks.trigger).not.toHaveBeenCalled();
+  expect(mocks.push).toHaveBeenCalledWith("/build/runtime-update");
+});
+
+it("hides base image refresh for a bare app without container services", async () => {
+  context.projectData.activeDeploymentId = "active";
+  context.servicesData.services = [];
+  context.projectData.runtimeMode = "bare";
+  await act(async () => root.render(<Deployments />));
+  await act(async () => container.querySelector<HTMLButtonElement>('button[aria-expanded]')!.click());
+  expect(container.textContent).not.toContain(baseDictionary.projectSettings.runtimeUpdates.refresh);
+});
 
 it.each(["project", "new-commit"])(
   "shows the API rejection when deploying from %s",

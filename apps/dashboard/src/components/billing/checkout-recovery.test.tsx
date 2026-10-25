@@ -8,7 +8,8 @@ import { baseDictionary } from "@/i18n";
 import { ApiError } from "@/lib/api/client";
 import { CloudResourceContext } from "@/context/CloudResourceContext";
 import { BillingWorkspaceProvider } from "./BillingWorkspaceContext";
-import { CheckoutRecoveryDialog, PendingPaymentsButton } from "./CheckoutRecovery";
+import { CheckoutRecoveryDialog } from "./CheckoutRecovery";
+import { PendingCheckoutsProvider, usePendingCheckouts } from "./PendingCheckoutsContext";
 
 const h = vi.hoisted(() => ({
   get: vi.fn(),
@@ -338,16 +339,27 @@ describe("unfinished checkout recovery", () => {
     expect(dialog()?.textContent).not.toContain(item.name);
   });
 
-  it("lists all Cloud server payments only on request, and supports keyboard dismissal", async () => {
-    await render(<PendingPaymentsButton />);
+  it("does not fetch a closed dialog and supports keyboard dismissal of all Cloud payments", async () => {
+    await render(<CheckoutRecoveryDialog isOpen={false} onClose={h.close} />);
     expect(h.get).not.toHaveBeenCalled();
-    await click(copy.title);
+    await render(<CheckoutRecoveryDialog isOpen onClose={h.close} />);
     expect(h.get).toHaveBeenCalledWith("billing/checkouts", { params: { workspaceId: undefined } });
     expect(dialog()?.textContent).toContain(copy.allServers);
     await act(async () =>
       dialog()!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })),
     );
-    expect(dialog()).toBeNull();
+    expect(h.close).toHaveBeenCalledOnce();
     expect(h.post).not.toHaveBeenCalled();
+  });
+
+  it("clears the shared count only when a scoped recovery dialog confirms cancellation", async () => {
+    function Count() { return <output>{usePendingCheckouts()?.count}</output>; }
+    await render(<PendingCheckoutsProvider><Count />{recovery()}</PendingCheckoutsProvider>);
+    expect(host.querySelector("output")?.textContent).toBe("1");
+    await click(copy.cancel);
+    h.post.mockResolvedValueOnce({ data: expired });
+    await click(copy.confirmCancel);
+    expect(host.querySelector("output")?.textContent).toBe("0");
+    expect(dialog()?.textContent).toContain(copy.canceled);
   });
 });

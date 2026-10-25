@@ -41,6 +41,7 @@ interface OauthBridgeRow {
   userId: string;
   sessionToken: string;
   organizationId: string;
+  state?: string;
 }
 
 export const OAUTH_BRIDGE_TTL_MS = 5 * 60 * 1000;
@@ -78,7 +79,7 @@ export async function startGithubLinkFromBridgeToken(token: string | undefined):
   try {
     const session = await repos.session.findByToken(bridge.sessionToken);
     if (!session || session.userId !== bridge.userId || session.expiresAt <= new Date()) return { kind: "expired" };
-    const install = await buildOrgScopedInstallUrl(bridge.userId, bridge.organizationId);
+    const install = bridge.state ? { state: bridge.state } : await buildOrgScopedInstallUrl(bridge.userId, bridge.organizationId);
     const result = await beginRepositoryAuthorization({
       userId: bridge.userId, organizationId: bridge.organizationId, sessionId: session.id,
     }, install.state, "bridge");
@@ -219,7 +220,7 @@ export async function attributeGithubInstall(input: {
   }
 
   console.log(
-    `[github install-callback] hit installation_id=${installationIdRaw} setup_action=${setupAction} state_present=true`,
+    `[github install-callback] hit setup_action=${setupAction} state_present=true`,
   );
   const installationId = installationIdRaw ? Number(installationIdRaw) : undefined;
   if (installationIdRaw && (!Number.isSafeInteger(installationId) || installationId! <= 0)) {

@@ -700,6 +700,7 @@ export async function planProjectImport(
       // A transferred hook must be explicitly delegated by a user in this
       // installation. Imported JSON must never forge an execution identity.
       if (name === "incoming_webhook") next.executionAuthority = null;
+      if (name === "route_protection") next.appliedRevision = null;
       // Project archives omit preview ownership and builder-local cache proof.
       // Re-enable automation explicitly after import on the destination.
       if (name === "project") {

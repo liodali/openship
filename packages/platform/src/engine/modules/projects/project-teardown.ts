@@ -247,7 +247,7 @@ async function teardownProjectLocked(
   if (preload?.organizationId === ctx.organizationId && preload.clusterId)
     await (
       await import("../../lib/project-storage-guard")
-    ).assertProjectStorageEmpty(ctx.organizationId, projectId, preload.clusterId);
+    ).assertProjectStorageEmpty(ctx.organizationId, projectId, preload.clusterId, {deletingProject: true});
   if (preload?.appTemplateId === "openship") {
     push({
       step: "guard_control_plane",
@@ -359,11 +359,16 @@ async function teardownProjectLocked(
       return finalize(steps, false);
     }
 
-    // Record-only ("soft") delete: keep the server workload + data, drop just
-    // the Openship record. NEVER honored for a cloud project — its resources
-    // live on Oblien and must be reclaimed; this is the security boundary, not
-    // the UI toggle. (CLOUD_MODE = the SaaS itself, where nothing is "kept".)
-    const recordOnly = !!opts.recordOnly && !project.workspaceId && !env.CLOUD_MODE;
+    // Provider-owned resources must be reclaimed. Hosted Manage has the same
+    // disconnect contract as self-hosting: customer workloads stay untouched,
+    // including after their management subscription has expired.
+    let recordOnly = !!opts.recordOnly && !project.workspaceId;
+    if (recordOnly && env.CLOUD_MODE) {
+      const server = project.serverId ? await repos.server.getInOrganization(project.serverId, ctx.organizationId) : null;
+      if (!server || server.isLocal || server.purpose === "migration_source")
+        throw new AppError("Cannot verify the server to disconnect. No resources were removed.", 409, "SERVER_CONNECTION_MISSING");
+      recordOnly = !server.workspaceId;
+    }
 
     // ── Step 1: Cancel in-flight work (force=true or forceOrphan). ───────
     // Cancellation only requests/records the stop here. Runtime cleanup happens
@@ -899,7 +904,7 @@ async function stepRuntimeCleanup(
   // The recovery action offered to clients must use the same policy as its
   // execution guard. Managed resources stay tracked until cleanup succeeds.
   const forceOrphanEligible =
-    !project.workspaceId && !manifest.runtimes?.some((runtime) => runtime.name === "kubernetes");
+    !project.workspaceId && !manifest.runtimes?.some((runtime) => runtime.supports("clusterStatus"));
   const needsProjectCleanup =
     manifest.projectCleanup && manifest.runtimes?.some((runtime) => !!runtime.cleanupProject);
   if (

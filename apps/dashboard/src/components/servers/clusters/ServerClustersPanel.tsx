@@ -34,7 +34,10 @@ export function ServerClustersPanel({
     <section>
       <NetworkStreamNotice stream={stream} />
       {!(isNetworks ? networks : clusters) && !error && (
-        <UiIcon name="spinner" className="mx-auto my-16 size-5 animate-spin text-muted-foreground" />
+        <UiIcon
+          name="spinner"
+          className="mx-auto my-16 size-5 animate-spin text-muted-foreground"
+        />
       )}
       {isNetworks && !!preparations.length && (
         <div className="mb-6 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
@@ -44,7 +47,9 @@ export function ServerClustersPanel({
               className="relative rounded-2xl bg-card p-5 transition-colors hover:bg-muted/40"
             >
               <div className="flex items-center gap-2 pe-8 text-xs text-muted-foreground">
-                {setup.status === "preparing" && <UiIcon name="spinner" className="size-3.5 animate-spin" />}
+                {setup.status === "preparing" && (
+                  <UiIcon name="spinner" className="size-3.5 animate-spin" />
+                )}
                 {n.managed.preparationStatus[setup.status]}
               </div>
               <div className="absolute end-3 top-3 z-10">
@@ -101,13 +106,18 @@ export function ServerClustersPanel({
               </div>
               <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
                 <UiIcon name="network" aria-hidden="true" className="size-3.5" />
-                {cluster.network.name}
+                {cluster.network?.name ?? "Docker Swarm · existing network"}
               </span>
               <div className="mt-5 flex items-center justify-between border-t border-border pt-3 text-xs text-muted-foreground">
                 <span className="truncate font-mono">
-                  <BlurIp>{cluster.network.network.cidrs.join(", ")}</BlurIp>
+                  <BlurIp>
+                    {cluster.network?.network.cidrs.join(", ") ?? "Connected manager"}
+                  </BlurIp>
                 </span>
-                <UiIcon name="arrow-right" className="ms-3 size-4 shrink-0 transition-transform group-hover:translate-x-0.5" />
+                <UiIcon
+                  name="arrow-right"
+                  className="ms-3 size-4 shrink-0 transition-transform group-hover:translate-x-0.5"
+                />
               </div>
             </Link>
           ))}

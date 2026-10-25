@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { KubernetesApi, KubernetesObject } from "./kubernetes-api";
+import { KubernetesApiError, type KubernetesApi, type KubernetesObject } from "./kubernetes-api";
 import { PostgresArchive, postgresObjectStore } from "./database-backups";
 import { ClusterDatabaseAdapter } from "./database";
 const signal = new AbortController().signal;
@@ -50,6 +50,75 @@ const backup = (phase: string, extra: Record<string, unknown> = {}): KubernetesO
   },
 });
 describe("operator archive recovery", () => {
+  it("gives scheduled Redis backups the private Sentinel topology used for primary discovery", async () => {
+    const saved = new Map<string, any>();
+    const request = vi.fn(async (method: string, path: string, body?: any) => {
+      if (method === "GET") {
+        const object = saved.get(path);
+        if (!object) throw new KubernetesApiError(404, "Not found");
+        return structuredClone(object);
+      }
+      const key = method === "POST" ? `${path}/${body.metadata.name}` : path;
+      const previous = saved.get(key);
+      const object = {
+        ...previous,
+        ...body,
+        data: { ...previous?.data, ...body.data },
+        metadata: {
+          ...previous?.metadata,
+          ...body.metadata,
+          uid: "owned-resource",
+          resourceVersion: "1",
+        },
+      };
+      saved.set(key, object);
+      return structuredClone(object);
+    });
+    const config = {
+      engine: "redis" as const,
+      mode: "replication" as const,
+      instances: 4,
+      storageGiB: 1,
+      storageClass: "openship-local",
+      cpuMillis: 250,
+      memoryMiB: 256,
+      databaseName: "app",
+      backup: { destinationId: "s3", schedule: "daily" as const, retentionDays: 7 },
+    };
+    const adapter = new ClusterDatabaseAdapter(
+      { request } as unknown as KubernetesApi,
+      {
+        id: "database",
+        projectId: "project",
+        runtimeId: "runtime",
+        generation: 1,
+        hosts: [],
+        config,
+        backupStorage: storage,
+      },
+      signal,
+      async () => {},
+    );
+    await adapter.dataTasks.schedule(config.backup);
+    const scheduled = request.mock.calls.find(
+      ([method, path]) => method === "POST" && path.endsWith("/cronjobs"),
+    )![2];
+    const task = scheduled.spec.jobTemplate.spec.template.spec.containers[0];
+    expect(
+      JSON.parse(task.env.find((item: any) => item.name === "TASK_CONFIG").value).redis,
+    ).toEqual({
+      host: `database-master.${adapter.namespace}.svc.cluster.local`,
+      port: 6379,
+      mode: "replication",
+      replicas: 3,
+      sentinel: {
+        host: `database-sentinel.${adapter.namespace}.svc.cluster.local`,
+        port: 26379,
+        masterName: "mymaster",
+      },
+    });
+  });
+
   it("adopts a completed backup after an ambiguous controller response", async () => {
     const context = archive([backup("completed")]);
     await context.archive.run("request", 3, vi.fn());

@@ -51,6 +51,8 @@ import { createProjectEnvEditState, type ProjectEnvEditState } from "@/lib/proje
 import { normalizeSubdomain } from "@/utils/subdomain";
 import { useDefaultDomainType } from "@/context/CloudContext";
 
+import { monorepoAppFromScan, reconcileMonorepoApps, normalizeAppRoot } from "./monorepo-config";
+
 type PersistedProject = Record<string, any> | null;
 
 interface PreparedConfigArgs {
@@ -128,36 +130,9 @@ function buildMonorepoApps(
 ): MonorepoAppConfig[] | undefined {
   if (!response.monorepoApps?.length) return undefined;
 
-  return response.monorepoApps.map((app): MonorepoAppConfig => {
-    const detectedFramework = (app.stack || "unknown") as FrameworkId;
-    const hasServer = app.stack === "docker" || !!app.startCommand;
-    const hasBuild = !!app.buildCommand;
-    const portString = app.port ? String(app.port) : "";
-
-    return {
-      id: app.id || app.rootDirectory,
-      name: app.name || app.rootDirectory.split("/").at(-1) || app.rootDirectory,
-      enabled: true,
-      framework: detectedFramework,
-      detectedFramework,
-      packageManager: app.packageManager || response.packageManager || "npm",
-      buildImage: app.buildImage || response.buildImage || "node:22",
-      rootDirectory: app.rootDirectory,
-      installCommand: app.installCommand || "",
-      buildCommand: app.buildCommand || "",
-      startCommand: app.startCommand || "",
-      outputDirectory: app.outputDirectory || "",
-      productionPaths: app.productionPaths || [],
-      port: portString,
-      hasServer,
-      hasBuild,
-      envVars: [],
-      publicEndpoints: ensurePublicEndpoints(
-        undefined,
-        hasServer ? { port: portString, domainType } : { targetPath: "/", domainType },
-      ),
-    };
-  });
+  return response.monorepoApps.map((app) =>
+    monorepoAppFromScan(app, response.repository.name, domainType),
+  );
 }
 
 function buildMonorepoWorkspace(
@@ -400,6 +375,21 @@ function buildSavedProjectResponse(
 
   const monorepoApps: PrepareMonorepoApp[] = monorepoRows.map((s) => ({
     id: s.id,
+    enabled: s.enabled,
+    exposed: s.exposed,
+    environment: s.environment ?? {},
+    publicEndpoints: s.publicEndpoints?.length
+      ? s.publicEndpoints
+      : s.domain || s.customDomain
+        ? [
+            {
+              port: Number(s.exposedPort) || 80,
+              domain: s.domain ?? undefined,
+              customDomain: s.customDomain ?? undefined,
+              domainType: s.domainType ?? undefined,
+            },
+          ]
+        : [],
     name: s.name,
     rootDirectory: s.rootDirectory ?? "",
     stack: (s.framework ?? "unknown") as StackId,
@@ -515,40 +505,9 @@ function resolvePreparedRoutingState(
       : String(project?.port ?? response.port ?? "");
   const hasStoredPort = context.projectType === "services" ? false : hasSavedProjectPort(project);
 
-  // Monorepo: seed one PublicEndpoint per detected sub-app so the
-  // existing `<PublicEndpointsCard>` in the sidebar renders all of them
-  // as separate Domain cards (the card's `+` button already supports
-  // multiple endpoints - we just need to seed the array). Each entry
-  // uses `{appName}-{projectSlug}` as the free-subdomain label and the
-  // sub-app's port; user can flip to a custom domain per entry the same
-  // way the single-app flow already supports.
-  if (context.projectType === "monorepo" && context.monorepoApps?.length) {
-    const slugify = (v: string) =>
-      v
-        .toLowerCase()
-        .replace(/^@/, "")
-        .replace(/[^a-z0-9-]+/g, "-")
-        .replace(/^-+|-+$/g, "");
-    const stored: PublicEndpoint[] = mapStoredPublicEndpoints(project) ?? [];
-    const seeded = context.monorepoApps.map((app) => {
-      const label = `${slugify(app.name)}-${slugify(primaryDomain)}`;
-      // Inherit if the user already saved a per-app endpoint for this
-      // sub-app (matched by domain label). Otherwise auto-derive.
-      const prior = stored.find((s: PublicEndpoint) => s.domain === label);
-      return createPublicEndpoint({
-        ...(prior ?? {}),
-        port: app.port || "",
-        targetPath: app.hasServer ? "" : "/",
-        domain: label,
-        domainType,
-      });
-    });
-    return {
-      effectiveHasServer,
-      primaryPort,
-      hasStoredPort,
-      publicEndpoints: seeded,
-    };
+  // Monorepo domains belong to their service, never a second project-level array.
+  if (context.projectType === "monorepo") {
+    return { effectiveHasServer, primaryPort, hasStoredPort, publicEndpoints: [] };
   }
 
   // Declared domains (openship.json) seed the single-app endpoints, unless the
@@ -857,8 +816,18 @@ export function useDeploymentConfig() {
           serviceDeploymentMode: preparedContext.serviceDeploymentMode,
           composeDefaults: preparedContext.composeDefaults,
           singleAppCandidate: preparedContext.singleAppCandidate,
-          monorepoApps: preparedContext.monorepoApps,
-          monorepoWorkspace: preparedContext.monorepoWorkspace,
+          monorepoApps:
+            args.preserveDraftSettings &&
+            prev.projectType === "monorepo" &&
+            preparedContext.projectType === "monorepo"
+              ? reconcileMonorepoApps(prev.monorepoApps ?? [], preparedContext.monorepoApps ?? [])
+              : preparedContext.monorepoApps,
+          monorepoWorkspace:
+            args.preserveDraftSettings &&
+            prev.projectType === "monorepo" &&
+            preparedContext.projectType === "monorepo"
+              ? (prev.monorepoWorkspace ?? preparedContext.monorepoWorkspace)
+              : preparedContext.monorepoWorkspace,
           // Same hydration rule as readiness/framework below: an EXISTING project keeps its
           // SAVED rules, so re-opening "Edit build config" and saving cannot silently replace
           // an operator's redirects/headers with whatever the repo's vercel.json happens to
@@ -1019,6 +988,26 @@ export function useDeploymentConfig() {
 
         if (response?.current_status === "running" || response?.exists) {
           return { success: false, buildInProgress: true };
+        }
+
+        if (project && context?.projectId) {
+          const saved = buildSavedProjectResponse(
+            project,
+            (await servicesApi.list(context.projectId)).services ?? [],
+          );
+          if (saved.projectType === "monorepo") {
+            const roots = new Set(
+              saved.monorepoApps?.map((app) => normalizeAppRoot(app.rootDirectory)),
+            );
+            response.monorepoApps = [
+              ...(saved.monorepoApps ?? []),
+              ...(response.monorepoApps ?? []).filter(
+                (app) => !roots.has(normalizeAppRoot(app.rootDirectory)),
+              ),
+            ];
+            response.projectType = "monorepo";
+            response.monorepoWorkspace = saved.monorepoWorkspace ?? response.monorepoWorkspace;
+          }
         }
 
         const repoName = response.repository.name || sourceRepo;
@@ -1472,7 +1461,7 @@ export function useDeploymentConfig() {
         // whether this is a services/monorepo project (buildSavedProjectResponse
         // derives the shape from them). Fetching for a plain app is a cheap empty
         // list and removes any dependency on the getInfo-derived projectType.
-        const svcRes = await servicesApi.list(projectId).catch((diagnosticFailure) => { observeCaughtError(diagnosticFailure, "dashboard/context/deployment/useDeploymentConfig"); return null; });
+        const svcRes = await servicesApi.list(projectId);
         const serviceRows: Service[] = svcRes?.services ?? [];
 
         // The shared loader makes this a data-loss-sensitive boundary: a failed

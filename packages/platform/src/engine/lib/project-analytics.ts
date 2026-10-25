@@ -60,7 +60,7 @@ export type ProjectTrafficSource =
 
 async function resolveTrafficRuntime(project: Project) {
   let deployTarget: string | null = null;
-  let serverId: string | null = null;
+  let serverId: string | null = project.serverId;
 
   if (project.activeDeploymentId) {
     const dep = await findActiveDeployment(project);
@@ -69,7 +69,7 @@ async function resolveTrafficRuntime(project: Project) {
     if (meta?.serverId) serverId = meta.serverId;
   }
 
-  return { deployTarget, serverId };
+  return { deployTarget: deployTarget ?? (project.workspaceId ? "cloud" : serverId ? "server" : null), serverId };
 }
 
 async function resolveProjectTrackedDomains(project: Project): Promise<string[]> {

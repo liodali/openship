@@ -8,8 +8,11 @@ import DeploymentDetails from "@/components/import-project/DeploymentDetails";
 import { baseDictionary } from "@/i18n";
 import { ApiError } from "@/lib/api/client";
 import { useDeploymentBuild } from "./useDeploymentBuild";
+import { monorepoAppFromScan } from "./monorepo-config";
+import { getModeSwitchUpdates } from "./mode-config";
 import {
   DEFAULT_CONFIG,
+  createPublicEndpoint,
   INITIAL_STATE,
   resolveBuildElapsedMs,
   type DeploymentContextType,
@@ -132,6 +135,23 @@ afterEach(async () => {
 });
 
 describe("persisted port review", () => {
+  it.each(["failed", "ready"])("restores resource recovery after a %s deployment is reopened", async status => {
+    await mount();
+    const errorDetails = { resourceIssue: "storage-full", workspaceId: "original-space", projectId: "project-1" };
+    await load({ status, is_active: false, decisionPending: status === "ready",
+      errorCode: "DEPLOYMENT_RESOURCE_FAILURE", errorDetails });
+    expect(build.state).toMatchObject({ errorCode: "DEPLOYMENT_RESOURCE_FAILURE", errorDetails });
+  });
+
+  it("preserves resource recovery on live partial completion", async () => {
+    await mount();
+    await load();
+    const errorDetails = { resourceIssue: "container-oom", workspaceId: "original-space" };
+    await act(async () => api.callbacks.onSuccess({ decisionPending: true,
+      errorCode: "DEPLOYMENT_RESOURCE_FAILURE", errorDetails }));
+    expect(build.state).toMatchObject({ deploymentSuccess: true, decisionPending: true, errorDetails });
+  });
+
   it("restores the binding finding and scopes a late dismissal to its original deployment", async () => {
     const portCheck = [{ port: 3000, checked: true, listening: true, loopbackOnly: true }];
     await mount();
@@ -290,6 +310,107 @@ describe("workflow rules in the shared deployment wizard", () => {
   });
 });
 
+describe("monorepo routing at deployment submission", () => {
+  it.each([
+    ["cloud", "single", false],
+    ["cloud", "single", true],
+    ["cloud", "services", false],
+    ["server", "single", false],
+    ["server", "single", true],
+    ["server", "services", false],
+  ] as const)(
+    "keeps %s %s routing and private=%s through both API requests",
+    async (deployTarget, mode, privateApp) => {
+      const app = monorepoAppFromScan(
+        {
+          id: "apps/web",
+          name: "web",
+          rootDirectory: "apps/web",
+          stack: "node",
+          category: "backend",
+          packageManager: "npm",
+          buildImage: "node:22",
+          installCommand: "npm ci",
+          buildCommand: "",
+          startCommand: "node server.js",
+          outputDirectory: "",
+          productionPaths: [],
+          port: 3000,
+          enabled: true,
+          publicEndpoints: [{ port: 3000, customDomain: "web.example.com", domainType: "custom" }],
+        },
+        "repo",
+        "custom",
+      );
+      const multi: DeploymentConfig = {
+        ...DEFAULT_CONFIG,
+        owner: "acme",
+        repo: "repo",
+        branch: "main",
+        projectName: "repo",
+        projectType: "monorepo",
+        serviceDeploymentMode: "services",
+        deployTarget,
+        serverId: "target",
+        monorepoApps: [app],
+        publicEndpoints: [],
+      };
+      const config =
+        mode === "single"
+          ? {
+              ...multi,
+              ...getModeSwitchUpdates(multi, "single"),
+              noPublicRoute: privateApp,
+              // The single app has its own edited commands; inactive per-app choices
+              // must not block it or contribute routes.
+              monorepoApps: [{ ...app, enabled: false }],
+              publicEndpoints: [
+                createPublicEndpoint({
+                  port: "3000",
+                  customDomain: "single.example.com",
+                  domainType: "custom",
+                }),
+              ],
+            }
+          : multi;
+      api.ensure.mockResolvedValue({ success: true, project_id: "draft", created: true });
+      api.buildAccess.mockResolvedValue({
+        success: true,
+        project_id: "draft",
+        deployment_id: "deployment",
+      });
+      await mount(config);
+      await act(async () => {
+        expect(await build.startDeployment()).toBe("deployment");
+      });
+      const ensured = api.ensure.mock.calls[0]![0];
+      const request = api.buildAccess.mock.calls[0]![0];
+      expect(request).toMatchObject({
+        deployTarget,
+        serverId: "target",
+        serviceDeploymentMode: mode,
+      });
+      if (mode === "services") {
+        expect(ensured.publicEndpoints).toBeUndefined();
+        expect(request.publicEndpoints).toBeUndefined();
+        expect(ensured.monorepoApps[0].publicEndpoints).toEqual([
+          expect.objectContaining({ customDomain: "web.example.com", port: 3000 }),
+        ]);
+      } else if (privateApp) {
+        expect(ensured.publicEndpoints).toEqual([]);
+        expect(request.publicEndpoints).toEqual([]);
+      } else {
+        expect(ensured.publicEndpoints).toEqual([
+          expect.objectContaining({ customDomain: "single.example.com", port: 3000 }),
+        ]);
+        expect(request.publicEndpoints).toEqual([
+          expect.objectContaining({ customDomain: "single.example.com", port: "3000" }),
+        ]);
+      }
+    },
+  );
+});
+
 describe("deployment counter (#919)", () => {
   it("picks up a queued build's start time even after its stream connects", async () => {
     await mount();
@@ -439,6 +560,8 @@ describe("deployment counter (#919)", () => {
         is_active: false,
         buildDurationMs: 3000,
         buildStartedAt: new Date(START.getTime() + 1000).toISOString(),
+        errorCode: "DEPLOYMENT_RESOURCE_FAILURE",
+        errorDetails: { resourceIssue: "memory-allocation", workspaceId: "original-space" },
       }),
     );
     await act(async () => {
@@ -449,6 +572,8 @@ describe("deployment counter (#919)", () => {
       isDeploying: false,
       buildDurationMs: 3000,
       buildStartedAt: new Date(START.getTime() + 1000).toISOString(),
+      errorCode: "DEPLOYMENT_RESOURCE_FAILURE",
+      errorDetails: { resourceIssue: "memory-allocation", workspaceId: "original-space" },
     });
     expect(clockText()).toBe("0:03");
   });
@@ -515,6 +640,25 @@ describe("deployment counter (#919)", () => {
       await vi.advanceTimersByTimeAsync(30_000);
     });
     expect(api.status).toHaveBeenCalledTimes(settledReads);
+  });
+
+  it("reveals a saved-image retry when terminal cleanup finishes without requiring refresh", async () => {
+    await mount();
+    await load({ status: "failed", is_active: false, completionPending: true,
+      canRetryDeployment: false, buildDurationMs: 4500 });
+    const initialReads = api.status.mock.calls.length;
+    await act(async () => { await vi.advanceTimersByTimeAsync(6000); });
+    expect(api.status).toHaveBeenCalledTimes(initialReads + 2);
+    expect(build.state.canRetryDeployment).toBe(false);
+    api.status.mockResolvedValue(snapshot({ status: "failed", is_active: false,
+      completionPending: false, canRetryDeployment: true, buildDurationMs: 4500 }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+    expect(build.state.canRetryDeployment).toBe(true);
+    expect(build.state.completionPending).toBe(false);
+    const reads = api.status.mock.calls.length;
+    await act(async () => { await vi.advanceTimersByTimeAsync(6000); });
+    expect(api.status).toHaveBeenCalledTimes(reads);
+    expect(clockText()).toBe("0:05");
   });
 
   it("does not let a delayed status poll replace a new retry's state", async () => {

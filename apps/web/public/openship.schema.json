@@ -7,6 +7,33 @@
   "additionalProperties": false,
   "properties": {
     "$schema": { "type": "string" },
+    "autoDeployPaths": {
+      "type": "object",
+      "description": "Push-only repo-relative path overrides. include replaces automatic workspace selection; exclude removes matching changes. Root build configuration and forced deploys always run.",
+      "additionalProperties": false,
+      "properties": {
+        "include": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "description": "Repo-relative paths supporting * and **."
+        },
+        "exclude": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "description": "Repo-relative paths supporting * and **."
+        }
+      }
+    },
 
     "framework": {
       "description": "Stack/framework slug. Overrides auto-detection.",
@@ -319,14 +346,15 @@
             }
           },
           "resources": {
-            "description": "Per-service cpu/memory caps, overriding the top-level resources field by field. Parity with compose mem_limit / deploy.resources.limits, which Openship also reads off the compose file. 0 = no limit.",
+            "description": "Per-service cpu/memory caps, overriding the top-level resources field by field. Parity with compose mem_limit / deploy.resources.limits, which Openship also reads off the compose file. 0 = no limit. swapDisabled runs the container without swap and requires a positive memory limit (own or inherited).",
             "type": "object",
             "additionalProperties": false,
             "properties": {
               "tier": { "enum": ["unlimited", "micro", "low", "medium", "high"] },
               "cpuCores": { "type": "number", "minimum": 0, "maximum": 1024 },
               "memoryMb": { "type": "integer", "minimum": 0, "maximum": 4194304 },
-              "diskMb": { "type": "integer", "minimum": 0, "maximum": 204800 }
+              "diskMb": { "type": "integer", "minimum": 0, "maximum": 204800 },
+              "swapDisabled": { "type": "boolean" }
             }
           }
         }

@@ -54,7 +54,7 @@
     "selfHostedServices": "Tüm yönetilen servisler — Postgres, Redis, posta",
     "selfHostedClients": "CLI, web ve masaüstü — tek backend",
     "selfHostedFreeSubdomains": "Cloud'a bağlandığınızda {freeSubdomains} ücretsiz {freeDomainSuffix} alt alan adı",
-    "monthlyCoverage": "Ödenen ay boyunca CPU, RAM ve depolama dahildir",
+    "monthlyCoverage": "Ödenen dönem boyunca CPU, RAM ve depolama dahildir",
     "namespaceCapacity": "Toplam: {namespaceCpu} vCPU, {namespaceRamGb} GB RAM, {namespaceDiskGb} GB disk"
   },
   "selfHosted": {

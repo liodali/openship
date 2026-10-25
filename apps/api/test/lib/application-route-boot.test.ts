@@ -104,6 +104,15 @@ it.each([true, false])(
     const result = scanRoutes(app);
     expect(result.summary.permissionGated).toBeGreaterThan(300);
     expect(result.errors).toEqual([]);
+    const { getRouteRegistry } = await import("../../src/lib/route-permission");
+    expect(
+      getRouteRegistry().find(
+        (route) =>
+          route.method === "POST" && route.path === "/api/updates/:projectId/runtime/check",
+      ),
+    ).toMatchObject({
+      spec: { tag: "project:read", readOnly: true, ids: { project: "projectId" } },
+    });
     const paths = new Set(app.routes.map((route) => route.path));
     expect(paths.has("/api/system/servers/:id/ensure")).toBe(true);
     expect(paths.has("/api/system/servers/:id/resize")).toBe(true);

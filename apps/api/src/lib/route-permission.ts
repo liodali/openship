@@ -25,7 +25,7 @@
 import { reportCaughtError as observeCaughtError } from "@repo/core/diagnostics";
 import type { Context, Next, MiddlewareHandler } from "hono";
 import type { TSchema } from "@sinclair/typebox";
-import { NotFoundError, normalizeRepoPath } from "@repo/core";
+import { NotFoundError, capabilityFor, capabilityRoot, normalizeRepoPath } from "@repo/core";
 import { permission, ORG_SINGLETON_RESOURCES, type CheckedResourceType } from "./permission";
 import { getRequestContext } from "./request-context";
 import type { Permission as Action } from "@repo/db";
@@ -367,8 +367,10 @@ export interface PermissionSpec {
    *   2. The handler asserts on that id before doing any work.
    * Use `"query"` for GET collections: this middleware requires and authorizes
    * the `projectId` query parameter itself before the handler runs.
+   * `"optional-query"` also permits an org-wide list without a projectId, using
+   * the existing wildcard authority; a project grant never authorizes that list.
    */
-  collectionProject?: boolean | "query";
+  collectionProject?: boolean | "query" | "optional-query";
   /** The shared application operation emits this mutation's audit event for every transport. */
   auditHandledByOperation?: boolean;
   /**
@@ -496,6 +498,12 @@ export function githubReadTarget(
 /*  Middleware factory                                                 */
 /* ------------------------------------------------------------------ */
 
+/** The capability a child collection check on its parent also accepts, if the child defines one. */
+function withCapability(root: string, leaf: string, action: Action) {
+  const capability = capabilityFor(leaf, action);
+  return capability && capabilityRoot(capability) === root ? { capability } : {};
+}
+
 /**
  * Build the Hono middleware that enforces a permission tag AND emits an
  * audit_event after a successful mutation.
@@ -585,14 +593,19 @@ export function requirePermission(spec: PermissionSpec): MiddlewareHandler {
 
       leafId = ghTarget.key;
     } else if (spec.collectionProject) {
-      if (spec.collectionProject === "query") {
+      if (spec.collectionProject === "query" || spec.collectionProject === "optional-query") {
         // GET collections carry the same explicit project scope in the query.
         // Enforce it here; a missing id must never become a wildcard list.
         const projectId = c.req.query("projectId");
-        if (!projectId?.trim()) return c.json({ error: "projectId query parameter required" }, 400);
-        await permission.assert(getRequestContext(c), {
-          resourceType: "project", resourceId: projectId,
-          action: parsed.isList ? "read" : parsed.action as Action,
+        if ((projectId !== undefined && !projectId.trim()) ||
+            (projectId === undefined && spec.collectionProject === "query"))
+          return c.json({ error: "projectId query parameter required" }, 400);
+        const action = parsed.isList ? "read" : parsed.action as Action;
+        await permission.assert(getRequestContext(c), projectId ? {
+          resourceType: "project", resourceId: projectId, action,
+          ...withCapability("project", parsed.leaf, action),
+        } : {
+          resourceType: parsed.leaf, resourceId: "*", action, scope: "list",
         });
       }
       // A body names the target project and the handler asserts on it — see
@@ -617,10 +630,13 @@ export function requirePermission(spec: PermissionSpec): MiddlewareHandler {
             400,
           );
         }
+        const action = parsed.isList ? "read" : parsed.action as Action;
         await permission.assert(getRequestContext(c), {
           resourceType: parsed.root,
           resourceId: parentId,
-          action: parsed.isList ? "read" : parsed.action as Action,
+          action,
+          // A capability on the parent (`deployments:read`) also lists its children.
+          ...withCapability(parsed.root, parsed.leaf, action),
         });
         leafId = "*";
       } else {

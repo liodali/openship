@@ -627,6 +627,11 @@
       "select": "Selecionar domínio...",
       "clear": "Limpar seleção"
     },
+    "buildQueue": {
+      "label": "Cancelar builds obsoletos",
+      "description": "Manter apenas o push pendente mais recente. Quando ativado, um novo push também cancela um build automático anterior antes das etapas de lançamento. Deploys manuais e reversões são preservados.",
+      "saveFailed": "Não foi possível salvar a preferência de cancelamento"
+    },
     "autoDeployCard": {
       "title": "Implementação automática",
       "enabled": "Ativada",
@@ -666,13 +671,15 @@
       "increaseAria": "Aumentar o histórico de reversão",
       "sizeEach": "~{size} por imagem, incluindo camadas compartilhadas",
       "diskFree": "{size} livres",
-      "autoBadge": "dimensionado automaticamente",
+      "autoBadge": "Automático",
       "manualBadge": "definido manualmente",
       "kindFiles": "arquivos gerados em disco",
       "kindImages": "imagens no host",
       "descGitFiles": "Os arquivos das versões recentes são mantidos de qualquer forma, então um rollback pode pular a build.",
       "retentionHint": "Mantenha os artefatos das implantações recentes para reverter rapidamente.",
       "retentionDescription": "Número máximo de versões anteriores a manter. As versões ativas e fixadas não contam para esse limite. Os artefatos antigos são removidos, mas o histórico permanece disponível. Use 0 para manter apenas as versões ativas e fixadas.",
+      "automaticValue": "Até {count} versões",
+      "automaticDescription": "Mantém até o limite padrão do histórico. Se faltar espaço em disco, artefatos recuperáveis podem ser removidos antes. Versões ativas e fixadas não entram no limite. O histórico de commits e configurações é preservado; a reversão pode exigir uma nova compilação.",
       "defaultBadge": "padrão da instância",
       "loadFailed": "Não foi possível carregar as configurações de reversão."
     },
@@ -1231,5 +1238,39 @@
     "saved": "Regra salva",
     "saveFailed": "Falha ao salvar regra",
     "loadFailed": "Falha ao carregar regras"
+  },
+  "runtimeUpdates": {
+    "options": "Opções de reimplantação",
+    "refresh": "Atualizar imagens e reimplantar",
+    "refreshing": "Atualizando imagens…",
+    "check": "Verificar atualizações de imagens",
+    "title": "Atualizações de imagens",
+    "failed": "Não foi possível iniciar a atualização de imagens.",
+    "uncertain": "O tempo da solicitação esgotou. Verifique o histórico de implantações antes de tentar novamente.",
+    "available": "Atualizações de imagens disponíveis",
+    "current": "Os digests das imagens correspondem aos últimos observados no registro.",
+    "checkUnavailable": "A comparação exige digests registrados e acesso ao registro.",
+    "checkFailed": "Não foi possível verificar atualizações de imagens.",
+    "pinned": "As imagens estão fixadas por digest. Edite a referência configurada para atualizá-las."
+  },
+  "securityAdvisories": {
+    "sourceRedeployRequired": "Recompile este aplicativo a partir do código-fonte salvo antes de atualizar seu ambiente de execução. A imagem atual não tem uma revisão de código verificada. Uma nova implantação a partir do código-fonte pode incluir código mais recente; revise-o em Implantações e verifique este aviso novamente.",
+    "openSourceRedeploy": "Abrir reimplantação a partir do código-fonte",
+    "reviewApps": "Rever apps afetadas ({count})",
+    "pendingApps": "Verificações pendentes para {count} apps. Os resultados aparecerão automaticamente.",
+    "checkAgain": "Verificar novamente",
+    "checking": "Verificando…",
+    "title": "Avisos de segurança",
+    "unavailable": "As verificações de segurança estão indisponíveis ou desatualizadas. Os avisos anteriores continuam visíveis.",
+    "affected": "Revise o ambiente afetado e as orientações publicadas antes de atualizar.",
+    "noMatches": "Nenhum aviso corresponde aos dados verificados. Isto não é uma análise completa de vulnerabilidades.",
+    "partial": "Alguns ambientes não puderam ser identificados. Processos do host, contêineres parados e imagens não compatíveis podem exigir verificação manual.",
+    "guidance": "Ler aviso",
+    "automatic": "Atualizar automaticamente correções de segurança verificadas",
+    "automaticDescription": "Desativado por padrão. Apenas serviços de imagens com uma correção assinada na tag atual são atualizados automaticamente. Compilações, imagens fixadas e mudanças de versão exigem revisão. As verificações normais de implantação e saúde continuam ativas.",
+    "notifications": "Alertas de segurança são ativados por padrão nos canais. Configure cada canal em Configurações → Notificações.",
+    "publicFeed": "Ver fonte pública",
+    "checked": "Evidências verificadas",
+    "possible": "A tag da imagem corresponde; a versão implantada precisa ser verificada."
   }
 }

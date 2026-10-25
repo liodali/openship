@@ -14,6 +14,7 @@ vi.mock("@repo/adapters", async (importOriginal) => ({
 }));
 vi.mock("@repo/platform/engine/lib/box-org", () => ({
   isLocalHostRow: async (row: { isLocal?: boolean }) => !!row.isLocal,
+  boxOwningOrgId: async () => "operator-org",
 }));
 
 import { SshConnectionManager } from "@repo/platform/engine/lib/ssh-manager";
@@ -26,7 +27,7 @@ function executor() {
   } as unknown as CommandExecutor & { dispose: ReturnType<typeof vi.fn> };
 }
 const row = (id: string) => ({
-  id, isLocal: id.startsWith("local"), sshHost: "192.0.2.1", sshUser: "ubuntu",
+  id, organizationId: "operator-org", isLocal: id.startsWith("local"), sshHost: "192.0.2.1", sshUser: "ubuntu",
   sshAuthMethod: "key", sshPrivateKey: "test-private-key",
 });
 let manager: SshConnectionManager;

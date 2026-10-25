@@ -4,12 +4,13 @@
  * complimentary grants renew their Mode A allowance through the same reconciler.
  */
 import { reportCaughtError as observeCaughtError, diagnostics as errorDiagnostics } from "@repo/core/diagnostics";
-import { and, asc, db, gt, isNotNull, schema } from "@repo/db";
+import { and, asc, db, gt, isNotNull, repos, schema } from "@repo/db";
 import { env } from "../../config/env";
 import { getJobRunner } from "../../lib/job-runner/index";
 import { reconcileOblienEntitlement } from "./billing-oblien-quota";
 
 const RECONCILE_BATCH = 200;
+let managementCursor: string | undefined;
 let workspaceCursor: string | undefined;
 
 export interface ReconcileStats {
@@ -61,6 +62,19 @@ export async function scheduleBillingAnniversary(): Promise<void> {
       } catch (error) {
         errorDiagnostics.error("platform/engine/modules/billing/billing-anniversary.cron", "[billing-reconcile] sweep failed", error);
       }
+    },
+  });
+  await runner.scheduleRecurring({
+    jobId: "billing:management-subscriptions",
+    cronExpression: "*/5 * * * *",
+    onTick: async () => {
+      const { syncManagementBilling } = await import("./management.service");
+      const rows = await repos.managementBilling.listReady(managementCursor);
+      for (const row of rows) {
+        try { await syncManagementBilling(row.organizationId); }
+        catch (error) { observeCaughtError(error, "platform/engine/modules/billing/billing-anniversary.cron"); }
+      }
+      managementCursor = rows.length === 50 ? rows.at(-1)!.organizationId : undefined;
     },
   });
   await runner.scheduleRecurring({

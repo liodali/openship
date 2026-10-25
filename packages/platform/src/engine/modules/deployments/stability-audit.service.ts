@@ -175,7 +175,11 @@ export async function verifyDeployedContainers(
 
       // The full tail goes to the build log as well: the error message is capped
       // for the DB, the stream is where the operator reads the crash.
-      logger.log(`${summary}\n`, "error", { serviceName: target.serviceName });
+      logger.log(`${summary}\n`, "error", {
+        serviceName: target.serviceName,
+        serviceId: target.serviceId,
+        ...(verdict.oomKilled ? { resourceIssue: "container-oom" as const } : {}),
+      });
       if (tail.length > 0) {
         logger.log(
           `Last ${tail.length} log line${tail.length === 1 ? "" : "s"} from "${target.serviceName}":\n` +

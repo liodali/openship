@@ -169,6 +169,8 @@ export type EdgeClassification = "free" | "ours" | "known" | "unknown";
 
 export interface EdgeOccupant {
   port: number;
+  /** Swarm retains ownership; never offer task/container takeover for this port. */
+  swarmService?: string;
   pid?: number;
   command?: string;
   rawCommand?: string;

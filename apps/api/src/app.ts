@@ -335,6 +335,8 @@ setupWebSocket(app);
 
 /* ---------- Cloud-only routes (gated by CLOUD_MODE) ---------- */
 if (env.CLOUD_MODE) {
+  const { connectedServerRoutes } = await import("./modules/system/connected-server.routes");
+  app.route("/api/system", connectedServerRoutes);
   const { diagnosticsRoutes } = await import("./modules/diagnostics/diagnostics.routes");
   app.route("/api/diagnostics", diagnosticsRoutes);
   const { cloudSupportRoutes } = await import("./modules/cloud-support/cloud-support.routes");

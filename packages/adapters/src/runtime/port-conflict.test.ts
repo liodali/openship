@@ -257,6 +257,7 @@ function recordingHost(rules: () => Rule[]) {
         return out;
       }
     }
+    if (cmd.includes("{{json .Id}} {{json .Config.Labels}}")) return `"${CID}" {}`;
     return "";
   };
   return { seen, executor: { exec } as unknown as CommandExecutor };

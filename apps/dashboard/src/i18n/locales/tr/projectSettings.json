@@ -676,6 +676,11 @@
       "select": "Alan adı seçin...",
       "clear": "Seçimi temizle"
     },
+    "buildQueue": {
+      "label": "Eski derlemeleri iptal et",
+      "description": "Yalnızca bekleyen en son push saklanır. Etkinleştirildiğinde yeni bir push, sürüm adımları başlamadan önce eski otomatik derlemeyi de iptal eder. Manuel dağıtımlar ve geri almalar korunur.",
+      "saveFailed": "Derleme iptal tercihi kaydedilemedi"
+    },
     "autoDeployCard": {
       "title": "Otomatik Dağıtım",
       "enabled": "Etkin",
@@ -715,13 +720,15 @@
       "increaseAria": "Geri alma geçmişini artır",
       "sizeEach": "paylaşılan katmanlar dahil imaj başına ~{size}",
       "diskFree": "{size} boş",
-      "autoBadge": "otomatik boyutlandırıldı",
+      "autoBadge": "Otomatik",
       "manualBadge": "elle ayarlandı",
       "kindFiles": "diskteki üretilmiş dosyalar",
       "kindImages": "sunucudaki imajlar",
       "descGitFiles": "Son sürümlerin dosyaları her durumda saklanır, böylece geri alma derlemeyi atlayabilir.",
       "retentionHint": "Hızlı geri dönüş için son dağıtımların çıktılarını saklayın.",
       "retentionDescription": "Saklanacak önceki sürümlerin en yüksek sayısıdır. Etkin ve sabitlenmiş sürümler bu sınıra dahil değildir. Eski çıktılar silinir; dağıtım geçmişi korunur. Yalnızca etkin ve sabitlenmiş sürümleri saklamak için 0 olarak ayarlayın.",
+      "automaticValue": "En fazla {count} sürüm",
+      "automaticDescription": "Varsayılan geçmiş sınırına kadar saklar. Disk alanı azaldığında yeniden oluşturulabilen çıktılar daha erken kaldırılabilir. Etkin ve sabitlenmiş sürümler sınıra dahil değildir. Commit ve yapılandırma geçmişi korunur; geri alma yeniden derleme gerektirebilir.",
       "defaultBadge": "örnek varsayılanı",
       "loadFailed": "Geri alma ayarları yüklenemedi."
     },
@@ -1231,5 +1238,39 @@
     "connection": "GitHub bağlantısı",
     "deliveryFailed": "Kontroller iletilemedi",
     "saveFailed": "GitHub kontrol ayarları kaydedilemedi."
+  },
+  "runtimeUpdates": {
+    "options": "Yeniden dağıtım seçenekleri",
+    "refresh": "İmajları yenile ve yeniden dağıt",
+    "refreshing": "İmajlar yenileniyor…",
+    "check": "İmaj güncellemelerini denetle",
+    "title": "İmaj güncellemeleri",
+    "failed": "İmaj yenileme başlatılamadı.",
+    "uncertain": "İstek zaman aşımına uğradı. Yeniden denemeden önce dağıtım geçmişini kontrol edin.",
+    "available": "İmaj güncellemeleri mevcut",
+    "current": "İmaj özetleri kayıt defterinde son gözlenen özetlerle eşleşiyor.",
+    "checkUnavailable": "Karşılaştırma için kayıtlı özetler ve kayıt deposuna erişim gerekir.",
+    "checkFailed": "İmaj güncellemeleri denetlenemedi.",
+    "pinned": "İmajlar özetle sabitlenmiş. Güncellemek için yapılandırılan referansı düzenleyin."
+  },
+  "securityAdvisories": {
+    "sourceRedeployRequired": "Çalışma ortamını yenilemeden önce bu uygulamayı kayıtlı kaynak kodundan yeniden derleyin. Mevcut imajın doğrulanmış bir kaynak revizyonu yok. Kaynaktan yeniden dağıtım daha yeni kod içerebilir; Dağıtımlar bölümünde inceleyin, ardından bu güvenlik duyurusunu tekrar kontrol edin.",
+    "openSourceRedeploy": "Kaynaktan yeniden dağıtımı aç",
+    "reviewApps": "Etkilenen uygulamaları incele ({count})",
+    "pendingApps": "{count} uygulama için kontroller bekleniyor. Sonuçlar otomatik olarak görünecek.",
+    "checkAgain": "Tekrar kontrol et",
+    "checking": "Kontrol ediliyor…",
+    "title": "Güvenlik bildirimleri",
+    "unavailable": "Güvenlik kontrolleri kullanılamıyor veya güncel değil. Önceki bildirimler görünür kalır.",
+    "affected": "Güncellemeden önce etkilenen çalışma ortamını ve yayımlanan önerileri inceleyin.",
+    "noMatches": "Kontrol edilen verilerle eşleşen bildirim yok. Bu, tam bir güvenlik açığı taraması değildir.",
+    "partial": "Bazı çalışma ortamları belirlenemedi. Ana makine süreçleri, durdurulmuş konteynerler ve desteklenmeyen imajlar elle kontrol gerektirebilir.",
+    "guidance": "Bildirimi oku",
+    "automatic": "Doğrulanmış güvenlik yamalarını otomatik güncelle",
+    "automaticDescription": "Varsayılan olarak kapalıdır. Yalnızca mevcut etiketinde imzalı düzeltme bulunan imaj servisleri otomatik güncellenir. Kaynak derlemeleri, sabitlenmiş imajlar ve sürüm değişiklikleri inceleme gerektirir. Normal dağıtım ve sağlık kontrolleri geçerlidir.",
+    "notifications": "Güvenlik bildirimleri kanallarda varsayılan olarak açıktır. Her kanalı Ayarlar → Bildirimler bölümünden yönetebilirsiniz.",
+    "publicFeed": "Herkese açık akışı gör",
+    "checked": "Kanıtlar kontrol edildi",
+    "possible": "İmaj etiketi eşleşiyor; dağıtılan sürüm doğrulanmalı."
   }
 }

@@ -202,6 +202,30 @@
     "confirm": "Roll back",
     "cancel": "Cancel"
   },
+  "resourceGuidance": {
+    "label": "Deployment resource guidance",
+    "reviewCapacity": "Review capacity",
+    "reviewTitle": "Review Cloud space capacity",
+    "reviewHint": "Check usage and configured limits first. Upgrading is optional; opening this review does not change or retry the deployment.",
+    "slowTitle": "This build is taking a while",
+    "slowDescription": "Downloads, network delays or build commands may be slow. More capacity can help compute-heavy builds; check the logs first.",
+    "titles": {
+      "container-oom": "Container ran out of memory",
+      "memory-allocation": "Memory allocation failed",
+      "process-heap": "Application heap limit reached",
+      "storage-full": "Storage allocation failed",
+      "storage-low": "Not enough free build storage",
+      "process-killed": "Build process was killed"
+    },
+    "causes": {
+      "container-oom": "Docker confirmed an out-of-memory kill. Review the container memory limit and Cloud space capacity before retrying.",
+      "memory-allocation": "The failing process could not allocate memory. Review configured limits and available capacity before choosing a larger plan.",
+      "process-heap": "The process reached its own heap limit. Check runtime settings; a larger plan alone may not fix this.",
+      "storage-full": "The operation ran out of disk space or inodes. Review usage and unused artifacts, preserving application data.",
+      "storage-low": "Docker's filesystem has too little free space or no free inodes. Review usage or increase storage.",
+      "process-killed": "The process received SIGKILL (exit 137). This alone does not prove an out-of-memory failure. Check the logs."
+    }
+  },
   "cloudBuildQueue": {
     "label": "Cloud build queue",
     "title": "Build queued",

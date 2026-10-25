@@ -34,6 +34,7 @@ export const KIND_ICON: Record<IssueKind, IconName> = {
   prompt: "help-circle",
   partial_decision: "split",
   routing_unsynced: "route",
+  runtime_health: "activity",
   domain_unverified: "globe",
   ssl_error: "lock",
   port_advisory: "plug",

@@ -2,7 +2,8 @@ import { reportCaughtError } from "@repo/core/diagnostics";
 import { blogSource, type BlogFrontmatter } from "@/lib/source";
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import type { Metadata } from "next";
+import type { Metadata, ResolvingMetadata } from "next";
+import { inheritSocialImages } from "@/lib/social-metadata";
 import ResourceShareSidebar from "@/components/resources/share-sidebar";
 import ResourceWriterSidebar from "@/components/resources/writer-sidebar";
 
@@ -41,7 +42,10 @@ function formatDateShort(raw: string): string {
   }
 }
 
-export async function generateMetadata({ params }: { params: Params }): Promise<Metadata> {
+export async function generateMetadata(
+  { params }: { params: Params },
+  parent: ResolvingMetadata,
+): Promise<Metadata> {
   const { slug } = await params;
   const rawPage = blogSource.getPage(slug);
   if (!rawPage) return {};
@@ -50,7 +54,7 @@ export async function generateMetadata({ params }: { params: Params }): Promise<
   const title = `${page.data.title} – Openship Blog`;
   const description = page.data.description ?? "An article from the Openship team.";
 
-  return {
+  const metadata: Metadata = {
     title,
     description,
     openGraph: {
@@ -71,6 +75,7 @@ export async function generateMetadata({ params }: { params: Params }): Promise<
       canonical: `${SITE_URL}${page.url}`,
     },
   };
+  return inheritSocialImages(metadata, parent);
 }
 
 export default async function BlogPostPage({ params }: { params: Params }) {

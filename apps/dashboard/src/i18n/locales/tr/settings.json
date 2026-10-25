@@ -821,7 +821,8 @@
   "notifications": {
     "deliveryHistory": {
       "title": "İletim geçmişi",
-      "description": "Tüm kanallardaki son 50 iletim.",
+      "description": "Tüm kanallardaki teslimatlar.",
+      "page": "Sayfa {page}",
       "refresh": "Yenile",
       "loading": "İletimler yükleniyor…",
       "error": "İletim geçmişi yüklenemedi. Yenileyerek tekrar deneyin.",
@@ -907,7 +908,9 @@
       "allTab": "Tümü",
       "eventHeader": "Olay",
       "cellAria": "{channel} üzerinden {category}",
-      "notifyMe": "Bana bildir"
+      "notifyMe": "Bana bildir",
+      "search": "Uyarılarda ara",
+      "noResults": "Eşleşen uyarı yok."
     },
     "orgDefaults": {
       "title": "Organizasyon varsayılanları",
@@ -920,6 +923,7 @@
       "description": "Kanallar hesabınıza aittir ve kuruluşlar arasında paylaşılır. Uyarı tercihleri ve varsayılanlar etkin kuruluş için geçerlidir.",
       "ready": "{total} kanaldan {count} tanesi hazır",
       "preferences": "Uyarı tercihleri",
+      "configuration": "Kanallar ve uyarılar",
       "retry": "Yeniden dene"
     },
     "groups": {
@@ -931,7 +935,8 @@
       "domains": "Alan Adları ve SSL",
       "members": "Üyeler",
       "mail": "E-posta",
-      "billing": "Faturalandırma"
+      "billing": "Faturalandırma",
+      "security": "Güvenlik"
     },
     "categories": {
       "deploy.failed": {
@@ -1065,6 +1070,10 @@
       "quota.warning": {
         "label": "Kota uyarısı",
         "description": "Plan sınırına yaklaşıyorsunuz (depolama, dağıtımlar, üyeler). Sorunlar başlamadan önce ön uyarı."
+      },
+      "security.advisory": {
+        "label": "Güvenlik duyuruları",
+        "description": "Bir güvenlik duyurusu Openship veya dağıtılmış bir hizmeti etkiliyor. Nedeni ve mevcut güncellemeyi içerir."
       }
     }
   },

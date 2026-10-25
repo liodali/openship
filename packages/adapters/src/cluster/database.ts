@@ -30,6 +30,8 @@ export type { ClusterDatabaseBackupStorage } from "./database-backups";
 export const DATABASE_IMAGES = {
   postgres:
     "ghcr.io/cloudnative-pg/postgresql:17.11@sha256:70664ebcfa1100361b5bdc28bbf06fdbe08db2dc4ad7bd14de33c5e05fe8ea8e",
+  redisSentinel:
+    "quay.io/opstree/redis-sentinel:v7.4.11@sha256:9aae9fadd987a72684d5e75f92081bd4a3df81726e713b47a71df8bae861cda6",
   redis:
     "quay.io/opstree/redis:v7.4.11@sha256:115d8e221b1459b9f2db7d927ed40318ffac4eb2cddb5702974bce92d32b7a51",
 } as const;
@@ -42,15 +44,29 @@ export const clusterDatabaseNamespace = (id: string) =>
 export function clusterDatabaseHosts(id: string, config: ClusterDatabaseConfig) {
   const ns = clusterDatabaseNamespace(id);
   return {
-    internalHost: `${config.engine === "postgres" ? "database-rw" : config.mode === "cluster" ? "database-leader" : "database"}.${ns}.svc.cluster.local`,
+    internalHost: `${config.engine === "postgres" ? "database-rw" : config.mode === "cluster" ? "database-leader" : config.mode === "replication" ? "database-master" : "database"}.${ns}.svc.cluster.local`,
     readOnlyHost:
       config.engine === "postgres" && config.mode === "cluster"
         ? `database-ro.${ns}.svc.cluster.local`
-        : null,
+        : config.engine === "redis" && config.mode === "replication"
+          ? `database-replica.${ns}.svc.cluster.local`
+          : null,
   };
 }
-export function clusterDatabaseUrl(id: string, config: ClusterDatabaseConfig, password: string) {
-  const host = clusterDatabaseHosts(id, config).internalHost;
+export function clusterDatabaseUrl(
+  id: string,
+  config: ClusterDatabaseConfig,
+  password: string,
+  target: "write" | "read" = "write",
+) {
+  const hosts = clusterDatabaseHosts(id, config);
+  if (target === "read" && !hosts.readOnlyHost)
+    throw new AppError(
+      "Add PostgreSQL read replicas before choosing a reader connection.",
+      422,
+      "CLUSTER_DATABASE_READERS_REQUIRED",
+    );
+  const host = target === "read" ? hosts.readOnlyHost! : hosts.internalHost;
   return config.engine === "postgres"
     ? `postgresql://app:${encodeURIComponent(password)}@${host}:5432/${config.databaseName}?sslmode=require`
     : `redis://:${encodeURIComponent(password)}@${host}:6379`;
@@ -64,6 +80,8 @@ type DatabaseTarget = {
   hosts: Pick<ClusterRuntimeHost, "serverId" | "name" | "nodeName">[];
   backupStorage?: ClusterDatabaseBackupStorage;
   restoreSource?: ClusterDatabaseRestoreSource | null;
+  /** Durable controller checkpoint: keep provenance without replaying imported data. */
+  restoreCompleted?: boolean;
   restoreStorage?: ClusterDatabaseBackupStorage;
   consumerProjectIds?: () => Promise<readonly string[]>;
 };
@@ -118,18 +136,18 @@ export class ClusterDatabaseAdapter {
   private crBase() {
     return this.target.config.engine === "postgres"
       ? `/apis/postgresql.cnpg.io/v1/namespaces/${this.namespace}/clusters`
-      : `/apis/redis.redis.opstreelabs.in/v1beta2/namespaces/${this.namespace}/${this.target.config.mode === "cluster" ? "redisclusters" : "redis"}`;
+      : `/apis/redis.redis.opstreelabs.in/v1beta2/namespaces/${this.namespace}/${this.target.config.mode === "cluster" ? "redisclusters" : this.target.config.mode === "replication" ? "redisreplications" : "redis"}`;
   }
   private metadata(name: string) {
     return { name, namespace: this.namespace, labels: this.labels };
   }
-  private assertOwned(object: KubernetesObject) {
+  private assertOwned(object: KubernetesObject, allowDeleting = false) {
     if (
       object.metadata.labels?.[managed] !== this.target.id ||
       object.metadata.labels?.["openship.io/project"] !==
         kubernetesIdLabel(this.target.projectId) ||
       object.metadata.labels?.["openship.io/runtime"] !== this.target.runtimeId ||
-      object.metadata.deletionTimestamp
+      (!allowDeleting && object.metadata.deletionTimestamp)
     )
       throw conflict(
         `${object.kind ?? "Resource"} ${object.metadata.name} has different ownership or is being removed. It was left unchanged.`,
@@ -152,6 +170,13 @@ export class ClusterDatabaseAdapter {
               this.target.generation
           )
             throw conflict("A newer database operation has already updated this resource.");
+          if (
+            object.kind === "RedisReplication" &&
+            object.spec.clusterSize < current.spec?.clusterSize
+          )
+            throw conflict(
+              "Redis replication members cannot be removed in place yet. Restore a verified backup into a smaller database and switch its connection.",
+            );
           await this.fence();
           return {
             ...object,
@@ -362,7 +387,12 @@ export class ClusterDatabaseAdapter {
               // must be able to run alongside its data pods on a full cluster.
               matchLabels: {
                 [managed]: this.target.id,
-                redis_setup_type: c.mode === "cluster" ? "cluster" : "standalone",
+                redis_setup_type:
+                  c.mode === "cluster"
+                    ? "cluster"
+                    : c.mode === "replication"
+                      ? "replication"
+                      : "standalone",
               },
             },
             topologyKey: "kubernetes.io/hostname",
@@ -380,7 +410,12 @@ export class ClusterDatabaseAdapter {
     };
     return {
       apiVersion: "redis.redis.opstreelabs.in/v1beta2",
-      kind: c.mode === "cluster" ? "RedisCluster" : "Redis",
+      kind:
+        c.mode === "cluster"
+          ? "RedisCluster"
+          : c.mode === "replication"
+            ? "RedisReplication"
+            : "Redis",
       metadata: this.metadata("database"),
       spec: {
         kubernetesConfig: {
@@ -416,7 +451,72 @@ export class ClusterDatabaseAdapter {
               redisLeader: { affinity, pdb: { enabled: true, minAvailable: c.instances - 1 } },
               redisFollower: { affinity, pdb: { enabled: true, minAvailable: c.instances - 1 } },
             }
-          : { affinity, nodeSelector: selector }),
+          : {
+              affinity,
+              nodeSelector: selector,
+              ...(c.mode === "replication"
+                ? {
+                    clusterSize: c.instances,
+                    pdb: { enabled: true, minAvailable: c.instances - 1 },
+                  }
+                : {}),
+            }),
+      },
+    };
+  }
+
+  /** The separate operator resource keeps role reconciliation active during a
+   * data-node outage. Embedded Sentinel waits for every Redis pod to be ready. */
+  sentinelManifest(): KubernetesObject {
+    const sentinelAffinity = {
+      nodeAffinity: {
+        requiredDuringSchedulingIgnoredDuringExecution: {
+          nodeSelectorTerms: [
+            {
+              matchExpressions: [
+                { key: "openship.io/runtime", operator: "In", values: [this.target.runtimeId] },
+              ],
+            },
+          ],
+        },
+      },
+      podAntiAffinity: {
+        requiredDuringSchedulingIgnoredDuringExecution: [
+          {
+            labelSelector: {
+              matchLabels: { [managed]: this.target.id, redis_setup_type: "sentinel" },
+            },
+            topologyKey: "kubernetes.io/hostname",
+          },
+        ],
+      },
+    };
+    return {
+      apiVersion: "redis.redis.opstreelabs.in/v1beta2",
+      kind: "RedisSentinel",
+      metadata: this.metadata("database"),
+      spec: {
+        clusterSize: 3,
+        podSecurityContext: { runAsUser: 1000, fsGroup: 1000 },
+        nodeSelector: { "openship.io/runtime": this.target.runtimeId },
+        affinity: sentinelAffinity,
+        pdb: { enabled: true, minAvailable: 2 },
+        redisSentinelConfig: {
+          redisReplicationName: "database",
+          masterGroupName: "mymaster",
+          quorum: "2",
+          redisReplicationPassword: { secretKeyRef: { name: "credentials", key: "password" } },
+        },
+        kubernetesConfig: {
+          image: DATABASE_IMAGES.redisSentinel,
+          imagePullPolicy: "IfNotPresent",
+          ignoreAnnotations: ["openship.io/generation"],
+          redisSecret: { name: "credentials", key: "password" },
+          resources: {
+            requests: { cpu: "100m", memory: "128Mi" },
+            limits: { cpu: "250m", memory: "256Mi" },
+          },
+        },
       },
     };
   }
@@ -462,11 +562,33 @@ export class ClusterDatabaseAdapter {
             },
             {
               from: [fromNamespace(c.engine === "postgres" ? "cnpg-system" : "ot-operators")],
-              ports: (c.engine === "postgres" ? [5432, 8000] : [6379, 16379]).map((port) => ({
+              ports: (c.engine === "postgres"
+                ? [5432, 8000]
+                : c.mode === "replication"
+                  ? [6379, 26379]
+                  : [6379, 16379]
+              ).map((port) => ({
                 protocol: "TCP",
                 port,
               })),
             },
+            ...(c.engine === "redis" && c.mode === "replication"
+              ? [
+                  {
+                    // Sentinel has no public client endpoint: only the scoped
+                    // connection-check Job may verify quorum from the app namespace.
+                    from: [
+                      {
+                        ...fromNamespace(kubernetesProjectNamespace(this.target.projectId)),
+                        podSelector: {
+                          matchLabels: { ...this.labels, "openship.io/database-probe": "true" },
+                        },
+                      },
+                    ],
+                    ports: [{ protocol: "TCP", port: 26379 }],
+                  },
+                ]
+              : []),
           ],
         },
       },
@@ -477,7 +599,13 @@ export class ClusterDatabaseAdapter {
   async apply(password: string) {
     if (this.target.config.backup && !this.target.backupStorage)
       throw new Error("The database backup destination could not be loaded.");
-    if (this.target.restoreSource && !this.target.restoreStorage)
+    if (
+      this.target.restoreSource &&
+      (!this.target.restoreCompleted ||
+        !this.target.restoreSource.format ||
+        this.target.restoreSource.format === "postgres-physical") &&
+      !this.target.restoreStorage
+    )
       throw new Error("The original backup destination could not be loaded for recovery.");
     await this.declare("/api/v1/namespaces", {
       apiVersion: "v1",
@@ -519,7 +647,31 @@ export class ClusterDatabaseAdapter {
       if (!storage.allowVolumeExpansion)
         throw new Error("This storage class does not support online volume expansion.");
     }
-    await this.declare(this.crBase(), this.manifest(), true);
+    if (old && c.engine === "postgres" && c.instances === 1 && Number(old.spec?.instances) > 1)
+      await this.assertNoApplicationReferences(
+        [
+          clusterDatabaseHosts(this.target.id, {
+            ...c,
+            mode: "cluster",
+            instances: Number(old.spec.instances),
+          }).readOnlyHost!,
+        ],
+        "reader",
+      );
+    const desired = this.manifest();
+    if (old && c.engine === "postgres" && c.mode === "standalone") {
+      // Merge Patch retains omitted properties: explicitly clear the previous
+      // synchronous policy so a sole primary cannot wait for removed readers.
+      // Null is a patch deletion instruction, not part of a new Cluster spec.
+      desired.spec.postgresql = { ...desired.spec.postgresql, synchronous: null };
+    }
+    await this.declare(this.crBase(), desired, true);
+    if (c.engine === "redis" && c.mode === "replication")
+      await this.declare(
+        `/apis/redis.redis.opstreelabs.in/v1beta2/namespaces/${this.namespace}/redissentinels`,
+        this.sentinelManifest(),
+        true,
+      );
     if (c.backup && !this.target.restoreSource) await this.archive.schedule(c.backup);
   }
 
@@ -556,6 +708,7 @@ export class ClusterDatabaseAdapter {
 
   async restore(log: (message: string) => Promise<void>) {
     if (
+      this.target.restoreCompleted ||
       !this.target.restoreSource ||
       !["redis-rdb-set", "postgres-logical", "backup-artifact"].includes(
         this.target.restoreSource.format ?? "",
@@ -627,15 +780,24 @@ export class ClusterDatabaseAdapter {
         pod.metadata.labels?.[managed] === this.target.id &&
         !pod.metadata.labels?.["openship.io/database-probe"],
     );
-    const dataPods = ownedPods.filter(
+    const memberPods = ownedPods.filter(
       (pod) => !pod.metadata.ownerReferences?.some((owner) => owner.kind === "Job"),
+    );
+    const sentinelPods = memberPods.filter(
+      (pod) => pod.metadata.labels?.redis_setup_type === "sentinel",
+    );
+    const dataPods = memberPods.filter(
+      (pod) => pod.metadata.labels?.redis_setup_type !== "sentinel",
     );
     const ready = dataPods.filter((pod) =>
       pod.status?.conditions?.some(
         (condition: any) => condition.type === "Ready" && condition.status === "True",
       ),
     );
-    const primary = root?.status?.currentPrimary ?? null;
+    const primary =
+      current.engine === "redis" && current.mode === "replication"
+        ? (root?.status?.masterNode ?? null)
+        : (root?.status?.currentPrimary ?? null);
     const engineReady =
       current.engine === "postgres"
         ? root?.status?.readyInstances === current.instances &&
@@ -645,7 +807,17 @@ export class ClusterDatabaseAdapter {
           ? root?.status?.state === "Ready" &&
             root.status.readyLeaderReplicas === current.instances &&
             root.status.readyFollowerReplicas === current.instances
-          : ready.length === 1;
+          : current.mode === "replication"
+            ? !!primary &&
+              dataPods.some((pod) => pod.metadata.name === primary) &&
+              sentinelPods.length === 3 &&
+              sentinelPods.every((pod) =>
+                pod.status?.conditions?.some(
+                  (condition: any) => condition.type === "Ready" && condition.status === "True",
+                ),
+              ) &&
+              new Set(sentinelPods.map((pod) => pod.spec?.nodeName)).size === 3
+            : ready.length === 1;
     const volumes = claims.items
       .filter((claim) => claim.metadata.labels?.[managed] === this.target.id)
       .map((claim) => ({
@@ -706,7 +878,7 @@ export class ClusterDatabaseAdapter {
                   },
           }
         : {}),
-      pods: dataPods.map((pod) => {
+      pods: memberPods.map((pod) => {
         const host = this.target.hosts.find((item) => item.nodeName === pod.spec?.nodeName);
         // Redis's StatefulSet labels describe its original group, not its
         // elected role after failover. Do not present those as live leadership.
@@ -716,14 +888,19 @@ export class ClusterDatabaseAdapter {
           serverId: host?.serverId ?? null,
           serverName: host?.name ?? null,
           role:
-            current.engine === "postgres"
-              ? pod.metadata.name === primary
-                ? "primary"
-                : "replica"
+            current.engine === "postgres" || current.mode === "replication"
+              ? pod.metadata.labels?.redis_setup_type === "sentinel"
+                ? "sentinel"
+                : pod.metadata.name === primary
+                  ? "primary"
+                  : "replica"
               : current.mode === "cluster"
                 ? "member"
                 : "standalone",
-          ready: ready.includes(pod),
+          ready:
+            pod.status?.conditions?.some(
+              (condition: any) => condition.type === "Ready" && condition.status === "True",
+            ) ?? false,
           phase: kubernetesPodPhase(pod),
           restarts: (pod.status?.containerStatuses ?? []).reduce(
             (sum: number, status: any) => sum + (status.restartCount ?? 0),
@@ -822,10 +999,24 @@ export class ClusterDatabaseAdapter {
             { name: "PGCONNECT_TIMEOUT", value: "10" },
           ]
         : [{ name: "REDISCLI_AUTH", valueFrom: password }];
+    const redisChecks = [`test "$(timeout 10 redis-cli -h ${host} PING)" = PONG`];
+    if (c.mode === "cluster")
+      redisChecks.push(
+        `timeout 30 redis-cli --cluster check ${host}:6379`,
+        `timeout 10 redis-cli -h ${host} CLUSTER INFO | tr -d '\\r' | grep -qx 'cluster_state:ok'`,
+        `timeout 10 redis-cli -h ${host} CLUSTER INFO | tr -d '\\r' | grep -qx 'cluster_slots_assigned:16384'`,
+      );
+    if (c.engine === "redis" && c.mode === "replication")
+      redisChecks.push(
+        `timeout 10 redis-cli -h ${host} INFO replication | tr -d '\\r' | grep -qx 'role:master'`,
+        `timeout 10 redis-cli -h ${host} INFO replication | tr -d '\\r' | grep -qx 'connected_slaves:${c.instances - 1}'`,
+        `timeout 15 redis-cli -h ${host} WAIT ${c.instances - 1} 10000 | grep -qx '${c.instances - 1}'`,
+        `timeout 10 redis-cli -h database-sentinel.${this.namespace}.svc.cluster.local -p 26379 SENTINEL CKQUORUM mymaster | grep -q '^OK '`,
+      );
     const check =
       c.engine === "postgres"
         ? "test \"$(psql -X -A -t -c 'SELECT 1')\" = 1"
-        : `test \"$(timeout 10 redis-cli -h ${host} PING)\" = PONG${c.mode === "cluster" ? ` && timeout 30 redis-cli --cluster check ${host}:6379 && timeout 10 redis-cli -h ${host} CLUSTER INFO | tr -d '\\r' | grep -qx 'cluster_state:ok' && timeout 10 redis-cli -h ${host} CLUSTER INFO | tr -d '\\r' | grep -qx 'cluster_slots_assigned:16384'` : ""}`;
+        : redisChecks.join(" && ");
     // Service endpoints can lag pod readiness. Retry only these read-only
     // protocol checks, within a bounded Job; never recreate the database.
     const command = [
@@ -982,6 +1173,33 @@ export class ClusterDatabaseAdapter {
         this.signal,
       );
     }
+    if (this.target.config.engine === "redis" && this.target.config.mode === "replication") {
+      const path = `/apis/redis.redis.opstreelabs.in/v1beta2/namespaces/${this.namespace}/redissentinels/database`;
+      const sentinel = await clusterObject(this.api, path, this.signal);
+      if (sentinel) {
+        this.assertOwned(sentinel, true);
+        if (!sentinel.metadata.deletionTimestamp) {
+          await this.fence();
+          await this.api.request(
+            "DELETE",
+            path,
+            {
+              propagationPolicy: "Foreground",
+              preconditions: {
+                uid: sentinel.metadata.uid,
+                resourceVersion: sentinel.metadata.resourceVersion,
+              },
+            },
+            this.signal,
+          );
+        }
+        await waitForClusterResource(
+          this.signal,
+          async () => ((await clusterObject(this.api, path, this.signal)) ? null : true),
+          "Redis Sentinel shutdown",
+        );
+      }
+    }
     const root = await clusterObject(this.api, `${this.crBase()}/database`, this.signal);
     if (root) {
       if (root.metadata.labels?.[managed] !== this.target.id)
@@ -1129,7 +1347,12 @@ export class ClusterDatabaseAdapter {
     await this.waitForNamespaceRemoval(log);
   }
 
-  private async assertNoApplicationReferences() {
+  private async assertNoApplicationReferences(
+    hosts: readonly string[] = Object.values(
+      clusterDatabaseHosts(this.target.id, this.target.config),
+    ).filter(Boolean) as string[],
+    purpose: "database" | "reader" = "database",
+  ) {
     // A disconnected consumer can still have an old running release. Inspect
     // managed application namespaces on this runtime, not only current links.
     const selector = encodeURIComponent(
@@ -1173,9 +1396,6 @@ export class ClusterDatabaseAdapter {
           this.signal,
         ),
       ]);
-      const hosts = Object.values(clusterDatabaseHosts(this.target.id, this.target.config)).filter(
-        Boolean,
-      ) as string[];
       const referenced = new Set(
         secrets.items
           .filter((secret) =>
@@ -1186,7 +1406,7 @@ export class ClusterDatabaseAdapter {
           .map((secret) => secret.metadata.name),
       );
       const usesDatabase = (spec: any) =>
-        spec?.containers?.some(
+        [...(spec?.containers ?? []), ...(spec?.initContainers ?? [])].some(
           (container: any) =>
             container.envFrom?.some((source: any) => referenced.has(source.secretRef?.name)) ||
             container.env?.some(
@@ -1205,7 +1425,9 @@ export class ClusterDatabaseAdapter {
         )
       )
         throw conflict(
-          "An application release still uses this database. Deploy its new connection, or stop the application and wait for its instances to exit, before removing the database.",
+          purpose === "reader"
+            ? "An application release still uses this database's reader endpoint. Redeploy it with the new connection, or stop it and wait for its instances to exit, before removing the final read replica."
+            : "An application release still uses this database. Deploy its new connection, or stop the application and wait for its instances to exit, before removing the database.",
         );
     }
   }

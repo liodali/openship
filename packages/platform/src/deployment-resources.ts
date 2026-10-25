@@ -63,8 +63,9 @@ export function createDeploymentResourceOperations(deps: DeploymentDependencies)
     },
     async list(ctx: ExecutionContext, value: ListDeploymentsInput = {}) {
       const input = parseInput(ListDeploymentsSchema, value);
-      const context = await deps.authorization.authorize(ctx, { resourceType: "deployment", resourceId: "*", action: "read", scope: "list" });
-      if (input.projectId) await deps.authorization.authorize(context, { resourceType: "project", resourceId: input.projectId, action: "read" });
+      const context = await deps.authorization.authorize(ctx, input.projectId
+        ? { resourceType: "project", resourceId: input.projectId, action: "read", capability: "deployments:read" }
+        : { resourceType: "deployment", resourceId: "*", action: "read", scope: "list" });
       const result = await resources().list(context.organizationId, input);
       return { context, data: {
         data: result.rows.map(deps.present), total: result.total, page: result.page, perPage: result.perPage,

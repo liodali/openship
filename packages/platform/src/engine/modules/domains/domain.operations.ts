@@ -15,6 +15,7 @@ import * as dnsChallenge from "./domain-dns-challenge.service";
 import { manageDomainSsl, needsDomainSslCheck } from "../../lib/domain-ssl";
 import { resolveManagedHostname } from "../../lib/routing-domains";
 import { domainExecution } from "./domain-execution";
+import { isCustomerProject } from "../billing/management.service";
 export { domainExecution } from "./domain-execution";
 
 function record(ctx: ExecutionContext, id: string, eventType: string, after: unknown) {
@@ -207,7 +208,10 @@ export const domainDependencies: DomainDependencies = {
       return result;
     },
     async uploadCert(ctx, id, input) {
-      if (env.CLOUD_MODE) throw new NotFoundError("Operation");
+      if (env.CLOUD_MODE) {
+        const domain = await service.getDomain(ctx, id);
+        if (!domain.projectId || !await isCustomerProject(ctx.organizationId, domain.projectId)) throw new NotFoundError("Operation");
+      }
       await domainExecution(ctx, id);
       const result = await service.uploadDomainCert(ctx, id, input);
       record(ctx, id, "domain.cert_uploaded", { domain: result.domain, issuer: result.issuer, expiresAt: result.expiresAt });

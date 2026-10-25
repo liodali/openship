@@ -21,7 +21,7 @@ import type { Readable } from "node:stream";
  *  into the DB. Everything an executor or producer might need about
  *  the service is on this handle. */
 export interface ServiceHandle {
-  /** Stable service id from the DB. */
+  /** Stable source id: a service, standalone project, or mail server. */
   id: string;
   projectId: string;
   /** Compose-style service name; used for hostnames + container names. */
@@ -33,7 +33,7 @@ export interface ServiceHandle {
    *  `pg_dump -U $POSTGRES_USER` etc. The orchestrator decrypts the
    *  per-service env_vars before constructing the handle. */
   env: Record<string, string>;
-  /** Raw compose-syntax volume strings from `service.volumes`. The
+  /** Declared persistent volumes in Compose syntax. The
    *  executor parses these to discover sources. */
   volumes: string[];
   /** Runtime-specific container/workspace id when the service is
@@ -477,6 +477,9 @@ export type DestinationKind =
  *  module decrypts its own secrets at construction time and discards
  *  the plaintext immediately. */
 export interface BackupDestinationRow {
+  /** Trusted execution policy, injected by the control plane at use time.
+   * Never persisted or accepted from a destination's configuration. */
+  publicNetworkOnly?: boolean;
   id: string;
   organizationId: string;
   name: string;
@@ -488,6 +491,9 @@ export interface BackupDestinationRow {
   sshHost: string | null;
   sshPort: number | null;
   sshUser: string | null;
+  /** Existing host identity pinned on a saved server; never discard it when
+   * hydrating an openship_server destination. Base64 SSH public host key. */
+  sshHostKey?: string | null;
   /** When kind="openship_server" this is the user's servers.id. The
    *  apps/api layer hydrates SSH creds from that server BEFORE handing
    *  the row to resolveDestination — the adapter never queries the DB. */

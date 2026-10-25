@@ -115,7 +115,7 @@ const PIPELINES = [
   },
   {
     file: "../../../../packages/platform/src/engine/modules/deployments/compose/deploy.service.ts",
-    executionScope: "async function deployComposeServicesUnlocked",
+    executionScope: "async function deployComposeServicesCore",
   },
 ];
 
@@ -133,13 +133,13 @@ describe("both deploy pipelines announce a demoted host channel", () => {
       // Scope the ordering check to the function that actually performs the
       // deployment. The Compose public wrapper may inspect routeStrategy to choose
       // the target-wide allocation lock, but it performs no host operation; the
-      // unlocked implementation remains the one place that fans out to them.
+      // core implementation remains the one place that fans out to them.
       const src = fileSource.slice(scope);
       const notice = src.indexOf("hostChannelDeployNotice(");
       expect(notice, "hostChannelDeployNotice() is never called").toBeGreaterThan(-1);
       // Before the port allocation and the routing preflight, whose own hints are the
       // ones that absorbed the refusal silently.
-      for (const touchpoint of ["allocateHostPort(", "ensureRoutingReady("]) {
+      for (const touchpoint of ["allocateHostPort(", "ensureRoutingReady(", "runtime.prepareServiceCutover("]) {
         const at = src.indexOf(touchpoint);
         if (at === -1) continue;
         expect(notice, `notice must precede ${touchpoint}`).toBeLessThan(at);

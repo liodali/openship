@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { BuildLogger, CommandExecutor, MultiServiceRuntimeAdapter } from "@repo/adapters";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { BuildLogger, CommandExecutor, MultiServiceRuntimeAdapter, DockerRuntime as DockerRuntimeType, CloudDockerRuntime as CloudDockerRuntimeType } from "@repo/adapters";
 import type { Deployment, Project } from "@repo/db";
 
 /**
@@ -20,6 +20,10 @@ import type { Deployment, Project } from "@repo/db";
 
 const h = vi.hoisted(() => ({
   localImageRefs: new Set<string>(),
+  targetLockHeld: false,
+  probeDeployedReadiness: vi.fn(),
+  applyProjectRouting: vi.fn(),
+  reapplyProjectLiveRoutes: vi.fn(),
   localRow: {
     id: "srv-local",
     isLocal: true,
@@ -35,8 +39,11 @@ const h = vi.hoisted(() => ({
   reserveResolvedLoopbackRoutes: vi.fn(),
   upsertServiceDeployment: vi.fn(),
   updateServiceDeployment: vi.fn(),
+  startServiceDeploymentTiming: vi.fn(),
+  finishStartedServiceDeploymentTimings: vi.fn(),
   services: [] as Array<Record<string, unknown>>,
   previousServiceRows: [] as Array<Record<string, unknown>>,
+  deploymentById: new Map<string, Record<string, unknown>>(),
   previousDeployment: { id: "d-old", projectId: "p1", organizationId: "org1", containerId: "compose", createdAt: null } as Record<
     string,
     unknown
@@ -45,6 +52,8 @@ const h = vi.hoisted(() => ({
 
 vi.mock("@repo/db", () => ({
   repos: {
+    routeProtection: { readPrivate: async () => null },
+    pullRequestPreview: { findByProject: async () => null },
     server: {
       get: async () => h.localRow,
       getInOrganization: async () => h.localRow,
@@ -55,12 +64,15 @@ vi.mock("@repo/db", () => ({
       listByDeployment: async () => h.previousServiceRows,
       upsertServiceDeployment: (...args: unknown[]) => h.upsertServiceDeployment(...args),
       updateServiceDeployment: (...args: unknown[]) => h.updateServiceDeployment(...args),
+      startServiceDeploymentTiming: (...args: unknown[]) => h.startServiceDeploymentTiming(...args),
+      finishStartedServiceDeploymentTimings: (...args: unknown[]) => h.finishStartedServiceDeploymentTimings(...args),
       markServiceDeploymentFailed: async () => undefined,
     },
     deployment: {
-      findById: async () => h.previousDeployment,
+      findById: async (id: string) => h.deploymentById.get(id) ?? h.previousDeployment,
     },
     project: {
+      findById: async (id: string) => ({ id, workspaceId: null }),
       getEnvMap: async () => ({}),
       listEnvVarChangeMeta: async () => [],
     },
@@ -93,7 +105,11 @@ vi.mock("@repo/platform/engine/lib/provision-lock", () => ({
 }));
 
 vi.mock("@repo/platform/engine/modules/deployments/pinned-host-ports", () => ({
-  withHostPortTargetLock: (_target: unknown, fn: () => unknown) => fn(),
+  withHostPortTargetLock: async (_target: unknown, fn: () => unknown) => {
+    if (h.targetLockHeld) throw new Error("nested physical target lock");
+    h.targetLockHeld = true;
+    try { return await fn(); } finally { h.targetLockHeld = false; }
+  },
   prepareTargetPinnedHostPorts: (...args: unknown[]) => h.prepareTargetPinnedHostPorts(...args),
   convergeTargetHostPortClaims: (...args: unknown[]) => h.convergeTargetHostPortClaims(...args),
   convergeTargetHostPortClaimsUnlocked: (...args: unknown[]) =>
@@ -107,7 +123,18 @@ vi.mock("@repo/platform/engine/modules/deployments/observed-host-port-claims", (
   reserveResolvedLoopbackRoutes: (...args: unknown[]) => h.reserveResolvedLoopbackRoutes(...args),
 }));
 
+vi.mock("@repo/platform/engine/modules/deployments/readiness-probe", () => ({
+  probeDeployedReadiness: (...args: unknown[]) => h.probeDeployedReadiness(...args),
+}));
+vi.mock("@repo/platform/engine/modules/domains/project-route.service", () => ({
+  reapplyProjectLiveRoutes: (...args: unknown[]) => h.reapplyProjectLiveRoutes(...args),
+}));
+
 const { resolveServerExecutor } = await import("@repo/platform/engine/lib/deployment-runtime");
+// Spy after the shared runtime has loaded; an eager partial-module mock would
+// await that same runtime through routing's circular import during collection.
+const routingApply = await import("@repo/platform/engine/modules/domains/routing-apply.service");
+vi.spyOn(routingApply, "applyProjectRouting").mockImplementation((...args) => h.applyProjectRouting(...args));
 const { deployComposeServices } =
   await import("@repo/platform/engine/modules/deployments/compose/deploy.service");
 const { DockerRuntime, CloudDockerRuntime } = await import("@repo/adapters");
@@ -153,7 +180,7 @@ function imageRefreshFixture() {
       containerId: id, status: "running", imageId: id === "old-db" ? dbId : apiId, ip: "172.18.0.2",
     })),
     getContainerIp: vi.fn(async () => "172.18.0.3"), destroy: vi.fn(async () => undefined),
-  }) as DockerRuntime;
+  }) as DockerRuntimeType;
   h.services = [
     { id: "svc-db", projectId: "p1", name: "db", image: dbRef, enabled: true,
       updatedAt: new Date(0), dependsOn: [], advanced: null, ports: [], exposed: false },
@@ -166,8 +193,8 @@ function imageRefreshFixture() {
   }));
   h.previousDeployment.createdAt = new Date(1_000);
   const { logger } = recordingLogger();
-  const run = (options: Parameters<typeof deployComposeServices>[4] = {}, trigger = "manual") =>
-    deployComposeServices({ ...project, activeDeploymentId: "d-old", routeStrategy: "container-ip" } as Project,
+  const run = (options: Parameters<typeof deployComposeServices>[4] = {}, trigger = "manual", projectOverrides: Partial<Project> = {}) =>
+    deployComposeServices({ ...project, activeDeploymentId: "d-old", routeStrategy: "container-ip", ...projectOverrides } as Project,
       { ...dep, trigger }, runtime, logger, options);
   return { runtime, run, logger, images, inspect, pull, activate, metadata, dbRef, apiRef, dbId, apiId, nextId };
 }
@@ -222,6 +249,8 @@ it("deploys Cloud Compose endpoints, internal paths, generated files and contain
   const configurations: Array<Record<string, any>> = [];
   const publishRoute = vi.fn(async () => undefined);
   const pullImage = vi.fn(async () => undefined);
+  const resolveRoutingTarget = vi.fn(async (id: string, port: number) => ({ workspace: "shared-vm",
+    port: id === "web-container" ? (port === 8080 ? 30001 : 30002) : 30003 }));
   const runtime = Object.assign(Object.create(CloudDockerRuntime.prototype), {
     name: "docker", workspaceId: "shared-vm", projectId: "p1", unsupportedComposeKeys: new Set(),
     supports: (cap: string) => cap === "dockerHost",
@@ -231,13 +260,12 @@ it("deploys Cloud Compose endpoints, internal paths, generated files and contain
       const hostPortByContainerPort = config.serviceName === "web" ? { 8080: 30001, 9090: 30002 } : { 8080: 30003 };
       return { status: "running", containerId: `${config.serviceName}-container`, hostPortByContainerPort };
     }),
-    resolveRoutingTarget: vi.fn(async (id: string, port: number) => ({ workspace: "shared-vm",
-      port: id === "web-container" ? (port === 8080 ? 30001 : 30002) : 30003 })),
+    resolveRoutingTarget,
     getContainerIp: vi.fn(async () => "172.18.0.2"), listAllContainers: vi.fn(async () => []),
     destroy: vi.fn(async () => undefined), publishRoute, pullImage,
-  }) as CloudDockerRuntime;
+  }) as CloudDockerRuntimeType;
   const routing = Object.assign(Object.create(CloudInfraProvider.prototype), {
-    publishRoute, resolveRoutingTarget: runtime.resolveRoutingTarget,
+    publishRoute, resolveRoutingTarget,
   });
   const executor = {
     exec: vi.fn(async () => ""), mkdir: vi.fn(async () => undefined), rm: vi.fn(async () => undefined),
@@ -309,6 +337,15 @@ async function demotedExecutor(): Promise<CommandExecutor> {
 beforeEach(() => {
   vi.unstubAllEnvs();
   vi.clearAllMocks();
+  h.targetLockHeld = false;
+  h.deploymentById.clear();
+  h.probeDeployedReadiness.mockReset().mockResolvedValue({ failure: null });
+  h.applyProjectRouting.mockReset().mockResolvedValue(undefined);
+  h.reapplyProjectLiveRoutes.mockReset().mockResolvedValue(undefined);
+  vi.spyOn(DockerRuntime.prototype, "prepareServiceCutover").mockResolvedValue(null);
+  // These fixtures stub daemon I/O/activation and intentionally skip constructors.
+  // Real volume preparation/cutover is covered by image-volume-persistence.e2e.
+  vi.spyOn(DockerRuntime.prototype, "prepareServiceVolumes").mockResolvedValue(undefined);
   h.localImageRefs.clear();
   const inspectImage = async (ref: string) => {
     if (ref.startsWith("/")) throw new Error("invalid image reference");
@@ -377,7 +414,11 @@ beforeEach(() => {
   h.convergeTargetHostPortClaimsUnlocked.mockResolvedValue({ released: 0, retained: [] });
   h.upsertServiceDeployment.mockResolvedValue(undefined);
   h.updateServiceDeployment.mockResolvedValue(undefined);
+  h.startServiceDeploymentTiming.mockResolvedValue(undefined);
+  h.finishStartedServiceDeploymentTimings.mockResolvedValue(undefined);
 });
+
+afterEach(() => vi.useRealTimers());
 
 function addDisabledPreviousService() {
   h.services.push({
@@ -415,6 +456,94 @@ describe("compose deploy — host channel unavailable", () => {
     expect(f.runtime.destroy).not.toHaveBeenCalled();
     expect(result.summary.deployed).toBe(0);
     expect(result.services.every(service => service.carried)).toBe(true);
+    expect(h.startServiceDeploymentTiming).not.toHaveBeenCalled();
+    expect(h.finishStartedServiceDeploymentTimings).not.toHaveBeenCalled();
+  });
+
+  it("includes image preparation in a changed service's clock without timing the unchanged sibling", async () => {
+    const f = imageRefreshFixture();
+    const start = new Date("2026-10-20T10:00:00Z");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(start);
+    f.pull.mockImplementation(async ref => {
+      vi.setSystemTime(Date.now() + 10_000);
+      if (ref === f.apiRef) f.images.set(ref, f.metadata(ref, f.nextId));
+    });
+    await f.run();
+    expect(h.startServiceDeploymentTiming).toHaveBeenCalledExactlyOnceWith({
+      deploymentId: dep.id, serviceId: "svc-api", serviceName: "api",
+      startedAt: new Date(start.getTime() + 10_000),
+    });
+    expect(h.finishStartedServiceDeploymentTimings).not.toHaveBeenCalled();
+    expect(f.activate).toHaveBeenCalledOnce();
+    expect(f.pull).toHaveBeenCalledTimes(2);
+  });
+
+  it("settles only the failed image preparation attempt before returning its original refusal", async () => {
+    const f = imageRefreshFixture();
+    const start = new Date("2026-10-20T11:00:00Z");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(start);
+    f.pull.mockImplementation(async ref => {
+      vi.setSystemTime(Date.now() + 10_000);
+      if (ref === f.apiRef) throw new Error("registry unavailable");
+    });
+    await expect(f.run()).rejects.toThrow("registry unavailable");
+    expect(h.startServiceDeploymentTiming).toHaveBeenCalledExactlyOnceWith({
+      deploymentId: dep.id, serviceId: "svc-api", serviceName: "api",
+      startedAt: new Date(start.getTime() + 10_000),
+    });
+    expect(h.finishStartedServiceDeploymentTimings).toHaveBeenCalledExactlyOnceWith(
+      dep.id, new Date(start.getTime() + 20_000),
+    );
+    expect(h.upsertServiceDeployment).not.toHaveBeenCalled();
+    expect(f.activate).not.toHaveBeenCalled();
+    expect(f.runtime.destroy).not.toHaveBeenCalled();
+  });
+
+  it("includes a shared image's single preparation in each selected service that activates", async () => {
+    const f = imageRefreshFixture();
+    const start = new Date("2026-10-20T12:00:00Z");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(start);
+    h.services[0]!.image = f.apiRef;
+    f.pull.mockImplementation(async ref => {
+      vi.setSystemTime(Date.now() + 10_000);
+      f.images.set(ref, f.metadata(ref, f.nextId));
+    });
+    await f.run({ targetServiceIds: new Set(["svc-db", "svc-api"]) });
+    expect(f.pull).toHaveBeenCalledOnce();
+    expect(h.startServiceDeploymentTiming).toHaveBeenCalledTimes(2);
+    for (const [input] of h.startServiceDeploymentTiming.mock.calls)
+      expect(input.startedAt).toEqual(start);
+    expect(f.activate).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps strictly untargeted siblings outside preparation and activation clocks", async () => {
+    const f = imageRefreshFixture();
+    f.pull.mockImplementation(async ref => {
+      f.images.set(ref, f.metadata(ref, f.nextId));
+    });
+    const result = await f.run({ targetServiceIds: new Set(["svc-api"]), strictScope: true });
+    expect(f.pull).toHaveBeenCalledExactlyOnceWith(f.apiRef, { force: true, logger: f.logger });
+    expect(h.startServiceDeploymentTiming).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ serviceId: "svc-api", startedAt: expect.any(Date) }),
+    );
+    expect(result.services).toContainEqual(
+      expect.objectContaining({ serviceId: "svc-db", carried: true, containerId: "old-db" }),
+    );
+  });
+
+  it("applies a project replica change even when service image and configuration are unchanged", async () => {
+    const f = imageRefreshFixture();
+    h.previousDeployment.meta = { clusterConfig: { replicas: 2 } };
+    const result = await deployComposeServices(
+      { ...project, activeDeploymentId: "d-old", routeStrategy: "container-ip" } as Project,
+      { ...dep, meta: { clusterConfig: { replicas: 3 } } }, f.runtime, f.logger,
+    );
+    expect(result.status).toBe("ready");
+    expect(f.activate).toHaveBeenCalledTimes(2);
+    expect(result.services.some(service => service.carried)).toBe(false);
   });
 
   it("recreates only changed image content and deploys the immutable image acquired", async () => {
@@ -432,6 +561,257 @@ describe("compose deploy — host channel unavailable", () => {
     expect(h.upsertServiceDeployment).toHaveBeenCalledWith(expect.objectContaining({
       serviceId: "svc-api", imageRef: f.apiRef, imageDigest: `ghcr.io/acme/api@${f.nextId}`,
     }));
+  });
+
+  it("keeps existing replacement order when overlap prerequisites are unavailable", async () => {
+    const f = imageRefreshFixture();
+    f.pull.mockImplementation(async ref => {
+      if (ref === f.apiRef) f.images.set(ref, f.metadata(ref, f.nextId));
+    });
+    const result = await f.run();
+    expect(result.status).toBe("ready");
+    expect(f.runtime.destroy).toHaveBeenCalledWith("old-api");
+    expect(vi.mocked(f.runtime.destroy).mock.invocationCallOrder[0]).toBeLessThan(
+      f.activate.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  function stagedFixture() {
+    const f = imageRefreshFixture();
+    h.services = h.services.filter(service => service.id === "svc-api");
+    Object.assign(h.services[0]!, { ports: ["8080"], exposed: true, exposedPort: "8080",
+      customDomain: "api.example.com", domainType: "custom", dependsOn: [],
+      advanced: { resources: { cpuCores: 1, memoryMb: 512 } } });
+    h.previousServiceRows = h.previousServiceRows.filter(row => row.serviceId === "svc-api");
+    h.previousDeployment.meta = { port: 8080, composeServices: structuredClone(h.services) };
+    const publish = vi.fn(async () => ({ ip: "172.18.0.4" }));
+    const retire = vi.fn(async () => undefined);
+    const prepared = vi.mocked(f.runtime.prepareServiceCutover).mockImplementation(async (_group, config) => ({
+      config: { ...config }, previousContainerId: "old-api", previousDeploymentId: "d-old", publish, retire,
+    }));
+    f.runtime.sampleStability = vi.fn(async () => ({ state: "running" as const, exitCode: null, restartCount: 0,
+      health: null, errorLine: null, oomKilled: false, restartPolicy: "always" }));
+    f.pull.mockImplementation(async ref => {
+      if (ref === f.apiRef) f.images.set(ref, f.metadata(ref, f.nextId));
+    });
+    const registerRoute = vi.fn(async () => undefined);
+    const routingOptions = { hostPortTarget: localHostPortTarget,
+      executor: { exec: vi.fn(async () => "") } as unknown as CommandExecutor,
+      routing: { registerRoute, removeRoute: vi.fn() } as never,
+      ssl: { provisionCert: vi.fn(), verifyCert: vi.fn() } as never, usesManagedRouting: false };
+    return { ...f, publish, retire, prepared, registerRoute, routingOptions };
+  }
+
+  it("retires a verified candidate's predecessor only after all routing and persistence", async () => {
+    const f = stagedFixture();
+    const result = await f.run(f.routingOptions);
+    expect(result.status).toBe("ready");
+    expect(f.publish).toHaveBeenCalledWith("new-api");
+    expect(f.runtime.destroy).not.toHaveBeenCalledWith("old-api");
+    expect(f.retire).not.toHaveBeenCalled();
+    await result.cutover?.commit();
+    expect(f.retire).toHaveBeenCalledWith("new-api");
+    expect(f.retire.mock.invocationCallOrder[0]).toBeGreaterThan(h.upsertServiceDeployment.mock.invocationCallOrder.at(-1)!);
+    expect(f.retire.mock.invocationCallOrder[0]).toBeGreaterThan(f.registerRoute.mock.invocationCallOrder.at(-1)!);
+    expect(h.upsertServiceDeployment).toHaveBeenCalledWith(expect.objectContaining({ serviceId: "svc-api", ip: "172.18.0.4" }));
+  });
+
+  it.each(["changed port", "unknown snapshot", "unowned snapshot"])("keeps normal replacement for %s", async reason => {
+    const f = stagedFixture();
+    if (reason === "changed port") Object.assign(h.services[0]!, { exposedPort: "9090", ports: ["9090"] });
+    if (reason === "unknown snapshot") h.previousDeployment.meta = {};
+    if (reason === "unowned snapshot") {
+      h.deploymentById.set("d-unowned", { ...h.previousDeployment, id: "d-unowned",
+        organizationId: "another-organization" });
+      f.prepared.mockImplementation(async (_group, config) => ({ config: { ...config },
+        previousContainerId: "old-api", previousDeploymentId: "d-unowned",
+        publish: f.publish, retire: f.retire }));
+    }
+    const result = await f.run(f.routingOptions);
+    expect(result.cutover).toBeUndefined();
+    expect(f.publish).not.toHaveBeenCalled();
+    expect(f.retire).not.toHaveBeenCalled();
+  });
+
+  it("includes a composite route's additional upstream in the predecessor port proof", async () => {
+    const f = stagedFixture();
+    const result = await f.run(f.routingOptions, "manual", { compositeRoutes: [{
+      hostname: "api.example.com", isCustomDomain: true, rootServiceId: "svc-api",
+      rootPort: 8080, locations: [{ pathPrefix: "/other", serviceId: "svc-api", port: 9090 }],
+    }] });
+    expect(f.prepared).toHaveBeenCalled();
+    expect(result.cutover).toBeUndefined();
+    expect(f.publish).not.toHaveBeenCalled();
+  });
+
+  it("checks a carried container's own deployment instead of the active release's pending port edit", async () => {
+    const f = stagedFixture();
+    h.deploymentById.set("d-container-owner", { ...h.previousDeployment, id: "d-container-owner" });
+    Object.assign(h.services[0]!, { exposedPort: "9090", ports: ["9090"] });
+    h.previousDeployment.meta = { port: 9090, composeServices: structuredClone(h.services) };
+    f.prepared.mockImplementation(async (_group, config) => ({ config: { ...config },
+      previousContainerId: "old-api", previousDeploymentId: "d-container-owner",
+      publish: f.publish, retire: f.retire }));
+    const result = await f.run(f.routingOptions);
+    expect(result.cutover).toBeUndefined();
+    expect(f.publish).not.toHaveBeenCalled();
+  });
+
+  it("waits for the final composite route before retiring the old container", async () => {
+    const f = stagedFixture();
+    f.registerRoute.mockImplementation(async () => { expect(f.retire).not.toHaveBeenCalled(); });
+    const result = await f.run(f.routingOptions, "manual", { compositeRoutes: [{
+      hostname: "api.example.com", isCustomDomain: true, rootServiceId: "svc-api", locations: [],
+    }] });
+    expect(result.status).toBe("ready");
+    expect(f.registerRoute.mock.calls.length).toBeGreaterThan(1);
+    expect(f.retire).not.toHaveBeenCalled();
+    await result.cutover?.commit();
+    expect(f.retire.mock.invocationCallOrder[0]).toBeGreaterThan(f.registerRoute.mock.invocationCallOrder.at(-1)!);
+  });
+
+  it("restores the incumbent before cleanup when a composite route fails after a service route succeeded", async () => {
+    const f = stagedFixture();
+    f.registerRoute.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error("composite edge reload failed"));
+    h.applyProjectRouting.mockImplementation(async () => {
+      expect(h.targetLockHeld).toBe(false);
+      expect(f.runtime.destroy).not.toHaveBeenCalledWith("new-api");
+      expect(f.retire).not.toHaveBeenCalled();
+    });
+    const result = await f.run(f.routingOptions, "manual", { compositeRoutes: [{
+      hostname: "api.example.com", isCustomDomain: true, rootServiceId: "svc-api", locations: [],
+    }] });
+    expect(f.registerRoute).toHaveBeenCalledTimes(2);
+    expect(result.status).toBe("failed");
+    expect(result.routeWarnings?.join(" ")).toContain("composite edge reload failed");
+    expect(result.cutover).toBeUndefined();
+    expect(f.retire).not.toHaveBeenCalled();
+    expect(f.runtime.destroy).not.toHaveBeenCalledWith("old-api");
+    expect(f.runtime.destroy).toHaveBeenCalledWith("new-api");
+    expect(h.applyProjectRouting.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(f.runtime.destroy).mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("keeps the incumbent when an existing composite shape cannot resolve its frontend hostname", async () => {
+    const f = stagedFixture();
+    Object.assign(h.services[0]!, { kind: "monorepo", framework: "nextjs", startCommand: "node server.js" });
+    h.services.push({ id: "svc-front", projectId: "p1", name: "front", image: f.apiRef, enabled: true,
+      kind: "monorepo", framework: "vite", startCommand: null, updatedAt: new Date(0), dependsOn: [],
+      advanced: null, ports: [], exposed: false });
+    h.previousServiceRows.push({ id: "sd-front", deploymentId: "d-old", serviceId: "svc-front", serviceName: "front",
+      containerId: "old-front", imageRef: f.apiRef, status: "success", ip: "172.18.0.2" });
+    const result = await f.run({ ...f.routingOptions, targetServiceIds: new Set(["svc-api"]) });
+    expect(f.prepared).toHaveBeenCalledOnce();
+    expect(result.status).toBe("failed");
+    expect(result.routeWarnings?.join(" ")).toContain("could not resolve every upstream and hostname");
+    expect(f.retire).not.toHaveBeenCalled();
+    expect(f.runtime.destroy).not.toHaveBeenCalledWith("old-api");
+    expect(h.applyProjectRouting).toHaveBeenCalled();
+    expect(f.runtime.destroy).toHaveBeenCalledWith("new-api");
+  });
+
+  it.each([{ failure: "candidate is not ready" }, { failure: null, skipped: "host probe unavailable" }])(
+    "keeps the old container and never publishes a failed or unverifiable candidate (%j)", async verdict => {
+      const f = stagedFixture();
+      h.probeDeployedReadiness.mockResolvedValue(verdict);
+      await f.run(f.routingOptions);
+      expect(f.publish).not.toHaveBeenCalled();
+      expect(f.retire).not.toHaveBeenCalled();
+      expect(f.runtime.destroy).not.toHaveBeenCalledWith("old-api");
+      expect(f.runtime.destroy).toHaveBeenCalledWith("new-api");
+    },
+  );
+
+  it("restores previous routing before reaping a candidate cancelled after partial route writes", async () => {
+    const f = stagedFixture();
+    const controller = new AbortController();
+    f.registerRoute.mockImplementation(async () => { controller.abort(); });
+    h.applyProjectRouting.mockImplementation(async () => {
+      expect(h.targetLockHeld).toBe(false);
+      expect(f.runtime.destroy).not.toHaveBeenCalledWith("new-api");
+    });
+    await expect(f.run({ ...f.routingOptions, signal: controller.signal })).rejects.toThrow("cancelled");
+    expect(h.applyProjectRouting).toHaveBeenCalledWith("p1", expect.anything());
+    expect(f.retire).not.toHaveBeenCalled();
+    expect(f.runtime.destroy).not.toHaveBeenCalledWith("old-api");
+    expect(f.runtime.destroy).toHaveBeenCalledWith("new-api");
+    expect(h.applyProjectRouting.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(f.runtime.destroy).mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("preserves both containers and tracks the candidate when routing restoration fails", async () => {
+    const f = stagedFixture();
+    const controller = new AbortController();
+    f.registerRoute.mockImplementation(async () => { controller.abort(); });
+    h.applyProjectRouting.mockRejectedValue(new Error("edge is unavailable"));
+    await expect(f.run({ ...f.routingOptions, signal: controller.signal })).rejects.toThrow("Both containers were preserved");
+    expect(f.runtime.destroy).not.toHaveBeenCalled();
+    expect(f.retire).not.toHaveBeenCalled();
+    expect(h.upsertServiceDeployment).toHaveBeenCalledWith(expect.objectContaining({
+      containerId: "new-api", status: "failed", errorMessage: expect.stringContaining("Routing recovery incomplete"),
+    }));
+  });
+
+  it("preserves both containers after a recovery deadline without abandoning the active route writer", async () => {
+    const f = stagedFixture();
+    const result = await f.run(f.routingOptions);
+    let releaseRoute!: () => void;
+    const routeSettled = new Promise<void>(resolve => { releaseRoute = resolve; });
+    let routeStarted!: () => void;
+    const started = new Promise<void>(resolve => { routeStarted = resolve; });
+    h.reapplyProjectLiveRoutes.mockImplementation(async () => {
+      routeStarted();
+      await routeSettled;
+    });
+    const setTimeout = globalThis.setTimeout;
+    let expire!: () => void;
+    const timer = vi.spyOn(globalThis, "setTimeout").mockImplementation((callback, delay, ...args) => {
+      if (delay === 30_000) expire = () => (callback as () => void)();
+      return setTimeout(callback, delay, ...args);
+    });
+    try {
+      let released = false;
+      const recovery = result.cutover!.rollback().finally(() => { released = true; });
+      await started;
+      expire();
+      await Promise.resolve();
+      expect(released).toBe(false);
+      expect(f.runtime.destroy).not.toHaveBeenCalled();
+      releaseRoute();
+      await expect(recovery).resolves.toBe(false);
+      expect(h.applyProjectRouting).not.toHaveBeenCalled();
+      expect(f.retire).not.toHaveBeenCalled();
+      expect(f.runtime.destroy).not.toHaveBeenCalled();
+      expect(h.upsertServiceDeployment).toHaveBeenCalledWith(expect.objectContaining({
+        containerId: "new-api", status: "failed", errorMessage: expect.stringContaining("routing recovery timed out"),
+      }));
+    } finally {
+      releaseRoute();
+      timer.mockRestore();
+    }
+  });
+
+  it("does not retire the predecessor when route registration reports a warning", async () => {
+    const f = stagedFixture();
+    f.registerRoute.mockRejectedValue(new Error("edge reload failed"));
+    const result = await f.run(f.routingOptions);
+    expect(result.routeWarnings?.join(" ")).toContain("edge reload failed");
+    expect(result.status).toBe("failed");
+    expect(h.applyProjectRouting).toHaveBeenCalled();
+    expect(f.retire).not.toHaveBeenCalled();
+    expect(f.runtime.destroy).not.toHaveBeenCalledWith("old-api");
+    expect(f.runtime.destroy).toHaveBeenCalledWith("new-api");
+  });
+
+  it("keeps larger cohorts on their existing path without preparing overlap", async () => {
+    const f = imageRefreshFixture();
+    f.pull.mockImplementation(async ref => { f.images.set(ref, f.metadata(ref, f.nextId)); });
+    await f.run();
+    expect(f.runtime.prepareServiceCutover).not.toHaveBeenCalled();
+    expect(f.runtime.destroy).toHaveBeenCalledWith("old-api");
+    expect(f.runtime.destroy).toHaveBeenCalledWith("old-db");
   });
 
   it("aborts the whole cohort when a later registry pull fails, preserving every old service", async () => {
@@ -494,6 +874,10 @@ describe("compose deploy — host channel unavailable", () => {
     expect(f.pull).toHaveBeenCalledTimes(1);
     expect(f.activate).not.toHaveBeenCalled();
     expect(f.runtime.destroy).not.toHaveBeenCalled();
+    expect(h.startServiceDeploymentTiming).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ serviceId: "svc-db", startedAt: expect.any(Date) }),
+    );
+    expect(h.finishStartedServiceDeploymentTimings).toHaveBeenCalledExactlyOnceWith(dep.id, expect.any(Date));
   });
 
   it("prepares a shared registry tag once and freezes every selected service to it", async () => {
@@ -567,7 +951,7 @@ describe("compose deploy — host channel unavailable", () => {
       })),
       getContainerIp: vi.fn(async () => "172.18.0.3"),
       destroy: vi.fn(async () => undefined), pullImage, deployServiceWorkload,
-    }) as DockerRuntime;
+    }) as DockerRuntimeType;
     h.services = [{
       id: "svc-api", projectId: "p1", name: "api", image: rowImage, build,
       enabled: true, dependsOn: [], advanced: null, ports: [], exposed: false,
@@ -1605,7 +1989,7 @@ describe("compose deploy — host channel unavailable", () => {
       getContainerIp: vi.fn(async () => "172.18.0.3"),
       destroy: vi.fn(async () => undefined),
       pullImage, deployServiceWorkload,
-    }) as DockerRuntime;
+    }) as DockerRuntimeType;
     h.services = [
       { id: "svc-local", projectId: "p1", name: "local-app", image: "my-app:custom",
         enabled: true, dependsOn: [], advanced: null, ports: [], exposed: false },
@@ -2307,4 +2691,68 @@ it("rejects an invalid GPU request before pulling images or replacing any siblin
   expect(fixture.pull).not.toHaveBeenCalled();
   expect(fixture.activate).not.toHaveBeenCalled();
   expect(fixture.runtime.destroy).not.toHaveBeenCalled();
+});
+
+it.each([{ ports: [] }, { ports: ["127.0.0.1:25774:25774"] }])(
+  "deploys private services without taking over the edge ($ports)",
+  async ({ ports }) => {
+    h.services = [{ ...h.services[0], exposed: false, customDomain: null, ports }];
+    h.previousServiceRows = [];
+    const runtime = startingRuntime();
+    const exec = vi.fn(async () => {
+      throw new Error("foreign proxy must not be touched");
+    });
+    const system = { ensureFeature: vi.fn(async (_feature: string) => undefined) };
+    const { logger, lines } = recordingLogger();
+    const result = await deployComposeServices(project, dep, runtime, logger, {
+      executor: { exec } as unknown as CommandExecutor,
+      hostPortTarget: localHostPortTarget,
+      system: system as never,
+    });
+    expect(result.status).toBe("ready");
+    expect(system.ensureFeature.mock.calls.map((call) => call[0])).toEqual(["deploy"]);
+    expect(h.prepareTargetPinnedHostPorts).not.toHaveBeenCalled();
+    expect(h.allocateAndReservePinnedHostPort).not.toHaveBeenCalled();
+    expect(runtime.deployServiceWorkload).toHaveBeenCalled();
+    expect(vi.mocked(runtime.deployServiceWorkload).mock.calls[0]?.[1].ports).toEqual(ports);
+    expect(lines.some((line) => line.message.includes("Edge/routing setup failed"))).toBe(false);
+  },
+);
+
+it("passes generated config through scheduler-native files without requiring a host writer", async () => {
+  h.services = [{id: "svc-web", projectId: "p1", name: "web", enabled: true, dependsOn: [],
+    image: "busybox:1.37", ports: [], volumes: [], exposed: false, environment: {GREETING: "${GREETING:-hello}"},
+    advanced: {environmentTemplateKeys: ["GREETING"], files: [{path: "/etc/app.yml", content: "enabled: true"}]},
+  }];
+  h.previousServiceRows = [];
+  const runtime = startingRuntime();
+  Object.assign(runtime, {name: "swarm", supports: (cap: string) => ["clusterStatus", "containerIp", "serviceConfigFiles"].includes(cap)});
+  const {logger} = recordingLogger();
+  const result = await deployComposeServices(project, dep, runtime, logger);
+  expect(result.status, JSON.stringify(result.services)).toBe("ready");
+  expect(runtime.deployServiceWorkload).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+    environment: expect.objectContaining({GREETING: "hello"}),
+    advanced: expect.objectContaining({files: [{path: "/etc/app.yml", content: "enabled: true"}]}),
+    volumes: [],
+  }), expect.any(Function));
+});
+
+it("refuses automatic private publishes when route inventory is unreadable without preparing the edge", async () => {
+  h.services = [{ ...h.services[0], exposed: false, customDomain: null, ports: ["8800"] }];
+  h.previousServiceRows = [];
+  h.prepareTargetPinnedHostPorts.mockRejectedValueOnce(new Error("route inventory unreadable"));
+  const runtime = startingRuntime();
+  const system = { ensureFeature: vi.fn(async (_feature: string) => undefined) };
+  const { logger } = recordingLogger();
+  await expect(
+    deployComposeServices(project, dep, runtime, logger, {
+      executor: { exec: vi.fn(async () => "") } as unknown as CommandExecutor,
+      hostPortTarget: localHostPortTarget,
+      system: system as never,
+    }),
+  ).rejects.toThrow("route inventory unreadable");
+  expect(system.ensureFeature.mock.calls.map((call) => call[0])).toEqual(["deploy"]);
+  expect(h.prepareTargetPinnedHostPorts).toHaveBeenCalledTimes(1);
+  expect(h.allocateAndReservePinnedHostPort).not.toHaveBeenCalled();
+  expect(runtime.deployServiceWorkload).not.toHaveBeenCalled();
 });

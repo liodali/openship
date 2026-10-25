@@ -1,4 +1,5 @@
-import type { Metadata } from "next";
+import type { Metadata, ResolvingMetadata } from "next";
+import { inheritSocialImages } from "@/lib/social-metadata";
 import type { ReactNode } from "react";
 import { CURRENCY_LD, getCloudPricing, priceLd, type CloudPricing } from "@/lib/pricing";
 import { faq } from "./_data";
@@ -7,7 +8,7 @@ const PAGE_URL = "https://openship.io/pricing";
 export const revalidate = 60;
 const DESCRIPTION =
   "Compare Openship Cloud managed servers. Monthly CPU, RAM and storage for your projects, with clear resource limits and no per-seat fees.";
-export const metadata: Metadata = {
+const metadata: Metadata = {
   title: "Pricing",
   description: DESCRIPTION,
   alternates: { canonical: "/pricing" },
@@ -19,6 +20,13 @@ export const metadata: Metadata = {
   },
   twitter: { card: "summary_large_image", title: "Pricing - Openship", description: DESCRIPTION },
 };
+
+export async function generateMetadata(
+  _props: unknown,
+  parent: ResolvingMetadata,
+): Promise<Metadata> {
+  return inheritSocialImages(metadata, parent);
+}
 
 function buildLd(pricing: CloudPricing) {
   const offers = pricing.tiers.map((plan) => ({

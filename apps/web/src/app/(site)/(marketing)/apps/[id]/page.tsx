@@ -1,4 +1,5 @@
-import type { Metadata } from "next";
+import type { Metadata, ResolvingMetadata } from "next";
+import { inheritSocialImages } from "@/lib/social-metadata";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ArrowLeft, ArrowUpRight, Check, ArrowRight, Layers, Database } from "lucide-react";
@@ -13,16 +14,19 @@ export function generateStaticParams() {
   return APP_TEMPLATES.filter((app) => !app.unlisted).map((app) => ({ id: app.id }));
 }
 
-export async function generateMetadata({
-  params,
-}: {
-  params: Promise<{ id: string }>;
-}): Promise<Metadata> {
+export async function generateMetadata(
+  {
+    params,
+  }: {
+    params: Promise<{ id: string }>;
+  },
+  parent: ResolvingMetadata,
+): Promise<Metadata> {
   const { id } = await params;
   const app = (await getMarketplaceApps()).find((app) => app.id === id);
   if (!app) return {};
   const title = `${app.name} — App catalog`;
-  return {
+  const metadata: Metadata = {
     title,
     description: app.description,
     alternates: { canonical: `/apps/${app.id}` },
@@ -38,6 +42,7 @@ export async function generateMetadata({
       description: app.description,
     },
   };
+  return inheritSocialImages(metadata, parent);
 }
 
 export default async function AppPage({ params }: { params: Promise<{ id: string }> }) {

@@ -27,6 +27,22 @@ import { validateImageReference } from "./project-source";
 export type DockerBuildRecipe = "generic" | "php" | "ruby" | "static";
 export type DockerRuntimeProbe = "node" | "bun" | "python" | "ruby" | "java" | "dotnet" | "elixir";
 
+/** Installed-version inspection, distinct from builder/runtime ABI compatibility.
+ * Keep executable commands compiled into the runtime registry, never in a feed. */
+export const RUNTIME_VERSION_COMMANDS = {
+  node: "node --version",
+  bun: "bun --version",
+  deno: "deno --version",
+  python: "python3 --version",
+  php: "php --version",
+  ruby: "ruby --version",
+  java: "java -version",
+  dotnet: "dotnet --list-runtimes",
+  go: "go version",
+} as const;
+export type InspectedRuntime = keyof typeof RUNTIME_VERSION_COMMANDS;
+export const INSPECTED_RUNTIMES = Object.keys(RUNTIME_VERSION_COMMANDS) as [InspectedRuntime, ...InspectedRuntime[]];
+
 export interface LanguageDefinition {
   name: string;
   /** Default build image - used when stack doesn't override */

@@ -63,6 +63,7 @@ import {
   TeardownProjectNotFoundError,
 } from "./cloud-ingest.service";
 import {
+  repos,
   DUMP_FORMAT_VERSION,
   PkCollisionError,
   type DatabaseDump,
@@ -895,8 +896,27 @@ export async function githubOauthHandoff(c: Context) {
   if (!user || !session) {
     return c.json({ error: "No active session" }, 401);
   }
+  const raw = await c.req.text();
+  let body: { state?: unknown } = {};
+  if (raw) {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+        return c.json({ error: "Invalid GitHub connection request" }, 400);
+      body = parsed;
+    } catch {
+      return c.json({ error: "Invalid GitHub connection request" }, 400);
+    }
+  }
+  const organizationId = getRequestContext(c).organizationId;
+  if (body.state !== undefined) {
+    if (typeof body.state !== "string" || body.state.length > 256) return c.json({ error: "Invalid GitHub connection attempt" }, 400);
+    const binding = await repos.githubInstallState.find(body.state);
+    if (!binding || binding.userId !== user.id || binding.organizationId !== organizationId || binding.flow !== "install" || binding.sourceId)
+      return c.json({ error: "This GitHub connection attempt expired or belongs to another workspace. Start again.", code: "GITHUB_ATTEMPT_EXPIRED" }, 403);
+  }
   const token = await oauthBridgeStore.issue(
-    { userId: user.id, sessionToken: session.token, organizationId: getRequestContext(c).organizationId },
+    { userId: user.id, sessionToken: session.token, organizationId, ...(typeof body.state === "string" && body.state ? { state: body.state } : {}) },
     { ttlMs: OAUTH_BRIDGE_TTL_MS },
   );
   return c.json({

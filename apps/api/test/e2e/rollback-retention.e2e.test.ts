@@ -13,6 +13,12 @@ const h = vi.hoisted(() => ({ runtime: null as DockerRuntime | null }));
 vi.mock("@repo/platform/engine/lib/deployment-runtime", async (original) => ({
   ...await original<typeof import("@repo/platform/engine/lib/deployment-runtime")>(),
   resolveDeploymentRuntime: async () => ({ runtime: h.runtime!, serverId: null }),
+  // The automatic disk-pressure policy also resolves a read connection. This
+  // fixture has no control-plane platform/host identity; both seams must use
+  // its real daemon, with host-pressure measurement left to its own journey.
+  resolveDeploymentRuntimeForRead: async () => ({
+    runtime: h.runtime!, serverId: null, hostPortTarget: null,
+  }),
 }));
 
 import { onDeploymentReady, setPin, reconcileProjectRetention } from "@repo/platform/engine/modules/deployments/rollback/rollback-orchestrator";

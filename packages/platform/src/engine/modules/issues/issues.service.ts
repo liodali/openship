@@ -316,6 +316,7 @@ const PENDING_TAB: Record<PendingActionKind, string> = {
   partial_decision: "deployments",
   port_advisory: "deployments",
   routing_unsynced: "domains",
+  runtime_health: "health",
   domain_unverified: "domains",
   ssl_error: "domains",
   routing_rules_dropped: "domains",
@@ -416,7 +417,6 @@ function updateIssue(row: UpdateRow): SystemIssue {
  * domain and update rows and no hint that servers exist.
  */
 async function canSeeInfra(ctx: RequestContext): Promise<boolean> {
-  if (env.CLOUD_MODE) return false;
   return checkPermissionOnResource(ctx, {
     resourceType: "server",
     resourceId: "*",

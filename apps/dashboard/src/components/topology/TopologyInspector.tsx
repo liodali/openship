@@ -88,7 +88,10 @@ function Detail({
                 await copyText(value);
                 setCopied({ value });
               } catch (diagnosticFailure) {
-                observeCaughtError(diagnosticFailure, "dashboard/components/topology/TopologyInspector");
+                observeCaughtError(
+                  diagnosticFailure,
+                  "dashboard/components/topology/TopologyInspector",
+                );
                 setCopied(null);
                 showToast(t.projectDetail.services.detail.networking.copyFailed, "error");
               }
@@ -156,7 +159,7 @@ export function TopologyInspector({
   onNavigate: (href: string) => void;
   onSave: (service: Service, patch: Partial<ServiceInput>) => Promise<void>;
   onResources: (
-    values: { cpuCores: number; memoryMb: number },
+    values: { cpuCores: number; memoryMb: number; swapDisabled?: boolean },
     before: ProjectResources,
     service?: Service,
   ) => void;
@@ -169,6 +172,7 @@ export function TopologyInspector({
 }) {
   const [tab, setTab] = useState(initialTab);
   const [savedNotice, setSavedNotice] = useState(false);
+  const { t } = useI18n();
   const service = resource?.service;
   const editable =
     resource &&
@@ -317,6 +321,20 @@ export function TopologyInspector({
         )}
         {resource && (!editable || tab === "overview") && (
           <div className="space-y-5">
+            {editable && !resource.pending && service?.enabled !== false && (
+              <Button
+                className="w-full justify-between"
+                variant="secondary"
+                disabled={disabled || busy}
+                onClick={() => setTab("scaling")}
+              >
+                <span className="flex items-center gap-2">
+                  <UiIcon name="layers" />
+                  {t.projects.quickScale.scale}
+                </span>
+                <UiIcon name="arrow-right" />
+              </Button>
+            )}
             <div className="rounded-xl border border-border/50 bg-muted/20 p-3">
               {resource.kind === "application" &&
               resource.version &&

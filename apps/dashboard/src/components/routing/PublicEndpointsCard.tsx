@@ -2,6 +2,8 @@
 
 import { Icon as UiIcon } from "@repo/ui/icons";
 
+import { RouteProtectionButton } from "./RouteProtectionButton";
+import { useOptionalDeployment } from "@/context/DeploymentContext";
 import React, { useState } from "react";
 import { RoutingSettingsCard } from "@/components/routing/RoutingSettingsCard";
 import { Switch } from "@/components/ui/Switch";
@@ -73,7 +75,8 @@ const PublicEndpointsCard: React.FC<PublicEndpointsCardProps> = ({
   allowRedirects = false,
 }) => {
   const { t } = useI18n();
-  const { baseDomain } = usePlatform();
+  const deployment = useOptionalDeployment();
+  const { baseDomain, selfHosted } = usePlatform();
   const w = t.widgets.routing.publicEndpoints;
   const hasMultipleEndpoints = endpoints.length > 1;
   const primaryId = endpoints.find((endpoint) => !endpoint.redirectTo)?.id;
@@ -203,6 +206,16 @@ const PublicEndpointsCard: React.FC<PublicEndpointsCardProps> = ({
       : host;
   };
 
+  const renderProtection = (endpoint: PublicEndpoint) => deployment && (
+    <RouteProtectionButton
+      hostname={endpointHostname(endpoint)}
+      projectId={deployment.config.projectId}
+      unsupported={!selfHosted || deployment.config.deployTarget === "cloud" || deployment.config.deployTarget === "cluster" || endpoint.domainType !== "custom" || endpointHostname(endpoint).startsWith("*.")}
+      draft={endpoint.protectionDraft}
+      onDraftChange={(protectionDraft) => handleEndpointChange(endpoint.id, { protectionDraft })}
+    />
+  );
+
   const renderRoutingCard = (endpoint: PublicEndpoint, actionSlot?: React.ReactNode) => {
     const resolvedUrl =
       endpoint.domainType === "custom" &&
@@ -240,7 +253,7 @@ const PublicEndpointsCard: React.FC<PublicEndpointsCardProps> = ({
         exposedPort={hasServer ? endpoint.port : undefined}
         readOnlyTarget={readOnlyTarget}
         liveUrl={resolvedUrl}
-        actionSlot={actionSlot}
+        actionSlot={<>{!hasMultipleEndpoints && renderProtection(endpoint)}{actionSlot}</>}
         portInline={portInline}
         hideTypeToggle={hideTypeToggle}
         redirect={
@@ -355,6 +368,7 @@ const PublicEndpointsCard: React.FC<PublicEndpointsCardProps> = ({
                         </span>
                       </span>
                     </button>
+                    {renderProtection(endpoint)}
                     <button
                       type="button"
                       onClick={() => handleRemoveEndpoint(endpoint.id)}
@@ -454,6 +468,7 @@ const PublicEndpointsCard: React.FC<PublicEndpointsCardProps> = ({
                         </span>
                       </span>
                     </button>
+                    {renderProtection(endpoint)}
                     <button
                       type="button"
                       onClick={() => handleRemoveEndpoint(endpoint.id)}

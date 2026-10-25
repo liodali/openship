@@ -6,7 +6,7 @@ import {
   resolveDeploymentPlatform,
   resolveDeploymentRuntimeForRead,
 } from "../../lib/deployment-runtime";
-import { resolveLiveServiceState } from "./live-state";
+import { resolveLiveServiceState, type LiveMatchKind } from "./live-state";
 import { isRealContainerRef } from "../../lib/container-ref";
 import { pickPrimaryServiceId } from "../../lib/public-endpoints";
 import type { DeploymentConfigSnapshot } from "../deployments/build.service";
@@ -104,8 +104,13 @@ export interface HostContainerLister {
  */
 export async function liveContainerIdWithRuntime(
   runtime: HostContainerLister | null | undefined,
-  args: { service: { id: string; name: string }; projectId: string; slug: string; tracked: string | null },
-  opts?: { requireLiveQuery?: boolean },
+  args: {
+    service: { id: string; name: string };
+    projectId: string;
+    slug: string;
+    tracked: string | null;
+  },
+  opts?: { requireLiveQuery?: boolean; tiers?: readonly LiveMatchKind[] },
 ): Promise<string | null> {
   return (await liveContainerStateWithRuntime(runtime, args, opts)).containerId;
 }
@@ -129,8 +134,13 @@ export async function liveContainerIdWithRuntime(
  */
 export async function liveContainerStateWithRuntime(
   runtime: HostContainerLister | null | undefined,
-  args: { service: { id: string; name: string }; projectId: string; slug: string; tracked: string | null },
-  opts?: { requireLiveQuery?: boolean },
+  args: {
+    service: { id: string; name: string };
+    projectId: string;
+    slug: string;
+    tracked: string | null;
+  },
+  opts?: { requireLiveQuery?: boolean; tiers?: readonly LiveMatchKind[] },
 ): Promise<{ containerId: string | null; running: boolean | null }> {
   if (!runtime?.supports("hostContainerQuery") || !runtime.listAllContainers) {
     return { containerId: args.tracked, running: null };
@@ -148,6 +158,7 @@ export async function liveContainerStateWithRuntime(
     projectId: args.projectId,
     slug: args.slug,
     trackedIds: { [args.service.id]: args.tracked },
+    tiers: opts?.tiers,
   }).get(args.service.id);
   if (!match?.containerId) return { containerId: null, running: null };
   return { containerId: match.containerId, running: match.status !== "stopped" };

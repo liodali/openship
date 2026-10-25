@@ -6,7 +6,8 @@ import type { ExecutionContext } from "@repo/platform";
 
 const h = vi.hoisted(() => ({ authority: vi.fn(), authorize: vi.fn(), permission: vi.fn(), identity: vi.fn(), fetch: vi.fn() }));
 vi.mock("@repo/platform/engine/lib/cloud/resource-authority", () => ({ resolveResourceAuthority: h.authority }));
-vi.mock("@repo/platform/engine/lib/authorization", () => ({ authorization: { authorize: h.authorize }, checkPermission: h.permission }));
+vi.mock("@repo/platform/engine/lib/authorization", () => ({ authorization: { authorize: h.authorize, checkPermissionOnResource: h.permission } }));
+vi.mock("../../src/lib/terminal-authorization", () => ({ refreshTerminalContext: async (ctx: unknown) => ctx }));
 vi.mock("@repo/platform/engine/lib/cloud/server-link", () => ({ linkedCloudIdentity: h.identity }));
 vi.mock("@repo/platform/engine/lib/cloud/transport", () => ({
   cloudFetchAsOrgOwner: h.fetch,
@@ -45,7 +46,7 @@ async function start() {
 }
 function makeBridge(kind: "server" | "service" = "service", resumeToken = "") {
   const client = { send: vi.fn(), close: vi.fn(), raw: { bufferedAmount: 0 } };
-  const handlers = cloudTerminalHandlers({ kind, id: "cloud-resource", userId: ctx.userId, organizationId: ctx.organizationId,
+  const handlers = cloudTerminalHandlers({ kind, id: "cloud-resource", context: ctx,
     cloud: { identity: { ...identity }, token }, resumeToken });
   bridges.push(handlers);
   return { handlers, client };

@@ -11,15 +11,23 @@ export function cloudDeployFailure(failure: {
   projectId?: string | null;
 }): ApiError | null {
   const code = failure.errorCode;
-  if (code !== "CLOUD_CAPACITY_REQUIRED" && code !== "CLOUD_BILLING_BLOCKED" && code !== "PLAN_UPGRADE_REQUIRED") return null;
+  if (code !== "CLOUD_CAPACITY_REQUIRED" && code !== "CLOUD_WORKSPACE_BUILD_CAPACITY" && code !== "CLOUD_BILLING_BLOCKED" && code !== "PLAN_UPGRADE_REQUIRED") return null;
   const projectId = failure.projectId ?? failure.errorDetails?.projectId;
-  if (code === "CLOUD_CAPACITY_REQUIRED" && (typeof projectId !== "string" || !projectId)) return null;
-  return new ApiError(code === "CLOUD_CAPACITY_REQUIRED" ? 409 : 402, "Cloud deployment needs attention", {
+  const capacity = code === "CLOUD_CAPACITY_REQUIRED" || code === "CLOUD_WORKSPACE_BUILD_CAPACITY";
+  if (capacity && (typeof projectId !== "string" || !projectId)) return null;
+  return new ApiError(capacity ? 409 : 402, "Cloud deployment needs attention", {
     ...failure.errorDetails,
     code,
     projectId,
     ...(failure.errorMessage ? { error: failure.errorMessage } : {}),
   });
+}
+
+/** Capacity refusals share a persistent action, separate from payment recovery. */
+export function cloudDeployCapacityFailure(failure: Parameters<typeof cloudDeployFailure>[0]): ApiError | null {
+  const error = cloudDeployFailure(failure);
+  return error && (failure.errorCode === "CLOUD_WORKSPACE_BUILD_CAPACITY" || cloudCapacityRestriction(error))
+    ? error : null;
 }
 
 export interface CloudCapacityRestriction {

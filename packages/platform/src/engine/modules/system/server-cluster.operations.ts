@@ -46,7 +46,7 @@ import { sshManager } from "../../lib/ssh-manager";
 import { inspectHostIssuedIdentity } from "../../lib/host-port-target";
 import { withServerInventoryLock } from "../../lib/server-inventory-lock";
 import { audit, operationAuditContext } from "../../lib/audit-emitter";
-import { assertSelfHosted, assertServerExecution, requireSelfHostedServer } from "./server-access";
+import { assertSelfHosted, assertServerExecution, requireConnectedServer } from "./server-access";
 import { notifyNetworkSetup } from "./network-setup-bus";
 import { assertNetworkSetupAcceptingWork, deferNetworkSetupWork } from "./network-setup-lifecycle";
 
@@ -70,7 +70,7 @@ export async function authorizeMember(ctx: ExecutionContext, serverId: string) {
     resourceId: serverId,
     action: "admin",
   });
-  return requireSelfHostedServer(ctx, serverId);
+  return requireConnectedServer(ctx, serverId);
 }
 
 export async function onServer<T>(

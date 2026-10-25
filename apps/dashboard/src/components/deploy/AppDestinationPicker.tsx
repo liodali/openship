@@ -64,7 +64,7 @@ export function AppDestinationPicker({
       onSelect={(server) => {
         if (!server && selfHosted) return;
         onChange({
-          deployTarget: server?.raw.managed || !selfHosted ? "cloud" : "server",
+          deployTarget: server ? (server.raw.managed ? "cloud" : "server") : "cloud",
           serverId: server?.id,
           workspaceId: server?.raw.managed?.id,
           serverHost: server?.host,

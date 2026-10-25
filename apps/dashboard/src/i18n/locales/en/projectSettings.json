@@ -676,6 +676,11 @@
       "select": "Select domain...",
       "clear": "Clear selection"
     },
+    "buildQueue": {
+      "label": "Cancel obsolete builds",
+      "description": "Keep only the latest pending push. When enabled, a newer push also cancels an older automatic build before release steps start. Manual deployments and rollbacks are preserved.",
+      "saveFailed": "Could not save build cancellation preference"
+    },
     "autoDeployCard": {
       "title": "Auto Deploy",
       "enabled": "Enabled",
@@ -709,6 +714,8 @@
       "title": "Rollback history",
       "retentionHint": "Keep recent deployment artifacts for quick rollback.",
       "retentionDescription": "Maximum number of past releases to keep. Active and pinned releases are extra. Older artifacts are removed; deployment history stays available. Set to 0 to keep only active and pinned releases.",
+      "automaticValue": "Up to {count} versions",
+      "automaticDescription": "Keeps up to the default history limit. Under disk pressure, recoverable artifacts may be removed earlier. Active and pinned releases are extra. Commit and configuration history stays available; rollback may require a rebuild.",
       "defaultBadge": "instance default",
       "loadFailed": "Could not load rollback settings.",
       "valueOne": "{count} version",
@@ -719,7 +726,7 @@
       "increaseAria": "Increase rollback history",
       "sizeEach": "~{size} per image, including shared layers",
       "diskFree": "{size} free",
-      "autoBadge": "sized automatically",
+      "autoBadge": "Automatic",
       "manualBadge": "set manually",
       "kindFiles": "built files on disk",
       "kindImages": "images on the host",
@@ -1231,5 +1238,39 @@
     "connection": "GitHub connection",
     "deliveryFailed": "Checks could not be delivered",
     "saveFailed": "Could not save GitHub check settings."
+  },
+  "runtimeUpdates": {
+    "options": "Redeploy options",
+    "refresh": "Refresh images & redeploy",
+    "refreshing": "Refreshing images…",
+    "check": "Check image updates",
+    "title": "Image updates",
+    "failed": "Could not start image refresh.",
+    "uncertain": "The request timed out. Check deployment history before trying again.",
+    "available": "Image updates available",
+    "current": "Image digests match the latest observed registry digests.",
+    "checkUnavailable": "Image comparison needs recorded digests and registry access.",
+    "checkFailed": "Could not check image updates.",
+    "pinned": "Images are pinned by digest. Edit the configured reference to update them."
+  },
+  "securityAdvisories": {
+    "sourceRedeployRequired": "Rebuild this app from its saved source before refreshing its runtime. The current image has no verified source revision. A source redeploy may include newer code; review it in Deployments, then check this advisory again.",
+    "openSourceRedeploy": "Open source redeploy",
+    "reviewApps": "Review affected apps ({count})",
+    "pendingApps": "Checks pending for {count} apps. Results will appear automatically.",
+    "checkAgain": "Check again",
+    "checking": "Checking…",
+    "title": "Security advisories",
+    "unavailable": "Security checks are unavailable or out of date. Existing notices remain visible.",
+    "affected": "Review the affected runtime and the published guidance before updating.",
+    "noMatches": "No matching advisories in the checked evidence. This is not a complete vulnerability scan.",
+    "partial": "Some runtimes could not be identified. Bare processes, stopped containers and unsupported images may need a manual check.",
+    "guidance": "Read advisory",
+    "automatic": "Automatically refresh verified security patches",
+    "automaticDescription": "Off by default. Only image services with a signed fix on their existing tag can update automatically. Source builds, pinned images and version changes require review. Normal deployment and health checks still apply.",
+    "notifications": "Security alerts are enabled on notification channels by default. You can change each channel in Settings → Notifications.",
+    "publicFeed": "View public feed",
+    "checked": "Evidence checked",
+    "possible": "Image tag matches; the deployed version needs verification."
   }
 }

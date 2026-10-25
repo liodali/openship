@@ -1,4 +1,4 @@
-import { ActionBillingOperationSchemas, BillingOperationSchemas, OperationError, isRecord, normalizeBillingCreditPacks, type CloudWorkspaceSummary } from "@repo/contracts";
+import { ManagementBillingOperationSchemas, ActionBillingOperationSchemas, BillingOperationSchemas, OperationError, isRecord, normalizeBillingCreditPacks, type CloudWorkspaceSummary } from "@repo/contracts";
 import { createPublicBillingOperations, type BillingDependencies } from "../../../billing";
 import type { ExecutionContext } from "../../../context";
 import type { ScopedServices } from "../../../resource-operations";
@@ -14,6 +14,16 @@ import { repos } from "@repo/db";
 import { assertCloudProxyScope } from "../../lib/cloud/scope";
 
 const routes = {
+  getManagement: ["GET", "/manage"],
+  purchaseManagement: ["POST", "/manage/checkout"],
+  confirmManagementChange: ["POST", "/manage/change"],
+  resumeManagementCheckout: ["POST", "/manage/checkout/resume"],
+  cancelManagementChange: ["POST", "/manage/change/cancel"],
+  cancelManagementCheckout: ["POST", "/manage/checkout/cancel"],
+  cancelManagementSubscription: ["POST", "/manage/cancel"],
+  resumeManagementSubscription: ["POST", "/manage/resume"],
+  createManagementPortal: ["POST", "/manage/portal"],
+
   getActionsBudget: ["GET", "/actions"],
   getActionsPurchase: ["GET", "/actions/purchase"],
   createActionsCheckout: ["POST", "/actions/checkout"],
@@ -55,7 +65,7 @@ async function invoke(name: keyof typeof BillingOperationSchemas, ctx: Execution
     }
     // Account-wide recovery follows Cloud inventory access. Scoped automation
     // must use its explicitly granted local server link instead.
-    if ((name === "listCheckouts" && !workspaceId) || name in ActionBillingOperationSchemas) assertCloudProxyScope(ctx);
+    if ((name === "listCheckouts" && !workspaceId) || name in ActionBillingOperationSchemas || name in ManagementBillingOperationSchemas) assertCloudProxyScope(ctx);
     if (linked && (name === "previewSubscriptionChange" || name === "confirmSubscriptionChange")) {
       const server = await requireWorkspaceServer(ctx.organizationId, linked.id);
       await authorization.authorize(ctx, { resourceType: "server", resourceId: server.id, action: "write" });

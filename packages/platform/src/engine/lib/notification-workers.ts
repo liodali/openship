@@ -25,6 +25,7 @@ import { safeFetch } from "@repo/platform/engine/lib/safe-fetch";
 import { safeErrorMessage } from "@repo/core";
 import { trackBackgroundWork } from "./background-work";
 import { canReceiveNotification } from "./notification-access";
+import { notificationPreferenceAllows } from "./notification-preferences";
 
 /* ─── Render helpers ─────────────────────────────────────────────────────── */
 
@@ -672,7 +673,8 @@ async function deliverQueuedNotifications(): Promise<void> {
           return;
         }
         if (channel.userId !== delivery.userId || !channel.enabled || !channel.verified ||
-            !(await canReceiveNotification(delivery.userId, delivery.organizationId, delivery))) {
+            !(await canReceiveNotification(delivery.userId, delivery.organizationId, delivery)) ||
+            !(await notificationPreferenceAllows(delivery.userId, delivery.organizationId, delivery.category, channel))) {
           await repos.notificationDelivery.markFailed(delivery.id, "Channel or recipient access is no longer available", false, attempt);
           return;
         }

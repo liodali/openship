@@ -1,3 +1,4 @@
+import { isCustomerServer, isCustomerProject } from "../modules/billing/management.service";
 /**
  * Plan entitlement gates — the ONE place a plan's limits become a refusal.
  *
@@ -132,6 +133,7 @@ export async function planBuildConcurrency(organizationId: string, workspaceId: 
  * at a feature module.
  */
 export interface DeployShape {
+  serverId?: string | null;
   workload: WorkloadType;
   /** Service ids this deploy targets; any target means the service pipeline. */
   targetServiceIds?: readonly string[] | null;
@@ -168,7 +170,7 @@ export async function assertPlanAllowsDeployShape(
   shape: DeployShape,
   workspaceId?: CloudWorkspaceScope,
 ): Promise<void> {
-  if (!env.CLOUD_MODE) return;
+  if (!env.CLOUD_MODE || await isCustomerServer(organizationId, shape.serverId)) return;
 
   const { tier, limits } = await planFor(organizationId, workspaceId);
 
@@ -201,8 +203,8 @@ export async function assertPlanAllowsDeployShape(
  * container is a container by definition, so there is no shape to inspect —
  * these paths never build and never pass through the deploy gate above.
  */
-export async function assertPlanAllowsServices(organizationId: string, workspaceId?: CloudWorkspaceScope): Promise<void> {
-  if (!env.CLOUD_MODE) return;
+export async function assertPlanAllowsServices(organizationId: string, workspaceId?: CloudWorkspaceScope, serverId?: string | null): Promise<void> {
+  if (!env.CLOUD_MODE || await isCustomerServer(organizationId, serverId)) return;
 
   const { tier, limits } = await planFor(organizationId, workspaceId);
   if (!limits.services) {
@@ -231,8 +233,9 @@ export async function assertPlanAllowsResourceTier(
   organizationId: string,
   requested: { tier?: string | null; cpuCores?: number | null; memoryMb?: number | null },
   workspaceId?: CloudWorkspaceScope,
+  serverId?: string | null,
 ): Promise<void> {
-  if (!env.CLOUD_MODE) return;
+  if (!env.CLOUD_MODE || await isCustomerServer(organizationId, serverId)) return;
 
   const { tier, limits } = await planFor(organizationId, workspaceId);
   assertResourcesFitPlan(tier, requested, limits, workspaceId);
@@ -336,7 +339,7 @@ async function assertServiceAllowance(
 
 /** The same slot/plan gate for new deployments and existing-container resumes. */
 export async function assertCloudServiceAllowance(organizationId: string, input: CloudServiceAllowance): Promise<void> {
-  if (!env.CLOUD_MODE) return;
+  if (!env.CLOUD_MODE || await isCustomerProject(organizationId, input.projectId)) return;
   const workspaceId = await workspaceForProject(organizationId, input.projectId, input.workspaceId);
   const { tier, limits } = await planFor(organizationId, workspaceId);
   await assertServiceAllowance(organizationId, tier, input, limits, workspaceId);
@@ -346,7 +349,7 @@ export async function assertCloudServiceAllowance(organizationId: string, input:
  * immediately before provisioning. Saved config, Compose, updates and rollbacks
  * must obey the same limits as the dashboard's resource picker. */
 export async function assertCloudDeploymentLimits(organizationId: string, input: CloudDeploymentLimits): Promise<void> {
-  if (!env.CLOUD_MODE) return;
+  if (!env.CLOUD_MODE || await isCustomerProject(organizationId, input.projectId)) return;
   const workspaceId = await workspaceForProject(organizationId, input.projectId, input.workspaceId);
   const { tier, limits } = await planFor(organizationId, workspaceId);
   await assertServiceAllowance(organizationId, tier, input, limits, workspaceId);
@@ -377,8 +380,9 @@ export async function assertCloudRuntimeLimits(organizationId: string,
   containers: ReadonlyArray<{ containerId: string;
     allocatedResources?: { containerId: string; cpuCores: number; memoryMb: number } | null }>,
   workspaceId?: CloudWorkspaceScope,
+  serverId?: string | null,
 ): Promise<void> {
-  if (!env.CLOUD_MODE || containers.length === 0) return;
+  if (!env.CLOUD_MODE || containers.length === 0 || await isCustomerServer(organizationId, serverId)) return;
   const { tier, limits } = await planFor(organizationId, workspaceId);
   if (runtime.supports("dockerHost") === false || planServiceResources(limits) === null) return;
   for (const container of containers) {
@@ -425,8 +429,9 @@ export async function assertRunningServiceQuota(
   addingCount = 1,
   replacingServiceIds: readonly string[] = [],
   workspaceId?: CloudWorkspaceScope,
+  serverId?: string | null,
 ): Promise<void> {
-  if (!env.CLOUD_MODE) return;
+  if (!env.CLOUD_MODE || await isCustomerServer(organizationId, serverId)) return;
 
   const { tier, limits } = await planFor(organizationId, workspaceId);
   const limit = limits.runningServices;
@@ -459,7 +464,7 @@ export async function assertServiceDefinitionQuota(
   const project = await repos.project.findByIdInOrganization(projectId, organizationId);
   if (!project) throw new AppError("Project not found", 404, "PROJECT_NOT_FOUND");
   if (!project.activeDeploymentId) return;
-  await assertRunningServiceQuota(organizationId, addingCount, replacingServiceIds, project.workspaceId ?? null);
+  await assertRunningServiceQuota(organizationId, addingCount, replacingServiceIds, project.workspaceId ?? null, project.serverId);
 }
 
 /* ─── Build minutes ──────────────────────────────────────────────────────── */
@@ -556,8 +561,8 @@ export async function getBuildMinuteUsage(
  * clean 402 instead of a `failed` deployment they have to clean up. Cloud static
  * builds also consume resources and require a paid build allowance.
  */
-export async function assertBuildMinutesAvailable(organizationId: string, workspaceId?: CloudWorkspaceScope): Promise<void> {
-  if (!env.CLOUD_MODE) return;
+export async function assertBuildMinutesAvailable(organizationId: string, workspaceId?: CloudWorkspaceScope, serverId?: string | null): Promise<void> {
+  if (!env.CLOUD_MODE || await isCustomerServer(organizationId, serverId)) return;
 
   const usage = await getBuildMinuteUsage(organizationId, undefined, workspaceId);
   if (!usage.exhausted) return;

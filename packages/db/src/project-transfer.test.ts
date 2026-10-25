@@ -22,6 +22,24 @@ function reader(databaseProjectId: string): TransferRowReader {
 }
 
 describe("project transfer runtime ownership", () => {
+  it("does not transfer automatic security consent or replay source refresh attempts", async () => {
+    const rows: Record<string, Record<string, unknown>[]> = {
+      project: [{ id: "project-a", groupId: "group-a", organizationId: "org-a" }],
+      project_app: [{ id: "group-a", organizationId: "org-a" }],
+      project_security: [{ projectId: "project-a", autoRefresh: true, approvedBy: "source-user" }],
+      security_refresh_attempt: [{ id: "source-attempt", projectId: "project-a", status: "queued" }],
+    };
+    const read: TransferRowReader = async (table, column, values) =>
+      (rows[table] ?? []).filter((row) => values.includes(row[column]));
+    const result = await selectProjectTransfer(read, selection);
+    expect(result.tables.project).toHaveLength(1);
+    expect(result.tables.project_security).toBeUndefined();
+    expect(result.tables.security_refresh_attempt).toBeUndefined();
+    expect(result.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining("consent are reset"),
+      expect.stringContaining("not replayed"),
+    ]));
+  });
   it("rejects exporting a managed preview without its source and cleanup ownership", async () => {
     const rows: Record<string, Record<string, unknown>[]> = {
       project: [{ id: "project-a", groupId: "group-a", organizationId: "org-a" }],

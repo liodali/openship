@@ -732,14 +732,40 @@ describe("secret-codec round-trips (extract → seal → decrypt)", () => {
     }
   });
 
-  it.each(["secretEncrypted", "envValueEncrypted"])("transfers cluster database %s with the same cipher as its writer", async (column) => {
-    const registered = SECRET_COLUMNS.find((entry) => entry.sqlName === "cluster_database" && entry.column === column)!;
-    expect(registered.scheme).toBe("scalar");
-    const plaintext = column === "secretEncrypted" ? "database-password" : "postgresql://app:password@database.private/app";
-    const entry = await extractPlaintext(registered, "database", encrypt(plaintext));
-    expect(entry?.value).toBe(plaintext);
-    expect(decrypt(await sealForInstance(registered, entry!) as string)).toBe(plaintext);
-  });
+  it.each(["secretEncrypted", "envValueEncrypted", "readEnvValueEncrypted"])(
+    "redacts and re-encrypts cluster database %s for another instance",
+    async (column) => {
+      const originalKey = env.BETTER_AUTH_SECRET;
+      const registered = SECRET_COLUMNS.find(
+        (entry) => entry.sqlName === "cluster_database" && entry.column === column,
+      )!;
+      const plaintext =
+        column === "secretEncrypted"
+          ? "database-password"
+          : "postgresql://app:password@database.private/app";
+      const stored = encrypt(plaintext);
+      const entry = await extractPlaintext(registered, "database", stored);
+      const tables = {
+        cluster_database: [{ id: "database", name: "Application database", [column]: stored }],
+      };
+      stripTransferSecrets(tables);
+      expect(tables.cluster_database[0]![column]).toBe(column === "secretEncrypted" ? "" : null);
+      expect(tables.cluster_database[0]!.name).toBe("Application database");
+      expect(JSON.stringify(tables)).not.toContain(stored);
+      expect(entry?.value).toBe(plaintext);
+      let restored: string;
+      try {
+        env.BETTER_AUTH_SECRET = "destination-database-reader-key-123456789";
+        closeEncryption();
+        restored = (await sealForInstance(registered, entry!)) as string;
+        expect(decrypt(restored)).toBe(plaintext);
+      } finally {
+        env.BETTER_AUTH_SECRET = originalKey;
+        closeEncryption();
+      }
+      expect(() => decrypt(restored)).toThrow();
+    },
+  );
 
   it("scalar", async () => {
     const stored = encrypt("db-url");

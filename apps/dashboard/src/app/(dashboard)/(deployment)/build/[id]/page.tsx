@@ -15,7 +15,7 @@ import { useI18n } from "@/components/i18n-provider";
 import { BUILD_SESSION_ERROR_FALLBACK } from "@/context/deployment/load-session";
 import { ResourceNotFound } from "@/components/resource-not-found";
 import { useCloudDeployPricing } from "@/hooks/useCloudDeployPricing";
-import { cloudDeployFailure } from "@/lib/cloud-deploy-pricing";
+import { cloudDeployFailure, cloudDeployCapacityFailure } from "@/lib/cloud-deploy-pricing";
 
 const BuildPage: React.FC = () => {
   const params = useParams();
@@ -116,8 +116,8 @@ const BuildPage: React.FC = () => {
   // racy: if the POST stalled or transiently failed, the reconnect gate
   // (`hasConnected || !lastStartBuild`) refused to retry and the user
   // saw an empty terminal until they hit refresh.
-  const handleRedeploy = useCallback(async (): Promise<string | null> => {
-    const newDeploymentId = await redeploy(deploymentId);
+  const handleRedeploy = useCallback(async (options?: { reuseBuild?: boolean }): Promise<string | null> => {
+    const newDeploymentId = await redeploy(deploymentId, options);
 
     if (newDeploymentId) {
       initializedDeploymentRef.current = newDeploymentId;
@@ -148,6 +148,8 @@ const BuildPage: React.FC = () => {
   // with no next step.
   useEffect(() => {
     if (!state.deploymentFailed || !state.errorCode) return;
+    // Capacity diagnosis remains visible in the build view; pricing opens on click.
+    if (config.deployTarget === "cloud" && state.errorDetails?.workspaceId && cloudDeployCapacityFailure(state)) return;
     // De-dupe — same deployment + same code shouldn't reopen the modal on every
     // state tick. The shared handler (useDeploymentBuild.maybeOpenCredentialModal)
     // owns the modal + its options; here we just pass the build-fail trigger and
@@ -164,7 +166,7 @@ const BuildPage: React.FC = () => {
       onResolved: () => void handleRedeploy(),
     });
     if (opened) shownModalRef.current = key;
-  }, [state.deploymentFailed, state.errorCode, state.errorDetails, state.projectId, deploymentId, maybeOpenCredentialModal, handleRedeploy, showCloudPricing]);
+  }, [state.deploymentFailed, state.errorCode, state.errorDetails, state.projectId, config.deployTarget, deploymentId, maybeOpenCredentialModal, handleRedeploy, showCloudPricing]);
 
   if (loadError) {
     return (

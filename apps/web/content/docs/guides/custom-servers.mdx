@@ -186,6 +186,38 @@ openship server rate-limit <server-id> --rps 50 --burst 20
 
 The installable components are `docker`, `git`, `openresty`, `certbot`, and `rsync`.
 
+## Inspect an existing Docker Swarm
+
+On a self-hosted or desktop controller, connect a Swarm manager using the normal
+server connection. Its **Overview → Docker Swarm → Review stacks** shows services,
+observed task counts, published ports, mount destinations and node health. A worker
+shows its membership and asks you to connect a manager for the inventory.
+
+The same inspection is available through the SDK, API and MCP:
+
+```bash
+openship server swarm <server-id>
+openship server swarm <server-id> --details
+```
+
+```ts
+const swarm = await ship.servers.inspectSwarm("server_example", { details: true });
+```
+
+The HTTP operation is `GET /api/system/servers/:id/swarm?details=true`; the MCP tool
+is `get_system_servers_by_id_swarm`. Server administration is required because a
+manager can observe the whole cluster. Environment values, credentials, join
+tokens, node addresses and mount source paths are excluded. Refresh is manual;
+a failed observation stays visible as an error rather than an empty cluster.
+
+This is **inspection only**. Swarm deployment, adoption, scaling and rollback are
+not available through Openship yet. Existing Swarm tasks are excluded from ordinary
+container imports, including flat imports. Edge takeover refuses Swarm-owned
+ports; worker nodes cannot prove routing-mesh ownership, so verify ingress through
+a connected manager. Change Swarm ports using its manager, not by stopping a task.
+Standalone Docker deployments and the existing K3s scaling workflow keep their
+current roles. This does not convert a Swarm cluster to K3s or enable Swarm on Cloud.
+
 ## Troubleshooting
 
 <Callout title="Can't reach the server" type="error">

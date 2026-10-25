@@ -186,11 +186,11 @@ export interface CleanupResult {
 // ─── Manifest Collectors ─────────────────────────────────────────────────────
 
 /** Failed container creation can leave claimed volumes without any mounts. */
-async function ownedCloudVolumeNames(
-  runtime: CloudDockerRuntime,
+async function ownedProjectVolumeNames(
+  runtime: DockerRuntime,
   projectId: string,
 ): Promise<string[]> {
-  if (runtime.projectId !== projectId)
+  if (runtime instanceof CloudDockerRuntime && runtime.projectId !== projectId)
     throw new Error("Cloud volume inventory belongs to another project");
   return (await runtime.listAllVolumes())
     .filter((volume) => volume.labels["openship.project"] === projectId)
@@ -751,15 +751,14 @@ export async function collectProjectManifest(
     }
   }
 
-  // Claimed Cloud volumes can survive a failed deployment without any container.
+  // Claimed persistent volumes can survive a failed deploy without any container.
   // Enumerate them only on an explicit wipe, after confirming the owned host.
   if (wipeVolumes)
     for (const runtime of dockerRuntimes) {
-      if (!(runtime instanceof CloudDockerRuntime)) continue;
       const target = runtimeTargets.get(runtime);
-      if (!target) throw new Error("Cloud volume cleanup has no owned target");
+      if (!target) throw new Error("Volume cleanup has no owned target");
       const names = await authoritativeRead(
-        ownedCloudVolumeNames(runtime, project.id),
+        ownedProjectVolumeNames(runtime, project.id),
         "inspect managed project volumes",
       );
       for (const name of names) pushVolume(name, runtime, "project", target);
@@ -916,8 +915,8 @@ export async function previewProjectDeletion(project: Project): Promise<Deletion
 
   const previewServices: DeletionPreviewService[] = [];
   const deploymentVolumes: string[] = [];
-  const cloudVolumes = new Set<string>();
-  const cloudVolumeTargets = new Set<string>();
+  const ownedVolumes = new Set<string>();
+  const volumeTargets = new Set<string>();
   const networkSlugs = new Set<string>();
   // Self-hosted is a STATIC fact of the project (anything not cloud-managed), not
   // something to infer from a live runtime probe: an imported/migrated project on
@@ -936,8 +935,9 @@ export async function previewProjectDeletion(project: Project): Promise<Deletion
   try {
   for (const dep of allDeps) {
     let runtime: RuntimeAdapter;
+    let serverId: string | null;
     try {
-      ({ runtime } = await resolveDeploymentRuntime(dep));
+      ({ runtime, serverId } = await resolveDeploymentRuntime(dep));
     } catch (diagnosticFailure) {
       observeCaughtError(diagnosticFailure, "platform/engine/modules/projects/project-cleanup.service");
       continue;
@@ -946,10 +946,11 @@ export async function previewProjectDeletion(project: Project): Promise<Deletion
     // through the preview and release every opened runtime on all exit paths.
     openedRuntimes.add(runtime);
     if (runtime instanceof DockerRuntime) networkSlugs.add(project.slug);
-    if (runtime instanceof CloudDockerRuntime && !cloudVolumeTargets.has(runtime.workspaceId)) {
-      cloudVolumeTargets.add(runtime.workspaceId);
+    const volumeTarget = runtime instanceof CloudDockerRuntime ? runtime.workspaceId : serverId ?? "local";
+    if (runtime instanceof DockerRuntime && !volumeTargets.has(volumeTarget)) {
+      volumeTargets.add(volumeTarget);
       const names = await withTimeout(
-        ownedCloudVolumeNames(runtime, project.id),
+        ownedProjectVolumeNames(runtime, project.id),
         INSPECT_TIMEOUT_MS,
         `preview managed project volumes ${project.id}`,
       ).catch((diagnosticFailure) => {
@@ -959,7 +960,7 @@ export async function previewProjectDeletion(project: Project): Promise<Deletion
         );
         return [] as string[];
       });
-      for (const name of names) cloudVolumes.add(name);
+      for (const name of names) ownedVolumes.add(name);
     }
 
     if (dep.containerId && runtime instanceof DockerRuntime) {
@@ -1029,10 +1030,10 @@ export async function previewProjectDeletion(project: Project): Promise<Deletion
   }
 
   const attachedVolumes = new Set([...deploymentVolumes, ...previewServices.flatMap(service => service.volumes)]);
-  for (const name of cloudVolumes) {
+  for (const name of ownedVolumes) {
     if (!attachedVolumes.has(name)) deploymentVolumes.push(name);
   }
-  const totalVolumes = new Set([...attachedVolumes, ...cloudVolumes]).size;
+  const totalVolumes = new Set([...attachedVolumes, ...ownedVolumes]).size;
 
   return {
     projectId: project.id,

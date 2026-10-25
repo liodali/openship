@@ -46,6 +46,7 @@ export const clusterDatabasesApi = {
     database: ClusterDatabase,
     envKey: string | null,
     replace?: { databaseId: string; expectedSequence: number },
+    readEnvKey?: string | null,
   ) =>
     api
       .post<{
@@ -54,6 +55,7 @@ export const clusterDatabasesApi = {
         databaseId: database.id,
         expectedSequence: database.sequence,
         envKey,
+        ...(readEnvKey === undefined ? {} : { readEnvKey }),
         ...(replace ? { replace } : {}),
       })
       .then((response) => response.data),

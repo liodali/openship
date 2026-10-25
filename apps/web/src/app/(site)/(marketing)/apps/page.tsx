@@ -1,16 +1,24 @@
-import type { Metadata } from "next";
+import type { Metadata, ResolvingMetadata } from "next";
+import { inheritSocialImages } from "@/lib/social-metadata";
 import { getMarketplaceApps } from "@/lib/app-catalog";
 import { AppDirectory } from "@/components/apps/app-directory";
 
 const description =
   "Find your next backend, database, CMS, or developer tool. Explore ready-to-deploy app templates for Openship Cloud and your own infrastructure.";
-export const metadata: Metadata = {
+const metadata: Metadata = {
   title: "Apps",
   description,
   alternates: { canonical: "/apps" },
   openGraph: { title: "Apps — Openship", description, url: "/apps", type: "website" },
   twitter: { card: "summary_large_image", title: "Apps — Openship", description },
 };
+
+export async function generateMetadata(
+  _props: unknown,
+  parent: ResolvingMetadata,
+): Promise<Metadata> {
+  return inheritSocialImages(metadata, parent);
+}
 
 export default async function AppsPage({
   searchParams,

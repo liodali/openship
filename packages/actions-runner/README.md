@@ -22,7 +22,7 @@ when upgrading GitHub's runner.
 
 ## Build and test
 
-Development needs Node 22 and Go 1.26.4. Installed Openship instances receive the
+Development needs Node 22 and Go 1.26.9. Installed Openship instances receive the
 compiled workers and do not need Go.
 
 ```sh

@@ -182,6 +182,15 @@ export const BuildAccessBody = Type.Object({
 // the controller resolves source from (owner,repo) vs path and enforces the
 // conditional requireds (owner+repo for github, path for local).
 export const PrepareDeployBody = Type.Object({
+  rootDirectory: Type.Optional(
+    Type.String({
+      minLength: 1,
+      maxLength: 200,
+      pattern: "^(?!/)(?![A-Za-z]:)(?!.*\\\\)(?!.*(?:^|/)\\.\\.(?:/|$)).*$",
+      description:
+        "Inspect this repository-relative app folder explicitly; use . for the repository root.",
+    }),
+  ),
   ...SourceScanOptionsSchema.properties,
   source: Type.Optional(
     Type.Union([Type.Literal("github"), Type.Literal("local")], {

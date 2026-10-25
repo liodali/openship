@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import {
   CLOUD_DOCKER_IMAGE,
   CloudWorkspaceExecutor,
-  Oblien,
+  type Oblien,
   cloudCpus,
   cloudWorkspaceCreationFailure,
   cloudWorkspaceStatus,
@@ -20,7 +20,7 @@ import { repos, type Project, type CloudWorkspaceOperation } from "@repo/db";
 import { AppError, deploymentBelongsToProject } from "@repo/core";
 import { cloudWorkspaceResourcesFromLimits } from "./resources";
 import { env } from "../config/env";
-import { issueNamespaceToken } from "./openship-cloud";
+import { getNamespaceClient } from "./openship-cloud";
 import { ensureLinkedCloudServer } from "./cloud/server-connection";
 import { createProvisionLock } from "./provision-lock";
 import {
@@ -79,7 +79,7 @@ export async function resizeDockerWorkspace(input: {
   };
 }) {
   const ws = input.client.workspace(input.workspaceId);
-  const executor = new CloudWorkspaceExecutor(() => ws.runtime(), input.workspaceId);
+  const executor = new CloudWorkspaceExecutor(options => ws.runtime(options), input.workspaceId);
   try {
     const inspect = () =>
       executor.exec("docker ps --filter status=running --no-trunc --format '{{.ID}}'", {
@@ -302,9 +302,7 @@ async function ensureDockerHost(
     }
     if (managed.remote) throw new AppError("A Cloud server cannot delegate its subscription", 409, "CLOUD_SERVER_LINK_INVALID");
     await assertCloudCanSpend(input.organizationId, managed.id);
-    const credentials = await issueNamespaceToken(input.organizationId, managed.id);
-    const { namespace, token } = credentials;
-    const client = new Oblien({ token, baseUrl: env.OBLIEN_API_URL });
+    const { client, namespace } = await getNamespaceClient(input.organizationId, managed.id);
     const requested =
       existing?.resources ??
       (await cloudSubscriptionWorkspaceResources(input.organizationId, managed.id));

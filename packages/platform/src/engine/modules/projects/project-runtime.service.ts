@@ -235,7 +235,7 @@ async function enableLiveProject(p: ProjectRow, organizationId: string) {
   await withDeploymentRuntime(dep, async (runtime) => {
     await assertCloudRuntimeLimits(organizationId, runtime, computeIds.map(containerId => ({
       containerId, allocatedResources: serviceRows.find(row => row.containerId === containerId)?.allocatedResources,
-    })), p.workspaceId ?? null);
+    })), p.workspaceId ?? null, p.serverId);
     for (const containerId of containerIds) {
       await startOne(runtime, containerId);
     }

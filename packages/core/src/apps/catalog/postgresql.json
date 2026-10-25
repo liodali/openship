@@ -159,7 +159,7 @@
       "label": "pgAdmin",
       "kind": "http",
       "defaultMode": "domain",
-      "allowedModes": ["domain", "publish", "internal"]
+      "allowedModes": ["domain", "port"]
     },
     {
       "service": "postgres",

@@ -40,6 +40,8 @@ export interface DiscoveredService {
   proxyKind?: "nginx" | "caddy" | "apache" | "traefik" | "haproxy" | "openresty";
   /** Host edge ports (80/443) it publishes — reserved for Openship's edge. */
   edgePorts?: number[];
+  /** Live cpu/memory caps and the Docker swap setting, preserved on adoption. */
+  resources?: { cpuCores?: number; memoryMb?: number; swapDisabled?: boolean };
   /** Routes the server's existing (foreign) reverse proxy already serves for this
    *  container, matched by published host port. ONE ENTRY PER (port,path,match mode): a
    *  path-fan-out domain (`/ → :1010`, `/v3 → :1020`) or a multi-port container

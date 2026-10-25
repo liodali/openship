@@ -6,8 +6,10 @@ import {
   resolveProjectVolumes,
   safeErrorMessage,
   validateClusterWorkload,
+  clusterWorkloadUnsupportedReason,
+  type ClusterWorkloadStatus,
 } from "@repo/core";
-import { KubernetesRuntime, kubernetesProjectNamespace } from "@repo/adapters";
+import { kubernetesProjectNamespace } from "@repo/adapters";
 import { ProjectClusterSchemas, type ProjectCluster } from "@repo/contracts";
 import type { ResourceServices } from "../../../resource-operations";
 import type { ProjectDependencies } from "../../../projects";
@@ -21,6 +23,7 @@ import { withDeploymentRuntime, type DeploymentMeta } from "../../lib/deployment
 import { findActiveDeployment } from "../../lib/active-deployment";
 import { withLiveProjectRuntimeMutation } from "../../lib/project-runtime-lock";
 import { assertProjectStorageEmpty } from "../../lib/project-storage-guard";
+import { assertRouteProtectionTarget } from "../../lib/route-protection";
 import { fleetAdmin } from "../system/managed-network.operations";
 import {
   authorizeMember,
@@ -35,19 +38,38 @@ export function createProjectClusterOperations(
     assertClusterManagementAvailable();
     const project = await repos.project.findById(id);
     assertResourceInOrg(project, "Project", ctx.organizationId, id);
+    const services = (await repos.service.listByProject(id)).filter((service) => service.enabled);
+    const selectedRuntime = project.clusterId
+      ? await repos.clusterRuntime.get(ctx.organizationId, project.clusterId)
+      : null;
     const active = await findActiveDeployment(project);
     const meta = active?.meta as DeploymentMeta | null;
     const result: ProjectCluster = {
+      unavailableReason:
+        project.appTemplateId === "openship"
+          ? "The OpenShip control plane cannot be replicated through application scaling."
+          : clusterWorkloadUnsupportedReason({
+              provider: selectedRuntime?.provider,
+              workload: projectToClass(project).workload,
+              framework: project.framework,
+              image: project.releaseSource?.imageTemplate,
+              volumes: resolveProjectVolumes(project.volumes, project.framework),
+              services,
+            }),
       clusterId: project.clusterId,
       serverId: project.serverId,
       config: project.clusterConfig,
-      requiresImageRepository:
-        !project.releaseSource || releaseArtifactKind(project.releaseSource) !== "image",
+      requiresImageRepository: services.length
+        ? services.some((service) => !service.image || !!service.advanced?.build)
+        : !project.releaseSource || releaseArtifactKind(project.releaseSource) !== "image",
       updatedAt: project.updatedAt.toISOString(),
       activeDeploymentId: active?.id ?? null,
       activeClusterId: meta?.clusterId ?? null,
+      ...(meta?.clusterConfig ? { activeReplicas: meta.clusterConfig.replicas } : {}),
       internalHost:
-        meta?.clusterId && snapshotToClass(meta).workload === "web"
+        meta?.clusterId &&
+        active?.containerId?.startsWith("k8s:") &&
+        snapshotToClass(meta).workload === "web"
           ? `app.${kubernetesProjectNamespace(project.id)}.svc.cluster.local`
           : null,
       status: null,
@@ -56,9 +78,33 @@ export function createProjectClusterOperations(
     };
     if (active?.containerId && meta?.clusterId) {
       try {
-        result.status = await withDeploymentRuntime(active, (runtime) => {
-          if (!(runtime instanceof KubernetesRuntime))
+        result.status = await withDeploymentRuntime(active, async (runtime) => {
+          if (!runtime.supports("clusterStatus") || !runtime.status)
             throw new Error("The active release does not use the cluster runtime.");
+          if (active.containerId === "compose") {
+            const rows = await repos.service.listByDeployment(active.id);
+            const statuses: ClusterWorkloadStatus[] = [];
+            for (const row of rows) {
+              if (!row.containerId) continue;
+              const status = await runtime.status(row.containerId);
+              statuses.push({
+                ...status,
+                message: status.message ? `${row.serviceName}: ${status.message}` : null,
+              });
+            }
+            if (!statuses.length)
+              throw new Error("No service instances are recorded for this release.");
+            return statuses.reduce((total, status) => ({
+              desired: total.desired + status.desired,
+              ready: total.ready + status.ready,
+              available: total.available + status.available,
+              updated: total.updated + status.updated,
+              generation: total.generation + status.generation,
+              observedGeneration: total.observedGeneration + status.observedGeneration,
+              message: [total.message, status.message].filter(Boolean).join("; ") || null,
+              pods: [...total.pods, ...status.pods],
+            }));
+          }
           return runtime.status(active.containerId!);
         });
         result.observedAt = new Date().toISOString();
@@ -82,6 +128,7 @@ export function createProjectClusterOperations(
       await fleetAdmin(ctx);
       const changed = await withLiveProjectRuntimeMutation(id, async (project) => {
         assertResourceInOrg(project, "Project", ctx.organizationId, id);
+        if (input.clusterId) await assertRouteProtectionTarget(project, "cluster");
         if (
           input.clusterId !== project.clusterId &&
           (await repos.clusterDatabase.list(ctx.organizationId, id)).some(
@@ -115,8 +162,32 @@ export function createProjectClusterOperations(
             ctx.organizationId,
             input.clusterId,
           );
+          if (
+            runtime.provider === "swarm"
+              ? input.acknowledgePlacement !== true
+              : input.stateless !== true
+          )
+            throw new AppError(
+              runtime.provider === "swarm"
+                ? "Acknowledge Swarm placement: named volumes stay on the connected manager with one instance."
+                : "Confirm that instances can run independently before selecting Kubernetes.",
+              422,
+              "CLUSTER_PLACEMENT_ACKNOWLEDGEMENT_REQUIRED",
+            );
+          if (
+            runtime.provider === "swarm" &&
+            project.clusterId !== input.clusterId &&
+            // Failed/cancelled attempts can retain containers, images and data too.
+            (await repos.deployment.findLatestByProject(project.id))
+          )
+            throw new AppError(
+              "Create a new project on this Swarm. Moving a previously deployed project requires an explicit data and routing migration.",
+              422,
+              "CLUSTER_MIGRATION_REQUIRED",
+            );
           for (const host of runtime.plan.hosts) await authorizeMember(ctx, host.serverId);
           await assertClusterWorkloadSupported({
+            provider: runtime.provider,
             projectId: id,
             workload: projectToClass(project).workload,
             framework: project.framework,
@@ -124,7 +195,7 @@ export function createProjectClusterOperations(
             services: (await repos.service.listByProject(id)).filter((service) => service.enabled),
             image:
               project.releaseSource && releaseArtifactKind(project.releaseSource) === "image"
-                ? "prebuilt"
+                ? (project.releaseSource.imageTemplate ?? "prebuilt")
                 : undefined,
             imageRepository: input.config.imageRepository,
           });
@@ -184,8 +255,13 @@ export function createProjectClusterOperations(
         record(ctx, id, { action: "cluster.replicas", replicas: input.replicas });
         // A configuration release reuses the immutable image. It uses the same
         // admission, cancellation, logs, history and recovery as every deploy.
-        const deployed = await triggerDeployment(ctx, { projectId: id, refresh: true });
-        if (!deployed.deployment) throw new AppError("Deployment was not queued", 409, "ACTIONS_CHECKS_PENDING");
+        const deployed = await triggerDeployment(ctx, {
+          projectId: id,
+          refresh: true,
+          forceAll: true,
+        });
+        if (!deployed.deployment)
+          throw new AppError("Deployment was not queued", 409, "ACTIONS_CHECKS_PENDING");
         return { deploymentId: deployed.deployment.id };
       });
       if (!result) throw new AppError("Project is being removed.", 409, "PROJECT_UNAVAILABLE");

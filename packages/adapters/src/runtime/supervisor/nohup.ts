@@ -22,6 +22,7 @@ import { sq, parseLogLevel } from "../build-pipeline";
 import { portOccupantDetails, probeListeningPort } from "../port-conflict";
 import { execReliable } from "../../system/remote-journal";
 import { DeployError } from "@repo/core";
+import { ensureOwnedDir } from "../../system/elevated-executor";
 
 export class NohupSupervisor implements ProcessSupervisor {
   readonly name = "nohup";
@@ -59,7 +60,6 @@ export class NohupSupervisor implements ProcessSupervisor {
   }
 
   private async writePid(id: string, pid: number): Promise<void> {
-    await this.executor.mkdir(`${this.workDir}/.pids`);
     await this.executor.writeFile(this.pidFile(id), String(pid));
   }
 
@@ -90,7 +90,6 @@ export class NohupSupervisor implements ProcessSupervisor {
   }
 
   private async writeArtifactPath(id: string, path: string): Promise<void> {
-    await this.executor.mkdir(`${this.workDir}/.artifacts`);
     await this.executor.writeFile(this.artifactFile(id), path);
   }
 
@@ -101,7 +100,9 @@ export class NohupSupervisor implements ProcessSupervisor {
   // ── Lifecycle ────────────────────────────────────────────────────────
 
   async deploy(opts: SupervisorDeployOpts): Promise<void> {
-    await this.executor.mkdir(`${this.workDir}/.logs`);
+    for (const directory of [".logs", ".pids", ".artifacts"]) {
+      await ensureOwnedDir(this.executor, `${this.workDir}/${directory}`);
+    }
 
     const envExports = Object.entries(opts.env)
       .filter(([key]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key))

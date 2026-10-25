@@ -161,7 +161,7 @@ export async function ensureEdgeStream(c: Context) {
           : "Edge setup and route application finished.",
         routeWarnings.length > 0 ? "warn" : "info",
       );
-      finishEdgeConsentSession(session.id, "completed");
+      finishEdgeConsentSession(session.id, routeWarnings.length > 0 ? "failed" : "completed");
     } catch (err) {
       observeCaughtError(err, "api/modules/domains/ensure-edge.controller");
       appendEdgeLog(session.id, safeErrorMessage(err), "error");

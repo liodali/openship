@@ -45,6 +45,12 @@ describe("immutable public software images", () => {
       softwareImageCandidates(JSON.stringify({ ...data, platform: "linux/arm64" })),
     ).toThrow();
   });
+  it("substitutes a pinned tracking reference only when its selected digest matches the pack", async () => {
+    const pinned = { ...data, dockerfile: `FROM oven/bun:1.3.14@${sourceDigest}\n` };
+    const exec = vi.fn(async (command: string) => command.startsWith("python3") ? JSON.stringify(pinned) : sourceDigest);
+    expect((await readSoftwareCache({ exec } as never, "/tmp/Dockerfile")).args).toContain(`oven/bun:1.3.14@${sourceDigest}=oci-layout://`);
+    expect(softwareImageCandidates(JSON.stringify({ ...pinned, dockerfile: `FROM oven/bun:1.3.14@${digest}\n` }))).toEqual([]);
+  });
   it("rejects traversal, shell text and unpinned image data", () => {
     for (const path of [
       "../../root",

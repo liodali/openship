@@ -272,9 +272,10 @@ export interface ServerContainerGroup {
     name: string;
     sshHost: string;
     isLocal: boolean;
-    /** Projects with an active deployment on this server — an absent edge is an
-     *  issue (not just an offer) only when this is > 0. */
+    /** All projects actively deployed on this server. */
     projectCount: number;
+    /** Whether its deployed projects need edge routing. Absent on older APIs. */
+    edgeRequired?: boolean;
   };
   components: ServerContainerStatus[];
 }
@@ -590,6 +591,8 @@ export interface TunnelInfo {
 }
 
 export const systemApi = {
+  inspectSwarm: (id: string, details = false) => checkedResponse(ServerResourceSchemas.inspectSwarm, api.get(`${endpoints.system.server(id)}/swarm?details=${details}`, { timeout: 45_000 })),
+  connectSwarm: (id: string, input: { name: string; requestId: string }) => checkedResponse(ServerResourceSchemas.connectSwarm, api.post(`${endpoints.system.server(id)}/swarm/connect`, input, { timeout: 45_000 })),
   /**
    * Vhosts the local edge serves that Openship no longer tracks.
    *
@@ -711,9 +714,9 @@ export const systemApi = {
     }, { timeout: 120_000 }),
 
   /** Get the current install session status (or check if one is running) */
-  getInstallSession: (sessionId?: string) =>
+  getInstallSession: (sessionId?: string, serverId?: string) =>
     api.get<SetupSessionInfo>(endpoints.system.installSession, {
-      params: sessionId ? { id: sessionId } : undefined,
+      params: { ...(sessionId ? { sessionId } : {}), ...(serverId ? { serverId } : {}) },
     }),
 
   /** Is a container image swap (edge/mail) running for this server? (re-attach) */

@@ -338,13 +338,20 @@ release command and app use the same database on both Docker and Bare.
 </Callout>
 
 <Callout title="Runtime support" type="warn">
-Release commands currently require a **single-app Docker or Bare deployment**, including
-portless workers. A database deployed as its own app and connected to this project keeps it
-single-app: the connection is injected as an environment variable, and the release command
-reaches the database over the network. Adding any enabled service to the **same project**,
-a database included, makes it a multi-service deployment instead, so a deploy with release
-commands fails before it builds. To run migrations against a database, deploy the database
-as its own app and connect it.
+Release commands run on single-app Docker or Bare deployments, including portless
+workers. On self-hosted Docker and Desktop, one inherited source app can also have
+private image-based infrastructure in the same project, such as PostgreSQL or Redis.
+Openship prepares those services first, waits for their declared health checks and
+startup stability, then runs the candidate image's commands on the shared project
+network before starting its roles and activating web. Configure meaningful service
+health checks; container readiness does not prove your application credentials work.
+
+The primary app must retain its inherited project build/runtime settings. Multiple
+source apps, explicit Compose projects, public attached apps, and primary service-row
+command/environment/volume overrides remain on the general service pipeline. The primary
+app keeps its project port; additional service-row ports and explicit cross-service
+path tables also remain on the general pipeline. A database
+in its own connected project continues to work without changing the app's shape.
 
 Full Compose/monorepo deployments, static sites, and runtimes without one-off command
 support **fail before activation** when commands are configured. Per-service release
@@ -353,6 +360,16 @@ the main app's release commands.
 </Callout>
 
 <Callout title="Rollbacks and database changes" type="warn">
+App rollbacks and roles-only configuration carry the current attached infrastructure;
+they do not restore old database credentials, configuration or data. Attached service
+changes become independently live before the app activates and remain live if a later
+migration or role startup fails. Unchanged infrastructure keeps its container and volumes.
+Use the migration workflow to move the app and its attached data to another server.
+
+After a completed app build fails during activation, **Retry deployment** reuses that exact
+image and the saved release commands and roles without source or a rebuild. Confirmed
+attached infrastructure remains running, including after a failed first deployment.
+
 Rollbacks skip release commands, including rollbacks that rebuild from Git. Other redeploys
 run the commands saved on that deployment, even when they reuse an existing image.
 
@@ -415,14 +432,15 @@ command before enabling it. Explicit roles remain the saved project configuratio
 Alternative queue backends share a preset slot; if both match, neither is suggested.
 Independent workers do not exclude each other merely because both are workers.
 
-Roles run on **single-app projects deployed to a Docker server**. A deploy that declares
+Roles run on **single-app projects deployed to a Docker server**, including the bounded
+one-source-app plus private image-infrastructure arrangement described above. A deploy that declares
 roles is refused **before the build starts**, with no build, release command or container
 run, on:
 
 - Openship Cloud
 - direct (bare) hosts
 - Kubernetes
-- multi-service projects (Compose or monorepo)
+- general multi-service projects (Compose or multiple source apps)
 - static sites
 
 Moving a project that has roles to another server is refused as well.
@@ -747,7 +765,7 @@ re-read on every deploy, and `build:` contexts resolve relative to it, exactly a
     resources: {
       type: "object",
       description:
-        "Per-service cpu/memory caps, overriding the top-level resources field by field. Same shape; 0 = no limit. Parity with compose mem_limit / deploy.resources.limits.",
+        "Per-service cpu/memory caps, overriding the top-level resources field by field. Same shape; 0 = no limit. Parity with compose mem_limit / deploy.resources.limits. swapDisabled runs the container without swap and requires a positive memory limit.",
     },
   }}
 />
@@ -765,6 +783,15 @@ arguments are not a secret-storage mechanism and can be retained in image metada
 A compose file's own limits are honored too — Openship reads `mem_limit` / `cpus` and
 `deploy.resources.limits.{memory,cpus}` off each service and applies them over the project-wide
 setting.
+
+Set a service's `resources.swapDisabled` to `true` to disable swap for its Docker container.
+It needs a positive `memoryMb` on that service or inherited from the project. Openship
+rejects edits that remove a required memory limit and refuses hosts whose swap-limit
+support cannot be verified before replacing the running container. This does not change
+the host's swap configuration or build-container limits. An explicit `false` enables
+normal Docker swap behavior on the next deployment; an omitted setting preserves a
+saved service override during Compose sync.
+
 
 ## Monorepo
 
@@ -845,7 +872,7 @@ the required roots and start commands.
 
 ## Edit running role configuration
 
-For a single-app Docker deployment, open **Apps & Services → Configure roles** to
+For a supported Docker app, open **Apps & Services → Configure roles** to
 add workers or schedulers and adjust worker replicas. Apply creates a configuration
 deployment using the active container's immutable image and frozen environment.
 It does not rebuild, run release commands, restart web, or rewrite domains. Unchanged
@@ -867,4 +894,17 @@ The expected release and project timestamp come from the configuration read and
 prevent stale edits. CLI equivalents are `openship project role-config <id>` and
 `openship project configure-roles <id> <file>`. The JSON file contains the same
 three fields. These controls do not enable runtime roles on Cloud, bare, cluster,
-static or multi-service deployments.
+static or general multi-service deployments. The one-primary-app plus private image
+infrastructure arrangement described above uses the same role configuration controls.
+
+
+## Automatic deploy paths
+
+`autoDeployPaths` optionally contains `include` and `exclude` arrays of repository-relative paths, with
+at most 50 patterns per array. Patterns support `*` and `**`; traversal, absolute paths and other glob
+operators are rejected. The selected app's file takes precedence over the repository-root file.
+
+This is a push-impact policy rather than a runtime setting. `include` replaces inferred workspace paths;
+`exclude` removes matching changes. Root build configuration, explicit shared paths and force-deploy
+requests still deploy. Omit `include` to keep automatic workspace dependency detection.
+See [Auto-deploy on push](/docs/guides/auto-deploy#monorepos-deploy-the-app-that-changed) for behavior and examples.

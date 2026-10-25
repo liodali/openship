@@ -7,7 +7,6 @@ import {
   cloudDockerProjectPaths,
   cloudWorkspaceStatus,
   dockerProjectStorage,
-  Oblien,
   sq,
   type ResourceConfig,
 } from "@repo/adapters";
@@ -32,7 +31,7 @@ export async function readCloudWorkspaceHost(organizationId: string, id: string)
   const owner = await requireCloudWorkspace(organizationId, id);
   if (!env.CLOUD_MODE) {
     const connection = await remoteServerConnection(organizationId, id);
-    const client = new Oblien({ token: connection.token, baseUrl: connection.providerApiUrl });
+    const { client } = await getNamespaceClient(organizationId, id, connection);
     const workspace = await client.workspaces.get(connection.workspaceId);
     if (workspace.namespace !== connection.namespace) throw new AppError("Cloud space ownership changed", 409, "CLOUD_NAMESPACE_MISMATCH");
     if (workspace.id !== connection.workspaceId)
@@ -77,7 +76,7 @@ async function runningConnection(organizationId: string, id: string) {
  * a host or installing the Docker API bridge just to read metrics/open a shell. */
 export async function openCloudWorkspaceExecutor(organizationId: string, id: string) {
   const { client, binding } = await runningConnection(organizationId, id);
-  return new CloudWorkspaceExecutor(() => client.workspace(binding.workspaceId!).runtime(), binding.workspaceId!);
+  return new CloudWorkspaceExecutor(options => client.workspace(binding.workspaceId!).runtime(options), binding.workspaceId!);
 }
 
 /** Server-authorized Docker operations (inventory and migration). Applications
@@ -127,7 +126,7 @@ async function measuredHost(organizationId: string, id: string) {
 export async function sampleCloudWorkspaceResources(organizationId: string, id: string, sampleUsage = true) {
   const { client, binding, provider } = await runningConnection(organizationId, id);
   if (!sampleUsage) return { capacity: provider.allocation, usage: unavailableServerUsage("Not sampled for an uncapped build") };
-  const executor = new CloudWorkspaceExecutor(() => client.workspace(binding.workspaceId!).runtime(), binding.workspaceId!);
+  const executor = new CloudWorkspaceExecutor(options => client.workspace(binding.workspaceId!).runtime(options), binding.workspaceId!);
   try {
     return { capacity: provider.allocation, usage: await sampleServerUsage(executor) };
   } finally {

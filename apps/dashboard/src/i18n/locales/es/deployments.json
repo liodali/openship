@@ -202,6 +202,30 @@
     "pageOf": "Página {page} de {total}",
     "range": "Despliegues {from}–{to} de {total}"
   },
+  "resourceGuidance": {
+    "label": "Orientación sobre recursos del despliegue",
+    "reviewCapacity": "Revisar capacidad",
+    "reviewTitle": "Revisar la capacidad del espacio Cloud",
+    "reviewHint": "Revisa primero el uso y los límites configurados. La mejora es opcional; abrir esta revisión no modifica ni reintenta el despliegue.",
+    "slowTitle": "Esta compilación está tardando",
+    "slowDescription": "Las descargas, la red o los comandos pueden ser lentos. Más capacidad puede ayudar en compilaciones intensivas; revisa primero los registros.",
+    "titles": {
+      "container-oom": "El contenedor se quedó sin memoria",
+      "memory-allocation": "Falló la asignación de memoria",
+      "process-heap": "Se alcanzó el límite de memoria del proceso",
+      "storage-full": "Falló la asignación de almacenamiento",
+      "storage-low": "No hay suficiente almacenamiento libre para compilar",
+      "process-killed": "El proceso de compilación fue terminado"
+    },
+    "causes": {
+      "container-oom": "Docker confirmó una terminación por falta de memoria. Revisa el límite del contenedor y la capacidad del espacio Cloud antes de reintentar.",
+      "memory-allocation": "El proceso no pudo asignar memoria. Revisa los límites configurados y la capacidad disponible antes de elegir un plan mayor.",
+      "process-heap": "El proceso alcanzó su propio límite de memoria heap. Revisa la configuración del entorno; un plan mayor por sí solo podría no resolverlo.",
+      "storage-full": "La operación agotó el espacio en disco o los inodos. Revisa el uso y los artefactos sin utilizar, preservando los datos de la aplicación.",
+      "storage-low": "El sistema de archivos de Docker tiene poco espacio libre o ningún inodo libre. Revisa el uso o aumenta el almacenamiento.",
+      "process-killed": "El proceso recibió SIGKILL (código de salida 137). Esto por sí solo no demuestra falta de memoria. Revisa los registros."
+    }
+  },
   "cloudBuildQueue": {
     "label": "Cola de compilación en la nube",
     "title": "Compilación en cola",

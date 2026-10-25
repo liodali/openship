@@ -5,21 +5,35 @@ limits. The API serves those terms through `GET /api/billing/plans`; dashboard,
 website and linked installations share the catalog. Oblien owns provider pricing,
 payment settlement, resource admission, metering and paid coverage.
 
-## Monthly server offers (v10)
+## Prepaid server offers (v13)
 
-| Plan | Monthly price | vCPU | RAM | Disk | Managed servers |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Hobby | $5 | 1 | 2 GiB | 40 GiB | 1 |
-| Starter | $20 | 2 | 8 GiB | 128 GiB | 1 |
-| Pro | $39 | 4 | 16 GiB | 250 GiB | 1 |
-| Scale | $99 | 8 | 32 GiB | 600 GiB | 1 |
+| Plan | Monthly price | Annual charge | Annual monthly equivalent | vCPU | RAM | Disk | Managed servers |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Hobby | $12 | $120 | $10 | 1 | 4 GiB | 50 GiB | 1 |
+| Starter | $24 | $240 | $20 | 2 | 8 GiB | 128 GiB | 1 |
+| Pro | $47 | $468 | $39 | 4 | 16 GiB | 250 GiB | 1 |
+| Scale | $119 | $1,188 | $99 | 8 | 32 GiB | 600 GiB | 1 |
+
+Annual is charged in full upfront. The dashboard displays the monthly equivalent
+and full annual charge together; the selected interval is sent through checkout.
+Manage remains monthly, separately from Cloud compute. Annual purchases require
+Oblien's `resellerSubscriptionIntervals` capability to include `yearly`.
+
+New compute subscriptions start at Hobby. Existing subscriptions, including $5 Hobby and v12 monthly offers, keep
+their saved price and capacity through renewal; catalog changes do not migrate
+them. Openship Manage offers Basic at $5/month with email support and Priority at
+$20/month with priority support. Both include two customer-owned servers, with
+additional servers at $3/month each and no included Cloud compute. Paid Cloud
+includes Basic; Priority retains its $15 support fee. New Manage v2 contracts bind
+the support plan, fee and server allowance together. Saved v1 contracts remain
+Basic at their original price. A support selection never proves paid entitlement.
 
 Each subscription covers its server's CPU, RAM and storage for the full paid
-month, without a second compute-credit allowance. CPU is shared vCPU, not a
+period, without a second compute-credit allowance. CPU is shared vCPU, not a
 reserved physical core. Projects and services share the purchased resources,
-including the operating system and Docker. There is no project/service count
-limit or separate build-minute cap on new offers. One service can use the whole
-pool; optional container limits do not reserve another VM. Source builds run on
+including the operating system and Docker. Each offer records its project,
+running-service and concurrent-build allowances; there is no separate build-minute
+cap. One service can use the whole pool; optional container limits do not reserve another VM. Source builds run on
 the same host using measured headroom and the shared execution/activity locks.
 Another server requires its own namespace and subscription.
 
@@ -57,7 +71,7 @@ the preview's package selection is never payment evidence.
 
 New purchases use the existing tracked `/billing/checkout` flow:
 
-- `kind: "subscription"`, `billingInterval: "monthly"`;
+- `kind: "subscription"`, `billingInterval: "monthly"` or `"yearly"`;
 - `offer.billingMode: "monthly"`, `offer.credits: 0`, no credit policy;
 - explicit `offer.capacity` and all seven `resourceLimits` fields;
 - the versioned reference plus server-derived organization, namespace and limits.
@@ -88,26 +102,30 @@ An accepted tariff and real settlement still need verification before release.
 
 ## Custom resources and plan changes
 
-Custom reuses the same subscription and resize flow. Retail additions remain
-$5 per extra vCPU, $2.50 per extra GiB RAM and $0.10 per extra GiB disk. The quote
-compares every preset plus additions and selects the least expensive bundle.
-For example, 1 vCPU / 2 GiB / 50 GiB costs $6; 3 vCPU / 12 GiB / 80 GiB costs
-$35. A bundle discount does not enlarge the selected server. Custom starts at
-2 GiB RAM, matching Hobby. Current Custom CPU
-selection stops at the provider's 12-vCPU per-VM ceiling.
+Custom reuses the same subscription and resize flow. Monthly retail additions are
+$6 per extra vCPU, $3 per extra GiB RAM and $0.12 per extra GiB disk. Annual
+additions are $60, $30 and $1.20 respectively for the whole year. The quote compares
+every preset plus additions and selects the least expensive bundle. A bundle
+discount does not enlarge the selected server. Custom starts at 2 GiB RAM and
+stops at the provider's 12-vCPU per-VM ceiling.
 
-`GET /api/billing/subscription/quote` returns the retail price and a fingerprint
-of the complete terms. Checkout accepts only the selected resources and that
-fingerprint, then recalculates the retail offer on the server. `custom-v2` saves
-monthly capacity and zero credits. Oblien still validates provider funding and
-physical admission; a local retail quote does not purchase coverage.
+`GET /api/billing/subscription/quote` accepts an optional `interval` (`monthly` or
+`annual`, default monthly) and returns the full-cycle retail price and a
+fingerprint of the complete terms, including interval. Checkout accepts only the
+selected resources and fingerprint, then recalculates the offer on the server.
+`custom-v3` saves prepaid capacity and zero credits. Monthly and annual quotes
+cannot be interchanged. Saved `custom-v1` and `custom-v2` terms retain their
+original fingerprints and renewal behavior. Oblien validates provider funding
+and physical admission; a local quote does not purchase coverage.
 
 Existing subscriptions use the provider's plan-change preview and confirmation,
 never another replacement checkout. The UI shows its amount due, effective date
 and affected projects. Pure funded upgrades apply after payment. Resource
 reductions and billing-model changes wait for renewal, even when retail price
 increases. Openship uses the returned direction and date without local proration.
-The durable worker applies the approved resize once. Changed project membership
+Annual upgrades use provider proration over the saved paid year and retain its
+original end date. Changing an existing subscription between monthly and annual
+billing is not supported. The durable worker applies the approved resize once. Changed project membership
 requires a fresh restart review. Disk shrinking remains unavailable.
 
 ## Saved contracts and metered compatibility

@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   listDomains: vi.fn(),
   verifySsl: vi.fn(),
   checkPorts: vi.fn(),
+  edgeStatus: vi.fn(),
 }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: vi.fn(), push: vi.fn() }) }));
 vi.mock("@/context/ProjectSettingsContext", () => ({ useProjectSettings: () => mocks.settings }));
@@ -36,7 +37,11 @@ vi.mock("@/lib/api", async (original) => {
   return {
     ...actual,
     getApiBaseUrl: () => "http://localhost:4000/api/",
-    projectsApi: { ...actual.projectsApi, getEdgeStatus: async () => ({ ready: true }) },
+    projectsApi: {
+      ...actual.projectsApi,
+      getEdgeStatus: mocks.edgeStatus,
+      listRouteProtection: async () => ({ data: [] }),
+    },
     domainsApi: { ...actual.domainsApi, list: mocks.listDomains, verifySsl: mocks.verifySsl },
     deployApi: {
       ...actual.deployApi,
@@ -60,6 +65,7 @@ const ports = [4010, 3021, 3022];
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.checkPorts.mockResolvedValue({ data: [] });
+  mocks.edgeStatus.mockResolvedValue({ ready: true });
   sessionStorage.clear();
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("fetch", mocks.fetch);
@@ -151,6 +157,97 @@ async function startRetry(strict = false) {
 }
 
 describe("routing retry on the Domains page", () => {
+  it("does not infer HTTPS success from a ready edge after its stream disconnects", async () => {
+    mocks.edgeStatus.mockResolvedValue({ ready: false });
+    await render();
+    const setup = [...host.querySelectorAll("button")].find(
+      (button) =>
+        button.textContent?.trim() ===
+        baseDictionary.projectSettings.domains.edge.setUp,
+    )!;
+    await act(async () => setup.click());
+    await emit("log", {
+      message: "Edge ready, checking HTTPS…",
+      level: "info",
+    });
+    mocks.edgeStatus.mockResolvedValue({ ready: true });
+    await act(async () => stream.close());
+    const log = host.querySelector('section[aria-label="Routing log"]')!;
+    expect(log.textContent).toContain(UNKNOWN_OUTCOME_MESSAGE);
+    expect(log.textContent).not.toContain(retryCopy.success);
+    expect(mocks.invalidate).toHaveBeenCalledWith("project-a");
+    expect(mocks.edgeStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["completed", "failed"])(
+    "keeps edge setup inline, preserves takeover consent, and refreshes state after %s",
+    async (status) => {
+      mocks.edgeStatus.mockResolvedValue({ ready: false });
+      mocks.fetch.mockImplementation(async (url: string) => {
+        if (url.endsWith("/respond")) return Response.json({ success: true });
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              stream = controller;
+            },
+          }),
+          {
+            headers: { "content-type": "text/event-stream" },
+          },
+        );
+      });
+      await render();
+      const setup = [...host.querySelectorAll("button")].find(
+        (button) =>
+          button.textContent?.trim() ===
+          baseDictionary.projectSettings.domains.edge.setUp,
+      )!;
+      expect(setup).toBeDefined();
+      await act(async () => setup.click());
+      expect(mocks.fetch).toHaveBeenCalledWith(
+        "http://localhost:4000/api/projects/project-a/routing/ensure-edge/stream",
+        expect.objectContaining({ method: "POST" }),
+      );
+      const log = host.querySelector('section[aria-label="Routing log"]')!;
+      expect(log).not.toBeNull();
+      expect(document.querySelector('[role="dialog"]')).toBeNull();
+      await emit("session", { sessionId: "edge-a" });
+      await emit("prompt", {
+        promptId: "takeover",
+        title: "Use the OpenShip edge?",
+        message: "Another proxy owns these ports.",
+        actions: [
+          { id: "cancel", label: "Leave it" },
+          { id: "takeover", label: "Use OpenShip" },
+        ],
+      });
+      expect(mocks.fetch).toHaveBeenCalledTimes(1);
+      const confirm = [...log.querySelectorAll("button")].find(
+        (button) => button.textContent?.trim() === "Use OpenShip",
+      )!;
+      expect(confirm).toBeDefined();
+      await act(async () => confirm.click());
+      expect(mocks.fetch).toHaveBeenLastCalledWith(
+        "http://localhost:4000/api/projects/project-a/routing/ensure-edge/respond",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ sessionId: "edge-a", action: "takeover" }),
+        }),
+      );
+      await emit("log", {
+        message: "Checking domain verification and HTTPS…",
+        level: "info",
+      });
+      await emit("complete", { status }, true);
+      expect(log.textContent).toContain(
+        "Checking domain verification and HTTPS…",
+      );
+      expect(mocks.invalidate).toHaveBeenCalledWith("project-a");
+      expect(mocks.edgeStatus).toHaveBeenCalledTimes(2);
+      expect(document.querySelector('[role="dialog"]')).toBeNull();
+    },
+  );
+
   it("shows the binding issue on its domain without suggesting a routing repair", async () => {
     mocks.settings.domainsData.domains = names.map((name) =>
       savedDomain({

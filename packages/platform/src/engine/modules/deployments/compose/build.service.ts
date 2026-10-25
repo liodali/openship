@@ -19,7 +19,7 @@ import type {
   BuildConfig,
 } from "@repo/adapters";
 import { BuildLogger, CloudDockerRuntime, STATIC_RELEASE_BASE } from "@repo/adapters";
-import { composeBuildIssues, hasRelativeVolumeMounts, validateImageReference, type ComposeAdvanced } from "@repo/core";
+import { composeBuildIssues, hasRelativeVolumeMounts, validateImageReference, type BaseImageReceipt, type ComposeAdvanced } from "@repo/core";
 import { repos, type Deployment, type Project, type Service } from "@repo/db";
 
 import {
@@ -399,6 +399,8 @@ function resolveSubAppOverrides(opts: SubAppOverrideInputs): {
 
 export interface ComposeBuildImagesResult {
   imageRefs: Map<string, string>;
+  /** Bases selected by each successful source build; absent on older adapters. */
+  baseImages?: Map<string, BaseImageReceipt[]>;
   /** Exact service/image pairs that are already available on the deploy target
    * because they were built now or explicitly pinned by an internal workflow. */
   preparedLocalImages: Map<string, string>;
@@ -437,6 +439,7 @@ export async function buildComposeImages(opts: {
   buildEnvVars: Record<string, string>;
   buildResources: ResourceConfig;
   gitToken?: string;
+  gitTokenRepositories?: string[];
   /** Relay helper path on the build host — desktop clone-on-server credential. */
   gitCredentialHelperPath?: string;
   /** Per-server SSH clone credential (ssh-server-key / deploy-key mode). */
@@ -453,12 +456,15 @@ export async function buildComposeImages(opts: {
    *  their existing image, so they're excluded from the build here. */
   refreshServiceIds?: Set<string>;
   signal?: AbortSignal;
+  /** Freeze the image phase before temporary build-context cleanup, including throws. */
+  onBuildMeasured?: (durationMs: number) => void;
 }): Promise<ComposeBuildImagesResult> {
   const services = await repos.service.listByProject(opts.project.id);
   const enabled = services.filter((service) => service.enabled);
   const serviceNames = new Set(enabled.map((service) => service.name));
   const buildDnsDiagnostics = new Map<string, ServiceBuildDnsDiagnostics>();
   const imageRefs = new Map<string, string>();
+  const baseImages = new Map<string, BaseImageReceipt[]>();
   const preparedLocalImages = new Map<string, string>();
   const builtImageRefs = new Map<string, string>();
   const staticArtifactRefs = new Map<string, string>();
@@ -471,6 +477,7 @@ export async function buildComposeImages(opts: {
   const buildErrorCauses: unknown[] = [];
   const cancelledServices = new Set<string>();
   const startedAt = Date.now();
+  let durationMs = 0;
 
   // Buildable = anything that needs a per-service image build.
   //   - Compose rows with a Dockerfile context (service.build set).
@@ -559,7 +566,18 @@ export async function buildComposeImages(opts: {
   const contextServices = cloudDocker
     ? [...new Map([...buildable, ...mountedInlineSources].map(service => [service.id, service])).values()]
     : buildable;
-  const inlineBuilds = await materializeInlineBuildContexts(contextServices, Boolean(cloudDocker));
+  // A service's total lifecycle includes image preparation. Runtime outcome
+  // writers finish this same clock; carried/unchanged services never start one.
+  await Promise.all(buildable.map(async (service) => {
+    try {
+      await repos.service.startServiceDeploymentTiming({
+        deploymentId: opts.dep.id, serviceId: service.id, serviceName: service.name,
+      });
+    } catch (error) {
+      observeCaughtError(error, "platform/engine/modules/deployments/compose/build.service");
+    }
+  }));
+  const inlineBuilds = await materializeInlineBuildContexts(contextServices, Boolean(cloudDocker) || env.CLOUD_MODE);
 
   try {
     if (cloudDocker && (buildable.length > 0 || sourceMounted.length > 0)) {
@@ -592,7 +610,9 @@ export async function buildComposeImages(opts: {
       const pinned = pinnedImageForService(opts.snapshot, service.name);
       if (!pinned) continue;
       imageRefs.set(service.id, pinned);
-      preparedLocalImages.set(service.id, pinned);
+      // A force-pull refresh acquires registry artifacts before cutover. Retained
+      // rollback/migration artifacts are already prepared locally.
+      if (!opts.snapshot.forcePullImages) preparedLocalImages.set(service.id, pinned);
       if (pinned.startsWith("/") && staticServiceIds.has(service.id)) {
         staticArtifactRefs.set(service.id, pinned);
       }
@@ -820,12 +840,13 @@ export async function buildComposeImages(opts: {
       // own ambient credentials, or the token already on buildConfig.gitToken.
       // Never for an inline build — cloning on the host replaces the shared tree,
       // so the materialized context would never reach the build.
-      if (opts.cloneOnServer && !inlineBuild) buildConfig.cloneOnServer = true;
+      if (opts.cloneOnServer && (!inlineBuild || inlineBuilds.files)) buildConfig.cloneOnServer = true;
       if (opts.gitCredentialHelperPath) {
         buildConfig.gitCredentialHelperPath = opts.gitCredentialHelperPath;
       }
       if (opts.gitSsh) buildConfig.gitSsh = opts.gitSsh;
       if (opts.gitAmbient) buildConfig.gitAmbient = opts.gitAmbient;
+      buildConfig.gitTokenRepositories = opts.gitTokenRepositories;
 
       return { service, buildConfig, serviceLogger };
     };
@@ -881,6 +902,7 @@ export async function buildComposeImages(opts: {
       }
 
       imageRefs.set(service.id, buildResult.imageRef);
+      baseImages.set(service.id, buildResult.baseImages ?? []);
       preparedLocalImages.set(service.id, buildResult.imageRef);
       builtImageRefs.set(service.id, buildResult.imageRef);
       if (buildResult.imageRef.startsWith("/") && staticServiceIds.has(service.id)) {
@@ -988,11 +1010,14 @@ export async function buildComposeImages(opts: {
       }
     }
   } finally {
+    durationMs = Math.max(0, Date.now() - startedAt);
+    opts.onBuildMeasured?.(durationMs);
     await inlineBuilds.cleanup();
   }
 
   return {
     imageRefs,
+    baseImages,
     preparedLocalImages,
     builtImageRefs,
     staticArtifactRefs,
@@ -1001,6 +1026,7 @@ export async function buildComposeImages(opts: {
     buildErrorCauses,
     externalCount: external.length,
     cancelled: cancelledServices.size > 0,
-    durationMs: Date.now() - startedAt,
+    durationMs,
   };
 }
+import { env } from "../../../config/env";

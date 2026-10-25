@@ -17,18 +17,18 @@ export function BillingHeader({ children }: { children?: React.ReactNode }) {
           {buyingServer ? purchase.intro.description : t.billing.layout.subtitle}
         </p>
       </div>
-      <div className="ms-auto flex min-w-0 flex-wrap items-center justify-end gap-3 empty:hidden">
+      <div className="ms-auto flex w-full min-w-0 flex-wrap items-center justify-end gap-3 empty:hidden sm:w-auto">
         {buyingServer && (
           <fieldset
             ref={purchase.setControlsTarget}
             disabled={purchase.busy}
             aria-busy={purchase.busy}
-            hidden={purchase.mode === "payg"}
+            hidden={purchase.mode !== "monthly"}
             className="min-w-0 empty:hidden"
           />
         )}
-        {buyingServer && <div ref={purchase.setDetailsTarget} className="empty:hidden" />}
-        {children}
+        {buyingServer && <div ref={purchase.setDetailsTarget} hidden={purchase.mode === "manage"} className="empty:hidden" />}
+        {purchase?.mode !== "manage" && children}
       </div>
     </header>
   );

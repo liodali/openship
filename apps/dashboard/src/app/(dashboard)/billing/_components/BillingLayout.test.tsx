@@ -9,10 +9,11 @@ import { baseDictionary } from "@/i18n";
 import { BillingLayout } from "./BillingLayout";
 import { BillingPageView, type BillingView } from "./BillingViewContext";
 import { BillingContent } from "./BillingContent";
+import { BillingPaymentsPanel } from "./billing-shared";
 
 const h = vi.hoisted(() => ({
   userId: "user-a", organizationId: "org-a", path: "/billing/overview", query: "",
-  list: vi.fn(), checkouts: vi.fn(), router: { push: vi.fn(), replace: vi.fn(), refresh: vi.fn() },
+  list: vi.fn(), checkouts: vi.fn(), cancel: vi.fn(), router: { push: vi.fn(), replace: vi.fn(), refresh: vi.fn() },
 }));
 vi.mock("@/lib/auth-client", () => ({ useSession: () => ({
   data: { user: { id: h.userId }, session: { activeOrganizationId: h.organizationId } },
@@ -21,7 +22,7 @@ vi.mock("next/navigation", () => ({
   usePathname: () => h.path, useSearchParams: () => new URLSearchParams(h.query), useRouter: () => h.router,
 }));
 vi.mock("@/lib/api/system", () => ({ systemApi: { listServerDestinations: h.list } }));
-vi.mock("@/lib/api/billing", async original => ({ ...await original<typeof import("@/lib/api/billing")>(), billingApi: { listCheckouts: h.checkouts } }));
+vi.mock("@/lib/api/billing", async original => ({ ...await original<typeof import("@/lib/api/billing")>(), billingApi: { listCheckouts: h.checkouts, cancelCheckout: h.cancel } }));
 vi.mock("@/context/CloudContext", () => ({ useCloud: () => ({ startConnect: vi.fn(), refresh: vi.fn() }) }));
 
 function server(id: string, name: string, tier = "starter"): ServerDetail {
@@ -48,10 +49,10 @@ const render = (children: ReactNode, selfHosted = false) => act(async () => root
 const page = (overrides: Partial<BillingView> = {}) => (
   <BillingPageView view={{ contextKey: "user-a:org-a", plansOnly: false, ...overrides }}><BillingContent
     layout={overrides.newServer ? "purchase" : h.path === "/billing/plans" ? "plans" : "details"} sidebar={null}>
-    <p>Billing content</p>
+    {h.path === "/billing/payment" ? <BillingPaymentsPanel hasHistory={false} /> : <p>Billing content</p>}
   </BillingContent></BillingPageView>
 );
-const tabs = () => [...host.querySelectorAll("nav a")];
+const tabs = () => [...host.querySelectorAll(`nav[aria-label="${baseDictionary.billing.layout.title}"] a`)];
 const purchaseTabs = () => [...host.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
 const picker = () => host.querySelector<HTMLButtonElement>('button[aria-haspopup="listbox"]');
 const serverButton = (name: string) => [...host.querySelectorAll<HTMLButtonElement>('aside button[aria-pressed]')].find(button => button.textContent?.includes(name))!;
@@ -69,18 +70,73 @@ afterEach(async () => {
 });
 
 describe("billing navigation by server ownership", () => {
+  it("returns from Manage to Plans without a separate product switch", async () => {
+    h.path = "/billing/manage";
+    await render(<p>Management subscription</p>);
+    expect(host.querySelector('a[href="/billing/plans"]')?.textContent).toContain("Back to plans");
+    expect(host.querySelector("header nav")).toBeNull();
+  });
+
   it.each([false, true])("keeps all pending payments reachable for an unpaid server (self-hosted: %s)", async selfHosted => {
     h.path = "/billing/plans";
     h.query = "workspaceId=cws-draft";
     h.list.mockResolvedValue({ servers: [draft] });
     await render(page({ plansOnly: true, workspaceId: "cws-draft", requestedWorkspaceId: "cws-draft" }), selfHosted);
-    const pending = [...host.querySelectorAll<HTMLButtonElement>("header button")].find(node => node.textContent?.includes(baseDictionary.billing.pendingPayments.title));
-    expect(pending).toBeDefined();
-    expect(h.checkouts).not.toHaveBeenCalled();
-    await act(async () => pending!.click());
+    expect(host.querySelector('a[href="/billing/payment?workspaceId=cws-draft"]')?.textContent).toContain(baseDictionary.billing.tabs.payment);
+    expect(host.querySelector("header")?.textContent).not.toContain(baseDictionary.billing.pendingPayments.title);
+    h.path = "/billing/payment";
+    await render(page({ plansOnly: true, workspaceId: "cws-draft", requestedWorkspaceId: "cws-draft" }), selfHosted);
     expect(h.checkouts).toHaveBeenCalledExactlyOnceWith(undefined);
-    expect(document.querySelector('[role="dialog"]')?.textContent).toContain(baseDictionary.billing.pendingPayments.empty);
-    expect(purchaseTabs()).toHaveLength(2);
+    expect(host.textContent).toContain(baseDictionary.billing.pendingPayments.empty);
+    expect(tabs().find(tab => tab.getAttribute("aria-current") === "page")?.textContent).toBe(baseDictionary.billing.tabs.payment);
+  });
+
+  it("shares all pending payments with the tab count and removes only a confirmed cancellation", async () => {
+    const pending = { id: "checkout-a", checkoutId: "cs-a", server: production.managed!, kind: "subscription",
+      name: "Pro monthly", amountCents: 3900, currency: "usd", interval: "monthly", state: "open", canResume: true, canCancel: true };
+    h.checkouts.mockResolvedValue({ items: [pending, { ...pending, id: "checkout-b", server: staging.managed! }] });
+    h.list.mockResolvedValue({ servers: [production, staging] });
+    h.query = "workspaceId=cws-production";
+    await render(page({ requestedWorkspaceId: "cws-production", workspaceId: "cws-production" }));
+    const payments = () => tabs().find(tab => tab.getAttribute("href")?.startsWith("/billing/payment"))!;
+    expect(payments().textContent).toContain("Pending: 2");
+    h.path = "/billing/payment";
+    await render(page({ requestedWorkspaceId: "cws-production", workspaceId: "cws-production" }));
+    expect(h.checkouts).toHaveBeenCalledExactlyOnceWith(undefined);
+    expect(host.textContent).toContain("Production");
+    expect(host.querySelectorAll("article")).toHaveLength(2);
+    const click = async (label: string) => act(async () => [...host.querySelectorAll<HTMLButtonElement>("article button")].find(button => button.textContent === label)!.click());
+    await click(baseDictionary.billing.pendingPayments.cancel);
+    let finish!: (result: unknown) => void;
+    h.cancel.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    await click(baseDictionary.billing.pendingPayments.confirmCancel);
+    expect(payments().textContent).toContain("Pending: 2");
+    await act(async () => finish({ status: "expired", checkoutId: "cs-a", checkoutUrl: null }));
+    expect(payments().textContent).toContain("Pending: 1");
+    expect(host.querySelectorAll("article")[0]?.textContent).toContain(baseDictionary.billing.pendingPayments.canceled);
+  });
+
+  it("discards an old account's pending count and ignores its late response", async () => {
+    let finish!: (result: unknown) => void;
+    h.checkouts.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    h.list.mockResolvedValue({ servers: [production] });
+    await render(page());
+    h.userId = "user-b";
+    await render(page({ contextKey: "user-b:org-a" }));
+    await act(async () => finish({ items: [{ id: "private-old-payment" }] }));
+    expect(host.textContent).not.toContain("Pending: 1");
+    h.path = "/billing/payment";
+    await render(page({ contextKey: "user-b:org-a" }));
+    expect(host.textContent).toContain(baseDictionary.billing.pendingPayments.empty);
+  });
+
+  it("refreshes the shared pending count when returning from hosted checkout", async () => {
+    h.list.mockResolvedValue({ servers: [production] });
+    await render(page());
+    h.checkouts.mockResolvedValueOnce({ items: [{ id: "new-pending-payment" }] });
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    expect(h.checkouts).toHaveBeenCalledTimes(2);
+    expect(tabs().find(tab => tab.getAttribute("href")?.startsWith("/billing/payment"))?.textContent).toContain("Pending: 1");
   });
   it("shows one payments tab and offers top-ups only when the scoped billing state allows them", async () => {
     h.query = "workspaceId=cws-production";
@@ -95,11 +151,11 @@ describe("billing navigation by server ownership", () => {
     expect(host.querySelector('a[href="/billing/topups?workspaceId=cws-production"]')).not.toBeNull();
   });
 
-  it("uses monthly and pay-as-you-go choices for a new customer without a server detour", async () => {
+  it("offers monthly, PAYG and management for a new customer without a server detour", async () => {
     h.path = "/billing/plans";
     await render(page({ plansOnly: true }));
     expect(host.querySelector("h1")?.textContent).toBe(baseDictionary.billing.onboarding.compareTitle);
-    expect(purchaseTabs().map(tab => tab.textContent)).toEqual([baseDictionary.billing.purchase.monthly, baseDictionary.billing.purchase.payg]);
+    expect(purchaseTabs().map(tab => tab.textContent)).toEqual([baseDictionary.billing.purchase.monthly, baseDictionary.billing.purchase.payg, baseDictionary.billing.purchase.manage]);
     expect(purchaseTabs()[0]?.getAttribute("aria-selected")).toBe("true");
     expect(picker()).toBeNull();
     expect(host.querySelector('a[href*="newServer=1"]')).toBeNull();
@@ -108,14 +164,14 @@ describe("billing navigation by server ownership", () => {
     expect(h.router.replace).not.toHaveBeenCalled();
   });
 
-  it("shows one server in the right card with Get server in the page header", async () => {
+  it("shows one server in the right card with one Add resources action", async () => {
     h.list.mockResolvedValue({ servers: [production] });
     await render(page({ workspaceId: "cws-production" }));
     expect(host.querySelector("header")?.textContent).not.toContain("Production");
     expect(host.querySelector("aside")?.textContent).toContain("Production");
     expect(serverButton("Production")).toBeUndefined();
     expect(picker()).toBeNull();
-    expect(host.querySelector('header a[href="/billing/plans?newServer=1"]')?.textContent).toContain(baseDictionary.billing.layout.getServer);
+    expect(host.querySelector('a[href="/billing/plans?newServer=1"]')?.textContent).toContain(baseDictionary.billing.layout.getServer);
     expect(host.querySelectorAll('a[href*="newServer=1"]')).toHaveLength(1);
     expect(host.querySelector('aside a[href*="newServer=1"]')).toBeNull();
     expect(tabs()).toHaveLength(4);
@@ -132,12 +188,12 @@ describe("billing navigation by server ownership", () => {
     expect(serverButton("Staging").getAttribute("aria-pressed")).toBe("false");
     await act(async () => serverButton("Staging").click());
     expect(h.router.push).toHaveBeenLastCalledWith("/billing/overview?workspaceId=cws-staging&organizationId=org-a", { scroll: false });
-    expect(host.querySelector('header a[href="/billing/plans?newServer=1&organizationId=org-a"]')?.textContent).toContain(baseDictionary.billing.layout.getServer);
+    expect(host.querySelector('a[href="/billing/plans?newServer=1&organizationId=org-a"]')?.textContent).toContain(baseDictionary.billing.layout.getServer);
     expect(host.querySelectorAll('a[href*="newServer=1"]')).toHaveLength(1);
     expect(h.list).toHaveBeenCalledOnce();
   });
 
-  it("keeps the shared selector and new-server action in the Plans header", async () => {
+  it("keeps the Cloud space selector and Plans actions in the page header", async () => {
     h.path = "/billing/plans";
     h.query = "workspaceId=cws-production&organizationId=org-a";
     h.list.mockResolvedValue({ servers: [production, staging] });
@@ -152,7 +208,7 @@ describe("billing navigation by server ownership", () => {
     expect(option).toBeDefined();
     await act(async () => option.click());
     expect(h.router.push).toHaveBeenLastCalledWith("/billing/plans?workspaceId=cws-staging&organizationId=org-a", { scroll: false });
-    expect(host.querySelector('header a[href="/billing/plans?newServer=1&organizationId=org-a"]')).not.toBeNull();
+    expect(host.querySelector('a[href="/billing/plans?newServer=1&organizationId=org-a"]')).not.toBeNull();
     expect(host.querySelectorAll('a[href*="newServer=1"]')).toHaveLength(1);
   });
 
@@ -162,8 +218,8 @@ describe("billing navigation by server ownership", () => {
     await render(page({ workspaceId: "cws-production" }));
     expect(host.querySelector("aside")).toBeNull();
     expect(picker()).toBeNull();
-    expect(host.querySelector("header")?.textContent).toContain("Production");
-    expect(host.querySelector('header a[href="/billing/plans?newServer=1"]')).not.toBeNull();
+    expect(host.querySelector(`section[aria-label="${baseDictionary.billing.workspaces.billingServers}"]`)?.textContent).toContain("Production");
+    expect(host.querySelector('a[href="/billing/plans?newServer=1"]')).not.toBeNull();
   });
 
   it("can switch from a subscribed server to an unpaid server and back without entering new-server checkout", async () => {
@@ -180,7 +236,7 @@ describe("billing navigation by server ownership", () => {
     h.query = "workspaceId=cws-draft&organizationId=org-a";
     await render(page({ workspaceId: "cws-draft", requestedWorkspaceId: "cws-draft", organizationId: "org-a", plansOnly: true }));
     expect(picker()?.textContent).toContain(draft.name);
-    expect(purchaseTabs()).toHaveLength(2);
+    expect(purchaseTabs()).toHaveLength(3);
     expect(host.textContent).not.toContain(baseDictionary.billing.creditAlert.backToBilling);
 
     await act(async () => picker()!.click());
@@ -194,7 +250,7 @@ describe("billing navigation by server ownership", () => {
     expect(host.querySelector("h1")?.textContent).toBe(baseDictionary.billing.layout.title);
     expect(tabs()).toHaveLength(4);
     expect(tabs().every(tab => tab.getAttribute("href")?.includes("workspaceId=cws-production"))).toBe(true);
-    expect(purchaseTabs()).toHaveLength(0);
+    expect(purchaseTabs()).toHaveLength(3);
     expect(h.list).toHaveBeenCalledOnce();
   });
 
@@ -206,7 +262,7 @@ describe("billing navigation by server ownership", () => {
     expect(picker()?.textContent).toContain(draft.name);
     await act(async () => picker()!.click());
     expect(document.querySelectorAll('[role="option"]')).toHaveLength(2);
-    expect(purchaseTabs()).toHaveLength(2);
+    expect(purchaseTabs()).toHaveLength(3);
   });
 
   it("does not carry an unpaid server's plan-only view into another server while its page loads", async () => {
@@ -215,10 +271,10 @@ describe("billing navigation by server ownership", () => {
     h.list.mockResolvedValue({ servers: [production, draft] });
     const draftPage = page({ workspaceId: "cws-draft", requestedWorkspaceId: "cws-draft", plansOnly: true });
     await render(draftPage);
-    expect(purchaseTabs()).toHaveLength(2);
+    expect(purchaseTabs()).toHaveLength(3);
     h.query = "workspaceId=cws-production";
     await render(draftPage);
-    expect(purchaseTabs()).toHaveLength(0);
+    expect(purchaseTabs()).toHaveLength(3);
     expect(host.querySelector("h1")?.textContent).toBe(baseDictionary.billing.layout.title);
     expect(picker()?.textContent).toContain(production.name);
     expect(tabs()).toHaveLength(4);
@@ -230,12 +286,12 @@ describe("billing navigation by server ownership", () => {
     h.query = "newServer=1&workspaceId=cws-production&organizationId=org-a";
     h.list.mockResolvedValue({ servers: [production] });
     await render(page({ workspaceId: "cws-production", requestedWorkspaceId: "cws-production", organizationId: "org-a", newServer: true, plansOnly: true }));
-    expect(purchaseTabs()).toHaveLength(2);
+    expect(purchaseTabs()).toHaveLength(3);
     expect(tabs()).toHaveLength(0);
     expect(host.textContent).not.toContain("Production");
     expect(picker()).toBeNull();
     expect(host.querySelector("aside")).toBeNull();
-    expect(host.querySelector('header a[href="/billing?organizationId=org-a"]')).not.toBeNull();
+    expect(host.querySelector('a[href="/billing?organizationId=org-a"]')).not.toBeNull();
     expect(host.querySelector('a[href*="newServer=1"]')).toBeNull();
   });
 
@@ -258,13 +314,13 @@ describe("billing navigation by server ownership", () => {
     await render(page({ workspaceId: "cws-production" }));
     const header = host.querySelector("header");
     const nav = host.querySelector("nav");
-    const getServer = host.querySelector('header a[href="/billing/plans?newServer=1"]');
+    const getServer = host.querySelector('a[href="/billing/plans?newServer=1"]');
     expect(getServer).not.toBeNull();
     h.path = "/billing/usage";
     await render(<div role="status">Loading tab</div>);
     expect(host.querySelector("header")).toBe(header);
     expect(host.querySelector("nav")).toBe(nav);
-    expect(host.querySelector('header a[href="/billing/plans?newServer=1"]')).toBe(getServer);
+    expect(host.querySelector('a[href="/billing/plans?newServer=1"]')).toBe(getServer);
     expect(tabs()).toHaveLength(4);
     expect(h.list).toHaveBeenCalledOnce();
   });
@@ -272,7 +328,7 @@ describe("billing navigation by server ownership", () => {
   it("reveals full billing navigation as soon as the subscription activates", async () => {
     h.path = "/billing/plans";
     await render(page({ plansOnly: true }));
-    expect(purchaseTabs()).toHaveLength(2);
+    expect(purchaseTabs()).toHaveLength(3);
     await render(page({ plansOnly: false, workspaceId: "cws-production" }));
     expect(host.querySelector("h1")?.textContent).toBe(baseDictionary.billing.layout.title);
     expect(tabs()).toHaveLength(4);
@@ -319,7 +375,7 @@ describe("billing navigation by server ownership", () => {
     expect(host.textContent).not.toContain("Production");
     expect(tabs()).toHaveLength(0);
     await render(page({ contextKey: "user-b:org-a", plansOnly: true }));
-    expect(purchaseTabs()).toHaveLength(2);
+    expect(purchaseTabs()).toHaveLength(3);
     expect(purchaseTabs()[0]?.getAttribute("aria-selected")).toBe("true");
   });
 

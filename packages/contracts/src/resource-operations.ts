@@ -1,9 +1,12 @@
 import type { Static, TSchema } from "@sinclair/typebox";
 import { Value } from "@sinclair/typebox/value";
+import type { Capability } from "@repo/core";
 
 /** Contracts describe authorized resource calls independently of HTTP envelopes. */
 export interface ResourceOperationSchema {
   action: "read" | "write" | "admin";
+  /** A parent operation may accept this child capability, with the same action. */
+  capability?: Capability;
   input?: TSchema;
   optionalInput?: true;
   output: TSchema;

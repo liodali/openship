@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
+import type { ClusterDatabase } from "@repo/contracts";
 import type { ProjectConnection } from "@/lib/api/connections";
 import type { Service, ServiceContainer } from "@/lib/api/services";
 import { serviceFromInput } from "./changes";
 import {
   buildProjectTopology,
+  addClusterDatabases,
+  buildDatabaseReplicaTopology,
+  databaseInstanceStatus,
   buildClusterReplicaTopology,
   dependencyProblem,
   servicePresentation,
@@ -55,6 +59,68 @@ const graph = (extra: Partial<Parameters<typeof buildProjectTopology>[0]> = {}) 
   buildProjectTopology({ project, services, containers, connections: [], ...extra });
 
 describe("production project topology", () => {
+  it("shows database replication roles and separate private writer/reader bindings", () => {
+    const application = { ...project, framework: "express" };
+    const database = {
+      id: "orders",
+      projectId: project.id,
+      name: "Orders",
+      status: "ready",
+      config: { engine: "postgres", mode: "cluster", instances: 3 },
+      observation: {
+        ready: true,
+        pods: [
+          { name: "primary", role: "primary", ready: true, phase: "Running" },
+          { name: "reader", role: "replica", ready: false, phase: "Pending" },
+        ],
+        primary: "primary",
+      },
+      envKey: "DATABASE_URL",
+      readEnvKey: "DATABASE_READ_URL",
+    } as ClusterDatabase;
+    const view = addClusterDatabases(graph({ project: application }), application, [database]);
+    expect(view.nodes.find((node) => node.database?.id === "orders")?.description).toBe(
+      "PostgreSQL · 1 primary + 2 read replicas",
+    );
+    expect(
+      view.edges.filter((edge) => edge.databaseId === "orders").map((edge) => edge.label),
+    ).toEqual(["DATABASE_URL", "DATABASE_READ_URL"]);
+    expect(
+      view.edges.find((edge) => edge.id === "database-read-connection:orders")?.description,
+    ).toContain("replicas may lag");
+    const replicas = buildDatabaseReplicaTopology(application, database);
+    expect(replicas.nodes.map((node) => node.name)).toEqual(["Primary", "Replica"]);
+    expect(replicas.nodes[1].state).toBe("starting");
+    expect(replicas.edges[0].description).toContain("PostgreSQL streaming replication");
+    database.config = { ...database.config, engine: "redis", mode: "replication" };
+    database.observation!.pods.push({
+      name: "voter",
+      role: "sentinel",
+      ready: true,
+      phase: "Running",
+      serverId: null,
+      serverName: null,
+      nodeName: null,
+      restarts: 0,
+    });
+    const redis = addClusterDatabases({ nodes: [], edges: [] }, application, [database]);
+    expect(redis.nodes[0].description).toBe("Redis · 1 primary + 2 replicas");
+    expect(buildDatabaseReplicaTopology(application, database).edges[0].description).toContain(
+      "Redis asynchronous replication",
+    );
+    expect(databaseInstanceStatus(database)).toEqual({ desired: 3, ready: 1, settled: false });
+    expect(
+      buildDatabaseReplicaTopology(application, database).nodes.find(
+        (node) => node.clusterPod?.name === "voter",
+      )?.name,
+    ).toBe("Failover voter");
+    expect(
+      buildDatabaseReplicaTopology(application, database).edges.find((edge) =>
+        edge.target.endsWith(":voter"),
+      )?.label,
+    ).toBe("Failover monitoring");
+  });
+
   it("shows active runtime roles alongside the application and their live replica state", () => {
     const result = graph({
       project: { ...project, framework: "laravel" },

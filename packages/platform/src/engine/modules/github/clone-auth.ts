@@ -39,11 +39,23 @@
  * several are available at once.
  */
 
-import { reportCaughtError as observeCaughtError } from "@repo/core/diagnostics";
-import { type BuildStrategy } from "@repo/core";
+import { reportCaughtError as observeCaughtError, diagnostics as errorDiagnostics } from "@repo/core/diagnostics";
+import { AppError, safeErrorMessage, type BuildStrategy } from "@repo/core";
 import type { AmbientGitVia, CommandExecutor } from "@repo/adapters";
-import { tokenFor, requireTokenFor, type TokenContext } from "./github.token";
-import { isPublicRepo } from "./github.http";
+import {
+  tokenFor,
+  requireTokenFor,
+  canResolveTokenFor,
+  type GitHubTokenSource,
+  type TokenContext,
+  type TokenResult,
+} from "./github.token";
+import { isPublicRepo, probeAnonymousRepoVisibility } from "./github.http";
+import {
+  gitmodulesTextFromContentsBody,
+  MAX_SUBMODULE_REPOS,
+  parseSameOwnerSubmoduleRepos,
+} from "./gitmodules";
 import { getLocalGhToken, hasLocalGitIdentity } from "./github.local-auth";
 import { resolveServerGitCredential } from "./server-github.service";
 import type { ExecutionContext as RequestContext } from "@repo/platform";
@@ -59,6 +71,8 @@ import { resolveGitHubApiBaseUrl } from "./github-source.service";
  */
 export interface BuildGitCredential {
   token?: string;
+  /** Ephemeral exact repository grant returned by the expanded App mint. */
+  tokenRepositories?: string[];
   relay?: boolean;
   /**
    * The TARGET SERVER authenticates the clone with its own pre-existing git
@@ -99,12 +113,213 @@ export interface BuildGitCredential {
   };
 }
 
+// ─── Credential tracing + submodule token expansion (#979) ─────────
+
+/**
+ * Which credential the clone ended up with. Logged once per resolution (never
+ * the token itself) so a failed clone can be traced to the step that chose it.
+ */
+interface CredentialTrace {
+  source: string;
+  /** Repos the token is scoped to: a count for App tokens, "all" for user
+   *  tokens (PAT / OAuth / gh), 0 when there is no token. */
+  repos: number | "all";
+  notes: string[];
+}
+
+const SOURCE_LABEL: Record<GitHubTokenSource, string> = {
+  "app-installation": "app-installation",
+  "user-oauth": "user-oauth",
+  project: "pat-project",
+  "user-pat": "pat-user",
+  "gh-cli": "gh-cli",
+};
+
+interface ResolveExtras {
+  /** Commit sha or branch to read `.gitmodules` at (default branch if absent). */
+  gitRef?: string | null;
+  onLog?: (message: string) => void;
+}
+
+function traceLog(extras: ResolveExtras, message: string, level: "info" | "warn" = "info"): void {
+  if (level === "warn") {
+    errorDiagnostics.warn("platform/engine/modules/github/clone-auth", `[clone-auth] ${message}`);
+  } else {
+    console.info(`[clone-auth] ${message}`);
+  }
+  try {
+    extras.onLog?.(message);
+  } catch {
+    // The sink may include credentials or private payloads in its exception.
+    observeCaughtError(
+      new Error("The build log sink rejected a clone authentication diagnostic"),
+      "platform/engine/modules/github/clone-auth",
+    );
+  }
+}
+
+function recordToken(trace: CredentialTrace, r: TokenResult, repos: number): void {
+  trace.source = SOURCE_LABEL[r.source] ?? r.source ?? "token";
+  trace.repos = r.source === "app-installation" ? repos : "all";
+}
+
+/**
+ * Explain an App step that produced nothing. `tokenFor` returns null from the
+ * App step silently in several cases (no installation row for this org+owner,
+ * the github-access gate denied the actor, the auth mode is not "app", a
+ * source-bound installation lost its credentials, the cloud mint came back
+ * empty); only a THROWN mint is logged upstream. The probe below separates
+ * "no usable installation" from "installation exists but the mint returned
+ * no token" without minting.
+ */
+async function diagnoseEmptyAppStep(
+  ctx: RequestContext,
+  purpose: "local" | "remote",
+  tokenCtx: TokenContext,
+  extras: ResolveExtras,
+  trace: CredentialTrace,
+): Promise<void> {
+  if (!tokenCtx.owner) return;
+  const probe = await canResolveTokenFor(ctx, purpose, {
+    ...tokenCtx,
+    only: ["app-installation"],
+  }).catch((diagnosticFailure) => {
+    observeCaughtError(diagnosticFailure, "platform/engine/modules/github/clone-auth");
+    return null;
+  });
+  const who = `owner=${tokenCtx.owner} repo=${tokenCtx.repo ?? "-"} actor=${ctx.userId ? "set" : "MISSING"}`;
+  const note =
+    probe === "app-installation"
+      ? `App installation step returned EMPTY (${who}): an installation row exists and the actor is authorized, ` +
+        `but the mint returned no token (source credentials missing, GitHub auth mode is not "app", or the cloud mint was empty)`
+      : `App installation step returned EMPTY (${who}): no installation row for this owner in the org, ` +
+        `or the github-access gate denied the actor`;
+  trace.notes.push(note);
+  traceLog(extras, note, "warn");
+}
+
+/**
+ * Parent-only App tokens 404 private submodules (`../other.git` inherits the
+ * parent URL's userinfo). Read `.gitmodules` with the parent token, then remint
+ * an App token covering the same-owner submodule repos. Soft: a missing file
+ * keeps the parent token silently; a read error keeps it with a warning.
+ */
+async function expandAppTokenForSubmodules(
+  ctx: RequestContext,
+  purpose: "local" | "remote",
+  tokenCtx: TokenContext,
+  minted: TokenResult | null,
+  extras: ResolveExtras,
+): Promise<{ result: TokenResult | null; repos: number }> {
+  const owner = tokenCtx.owner;
+  const repo = tokenCtx.repo;
+  if (!minted?.token || minted.source !== "app-installation" || !owner || !repo) {
+    return { result: minted, repos: minted?.token ? 1 : 0 };
+  }
+  let extra = await fetchSameOwnerSubmoduleRepos(minted.token, owner, repo, ctx, tokenCtx, extras);
+  if (extra.length > MAX_SUBMODULE_REPOS) {
+    traceLog(
+      extras,
+      `.gitmodules lists ${extra.length} same-owner repos under ${owner}; capping token expansion at ${MAX_SUBMODULE_REPOS}`,
+      "warn",
+    );
+    extra = extra.slice(0, MAX_SUBMODULE_REPOS);
+  }
+  if (!extra.length) return { result: minted, repos: 1 };
+  const reminted = await tokenFor(ctx, purpose, {
+    ...tokenCtx,
+    only: ["app-installation"],
+    extraRepositories: extra,
+  }).catch((err) => {
+    observeCaughtError(err, "platform/engine/modules/github/clone-auth");
+    return null;
+  });
+  if (!reminted?.token) {
+    traceLog(
+      extras,
+      `submodule token remint for ${owner}/${repo} returned no token; keeping the parent-only token ` +
+        `(private submodules may fail to clone)`,
+      "warn",
+    );
+    return { result: minted, repos: 1 };
+  }
+  traceLog(extras, `App token expanded for ${extra.length} same-owner submodule repo(s): ${extra.join(", ")}`);
+  return { result: reminted, repos: reminted.repositories?.length ?? 1 + extra.length };
+}
+
+const GITMODULES_FETCH_TIMEOUT_MS = 10_000;
+
+async function fetchSameOwnerSubmoduleRepos(
+  token: string,
+  owner: string,
+  repo: string,
+  ctx: RequestContext,
+  tokenCtx: TokenContext,
+  extras: ResolveExtras,
+): Promise<string[]> {
+  let apiBase = "https://api.github.com";
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), GITMODULES_FETCH_TIMEOUT_MS);
+  try {
+    apiBase =
+      (await resolveGitHubApiBaseUrl(ctx.organizationId, owner, tokenCtx.installationId).catch(
+        () => {
+          observeCaughtError(
+            new Error("Could not resolve the GitHub source for submodule discovery"),
+            "platform/engine/modules/github/clone-auth",
+          );
+          return null;
+        },
+      )) ?? apiBase;
+    const ref = extras.gitRef ? `?ref=${encodeURIComponent(extras.gitRef)}` : "";
+    // JSON contents + base64 decode: `Accept: application/vnd.github.raw` 404s
+    // for App installation tokens on this endpoint (seen on 0.8.0).
+    const url = `${apiBase.replace(/\/$/, "")}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/.gitmodules${ref}`;
+    const res = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+        "User-Agent": "openship",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+      signal: controller.signal,
+    });
+    if (res.status === 404) return []; // no .gitmodules: nothing to expand
+    const body = await res.text();
+    if (!res.ok) {
+      traceLog(
+        extras,
+        `reading .gitmodules for ${owner}/${repo} failed (HTTP ${res.status}); ` +
+          `falling back to a parent-only token (private submodules may fail to clone)`,
+        "warn",
+      );
+      return [];
+    }
+    const host = new URL(apiBase).hostname.replace(/^api\./, "");
+    return parseSameOwnerSubmoduleRepos(gitmodulesTextFromContentsBody(body), owner, repo, host);
+  } catch (err) {
+    // diagnostics-ignore: traceLog(warn) reports this safe summary once through
+    // the central diagnostics.warn; forwarding the exception would expose payloads.
+    traceLog(
+      extras,
+      `reading .gitmodules for ${owner}/${repo} failed (${err instanceof Error ? err.name : "error"}); ` +
+        `falling back to a parent-only token (private submodules may fail to clone)`,
+      "warn",
+    );
+    return [];
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** Resolve a credential for a clone that runs on THIS host (local gh, else the
  *  resolver chain). Shared by the local-build path and the api-host fallback. */
 async function resolveLocalCredential(
   ctx: RequestContext,
   tokenCtx: TokenContext,
-): Promise<{ token?: string }> {
+  trace: CredentialTrace = { source: "none", repos: 0, notes: [] },
+  extras: ResolveExtras = {},
+): Promise<BuildGitCredential> {
   const customSource = tokenCtx.owner
     ? await resolveGitHubApiBaseUrl(
         ctx.organizationId,
@@ -114,16 +329,70 @@ async function resolveLocalCredential(
     : null;
   if (!customSource) {
     const ghToken = await getLocalGhToken();
-    if (ghToken) return { token: ghToken };
+    if (ghToken) {
+      trace.source = "gh-cli";
+      trace.repos = "all";
+      return { token: ghToken };
+    }
   }
-  const r = await tokenFor(ctx, "local", {
+  const localCtx: TokenContext = {
     ...tokenCtx,
     ...(customSource ? { only: ["app-installation"] } : {}),
-  });
-  return r?.token ? { token: r.token } : {};
+  };
+  const first = await tokenFor(ctx, "local", localCtx);
+  if (!first?.token || (first.source !== "app-installation" && first.source !== "gh-cli")) {
+    await diagnoseEmptyAppStep(ctx, "local", localCtx, extras, trace);
+  }
+  const { result: r, repos } = await expandAppTokenForSubmodules(ctx, "local", localCtx, first, extras);
+  if (r?.token) {
+    recordToken(trace, r, repos);
+    return { token: r.token, ...(r.repositories ? { tokenRepositories: r.repositories } : {}) };
+  }
+  await assertAnonymousCloneCanWork(tokenCtx, customSource, extras, trace);
+  return {};
 }
 
-export async function resolveBuildGitToken(opts: {
+/**
+ * Fail LOUDLY instead of cloning a private repo anonymously. Before this, an
+ * empty credential chain returned `{}` and the clone ran with no userinfo,
+ * surfacing only as git's "Repository not found" with no hint that NO
+ * credential was ever chosen. A definitive anonymous 404 means an anonymous
+ * clone cannot succeed, so stop with the real cause. "unknown" (probe
+ * throttled / offline) keeps upstream's behavior and proceeds, with a warning.
+ */
+async function assertAnonymousCloneCanWork(
+  tokenCtx: TokenContext,
+  customApiBase: string | null,
+  extras: ResolveExtras,
+  trace: CredentialTrace,
+): Promise<void> {
+  const { owner, repo } = tokenCtx;
+  if (!owner || !repo) return; // not a GitHub repo (local path, other host)
+  const visibility = await probeAnonymousRepoVisibility(owner, repo, customApiBase ?? undefined);
+  if (visibility === "public") {
+    trace.source = "none (public repo)";
+    return;
+  }
+  if (visibility === "unknown") {
+    traceLog(
+      extras,
+      `no GitHub credential resolved for ${owner}/${repo} and its visibility could not be confirmed; ` +
+        `attempting an anonymous clone`,
+      "warn",
+    );
+    return;
+  }
+  const why = trace.notes.length ? ` ${trace.notes.join("; ")}.` : "";
+  throw new AppError(
+    `No GitHub credential resolved for ${owner}/${repo}, and the repository is not publicly readable, ` +
+      `so an anonymous clone would fail with "Repository not found".${why} ` +
+      `Check the GitHub App installation for ${owner} (and that it covers ${repo}), or set a per-project clone token.`,
+    403,
+    "GITHUB_TOKEN_REQUIRED",
+  );
+}
+
+export interface ResolveBuildGitTokenOptions {
   /** Caller's request context. Carries userId + organizationId; org-scoped
    *  App installation lookup uses ctx.organizationId. */
   ctx: RequestContext;
@@ -170,7 +439,34 @@ export async function resolveBuildGitToken(opts: {
   repoUrl?: string | null;
   /** Build-log sink for the probe's one-line outcome. Never receives secrets. */
   onLog?: (message: string) => void;
-}): Promise<BuildGitCredential> {
+  /** Commit sha or branch being deployed; `.gitmodules` is read at this ref. */
+  gitRef?: string | null;
+}
+
+export async function resolveBuildGitToken(opts: ResolveBuildGitTokenOptions): Promise<BuildGitCredential> {
+  const trace: CredentialTrace = { source: "none", repos: 0, notes: [] };
+  const extras: ResolveExtras = { gitRef: opts.gitRef, onLog: opts.onLog };
+  const where = `owner=${opts.owner ?? "-"} repo=${opts.repo ?? "-"} strategy=${opts.buildStrategy}`;
+  try {
+    const cred = await resolveBuildGitTokenTraced(opts, trace, extras);
+    const shape = cred.apiHostFallback ? " apiHostFallback=true" : "";
+    traceLog(extras, `clone auth: source=${trace.source} repos=${trace.repos} ${where}${shape}`);
+    return cred;
+  } catch (err) {
+    traceLog(
+      extras,
+      `clone auth: source=none (resolution failed: ${safeErrorMessage(err)}) ${where}`,
+      "warn",
+    );
+    throw err;
+  }
+}
+
+async function resolveBuildGitTokenTraced(
+  opts: ResolveBuildGitTokenOptions,
+  trace: CredentialTrace,
+  extras: ResolveExtras,
+): Promise<BuildGitCredential> {
   const tokenCtx: TokenContext = {
     projectId: opts.projectId,
     owner: opts.owner ?? undefined,
@@ -185,7 +481,7 @@ export async function resolveBuildGitToken(opts: {
     // githubFetch: local op → gh.) Falls through to the full resolver chain
     // (App installation / project PAT / user PAT / OAuth) only when there's no
     // local gh. getLocalGhToken self-guards to null in CLOUD_MODE.
-    return resolveLocalCredential(opts.ctx, tokenCtx);
+    return resolveLocalCredential(opts.ctx, tokenCtx, trace, extras);
   }
 
   // ── SERVER / REMOTE build: the clone/build runs off this host. ──────────────
@@ -200,6 +496,7 @@ export async function resolveBuildGitToken(opts: {
   //    on the remote — so only forward when a gh identity actually exists;
   //    otherwise fall through so the relay never opens to vend nothing.
   if (opts.allowRelayFallback && (await hasLocalGitIdentity())) {
+    trace.source = "relay";
     return { relay: true };
   }
 
@@ -216,8 +513,14 @@ export async function resolveBuildGitToken(opts: {
       repoUrl: opts.repoUrl,
       onLog: opts.onLog,
     });
-    if (probed?.via === "anonymous") return { anonymous: true };
-    if (probed) return { ambient: { via: probed.via } };
+    if (probed?.via === "anonymous") {
+      trace.source = "none (public repo, server probe)";
+      return { anonymous: true };
+    }
+    if (probed) {
+      trace.source = `server-ambient:${probed.via}`;
+      return { ambient: { via: probed.via } };
+    }
   }
 
   // 3. Per-server stored identity (Server tab: device-flow token, per-server PAT,
@@ -230,15 +533,30 @@ export async function resolveBuildGitToken(opts: {
       owner: opts.owner ?? null,
       repo: opts.repo ?? null,
     });
-    if (serverCred) return serverCred;
+    if (serverCred) {
+      trace.source = serverCred.ssh ? `server-ssh:${serverCred.ssh.keyKind}` : "server-token";
+      trace.repos = serverCred.token ? "all" : 0;
+      return serverCred;
+    }
   }
 
   // 4. SaaS-minted App installation token (short-lived, repo-scoped) or a PAT —
   //    gh is REFUSED in this chain (HIGH #7: never ship the operator's broad
   //    token off-host via the URL). This is the only shippable credential in
   //    cloud mode, where none of steps 1-3 apply.
-  const r = await tokenFor(opts.ctx, "remote", tokenCtx);
-  if (r?.token) return { token: r.token };
+  const first = await tokenFor(opts.ctx, "remote", tokenCtx);
+  if (!first?.token) await diagnoseEmptyAppStep(opts.ctx, "remote", tokenCtx, extras, trace);
+  const { result: r, repos } = await expandAppTokenForSubmodules(
+    opts.ctx,
+    "remote",
+    tokenCtx,
+    first,
+    extras,
+  );
+  if (r?.token) {
+    recordToken(trace, r, repos);
+    return { token: r.token, ...(r.repositories ? { tokenRepositories: r.repositories } : {}) };
+  }
 
   // 5. PUBLIC github.com repo → clone anonymously (nothing to ship). FAST PATH
   //    ONLY: isPublicRepo is unauthenticated + rate-limited (60/hr/IP) and fails
@@ -246,6 +564,7 @@ export async function resolveBuildGitToken(opts: {
   //    is the real authority when a server executor exists. Kept for cloud clones
   //    (no executor to probe with) and as a cheap early out.
   if (opts.owner && opts.repo && (await isPublicRepo(opts.owner, opts.repo))) {
+    trace.source = "none (public repo)";
     return { anonymous: true };
   }
 
@@ -255,7 +574,7 @@ export async function resolveBuildGitToken(opts: {
   //    a LOCAL credential is valid (flagged apiHostFallback so callers never ship
   //    it off-host).
   if (opts.allowApiHostFallback) {
-    const local = await resolveLocalCredential(opts.ctx, tokenCtx);
+    const local = await resolveLocalCredential(opts.ctx, tokenCtx, trace, extras);
     return { ...local, apiHostFallback: true };
   }
 

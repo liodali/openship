@@ -133,7 +133,7 @@ describe("deployment plan selection", () => {
     expect(checkoutTab.opener).toBeNull();
     expect(checkoutTab.location.href).toBe("about:blank");
     expect(mocks.post).toHaveBeenCalledTimes(1);
-    expect(mocks.post).toHaveBeenCalledWith("billing/subscription", expect.objectContaining({ planTierId: "starter", interval: "monthly", idempotencyKey: expect.any(String) }));
+    expect(mocks.post).toHaveBeenCalledWith("billing/subscription", expect.objectContaining({ planTierId: "starter", interval: "annual", idempotencyKey: expect.any(String) }));
     await act(async () => resolveCheckout({ data: { checkoutUrl: "https://checkout.example.test/session" } }));
     expect(checkoutTab.location.href).toBe("https://checkout.example.test/session");
     expect(container.querySelector("input")?.value).toBe("My configured project");
@@ -218,6 +218,7 @@ describe("deployment plan selection", () => {
       plans: plans.map(plan => ({ ...plan, limits: { ...plan.limits, buildMinutesPerMonth: 3000 } })) } });
     await render();
     await click("Deploy");
+    await click(copy.pricing.monthly);
     expect(document.querySelector('[role="note"]')?.textContent).toContain("Hobby: 1,234");
     expect(document.querySelector<HTMLDetailsElement>('[role="dialog"] details')?.open).toBe(false);
     expect(document.querySelectorAll('[role="dialog"] [role="note"]')).toHaveLength(1);

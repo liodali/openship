@@ -12,7 +12,9 @@ const h = vi.hoisted(() => ({
   list: vi.fn(),
   setEnv: vi.fn(),
   cloud: false,
+  customer: false,
 }));
+vi.mock("@repo/platform/engine/modules/billing/management.service", () => ({ isCustomerServer: async () => h.customer }));
 vi.mock("@repo/platform/engine/modules/apps/catalog-source", () => ({
   getTemplateForOrg: h.template,
 }));
@@ -56,7 +58,7 @@ import { installApp } from "@repo/platform/engine/modules/apps/app-install.servi
 const ctx = { organizationId: "org-ai", userId: "user-ai" } as RequestContext;
 beforeEach(() => {
   vi.clearAllMocks();
-  h.cloud = false;
+  h.cloud = false; h.customer = false;
   h.template.mockImplementation(async (_org, id) => ({ ...getAppTemplate(id)!, available: true }));
   h.placement.mockResolvedValue(null);
   h.draft.mockResolvedValue(null);
@@ -82,7 +84,7 @@ it.each(
     expect(h.create).not.toHaveBeenCalled();
     expect(h.service).not.toHaveBeenCalled();
     expect(h.update).not.toHaveBeenCalled();
-  if (mode === "saas") expect(h.placement).not.toHaveBeenCalled();
+
   },
 );
 it("creates CPU Ollama without GPU requests and uses the selected GPU mode on a self-hosted server", async () => {
@@ -134,4 +136,11 @@ it("reopening a CPU draft applies the GPU choice without creating another projec
   expect(patch.environment.CUSTOM).toBe("kept");
   expect(patch.environment).not.toHaveProperty("NVIDIA_VISIBLE_DEVICES");
   expect(patch).not.toHaveProperty("publicEndpoints");
+});
+
+it("allows a self-hosted AI template on a paid customer-owned server from SaaS", async () => {
+  h.cloud = true; h.customer = true;
+  await installApp(ctx, { templateId: "ollama", serverId: "self-ai", useGpu: false });
+  expect(h.create).toHaveBeenCalled();
+  expect(h.placement).toHaveBeenCalledWith("org-ai", "self-ai");
 });

@@ -16,6 +16,9 @@ export function createPullRequestPreviewRepo(db: Database, encryption: Configura
       sql`${previews.leaseExpiresAt} > now()`,
     );
   return {
+    async findByProject(projectId: string) {
+      return (await db.select().from(previews).where(eq(previews.projectId, projectId)))[0];
+    },
     async findLeased(id: string, token: string) {
       return (await db.select().from(previews).where(leased(id, token)))[0];
     },

@@ -15,11 +15,14 @@ export function ServerCapacityRecovery({
   message,
   onClose,
   onRetry,
+  advisory = false,
 }: {
   workspaceId?: string;
   message?: string;
   onClose: () => void;
   onRetry?: () => Promise<unknown>;
+  /** Capacity comparison is optional; no plan refusal was received. */
+  advisory?: boolean;
 }) {
   const { t } = useI18n();
   const copy = t.billing.workspaces;
@@ -54,10 +57,10 @@ export function ServerCapacityRecovery({
       className="space-y-5 p-5 outline-none"
     >
       <h2 id={title} className="text-lg font-semibold">
-        {copy.buildCapacityTitle}
+        {advisory ? t.deployments.resourceGuidance.reviewTitle : copy.buildCapacityTitle}
       </h2>
       {message && <p className="text-sm">{message}</p>}
-      <p className="text-sm text-muted-foreground">{copy.buildCapacityHint}</p>
+      <p className="text-sm text-muted-foreground">{advisory ? t.deployments.resourceGuidance.reviewHint : copy.buildCapacityHint}</p>
       {(error || fetchError) && (
         <p role="alert" className="text-sm text-danger">
           {error || fetchError}

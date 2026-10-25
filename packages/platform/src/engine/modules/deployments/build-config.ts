@@ -111,6 +111,10 @@ export function createBuildConfig(opts: BuildConfigFactoryOptions): BuildConfig 
     gitToken,
     gitCredentialHelperPath,
     ...overrides,
+    // Run intent is shared by generated, Dockerfile and monorepo builds. A
+    // rollback replays its sources/artifacts without inheriting old pull hints.
+    refreshBaseImages: dep.trigger !== "rollback" &&
+      (snapshot.forcePullImages === true || dep.trigger === "update"),
   };
 }
 

@@ -11,11 +11,13 @@ vi.mock("@repo/adapters", () => ({
 }));
 vi.mock("@repo/platform/engine/lib/edge-image", () => ({ edgeBuildSpec: vi.fn() }));
 vi.mock("@repo/platform/engine/lib/mail-image", () => ({ mailBuildSpec: vi.fn() }));
+vi.mock("@repo/platform/engine/lib/buildkit-image", () => ({ buildKitBuildSpec: vi.fn() }));
 
 import { buildImage, imageExistsLocally } from "@repo/adapters";
 
 import { deliverManagedImage } from "@repo/platform/engine/lib/deliver-managed-image";
 import { edgeBuildSpec } from "@repo/platform/engine/lib/edge-image";
+import { buildKitBuildSpec } from "@repo/platform/engine/lib/buildkit-image";
 import { mailBuildSpec } from "@repo/platform/engine/lib/mail-image";
 
 const SPEC = { context: "/repo", dockerfile: "apps/edge/Dockerfile" };
@@ -152,4 +154,13 @@ describe("deliverManagedImage", () => {
     expect(calls.transferIn).toHaveLength(1);
     expect(calls.rm).toHaveLength(1); // finally block ran
   });
+  it("delivers a protected BuildKit source image through the same managed-image path", async () => {
+    vi.mocked(buildKitBuildSpec).mockReturnValue({ context: "/repo", dockerfile: "packages/adapters/Dockerfile.buildkit" });
+    const { executor, calls } = target({ checkoutHere: true });
+    await expect(deliverManagedImage({ kind: "buildkit", image: "worker:dev.test", targetExecutor: executor, onLog })).resolves.toEqual({ delivered: true });
+    expect(mockBuildImage.mock.calls[0][2]).toEqual({ context: "/repo", dockerfile: "packages/adapters/Dockerfile.buildkit" });
+    expect(mockBuildImage.mock.calls[0][4]).toBe("buildkit");
+    expect(calls.transferIn).toHaveLength(0);
+  });
+
 });

@@ -1,3 +1,4 @@
+import { stubProtectedBuildWorker } from "../../test/fixtures/remote-build-worker";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -82,6 +83,7 @@ describe("DockerRuntime build cancellation", () => {
       verifyImageBuilt,
       ...extra,
     });
+    stubProtectedBuildWorker(runtime);
     return { runtime, verifyImageBuilt, cloneSourceOnRemote };
   }
 

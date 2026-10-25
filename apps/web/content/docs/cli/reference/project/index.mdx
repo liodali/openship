@@ -161,7 +161,7 @@ openship project cluster [options] [command]
 | Subcommand | Purpose |
 | --- | --- |
 | [`get <project>`](/docs/cli/reference/project#openship-project-cluster-get) | Read placement, replicas and the revision required for changes |
-| [`set [options] <id> [file]`](/docs/cli/reference/project#openship-project-cluster-set) | Set or clear cluster placement with explicit stateless-workload acknowledgement |
+| [`set [options] <id> [file]`](/docs/cli/reference/project#openship-project-cluster-set) | Set or clear cluster placement: acknowledgePlacement for Swarm, stateless for Kubernetes |
 | [`scale [options] <project> <replicas>`](/docs/cli/reference/project#openship-project-cluster-scale) | Scale the reviewed deployment; returns the new deployment ID to follow |
 
 ## openship project cluster get
@@ -196,7 +196,7 @@ openship project cluster scale [options] <project> <replicas>
 
 ## openship project cluster set
 
-Set or clear cluster placement with explicit stateless-workload acknowledgement
+Set or clear cluster placement: acknowledgePlacement for Swarm, stateless for Kubernetes
 
 ```text
 openship project cluster set [options] <id> [file]

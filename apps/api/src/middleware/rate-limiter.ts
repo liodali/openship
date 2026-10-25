@@ -17,13 +17,18 @@
 
 import type { Context, Next, MiddlewareHandler } from "hono";
 import { isLoopbackPeer, peerAddress } from "./loopback-peer";
-import { rateLimit, type PolicyId } from "../lib/rate-limit";
+import { rateLimit, type PolicyId, type RateLimitSubject, type RateLimitResult } from "../lib/rate-limit";
 import { POLICIES } from "../lib/rate-limit/policies";
+import { webhookSubject } from "../lib/rate-limit/webhook-subject";
 import { getRequestContext } from "../lib/request-context";
 import { env } from "@repo/platform/engine/config/index";
 
-function resolveSubjectId(c: Context, subject: "ip" | "user" | "org" | "global"): string | null {
+function resolveSubjectId(c: Context, subject: RateLimitSubject): string | null {
   if (subject === "global") return "global";
+  if (subject === "webhook") {
+    const ip = resolveSubjectId(c, "ip");
+    return ip ? webhookSubject(c, ip) : null;
+  }
   if (subject === "ip") {
     const ip = c.var.clientIp;
     if (ip) return ip;
@@ -44,6 +49,14 @@ function resolveSubjectId(c: Context, subject: "ip" | "user" | "org" | "global")
     const peer = peerAddress(c);
     return peer && isLoopbackPeer(peer) ? peer : null;
   }
+}
+
+function rejectLimit(c: Context, limit: number, result: RateLimitResult): Response {
+  c.header("Retry-After", String(Math.ceil(result.resetMs / 1000)));
+  c.header("X-RateLimit-Limit", String(limit));
+  c.header("X-RateLimit-Remaining", "0");
+  c.header("X-RateLimit-Reset", String(Math.ceil((Date.now() + result.resetMs) / 1000)));
+  return c.json({ error: "Too many requests" }, 429);
 }
 
 async function enforce(c: Context, policyId: PolicyId): Promise<Response | null> {
@@ -75,13 +88,13 @@ async function enforce(c: Context, policyId: PolicyId): Promise<Response | null>
   if (!subjectId) {
     return c.json({ error: "Missing client IP — request must come through the proxy" }, 400);
   }
+  if (policyId === "webhook-ingress") {
+    const ceiling = await rateLimit({ policy: "webhook-flood", subjectId: resolveSubjectId(c, "ip")! });
+    if (!ceiling.allowed) return rejectLimit(c, POLICIES["webhook-flood"].limit, ceiling);
+  }
   const result = await rateLimit({ policy: policyId, subjectId });
   if (!result.allowed) {
-    c.header("Retry-After", String(Math.ceil(result.resetMs / 1000)));
-    c.header("X-RateLimit-Limit", String(policy.limit));
-    c.header("X-RateLimit-Remaining", "0");
-    c.header("X-RateLimit-Reset", String(Math.ceil((Date.now() + result.resetMs) / 1000)));
-    return c.json({ error: "Too many requests" }, 429);
+    return rejectLimit(c, policy.limit, result);
   }
   c.header("X-RateLimit-Limit", String(policy.limit));
   c.header("X-RateLimit-Remaining", String(result.remaining));

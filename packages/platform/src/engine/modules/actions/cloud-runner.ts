@@ -164,12 +164,16 @@ async function clientFor(run: Pick<ActionRun, "organizationId">, runner: ActionR
     );
   // Namespace-scoped clients only, even inside the SaaS. Never pass the master
   // client to an executor or expose a runtime token to workflow code.
-  const result = await getOblienClient().tokens.create({
+  const namespace = runner.cloudPoolId;
+  const issueToken = () => getOblienClient().tokens.create({
     scope: "namespace",
-    namespace: runner.cloudPoolId,
+    namespace,
     ttl: 1800,
   });
-  return new Oblien({ token: result.token, baseUrl: env.OBLIEN_API_URL });
+  const result = await issueToken();
+  return new Oblien({ token: result.token, baseUrl: env.OBLIEN_API_URL,
+    tokenRefresh: { expiresAt: result.expiresAt, refresh: issueToken },
+  });
 }
 
 function workspaceInput(job: ActionWorkerAllocation, runner: ActionRunner) {
@@ -314,7 +318,7 @@ export async function openCloudActionWorker(
   }
   if (workspace.ready === false || !["active", "running"].includes(status)) return null;
   const executor = new CloudWorkspaceExecutor(
-    () => client.workspace(workspace.id).runtime(),
+    options => client.workspace(workspace.id).runtime(options),
     workspace.id,
   );
   try {

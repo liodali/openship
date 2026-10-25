@@ -19,3 +19,10 @@ export async function updateRouteRule(c: Context) {
 export async function deleteRouteRule(c: Context) {
   return c.json(await operationData(c, operations().removeRouteRule(operationContext(c), param(c, "id"), param(c, "ruleId"))));
 }
+
+export async function listRouteProtection(c: Context) {
+  return c.json({ data: await operationData(c, operations().listRouteProtection(operationContext(c), param(c, "id"))) });
+}
+export async function changeRouteProtection(c: Context) {
+  return c.json({ data: await operationData(c, operations().changeRouteProtection(operationContext(c), param(c, "id"), await c.req.json())) });
+}

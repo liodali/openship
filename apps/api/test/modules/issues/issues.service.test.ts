@@ -346,18 +346,16 @@ describe("the infra gate mirrors the endpoints it replaces", () => {
     expect(listBehindByOrg).not.toHaveBeenCalled();
   });
 
-  it("drops them on cloud without asking about permissions at all", async () => {
-    // Managed containers and the health watcher are self-hosted concepts; the
-    // endpoints behind them `assertNotCloud`, so the feed must not call them.
+  it("keeps customer-server monitoring available in hosted mode with permission checks", async () => {
     envMock.CLOUD_MODE = true;
     incidentListByOrg.mockResolvedValue([incident()]);
     getOrgPendingActions.mockResolvedValue(new Map([["proj-1", [pendingAction()]]]));
 
     const { issues } = await listOrganizationIssues(ctx);
 
-    expect(issues.map((i) => i.source)).toEqual(["domain"]);
-    expect(checkPermissionOnResource).not.toHaveBeenCalled();
-    expect(loadOrgContainerIssues).not.toHaveBeenCalled();
+    expect(issues.map((i) => i.source)).toEqual(["incident", "domain"]);
+    expect(checkPermissionOnResource).toHaveBeenCalled();
+    expect(loadOrgContainerIssues).toHaveBeenCalled();
   });
 
   it("checks server:read as a list-scope read, not against one server", async () => {

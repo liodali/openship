@@ -48,6 +48,7 @@ import { TwoFactorSetting } from "./_components/TwoFactorSetting";
 import { ProductViewSetting } from "./_components/ProductViewSetting";
 import { MailModeSetting } from "./_components/MailModeSetting";
 import { UpdatesTab } from "./_components/UpdatesTab";
+import { SecurityAdvisorySettings } from "./_components/SecurityAdvisorySettings";
 import { InfrastructureTab } from "./_components/InfrastructureTab";
 import { TeamTab } from "./_components/TeamTab";
 import { NotificationsTab } from "./_components/NotificationsTab";
@@ -181,7 +182,12 @@ function SettingsPageInner() {
 
           {activeTab === "team" && <TeamTab />}
 
-          {activeTab === "notifications" && <NotificationsTab />}
+          {activeTab === "notifications" && (
+            <>
+              <SecurityAdvisorySettings />
+              <NotificationsTab />
+            </>
+          )}
 
           {activeTab === "email" && selfHosted && <EmailSettings />}
 

@@ -75,6 +75,7 @@ vi.mock("@repo/db", () => {
     repos: {
       cloudWorkspace: { findByNamespace: async () => undefined },
       actionBilling: { byNamespace: async () => undefined },
+      managementBilling: { byNamespace: async () => undefined, get: async () => undefined },
       billingUsageSnapshot: { upsert: h.usageUpsert },
       organization: { findById: h.orgFindById },
     },

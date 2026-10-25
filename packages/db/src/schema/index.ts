@@ -16,6 +16,7 @@ export { projectGroup, project, envVar } from "./project";
 export { deployment, buildSession } from "./deployment";
 export { domain } from "./domain";
 export { acmeAccount, domainDnsChallenge } from "./domain-dns-challenge";
+export { routeProtection } from "./route-protection";
 export { routeRule } from "./route-rule";
 export { webhookSource } from "./webhook-source";
 export {
@@ -26,6 +27,7 @@ export {
 } from "./incoming-webhook";
 export { systemNotice } from "./system-notice";
 export { updateStatus } from "./update-status";
+export { advisoryFeed, projectSecurity, securityRefreshAttempt } from "./security-advisory";
 export { serverModuleStatus } from "./server-module-status";
 export { serverContainerStatus, type ServerContainerDetail } from "./server-container-status";
 export { edgeTargetVerification } from "./edge-target-verification";
@@ -123,3 +125,5 @@ export * from "./ingress-connection";
 export * from "./ingress-hostname";
 
 export * from "./pull-request-preview";
+
+export * from "./management-billing";

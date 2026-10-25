@@ -16,7 +16,8 @@ import { assertNotControlPlane, assertResourceInOrg } from "../../lib/resource-a
 import { assertExactServiceTargets } from "../deployments/exact-service-targets";
 import { reapplyProjectLiveRoutes } from "../domains/project-route.service";
 import { applyProjectRouting } from "../domains/routing-apply.service";
-import { liveContainerIdWithRuntime } from "./service-container";
+import { containerIdForService, liveContainerIdWithRuntime } from "./service-container";
+import { liveMatchTiersForDeployment } from "./live-state";
 import {
   loadServiceEnvironment,
   resolveServiceRuntimeEnvironment,
@@ -62,16 +63,13 @@ export async function applyServiceEnvironment(
     const row = (await repos.service.listByDeployment(deployment.id)).find(
       (item) => item.serviceId === serviceId,
     );
-    if (!row?.containerId)
-      throw new AppError(
-        "This service has no deployed container. Use Redeploy first.",
-        409,
-        "SERVICE_NOT_DEPLOYED",
-      );
+    // The comparison and Apply must resolve the same live identity. Older
+    // releases can have only Compose metadata, or an empty per-service record.
+    const tracked = await containerIdForService(deployment, service);
 
     if (env.CLOUD_MODE) {
-      await assertPlanAllowsServices(ctx.organizationId, project.workspaceId ?? null);
-      await assertRunningServiceQuota(ctx.organizationId, 1, [serviceId], project.workspaceId ?? null);
+      await assertPlanAllowsServices(ctx.organizationId, project.workspaceId ?? null, project.serverId);
+      await assertRunningServiceQuota(ctx.organizationId, 1, [serviceId], project.workspaceId ?? null, project.serverId);
     }
     const { runtime, serverId } = await resolveDeploymentRuntimeForRead({ ...deployment, meta: { ...(deployment.meta as Record<string, unknown>), runtimeMode: "docker" } });
     const cloudRuntime = runtime instanceof CloudDockerRuntime;
@@ -83,12 +81,19 @@ export async function applyServiceEnvironment(
           "SERVICE_ENVIRONMENT_UNSUPPORTED",
         );
       }
-      const containerId = await liveContainerIdWithRuntime(runtime, {
-        service,
-        projectId,
-        slug: project.slug,
-        tracked: row.containerId,
-      });
+      const containerId = await liveContainerIdWithRuntime(
+        runtime,
+        {
+          service,
+          projectId,
+          slug: project.slug,
+          tracked,
+        },
+        {
+          requireLiveQuery: true,
+          tiers: liveMatchTiersForDeployment(deployment.meta as Record<string, unknown>),
+        },
+      );
       if (!containerId)
         throw new AppError(
           "The service container is missing. Use Redeploy.",
@@ -96,9 +101,13 @@ export async function applyServiceEnvironment(
           "SERVICE_NOT_DEPLOYED",
         );
       if (env.CLOUD_MODE) {
-        await assertCloudRuntimeLimits(ctx.organizationId, runtime, [
-          { containerId, allocatedResources: row.allocatedResources },
-        ], project.workspaceId ?? null);
+        await assertCloudRuntimeLimits(
+          ctx.organizationId,
+          runtime,
+          [{ containerId, allocatedResources: row?.allocatedResources ?? null }],
+          project.workspaceId ?? null,
+          project.serverId,
+        );
       }
 
       // Capture BEFORE reading: a concurrent Save must remain pending if it
@@ -145,7 +154,7 @@ export async function applyServiceEnvironment(
         onReplaced: async (result) => {
           // Cloud Docker routes address stable workspace host ports. Its bridge
           // IP is private to that workspace and requires no cloud edge update.
-          if (!cloudRuntime && result.ip && result.ip !== row.ip) {
+          if (!cloudRuntime && result.ip && result.ip !== row?.ip) {
             routingChanged = true;
             await refreshRoutes(result);
           }
@@ -154,7 +163,7 @@ export async function applyServiceEnvironment(
             organizationId: ctx.organizationId,
             deploymentId: deployment.id,
             serviceId,
-            expectedContainerId: row.containerId,
+            expectedContainerId: row?.containerId ?? null,
             previousContainerId: containerId,
             containerId: result.containerId,
             ip: result.ip,
@@ -162,12 +171,12 @@ export async function applyServiceEnvironment(
           });
         },
         onRestored: async (result) => {
-          if (!cloudRuntime && (routingChanged || (result.ip && result.ip !== row.ip))) {
+          if (!cloudRuntime && (routingChanged || (result.ip && result.ip !== row?.ip))) {
             await refreshRoutes(result);
           }
           // A rollback can also receive a new dynamic address. Refresh only the
           // live IP cache; the unapplied environment must remain pending.
-          if (result.ip && result.ip !== row.ip) {
+          if (row && result.ip && result.ip !== row.ip) {
             await repos.service.updateServiceDeployment(row.id, { ip: result.ip });
           }
         },

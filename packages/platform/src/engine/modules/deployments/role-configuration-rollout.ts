@@ -97,6 +97,8 @@ export async function runRoleConfigurationRollout(input: {
           "ROLE_CONFIGURATION_CHANGED",
         );
       await assertRoleInventorySettled(runtime, project.id, previous.roleContainers ?? []);
+      config.previousContainerId = intent.webContainerId;
+      await runtime.prepareDeploymentVolumes(config);
       const reuse = reusableRoleReplicas(previous, snapshot.roles ?? []);
       for (const ref of reuse) {
         if (

@@ -202,6 +202,30 @@
     "pageOf": "第 {page} 页，共 {total} 页",
     "range": "第 {from}–{to} 条部署，共 {total} 条"
   },
+  "resourceGuidance": {
+    "label": "部署资源指引",
+    "reviewCapacity": "检查容量",
+    "reviewTitle": "检查云空间容量",
+    "reviewHint": "请先检查使用量和已配置的限制。升级是可选的；打开此页面不会更改或重试部署。",
+    "slowTitle": "此次构建耗时较长",
+    "slowDescription": "下载、网络延迟或构建命令可能较慢。增加容量可能有助于计算密集型构建；请先检查日志。",
+    "titles": {
+      "container-oom": "容器内存不足",
+      "memory-allocation": "内存分配失败",
+      "process-heap": "已达到应用堆内存上限",
+      "storage-full": "存储分配失败",
+      "storage-low": "构建可用存储不足",
+      "process-killed": "构建进程被终止"
+    },
+    "causes": {
+      "container-oom": "Docker 已确认容器因内存不足被终止。重试前请检查容器内存限制和云空间容量。",
+      "memory-allocation": "失败的进程无法分配内存。选择更大套餐前，请检查已配置的限制和可用容量。",
+      "process-heap": "进程达到了自身的堆内存上限。请检查运行时设置；仅升级套餐可能无法解决此问题。",
+      "storage-full": "此次操作耗尽了磁盘空间或 inode。请在保留应用数据的前提下检查使用量和未使用的产物。",
+      "storage-low": "Docker 文件系统的可用空间过少或没有可用 inode。请检查使用量或增加存储。",
+      "process-killed": "进程收到了 SIGKILL（退出码 137）。仅凭此信息无法确认内存不足。请检查日志。"
+    }
+  },
   "cloudBuildQueue": {
     "label": "云构建队列",
     "title": "构建已排队",

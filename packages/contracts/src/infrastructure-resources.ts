@@ -88,13 +88,14 @@ export const ComputeClusterSchema = Type.Object({
   name: Type.String(),
   location: Type.Union([Type.String(), Type.Null()]),
   revision,
-  networkId: id,
+  networkId: Type.Union([id, Type.Null()]),
   serverIds: Type.Array(id),
-  network: PrivateNetworkSchema,
+  network: Type.Union([PrivateNetworkSchema, Type.Null()]),
   /** Saved scaling readiness is independent of private-network verification. */
   scaling: Type.Optional(
     Type.Union([
       Type.Object({
+        provider: Type.Optional(Type.Union([Type.Literal("k3s"), Type.Literal("swarm")])),
         status: ClusterRuntimeStatusSchema,
         verifiedAt: Type.Union([Type.String(), Type.Null()]),
       }),

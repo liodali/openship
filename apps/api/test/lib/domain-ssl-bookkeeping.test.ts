@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { AppError } from "@repo/core";
 
 /**
  * A throw from certbot is NOT proof that no certificate was issued.
@@ -141,6 +142,20 @@ beforeEach(() => {
 });
 
 describe("provider TLS observations", () => {
+  it("preserves routing recovery guidance without issuing a certificate or invalidating DNS", async () => {
+    h.provider = true;
+    domain({ sslStatus: "active" });
+    const message = "This domain has no Cloud route for this project. Retry routing from Domains & Routes, then verify HTTPS.";
+    h.verifyCert.mockRejectedValue(new AppError(message, 409, "CLOUD_DOMAIN_NOT_CONNECTED"));
+    expect(await manageDomainSsl(HOST, { action: "provision" })).toMatchObject({
+      verified: false, reason: "read_error", detail: message,
+    });
+    expect(h.recordSslFailure).toHaveBeenCalledExactlyOnceWith("dom_1", message, "unknown");
+    expect(h.provisionCert).not.toHaveBeenCalled();
+    expect(h.renewCert).not.toHaveBeenCalled();
+    expect(h.updateDomain).not.toHaveBeenCalled();
+    expect(h.updateSsl).not.toHaveBeenCalled();
+  });
   it("reports an edge mismatch without repeatedly issuing a certificate", async () => {
     h.provider = true;
     domain({ sslStatus: "active" });

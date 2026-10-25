@@ -25,21 +25,28 @@
  *
  * Read-only and side-effect free. Computed on demand, NOT folded into the project
  * read payload, matching how the other attention data works (`/commit-status`,
- * `/port-check`, `/routing/edge-status`) — so the hot list/detail reads pay
- * nothing for it.
+ * `/port-check`, `/routing/edge-status`). The hot list/detail reads do not fetch
+ * this action list. Runtime-health
+ * attention reuses the existing incident state; the global Issues feed already
+ * reads those incidents directly and does not duplicate them as pending actions.
  */
 
 import { reportCaughtError as observeCaughtError } from "@repo/core/diagnostics";
 import { getPortCheckIssue, getPortCheckTarget, type PortCheckResult } from "@repo/core";
 import { activeDeploymentForProject, findActiveDeployment } from "@repo/platform/engine/lib/active-deployment";
 import { repos } from "@repo/db";
-import type { Deployment } from "@repo/db";
+import type { Deployment, ServiceIncident } from "@repo/db";
 import { compileVercelRouting, type PortStopTarget } from "@repo/adapters";
 import * as sessionManager from "@repo/platform/engine/modules/deployments/session-manager";
 // Leaf import, not the ./compose barrel — this needs one pure predicate over
 // `project.framework`, not the whole compose pipeline in the graph.
 import { isMultiServiceProject } from "@repo/platform/engine/modules/deployments/compose/project-services";
-import { deploymentIsInFlight, deploymentRoutingUnsynced } from "@repo/platform/engine/modules/projects/deployment-flags";
+import {
+  deploymentIsInFlight,
+  deploymentRoutingUnsynced,
+} from "@repo/platform/engine/modules/projects/deployment-flags";
+
+import { loadProjectRuntimeHealth } from "./project-runtime-health";
 
 // ─── Shape ──────────────────────────────────────────────────────────────────
 
@@ -52,6 +59,8 @@ export type PendingActionKind =
   | "partial_decision"
   /** Live, but the managed edge route didn't sync. */
   | "routing_unsynced"
+  /** An existing open health incident on the active workload. */
+  | "runtime_health"
   /** A custom domain whose DNS hasn't verified. */
   | "domain_unverified"
   /** A certificate that errored or expired. */
@@ -300,6 +309,45 @@ function buildRoutingUnsynced(projectId: string, dep: Deployment): PendingAction
   };
 }
 
+/** Deployment success and current runtime health are separate facts. */
+function buildRuntimeHealth(
+  projectId: string,
+  dep: Deployment,
+  incidents: ServiceIncident[],
+): PendingAction | null {
+  if (incidents.length === 0) return null;
+  return {
+    id: `runtime_health:${dep.id}`,
+    kind: "runtime_health",
+    severity: "action_required",
+    title: "Service health needs attention",
+    message: incidents
+      .map((row) => `${row.serviceName}: ${row.reason ?? row.kind}`)
+      .join("; "),
+    details: {
+      deploymentId: dep.id,
+      href: `/projects/${projectId}/health`,
+      incidents: incidents.map((row) => ({
+        id: row.id,
+        serviceId: row.serviceId,
+        serviceName: row.serviceName,
+        kind: row.kind,
+        reason: row.reason,
+        exitCode: row.exitCode,
+        oomKilled: row.oomKilled,
+        restartCount: row.restartCount,
+      })),
+    },
+    resolveWith: [
+      {
+        label: "Redeploy",
+        method: "POST",
+        path: `/api/deployments/${dep.id}/redeploy`,
+      },
+    ],
+  };
+}
+
 type DomainRow = Awaited<ReturnType<typeof repos.domain.listByProject>>[number];
 
 /**
@@ -469,6 +517,7 @@ export function collectPendingActions(input: {
   latest: Deployment | null;
   active: Deployment | null;
   domains: DomainRow[];
+  runtimeIncidents?: ServiceIncident[];
 }): PendingAction[] {
   const { project, latest, active, domains } = input;
   const actions: PendingAction[] = [];
@@ -489,6 +538,8 @@ export function collectPendingActions(input: {
     if (decision) actions.push(decision);
     const routing = buildRoutingUnsynced(project.id, active);
     if (routing) actions.push(routing);
+    const runtimeAction = buildRuntimeHealth(project.id, active, input.runtimeIncidents ?? []);
+    if (runtimeAction) actions.push(runtimeAction);
     actions.push(...buildPortAdvisories(active, isMultiServiceProject(project)));
   }
 
@@ -514,15 +565,16 @@ export async function getProjectPendingActions(
   const project = await repos.project.findById(projectId);
   if (!project || project.organizationId !== organizationId) return [];
 
-  const [latest, active, domains] = await Promise.all([
+  const [latest, active, domains, runtimeHealth] = await Promise.all([
     repos.deployment.findLatestByProject(projectId).catch((diagnosticFailure) => { observeCaughtError(diagnosticFailure, "platform/engine/modules/projects/pending-actions.service"); return null; }),
     project.activeDeploymentId
       ? findActiveDeployment(project).catch((diagnosticFailure) => { observeCaughtError(diagnosticFailure, "platform/engine/modules/projects/pending-actions.service"); return null; })
       : Promise.resolve(null),
     repos.domain.listByProject(projectId).catch((diagnosticFailure) => { observeCaughtError(diagnosticFailure, "platform/engine/modules/projects/pending-actions.service"); return []; }),
+    loadProjectRuntimeHealth([project]),
   ]);
 
-  return collectPendingActions({ project, latest: latest ?? null, active: active ?? null, domains });
+  return collectPendingActions({ project, latest: latest ?? null, active: active ?? null, domains, runtimeIncidents: runtimeHealth.get(projectId) ?? [] });
 }
 
 /**
@@ -555,6 +607,8 @@ export async function getOrgPendingActions(
     repos.domain.listByProjects(ids).catch((diagnosticFailure) => { observeCaughtError(diagnosticFailure, "platform/engine/modules/projects/pending-actions.service"); return new Map<string, DomainRow[]>(); }),
   ]);
 
+  // Global Issues already reads canonical workload incidents separately. Do not
+  // add a second pending-action copy of the same health incident to that feed.
   for (const project of projects) {
     const items = collectPendingActions({
       project,
@@ -593,6 +647,10 @@ export async function getDeploymentPendingActions(
   }
   const decision = buildPartialDecision(dep);
   if (decision) actions.push(decision);
+  const runtimeHealth = project?.organizationId === organizationId && project.activeDeploymentId === dep.id
+    ? await loadProjectRuntimeHealth([project]) : new Map<string, ServiceIncident[]>();
+  const runtimeAction = buildRuntimeHealth(dep.projectId, dep, runtimeHealth.get(dep.projectId) ?? []);
+  if (runtimeAction) actions.push(runtimeAction);
   if (project) actions.push(...buildPortAdvisories(dep, isMultiServiceProject(project)));
   return actions.sort(bySeverity);
 }

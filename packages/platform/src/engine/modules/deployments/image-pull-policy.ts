@@ -1,9 +1,7 @@
 import type { Deployment } from "@repo/db";
+import { isMutableImageRef } from "@repo/core";
 
-/** A ref that can move under us: anything not pinned to a digest. */
-export function isMutableImageRef(ref: string): boolean {
-  return !/(?:^|@)sha256:[a-f0-9]{64}$/.test(ref.trim());
-}
+export { isMutableImageRef } from "@repo/core";
 
 export function deploymentImagePullPolicy(
   dep: Pick<Deployment, "trigger">,
@@ -14,7 +12,10 @@ export function deploymentImagePullPolicy(
   if (dep.trigger === "rollback") return { force: false, refreshMutableTag: false };
   return {
     force: dep.trigger === "update" || forcePullImages === true,
-    refreshMutableTag: dep.trigger === "manual" && !!imageRef && isMutableImageRef(imageRef),
+    refreshMutableTag:
+      (dep.trigger === "manual" || dep.trigger === "redeploy") &&
+      !!imageRef &&
+      isMutableImageRef(imageRef),
   };
 }
 
@@ -22,9 +23,9 @@ export function deploymentImagePullPolicy(
  * Whether a deploy re-pulls its image instead of reusing one already present on the host.
  * Shared by the single-image pipeline (Docker and the cluster builder) and the Compose path.
  *
- * Manual deploys request a registry tag refresh; the runtime proves registry
- * provenance before pulling, preserving local artifacts. Webhook deploys keep
- * pull-if-missing unless explicitly forced. Rollbacks always replay their pins.
+ * Manual deploys and redeploys request a registry tag refresh; the runtime proves
+ * registry provenance before pulling, preserving local artifacts. Webhook deploys
+ * keep pull-if-missing unless explicitly forced. Rollbacks always replay their pins.
  */
 export function deploymentForcesImagePull(
   dep: Pick<Deployment, "trigger">,

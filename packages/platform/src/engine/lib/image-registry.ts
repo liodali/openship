@@ -143,11 +143,11 @@ async function headManifest(
  * Returns null on ANY failure (unknown/private registry, network, auth, rate
  * limit) — the caller treats null as "no update info" and never blocks.
  */
-export async function resolveLatestImageDigest(image: string): Promise<string | null> {
+export async function resolveLatestImageDigest(image: string, options?: { refresh?: boolean }): Promise<string | null> {
   const cached = cache.get(image);
   // Note: cache read uses the wall clock; callers pass real images, and a stale
   // few-minute entry is acceptable for a background scan.
-  if (cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.digest;
+  if (!options?.refresh && cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.digest;
 
   const digest = await resolveUncached(image);
   cache.set(image, { digest, at: Date.now() });

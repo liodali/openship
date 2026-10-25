@@ -13,8 +13,11 @@
 
 import { reportCaughtError as observeCaughtError } from "@repo/core/diagnostics";
 import { repos, type Project, type Service } from "@repo/db";
-import { getProjectType, type ComposeAdvanced, type StackId } from "@repo/core";
-import { serviceKind, type DeployableService } from "../../../lib/deployable-service";
+import { getProjectType, composeNamespaceDependencies, type ComposeAdvanced, type StackId } from "@repo/core";
+import { hasSourceBuildRecipe, serviceKind, type DeployableService } from "../../../lib/deployable-service";
+import { resolveServicePublicEndpoints } from "../../../lib/public-endpoints";
+import { isMaterializedAppRow } from "../../services/materialized-app-row";
+import { replaysFrozenDeployment } from "../deployment-artifacts";
 export { serviceKind } from "../../../lib/deployable-service";
 
 export function isMultiServiceProject(
@@ -123,7 +126,7 @@ export function newerThanRestoredRelease(dep: {
   trigger?: string | null;
   meta?: unknown;
 }): (service: { name: string }) => boolean {
-  if (dep.trigger !== "rollback") return () => false;
+  if (!replaysFrozenDeployment(dep)) return () => false;
   const frozen = (dep.meta as { composeServices?: Array<{ name?: string }> } | null)
     ?.composeServices;
   const names = new Set((frozen ?? []).map((s) => s.name).filter((n): n is string => !!n));
@@ -134,9 +137,10 @@ export function newerThanRestoredRelease(dep: {
 export async function resolveProjectServicePreflightServices(
   projectId: string,
   requestServices?: DeployableService[] | null,
+  savedServices?: Service[],
 ): Promise<DeployableService[]> {
   if (requestServices?.length) return requestServices;
-  const services = await listProjectComposeServices(projectId);
+  const services = savedServices ?? (await listProjectComposeServices(projectId));
   // One round trip for "has this service EVER produced a service_deployment
   // row" — distinguishes a saved row nobody has ever deployed (eligible for
   // the dead-row preflight carve-out) from a fresh row about to be deployed
@@ -152,16 +156,88 @@ export async function resolveProjectServicePreflightServices(
 export async function shouldUseProjectServicePipeline(
   project: Project,
   requestServices?: DeployableService[] | null,
+  savedServices?: Service[],
 ): Promise<boolean> {
   if (requestServices?.length) return true;
   // Both compose AND monorepo rows trigger the unified pipeline, but disabled
   // rows are retained configuration rather than deployable topology. Counting
   // them here routes a single-app project with only disabled sidecars into an
   // empty service deploy (notably after switching it to a release image).
-  if ((await listProjectComposeServices(project.id)).some((service) => service.enabled !== false)) {
+  const services = savedServices ?? (await listProjectComposeServices(project.id));
+  if (services.some((service) => service.enabled !== false)) {
     return true;
   }
 
   // Fallback for compose projects that don't have synced service rows.
   return isMultiServiceProject(project);
+}
+
+/** One inherited source app plus image-only infrastructure, not general Compose.
+ * Overrides on the app row belong to the multi-app pipeline and are never lost
+ * by treating that row as its parent project's single app. */
+export function primaryAppWithInfrastructure(
+  project: Pick<
+    Project,
+    | "slug"
+    | "rootDirectory"
+    | "framework"
+    | "composePath"
+    | "buildCommand"
+    | "startCommand"
+    | "port"
+    | "compositeRoutes"
+  >,
+  services: Service[],
+) {
+  if (
+    (isMultiServiceProject(project) && project.framework !== "docker") ||
+    project.composePath?.trim() ||
+    project.compositeRoutes?.length ||
+    !hasSourceBuildRecipe(project)
+  )
+    return null;
+  const enabled = services.filter((service) => service.enabled);
+  const apps = enabled.filter((service) => serviceKind(service) === "monorepo");
+  if (apps.length !== 1) return null;
+  const app = apps[0]!;
+  if (
+    !isMaterializedAppRow(project, app) ||
+    (app.rootDirectory ?? ".") !== (project.rootDirectory ?? ".") ||
+    Object.keys(app.buildArgs ?? {}).length ||
+    app.namespaceVolumes === false ||
+    app.alwaysRebuildGlobs?.length ||
+    (app.restart && !["unless-stopped", "always"].includes(app.restart)) ||
+    app.ports?.length ||
+    (app.exposedPort && Number(app.exposedPort) !== project.port) ||
+    resolveServicePublicEndpoints(app).some(
+      (endpoint) => endpoint.port != null && endpoint.port !== project.port,
+    ) ||
+    Object.keys(app.environment ?? {}).length ||
+    app.volumes?.length ||
+    Object.keys(app.advanced ?? {}).length ||
+    app.command ||
+    app.commandArgv?.length ||
+    app.buildImage ||
+    app.packageManager
+  )
+    return null;
+  const infrastructure = enabled.filter((service) => service.id !== app.id);
+  if (
+    !infrastructure.length ||
+    infrastructure.some(
+      (service) =>
+        serviceKind(service) !== "compose" ||
+        !service.image ||
+        service.exposed ||
+        service.build ||
+        service.dockerfile ||
+        service.advanced?.build ||
+        service.dependsOn?.includes(app.name) ||
+        composeNamespaceDependencies(service.advanced).includes(app.name),
+    )
+  )
+    return null;
+  if (app.dependsOn?.some((name) => !infrastructure.some((service) => service.name === name)))
+    return null;
+  return { app, infrastructure };
 }

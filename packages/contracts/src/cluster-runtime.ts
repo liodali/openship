@@ -17,14 +17,14 @@ export const ClusterRuntimeSchema = Type.Object(
   {
     id,
     clusterId: id,
-    provider: Type.Literal("k3s"),
+    provider: Type.Union([Type.Literal("k3s"), Type.Literal("swarm")]),
     status: ClusterRuntimeStatusSchema,
     intent: Type.Union([Type.Literal("setup"), Type.Literal("remove")]),
     sequence: Type.Integer({ minimum: 1 }),
     generation: Type.Integer({ minimum: 1 }),
     plan: Type.Object({
-      networkId: id,
-      networkRevision: Type.Integer({ minimum: 1 }),
+      networkId: Type.Union([id, Type.Null()]),
+      networkRevision: Type.Union([Type.Integer({ minimum: 1 }), Type.Null()]),
       version: nullable,
       podCidr: nullable,
       serviceCidr: nullable,

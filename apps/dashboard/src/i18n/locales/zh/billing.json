@@ -136,7 +136,8 @@
     "billingInterval": "计费周期",
     "monthly": "按月",
     "annual": "按年",
-    "billedAnnually": "按年计费"
+    "billedAnnually": "按年计费",
+    "annualTotal": "每年一次性收取 {price}，可随时取消续订"
   },
   "topups": {
     "loadError": "加载充值包失败",
@@ -719,8 +720,10 @@
     "nextPlan": "新套餐"
   },
   "purchase": {
+    "manage": "管理你的服务器",
+    "manageDescription": "连接自己的服务器，管理部署、域名、监控和备份。",
     "mode": "计费方式",
-    "monthly": "月付套餐",
+    "monthly": "云套餐",
     "payg": "预付按量计费",
     "title": "预付费托管",
     "description": "选择资源等级、添加额度，并按服务器用量付费。",
@@ -851,6 +854,35 @@
       "processing": "付款已提交 · 正在确认状态",
       "canceling": "正在确认取消…",
       "unavailable": "付款状态暂时不可用"
+    }
+  },
+  "managementPlans": {
+    "label": "支持方案",
+    "basic": "基础",
+    "priority": "优先",
+    "email": "电子邮件支持",
+    "prioritySupport": "优先支持",
+    "description": "部署和更新应用、监控运行状态并备份数据。通过 Openship 管理您自己的服务器。",
+    "basicDescription": "适合日常应用和个人项目。",
+    "priorityDescription": "适合需要优先支持的生产应用。",
+    "serversIncluded": "{count} 台已连接服务器",
+    "serverCount": "服务器数量",
+    "extraServers": "包含 {included} 台 · 每增加一台 {price}/月",
+    "billingNote": "按月计费，随时取消",
+    "selected": "已选择",
+    "select": "选择 {name}",
+    "monthlyTotal": "每月总计",
+    "includedTitle": "两个套餐均包含",
+    "cloudIncluded": "您的付费 Cloud Space 已包含 Basic。Priority 每月另加 {price}。",
+    "cloudBasic": "Cloud 已包含",
+    "perMonth": "/月",
+    "features": {
+      "updates": "应用部署和镜像更新",
+      "health": "应用健康检查和告警",
+      "monitoring": "CPU、内存和存储监控",
+      "domains": "域名和自动 HTTPS",
+      "backups": "定时备份和恢复",
+      "automation": "API、SDK 和 CLI 访问"
     }
   }
 }

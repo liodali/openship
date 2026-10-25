@@ -72,6 +72,9 @@ export interface WorkloadTarget {
   serviceName: string;
   serverId: string | null;
   containerId: string | null;
+  /** Release and stored identity hint used to resolve the live container. */
+  deploymentId?: string | null;
+  trackedContainerId?: string | null;
 }
 
 /** What one tick observed about a broken workload. */
@@ -206,6 +209,8 @@ export async function recordWorkloadFailure(
     restartCount: observation.restartCount,
     oomKilled: observation.oomKilled,
     containerId: target.containerId,
+    deploymentId: target.deploymentId ?? null,
+    trackedContainerId: target.trackedContainerId ?? null,
   };
 
   if (!existing) {

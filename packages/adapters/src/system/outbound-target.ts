@@ -2,16 +2,16 @@
  * SSRF guard for user-supplied outbound targets (webhook URLs, backup-destination
  * endpoints/hosts, container registry hosts, …). Blocks loopback / private /
  * link-local / metadata / CGNAT / ULA destinations, and — for hostnames —
- * resolves DNS and rejects if ANY resolved address is private (defeats DNS
- * rebinding). Centralized so every outbound sink shares one policy instead of
- * ad-hoc per-call regexes (SaaS audit: 3 separate SSRF sinks had none).
+ * resolves DNS and rejects if ANY resolved address is private. Transports must
+ * dial the returned IP to prevent DNS rebinding. Centralized so outbound sinks
+ * share one policy instead of ad-hoc per-call regexes.
  *
- * Two entry points:
+ * Entry points:
  *   - `assertPublicUrlLiteral` / `assertPublicHostLiteral` — sync, literal-only
  *     (no DNS). Use at create/update validation time to reject obvious abuse.
- *   - `assertPublicUrl` / `assertPublicHost` — async, resolves DNS and pins the
- *     policy to every resolved IP. Use at fetch/connect time (the real defense
- *     against a hostname that later resolves to a private IP).
+ *   - `assertPublicUrl` / `assertPublicHost` — async validation for create/update.
+ *   - `resolvePinnedHost` — use its returned IP for the actual connection;
+ *     validation followed by a second DNS lookup is not a safe transport.
  */
 
 import { reportCaughtError as observeCaughtError } from "@repo/core/diagnostics";
@@ -93,7 +93,7 @@ export function assertPublicUrlLiteral(raw: string, opts: { allowHttp?: boolean 
 }
 
 /** Async host guard: literal check + DNS-resolve and reject if ANY resolved
- *  address is private (DNS-rebinding defense). Use at connect/fetch time. */
+ *  address is private. Validation only; transports must use resolvePinnedHost. */
 export async function assertPublicHost(hostRaw: string): Promise<void> {
   await resolvePinnedHost(hostRaw);
 }
@@ -149,7 +149,7 @@ export async function resolvePinnedHost(
   return { ip: chosen.address, family: chosen.family };
 }
 
-/** Async URL guard: protocol + literal + DNS-pin. Use at fetch time. */
+/** Async URL validation: protocol + literal + DNS. Does not pin a transport. */
 export async function assertPublicUrl(raw: string, opts: { allowHttp?: boolean } = {}): Promise<void> {
   let url: URL;
   try {

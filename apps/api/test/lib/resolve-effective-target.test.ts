@@ -44,7 +44,7 @@ describe("resolveEffectiveTarget", () => {
     ).toBe("cloud");
   });
 
-  it("the SaaS (cloud base) never routes to SSH even with a stray serverId", () => {
-    expect(resolveEffectiveTarget("cloud", meta({ serverId: "srv_1" }))).toBe("cloud");
+  it("hosted management selects the server; the resolver separately verifies ownership and paid access", () => {
+    expect(resolveEffectiveTarget("cloud", meta({ serverId: "srv_1" }))).toBe("server");
   });
 });

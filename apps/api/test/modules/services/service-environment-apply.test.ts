@@ -285,19 +285,62 @@ describe("apply service environment operation", () => {
     expect(captures.every((at) => at >= cutoff)).toBe(true);
   });
 
-  it.each(["other organization", "other service", "disabled", "no container", "in flight"])(
+  it.each(["other organization", "other service", "disabled", "in flight"])(
     "refuses %s before runtime mutation",
     async (problem) => {
       if (problem === "other organization")
         h.project.mockResolvedValue({ ...project, organizationId: "org2" });
       if (problem === "other service") h.services.mockResolvedValue([]);
       if (problem === "disabled") h.services.mockResolvedValue([{ ...service, enabled: false }]);
-      if (problem === "no container") h.rows.mockResolvedValue([]);
       if (problem === "in flight") h.inFlight.mockResolvedValue([{ id: "building" }]);
       await expect(applyServiceEnvironment(ctx, "p1", "api")).rejects.toBeInstanceOf(Error);
       expect(h.resolveRuntime).not.toHaveBeenCalled();
       expect(apply).not.toHaveBeenCalled();
       expect(h.record).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["missing record", "empty container record", "Compose metadata"])(
+    "applies to the verified live service with %s and repairs bookkeeping only on success",
+    async (legacy) => {
+      h.rows.mockResolvedValue(
+        legacy === "empty container record" ? [{ ...row, containerId: null }] : [],
+      );
+      if (legacy === "Compose metadata")
+        h.deployment.mockResolvedValue({
+          ...deployment,
+          meta: { composeServices: [{ name: "api", containerId: "legacy-api" }] },
+        });
+      await applyServiceEnvironment(ctx, "p1", "api");
+      expect(apply).toHaveBeenCalledWith("old-api", expect.any(Object), expect.any(Object));
+      expect(h.liveContainer).toHaveBeenCalledWith(
+        runtime,
+        expect.objectContaining({
+          tracked: legacy === "Compose metadata" ? "legacy-api" : null,
+        }),
+        { requireLiveQuery: true, tiers: ["label", "name", "trackedId"] },
+      );
+      expect(h.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          expectedContainerId: null,
+          previousContainerId: "old-api",
+          containerId: "new-api",
+        }),
+      );
+      expect(h.createDeployment).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["missing", "unreachable"])(
+    "does not replace a legacy service when the host is %s",
+    async (state) => {
+      h.rows.mockResolvedValue([]);
+      if (state === "missing") h.liveContainer.mockResolvedValue(null);
+      else h.liveContainer.mockRejectedValueOnce(new Error("SSH unreachable"));
+      await expect(applyServiceEnvironment(ctx, "p1", "api")).rejects.toThrow();
+      expect(apply).not.toHaveBeenCalled();
+      expect(h.record).not.toHaveBeenCalled();
+      expect(runtime.dispose).toHaveBeenCalledOnce();
     },
   );
 
@@ -329,11 +372,11 @@ describe("apply service environment operation", () => {
   it("keeps Cloud quota and allocation checks ahead of the runtime replacement", async () => {
     h.cloud.CLOUD_MODE = true;
     await applyServiceEnvironment(ctx, "p1", "api");
-    expect(h.plan).toHaveBeenCalledExactlyOnceWith("org1", null);
-    expect(h.quota).toHaveBeenCalledExactlyOnceWith("org1", 1, ["api"], null);
+    expect(h.plan).toHaveBeenCalledExactlyOnceWith("org1", null, undefined);
+    expect(h.quota).toHaveBeenCalledExactlyOnceWith("org1", 1, ["api"], null, undefined);
     expect(h.limits).toHaveBeenCalledExactlyOnceWith("org1", runtime, [
       { containerId: "old-api", allocatedResources: row.allocatedResources },
-    ], null);
+    ], null, undefined);
     expect(h.limits.mock.invocationCallOrder[0]).toBeLessThan(apply.mock.invocationCallOrder[0]!);
   });
 

@@ -64,6 +64,10 @@ vi.mock("@repo/db", () => ({
     },
   },
 }));
+vi.mock("../../../src/lib/terminal-authorization", () => ({
+  resolveTerminalContext: async (_headers: Headers, ctx: unknown) => ctx,
+  watchTerminalAuthorization: () => () => {},
+}));
 vi.mock("../../../src/lib/ws", () => ({ upgradeWebSocket: (fn: unknown) => fn }));
 vi.mock("@repo/platform/engine/lib/auth", () => ({ auth: { api: { getSession: vi.fn() } } }));
 vi.mock("@repo/platform/engine/lib/ssh-manager", () => ({ sshManager: h.ssh }));
@@ -75,6 +79,7 @@ vi.mock("@repo/platform/engine/lib/cloud-workspace-lock", () => ({
 }));
 vi.mock("@repo/platform/engine/lib/authorization", () => ({
   checkPermission: vi.fn(async () => true),
+  authorization: { checkPermissionOnResource: vi.fn(async () => true) },
 }));
 vi.mock("../../../src/middleware/active-organization", () => ({
   resolveActiveOrganizationId: vi.fn(async () => "org_1"),

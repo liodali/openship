@@ -8,12 +8,13 @@ import { getPlatformKernel } from "@repo/platform/engine/lib/platform";
 import { flushAudit } from "@repo/platform/engine/lib/audit-emitter";
 import { mintPatToken } from "@repo/platform/engine/lib/pat";
 import { tokenRoutes } from "../../../src/modules/tokens/token.routes";
+import { deploymentRoutes } from "../../../src/modules/deployments/deployment.routes";
 import { projectRoutes } from "../../../src/modules/projects/project.routes";
 import { healthRoutes } from "../../../src/modules/health/health.routes";
 import { handleApiError } from "../../../src/middleware/error-handler";
 
 installFakeRunner();
-const app = new Hono().onError(handleApiError).route("/api/health", healthRoutes).route("/api/tokens", tokenRoutes).route("/api/projects", projectRoutes);
+const app = new Hono().onError(handleApiError).route("/api/health", healthRoutes).route("/api/deployments", deploymentRoutes).route("/api/tokens", tokenRoutes).route("/api/projects", projectRoutes);
 function remote(owner: SeededOwner, token = owner.token) {
   return new OpenshipClient({ baseUrl: "http://openship.test", token, organizationId: owner.orgId, fetch: ((url, init) => app.request(url as string, init)) as typeof fetch });
 }
@@ -133,5 +134,27 @@ describe("token lifecycle shared by native SDK and HTTP", () => {
     await expect(repos.personalAccessToken.createWithGrants(input, [grant, grant])).rejects.toBeDefined();
     expect(await repos.personalAccessToken.findActiveByHash(values.tokenHash)).toBeNull();
     expect(await repos.personalAccessToken.listByUser(owner.userId)).toHaveLength(1);
+  });
+});
+
+describe("capability-only deployment history through real stored grants", () => {
+  it("lists the selected project's history through HTTP and native SDK without widening project or org access", async () => {
+    const owner = await seedOwner(), p = await project(owner, "history"), hidden = await project(owner, "hidden-history"), c = await clients(owner);
+    const row = (await repos.deployment.create({ projectId: p.id, organizationId: owner.orgId, branch: "main", status: "failed" }))!;
+    const issued = await c.remote.tokens.create({ name: "History only", grants: [{ resourceType: "project", resourceId: p.id, permissions: ["deployments:read"] }] });
+    const limited = await clients(owner, { sessionId: `pat:${issued.id}`, principalKind: "pat", tokenScope: { tokenId: issued.id }, credential: { organizationId: owner.orgId, readOnly: false } });
+    const actor = remote(owner, issued.token);
+    for (const ship of [limited.native, actor]) {
+      expect((await ship.projects.listDeployments(p.id)).data.map(deployment => deployment.id)).toContain(row.id);
+      expect((await ship.deployments.list({ projectId: p.id })).data.map(deployment => deployment.id)).toContain(row.id);
+      await expect(ship.projects.get(p.id)).rejects.toMatchObject({ code: "NOT_FOUND" });
+      await expect(ship.projects.listDeployments(hidden.id)).rejects.toMatchObject({ code: "NOT_FOUND" });
+      await expect(ship.deployments.list({ projectId: hidden.id })).rejects.toMatchObject({ code: "NOT_FOUND" });
+      await expect(ship.deployments.list()).rejects.toMatchObject({ code: "NOT_FOUND" });
+      await expect(ship.deployments.cancel(row.id)).rejects.toMatchObject({ code: "NOT_FOUND" });
+      await expect(ship.deployments.rollback(row.id)).rejects.toMatchObject({ code: "NOT_FOUND" });
+    }
+    await c.remote.tokens.revoke(issued.id);
+    await expect(actor.projects.listDeployments(p.id)).rejects.toMatchObject({ status: 401 });
   });
 });

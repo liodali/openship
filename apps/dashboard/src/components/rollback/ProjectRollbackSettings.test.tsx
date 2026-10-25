@@ -50,8 +50,9 @@ const click = async (label: string) => act(async () => button(label).click());
 
 it("shows the enforced default and explains the active/pinned exceptions", async () => {
   await render();
-  expect(container.textContent).toContain("5 versions");
+  expect(container.textContent).toContain("Up to 5 versions");
   expect(container.textContent).toContain("instance default");
+  expect(container.textContent).toContain("Under disk pressure");
   expect(container.textContent).toContain("Active and pinned releases are extra");
   expect(button("Decrease rollback history").disabled).toBe(false);
 });
@@ -129,4 +130,20 @@ it.each([0, 20])("bounds the stepper at %i", async (window) => {
   h.load.mockResolvedValueOnce(capacity(window));
   await render();
   expect(button(window === 0 ? "Decrease rollback history" : "Increase rollback history").disabled).toBe(true);
+});
+
+
+it("restores automatic retention by clearing the explicit override", async () => {
+  h.load.mockResolvedValueOnce({
+    data: { ...capacity(3).data, explicit: 3, source: "explicit" },
+  });
+  await render();
+  expect(container.textContent).not.toContain("Under disk pressure");
+  h.load.mockResolvedValueOnce(capacity());
+  await click("Automatic");
+  expect(h.update).toHaveBeenCalledExactlyOnceWith("project", {
+    rollbackWindow: null,
+  });
+  expect(container.textContent).toContain("Up to 5 versions");
+  expect(container.textContent).toContain("Under disk pressure");
 });

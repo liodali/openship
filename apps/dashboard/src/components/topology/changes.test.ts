@@ -467,4 +467,28 @@ describe("topology review and apply", () => {
     ).rejects.toThrow("already exists");
     expect(io.createService).not.toHaveBeenCalled();
   });
+  it("removes the old swap opt-in when the service checkbox is cleared", async () => {
+    const saved = { ...api, advanced: { resources: { memoryMb: 512, swapDisabled: true } } };
+    const io = ports();
+    io.listServices = vi.fn(async () => [saved]);
+    const changes = stageServiceChange([], saved,
+      { advanced: { resources: { cpuCores: 1, memoryMb: 512 } } }, true);
+    await applyTopologyChanges({ changes, intent: "update", deployed: true, ports: io, onSaved: () => {} });
+    expect(io.updateService).toHaveBeenCalledWith("api", expect.objectContaining({
+      advanced: { resources: { cpuCores: 1, memoryMb: 512 } },
+    }));
+  });
+
+  it("stages the swap opt-in together with the memory limit it needs", () => {
+    const changes = stageServiceChange(
+      [],
+      api,
+      { advanced: { resources: { memoryMb: 1024, swapDisabled: true } } },
+      true,
+    );
+    expect(changes[0]).toMatchObject({
+      kind: "update-service",
+      patch: { advanced: { resources: { memoryMb: 1024, swapDisabled: true } } },
+    });
+  });
 });

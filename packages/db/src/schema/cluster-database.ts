@@ -61,6 +61,9 @@ export const clusterDatabase = pgTable(
     envKey: text("env_key"),
     /** Exact encrypted value inserted by Connect; detaching never deletes a user's replacement. */
     envValueEncrypted: text("env_value_encrypted"),
+    /** Optional reader endpoint; owns only the exact encrypted env value it inserted. */
+    readEnvKey: text("read_env_key"),
+    readEnvValueEncrypted: text("read_env_value_encrypted"),
     leaseExpiresAt: timestamp("lease_expires_at"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),

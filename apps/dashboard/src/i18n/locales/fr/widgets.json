@@ -285,7 +285,26 @@
       "repoCountOther": "{count} dépôts",
       "coveredByOrg": "Couvert par l'autorisation à l'échelle de l'organisation ci-dessus.",
       "noRepos": "Aucun dépôt.",
-      "searchRepos": "Rechercher des dépôts…"
+      "searchRepos": "Rechercher des dépôts…",
+      "capabilityAreas": {
+        "domains": "Domaines",
+        "deployments": "Déploiements"
+      },
+      "capabilityLabels": {
+        "domains:read": "Voir",
+        "domains:write": "Ajouter et vérifier",
+        "domains:delete": "Supprimer",
+        "deployments:read": "Voir",
+        "deployments:trigger": "Déclencher"
+      },
+      "capabilityHints": {
+        "domains:read": "Lister les domaines, les enregistrements DNS et l'état des certificats",
+        "domains:write": "Ajouter, vérifier et renouveler des domaines, lancer des challenges DNS",
+        "domains:delete": "Supprimer des domaines",
+        "deployments:read": "Lire les déploiements, les journaux et l'état des builds",
+        "deployments:trigger": "Démarrer, redéployer, redémarrer, épingler les déploiements et gérer leurs décisions. Annuler, restaurer et supprimer nécessitent les droits administrateur du projet."
+      },
+      "capabilityImplied": "Inclus dans le niveau d'accès de cette ressource"
     },
     "sourceAccess": {
       "title": "Accès au code source",
@@ -483,6 +502,31 @@
       "dnsHintSelfhosted": "Ajoutez l'enregistrement A pointant vers l'IP de votre serveur, puis l'enregistrement TXT pour la vérification.",
       "dnsHintCloud": "Ajoutez l'enregistrement CNAME pour le routage, puis l'enregistrement TXT pour la vérification.",
       "dnsPropagation": "La propagation des changements DNS peut prendre jusqu'à 48 heures."
+    },
+    "protection": {
+      "unknown": "Impossible de vérifier la protection.",
+      "title": "Protection par mot de passe",
+      "chooseHostname": "Choisissez d’abord un nom d’hôte",
+      "description": "Les visiteurs saisissent un mot de passe partagé une fois, puis restent connectés pendant 24 heures. Le modifier déconnecte tout le monde.",
+      "unsupported": "Disponible pour les noms d’hôte personnalisés exacts avec HTTPS sur un edge auto-hébergé. Cloud, les sous-domaines gratuits et les proxys TLS externes ne sont pas encore pris en charge.",
+      "loading": "Vérification de la protection…",
+      "staged": "Mot de passe préparé. La protection sera installée avant la publication de cette route.",
+      "pending": "Enregistré, mais pas encore confirmé sur l’edge. Réessayez ou déployez ce projet ; ne le partagez pas encore comme privé.",
+      "protected": "La protection par mot de passe est active",
+      "public": "Cette route est publique",
+      "password": "Mot de passe du site",
+      "newPassword": "Nouveau mot de passe du site",
+      "passwordHint": "Utilisez au moins 12 caractères. Partagez-le uniquement avec les personnes autorisées.",
+      "save": "Enregistrer le mot de passe",
+      "loadFailed": "Impossible de vérifier la protection. Rouvrez cette fenêtre pour réessayer.",
+      "saveFailed": "Impossible d’appliquer la protection. Vérifiez la connexion et réessayez.",
+      "retry": "Réessayer la mise à jour de l’edge",
+      "revoke": "Déconnecter tout le monde",
+      "remove": "Retirer la protection",
+      "unlockConfirm": "Toute personne disposant de cette URL pourra ouvrir le site. Retirer le mot de passe ?",
+      "unlock": "Rendre public",
+      "cancel": "Annuler",
+      "scope": "Seul ce nom d’hôte est protégé. Les autres domaines et les ports directs des services conservent leurs propres règles d’accès. Purgez tout contenu déjà mis en cache sur un CDN externe."
     }
   },
   "updates": {

@@ -91,8 +91,9 @@ export const SYSTEM_JOB_DEFS: SystemJobDef[] = [
     label: "SSL certificate renewal",
     defaultCron: "17 3 * * *",
     // Desktop resolves each certificate's remote serving host, just like self-hosted.
-    // Both run while Openship is running; cloud owns TLS at its managed edge.
-    available: () => platform().target !== "cloud",
+    // Managed Cloud edges are excluded by the certificate resolver; customer
+    // servers use this same renewal job when their control plane is hosted.
+    available: () => true,
     run: async () => {
       const r = await renewExpiringCerts();
       return { renewed: r.renewed, failed: r.failed, total: r.total };
@@ -176,9 +177,8 @@ export const SYSTEM_JOB_DEFS: SystemJobDef[] = [
     // Only a seed — the job row is authoritative once created, so an operator with
     // many servers can stretch it from the Jobs UI without a code change.
     defaultCron: "13,43 * * * *",
-    // Cloud traffic analytics live at Oblien's edge and are read through,
-    // rather than scraped from a host OpenResty instance.
-    available: () => platform().target !== "cloud",
+    // The collector excludes provider VMs and the SaaS control-plane host.
+    available: () => true,
     run: async () => runAnalyticsScrapeSweep(),
   },
   {
@@ -326,6 +326,12 @@ export const SYSTEM_JOB_DEFS: SystemJobDef[] = [
         failed: r.failed,
       };
     },
+  },
+  {
+    key: "security:advisories",
+    label: "Security advisories",
+    defaultCron: "*/5 * * * *",
+    run: async () => (await import("../updates/security.service")).scanSecurityAdvisories(),
   },
   {
     key: "updates:scan",

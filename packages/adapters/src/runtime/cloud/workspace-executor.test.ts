@@ -27,6 +27,36 @@ function exitFrame(command: string[], code: number): Buffer {
 }
 
 describe("workspace command transport", () => {
+  it("refreshes credentials to close an owned terminal even after disposal and caller abort", async () => {
+    const pending = new Map<string, ManagedCommandRef>();
+    const hooks = { record: async (command: ManagedCommandRef) => { pending.set(command.marker, command); },
+      complete: async (marker: string) => { pending.delete(marker); } };
+    let owned: { id: string; command: string[]; alive: boolean } | undefined;
+    let opened!: () => void;
+    const socket = {
+      onOpen: (fn: () => void) => { opened = fn; }, onTerminalOutput: () => {},
+      onTerminalExit: () => {}, onClose: () => {}, onError: () => {},
+      connect: () => queueMicrotask(() => opened()), close: vi.fn(),
+    };
+    const terminal = {
+      create: async (input: { cmd: string[] }) => (owned = { id: "owned-pty", command: input.cmd, alive: true }),
+      list: async () => owned ? [owned] : [],
+      close: vi.fn(async () => { owned = undefined; return { success: true }; }),
+    };
+    const original = { terminal, ws: () => socket } as unknown as Runtime;
+    const fresh = { terminal, exec: { run: cancelProcesses, kill } } as unknown as Runtime;
+    const runtime = vi.fn(async (options?: { force?: boolean }) => options?.force ? fresh : original);
+    executor = new CloudWorkspaceExecutor(runtime, "test-vm");
+    const abort = new AbortController();
+    await withManagedCommandTracking(hooks, () => executor.runWithAbortSignal(abort.signal, async () => {
+      await executor.openShell();
+      abort.abort();
+      await executor.dispose();
+    }));
+    expect(pending.size).toBe(0);
+    expect(terminal.close).toHaveBeenCalledExactlyOnceWith("owned-pty");
+    await expect(executor.exec("after disposal")).rejects.toThrow("connection is closed");
+  });
   it("releases completed commands so a long app install does not exhaust retained task slots", async () => {
     const retained = new Set(["another-command"]);
     let sequence = 0;
@@ -104,6 +134,41 @@ describe("workspace command transport", () => {
     release();
     await vi.waitFor(() => expect(kill).toHaveBeenCalledExactlyOnceWith("late-task"));
   });
+  it("reports a command timeout only after its process exit is confirmed", async () => {
+    let release!: () => void;
+    const stopped = new Promise<void>(resolve => { release = resolve; });
+    stream.mockImplementation(async function* () {
+      yield { event: "task_id", task_id: "slow-scan" };
+      await stopped;
+      yield { event: "exit", exit_code: 137 };
+    });
+    let acknowledge!: () => void;
+    cancelProcesses.mockImplementation(async (command: string[]) => {
+      await new Promise<void>(resolve => { acknowledge = resolve; });
+      return { stdout: `stopped:${command.at(-1)}` };
+    });
+    const scan = executor.exec("du -sk /build-cache", { timeout: 10 });
+    let settled = false;
+    void scan.finally(() => { settled = true; }).catch(() => {});
+    await vi.waitFor(() => expect(cancelProcesses).toHaveBeenCalledOnce());
+    expect(settled).toBe(false);
+    acknowledge();
+    await expect(scan).rejects.toMatchObject({ name: "TimeoutError", message: "Cloud command timed out" });
+    expect(kill).toHaveBeenCalledExactlyOnceWith("slow-scan");
+    release();
+  });
+
+  it("preserves an unconfirmed-exit error when a timeout cannot stop its command", async () => {
+    stream.mockImplementation(async function* () {
+      yield { event: "task_id", task_id: "unreachable-scan" };
+      await new Promise(() => {});
+    });
+    cancelProcesses.mockRejectedValue(new Error("server unreachable"));
+    await expect(executor.exec("du -sk /build-cache", { timeout: 10 }))
+      .rejects.toMatchObject({ code: "CLOUD_COMMAND_EXIT_UNCONFIRMED" });
+    expect(kill).not.toHaveBeenCalled();
+  });
+
   it("persists command intent before dispatch and retains it when exit cannot be confirmed", async () => {
     const pending = new Map<string, ManagedCommandRef>();
     const hooks = { record: async (command: ManagedCommandRef) => { pending.set(command.marker, command); },

@@ -11,7 +11,7 @@ import { Toggle } from "@/components/project-settings/ServerSideSwitch";
 import { useOptionalDeployment } from "@/context/DeploymentContext";
 import { usePlatform } from "@/context/PlatformContext";
 import { getPublicEndpointHosts, getRecommendedSingleAppBuildImage, workloadOf, type PublicEndpoint } from "@/context/deployment/types";
-import { getRuntimeVersionPolicy, runtimeProjectUpdate, runtimeNeedsInstall, getRuntimeImage, STACKS, type StackId, type WorkloadType } from "@repo/core";
+import { getRuntimeVersionPolicy, supportsBuildImageOverride, supportsRuntimeImageOverride, runtimeProjectUpdate, runtimeNeedsInstall, getRuntimeImage, STACKS, type StackId, type WorkloadType } from "@repo/core";
 import { CustomSelect } from "@/components/ui/CustomSelect";
 import { useI18n, interpolate } from "@/components/i18n-provider";
 import { CommandEnvironmentNotice } from "./CommandEnvironmentNotice";
@@ -30,8 +30,9 @@ interface InputField {
 }
 
 interface BuildSettingsProps {
-  variant?: 'deploy' | 'import';
-  mode?: 'simple' | 'advanced';
+  allowWorker?: boolean;
+  variant?: "deploy" | "import";
+  mode?: "simple" | "advanced";
   buildData?: any;
   onSave?: (field: string, value: string) => Promise<void>;
   loading?: { [key: string]: boolean };
@@ -40,7 +41,8 @@ interface BuildSettingsProps {
 }
 
 const BuildSettings: React.FC<BuildSettingsProps> = ({
-  mode = 'simple',
+  mode = "simple",
+  allowWorker = true,
   buildData: externalBuildData,
   onSave,
   loading = {},
@@ -145,28 +147,6 @@ const BuildSettings: React.FC<BuildSettingsProps> = ({
       optional: true,
       icon: <UiIcon name="folder-out" className="size-4" />
     },
-    {
-      key: 'buildImage',
-      label: bs.buildImageLabel,
-      placeholder: recommendedBuildImage,
-      description: bs.buildImageDesc,
-      type: 'text',
-      optional: true,
-      icon: <UiIcon name="select" className="size-4" />,
-      source: 'config',
-    },
-    ...((config?.runtimeMode !== "bare" && workload !== "static" && !["compose", "monorepo", "services", "docker"].includes(config?.projectType)) || config?.runtimeImage != null ? [{
-      key: 'runtimeImage',
-      label: bs.runtimeImageLabel,
-      placeholder: runtimePolicy
-        ? runtimePolicy.images(runtimePolicy.versions.includes(config?.runtimeVersion) ? config.runtimeVersion : runtimePolicy.defaultVersion).runtimeImage
-        : getRuntimeImage((config?.framework && Object.hasOwn(STACKS, config.framework) ? config.framework : 'unknown') as StackId, config?.packageManager, config?.buildImage),
-      description: bs.runtimeImageDesc,
-      type: 'text' as const,
-      optional: true,
-      icon: <UiIcon name="select" className="size-4" />,
-      source: 'config' as const,
-    }] : []),
     ...(needsBuild ? [
       {
         key: 'productionPaths',
@@ -202,6 +182,43 @@ const BuildSettings: React.FC<BuildSettingsProps> = ({
       icon: <UiIcon name="hash" className="size-4" />
     },
   ];
+
+  const buildImageSupported = supportsBuildImageOverride(config ?? {});
+  const buildImageField: InputField = {
+    key: 'buildImage',
+    label: bs.buildImageLabel,
+    placeholder: recommendedBuildImage,
+    description: bs.buildImageDesc,
+    type: 'text',
+    optional: true,
+    icon: <UiIcon name="select" className="size-4" />,
+    source: 'config',
+  };
+  const runtimeImageSupported = supportsRuntimeImageOverride({ ...config, workloadType: workload });
+  const hasRuntimeOverrides = config?.runtimeVersion != null || config?.runtimeImage != null;
+  const runtimeImageField: InputField = {
+    key: 'runtimeImage',
+    label: bs.runtimeImageLabel,
+    placeholder: runtimePolicy
+      ? runtimePolicy.images(runtimePolicy.versions.includes(config?.runtimeVersion) ? config.runtimeVersion : runtimePolicy.defaultVersion).runtimeImage
+      : getRuntimeImage((config?.framework && Object.hasOwn(STACKS, config.framework) ? config.framework : 'unknown') as StackId, config?.packageManager, config?.buildImage),
+    description: bs.runtimeImageDesc,
+    type: 'text',
+    optional: true,
+    icon: <UiIcon name="select" className="size-4" />,
+    source: 'config',
+  };
+  const runtimeDescription = runtimeImageSupported
+    ? bs.runtimeDesc
+    : config?.runtimeMode === "bare"
+      ? bs.runtimeBareDesc
+      : workload === "static"
+        ? bs.runtimeStaticDesc
+        : config?.sourceKind === "image"
+          ? bs.runtimePrebuiltDesc
+          : config?.projectType === "docker" || config?.buildKind === "dockerfile"
+            ? bs.runtimeDockerfileDesc
+            : bs.runtimeServicesDesc;
 
   // ── General fields (always visible) ──────────────────────────────
   const generalFields: InputField[] = [];
@@ -283,13 +300,16 @@ const BuildSettings: React.FC<BuildSettingsProps> = ({
             value={displayValue || ''}
             onChange={(e) => handleChange(field, e.target.value)}
             placeholder={field.placeholder}
-            onBlur={field.key === 'runtimeImage' ? () => {
+            onBlur={field.key === 'runtimeImage' || (field.key === 'buildImage' && config?.runtimeVersion != null) ? (event) => {
               try {
-                runtimeProjectUpdate(config, { runtimeImage: config.runtimeImage || null });
+                const value = event.currentTarget.value;
+                runtimeProjectUpdate(config, {
+                  [field.key]: field.key === 'runtimeImage' && !value.trim() ? null : value,
+                });
                 setRuntimeError(null);
               } catch (error) {
-                observeCaughtError(error, "dashboard/components/import-project/BuildSettings/runtimeImage");
-                setRuntimeError(error instanceof Error ? error.message : bs.runtimeImageDesc);
+                observeCaughtError(error, "dashboard/components/import-project/BuildSettings");
+                setRuntimeError(error instanceof Error ? error.message : bs.runtimeVersionDesc);
               }
             } : undefined}
             className={field.type === 'text' ? "min-w-0 font-mono" : "min-w-0"}
@@ -358,6 +378,88 @@ const BuildSettings: React.FC<BuildSettingsProps> = ({
       </div>
     );
   };
+
+  const renderRuntimeSettings = () => (
+    <section aria-labelledby={`${fieldPrefix}-runtime-title`} className="space-y-4">
+      <div className="flex items-center gap-2 rounded-xl bg-card px-3 py-3">
+        <UiIcon name="play" className="size-3.5 shrink-0 text-muted-foreground" />
+        <h3 id={`${fieldPrefix}-runtime-title`} className="text-sm font-medium text-foreground">{bs.runtimeTitle}</h3>
+      </div>
+      <p className="text-xs text-muted-foreground">{runtimeDescription}</p>
+      {(buildImageSupported || runtimeImageSupported) && (
+        <div className="grid gap-5 @min-[40rem]/build-settings:grid-cols-2">
+          {runtimeImageSupported && (runtimePolicy || config?.runtimeVersion != null) && (
+            <div className="space-y-1.5">
+              <label
+                htmlFor={`${fieldPrefix}-runtime-version`}
+                className="block text-sm font-medium text-foreground"
+              >
+                {bs.runtimeVersionLabel}
+              </label>
+              <CustomSelect
+                id={`${fieldPrefix}-runtime-version`}
+                variant="filled"
+                triggerClassName="bg-muted/60 hover:bg-muted"
+                value={config.runtimeVersion ?? ""}
+                options={[
+                  { value: "", label: runtimePolicy ? `${bs.runtimeVersionDefault} (${runtimePolicy.defaultVersion})` : bs.runtimeVersionDefault },
+                  ...(config.runtimeVersion && !runtimePolicy?.versions.includes(config.runtimeVersion)
+                    ? [{ value: config.runtimeVersion, label: config.runtimeVersion }]
+                    : []),
+                  ...(runtimePolicy?.versions ?? []).map((version) => ({
+                    value: version,
+                    label: `${runtimePolicy!.label} ${version}`,
+                  })),
+                ]}
+                onChange={(value) => {
+                  const runtimeVersion = value || null;
+                  try {
+                    const runtime = !runtimePolicy && runtimeVersion == null
+                      ? { runtimeVersion: null }
+                      : runtimeProjectUpdate(config, { runtimeVersion });
+                    // Keep Composer enabled on first selection, even if detection
+                    // found no separate JavaScript asset build.
+                    updateConfig?.({
+                      ...runtime,
+                      ...(!config.runtimeVersion && !hasBuild && runtimeNeedsInstall(config.framework, runtimeVersion, config.options?.installCommand)
+                        ? { options: { ...config.options, hasBuild: true } }
+                        : {}),
+                    });
+                    setRuntimeError(null);
+                  } catch (error) {
+                    observeCaughtError(error, "dashboard/components/import-project/BuildSettings");
+                    setRuntimeError(error instanceof Error ? error.message : bs.runtimeVersionDesc);
+                  }
+                }}
+              />
+              <p className="text-xs text-muted-foreground">{bs.runtimeVersionDesc}</p>
+            </div>
+          )}
+
+          {buildImageSupported && <div className="space-y-1.5">
+            {renderInput(buildImageField)}
+            <p className="text-xs text-muted-foreground">{bs.buildImageDesc}</p>
+          </div>}
+          {runtimeImageSupported && <div className="space-y-1.5">
+            {renderInput(runtimeImageField)}
+            <p className="text-xs text-muted-foreground">{bs.runtimeImageDesc}</p>
+          </div>}
+        </div>
+      )}
+      {!runtimeImageSupported && hasRuntimeOverrides && (
+        <div className="space-y-3 rounded-xl bg-card p-3">
+          <p className="text-xs text-muted-foreground">{bs.runtimeOverrideUnused}</p>
+          {config.runtimeVersion != null && <p className="text-sm text-foreground">{bs.runtimeVersionLabel}: {config.runtimeVersion}</p>}
+          {config.runtimeImage != null && <p dir="ltr" className="break-all font-mono text-xs text-foreground">{config.runtimeImage}</p>}
+          <Button type="button" variant="secondary" onClick={() => {
+            updateConfig?.({ runtimeVersion: null, runtimeImage: null });
+            setRuntimeError(null);
+          }}>{bs.clearRuntimeOverrides}</Button>
+        </div>
+      )}
+      {runtimeError && <p role="alert" className="text-xs text-danger">{runtimeError}</p>}
+    </section>
+  );
 
   const visibleBuildFields = hasBuild ? buildFields : [];
   // web → start command + port; worker → start command only (no port); static → none.
@@ -532,55 +634,6 @@ const BuildSettings: React.FC<BuildSettingsProps> = ({
                 />
               </div>
               <div className="min-w-0 space-y-4 empty:hidden @min-[40rem]/build-settings:col-start-1 @min-[40rem]/build-settings:row-start-2">
-                {(runtimePolicy || config?.runtimeVersion != null) && (
-                  <div className="space-y-1.5">
-                    <label
-                      htmlFor={`${fieldPrefix}-runtime-version`}
-                      className="block text-sm font-medium text-foreground"
-                    >
-                      {bs.runtimeVersionLabel}
-                    </label>
-                    <CustomSelect
-                      id={`${fieldPrefix}-runtime-version`}
-                      variant="filled"
-                      triggerClassName="bg-muted/60 hover:bg-muted"
-                      value={config.runtimeVersion ?? ""}
-                      options={[
-                        { value: "", label: runtimePolicy ? `${bs.runtimeVersionDefault} (${runtimePolicy.defaultVersion})` : bs.runtimeVersionDefault },
-                        ...(runtimePolicy?.versions ?? []).map((version) => ({
-                          value: version,
-                          label: `${runtimePolicy!.label} ${version}`,
-                        })),
-                      ]}
-                      onChange={(value) => {
-                        const runtimeVersion = value || null;
-                        try {
-                          const runtime = !runtimePolicy && runtimeVersion == null
-                            ? { runtimeVersion: null }
-                            : runtimeProjectUpdate(config, { runtimeVersion });
-                          // Keep Composer enabled on first selection, even if detection
-                          // found no separate JavaScript asset build.
-                          updateConfig?.({
-                            ...runtime,
-                            ...(!config.runtimeVersion && !hasBuild && runtimeNeedsInstall(config.framework, runtimeVersion, config.options?.installCommand)
-                              ? { options: { ...config.options, hasBuild: true } }
-                              : {}),
-                          });
-                          setRuntimeError(null);
-                        } catch (error) {
-                          observeCaughtError(error, "dashboard/components/import-project/BuildSettings");
-                          setRuntimeError(error instanceof Error ? error.message : bs.runtimeVersionDesc);
-                        }
-                      }}
-                    />
-                    <p className="text-xs text-muted-foreground">{bs.runtimeVersionDesc}</p>
-                    {runtimeError && (
-                      <p role="alert" className="text-xs text-danger">
-                        {runtimeError}
-                      </p>
-                    )}
-                  </div>
-                )}
                 {visibleBuildFields.map(renderInput)}
                 {generalFields.map(renderInput)}
               </div>
@@ -591,22 +644,28 @@ const BuildSettings: React.FC<BuildSettingsProps> = ({
                   <UiIcon name="play" className="size-3.5 shrink-0 text-muted-foreground" />
                   <p className="text-sm font-medium text-foreground">{bs.start}</p>
                 </div>
-                <div role="group" aria-label={bs.start} className="grid grid-cols-3 gap-1">
-                  {workloadOptions.map((opt) => (
-                    <button
-                      key={opt.value}
-                      type="button"
-                      onClick={() => setWorkload(opt.value)}
-                      aria-pressed={workload === opt.value}
-                      className={`px-2 py-1.5 text-sm font-medium rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 ${
-                        workload === opt.value
-                          ? "bg-foreground text-background"
-                          : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"
-                      }`}
-                    >
-                      {opt.label}
-                    </button>
-                  ))}
+                <div
+                  role="group"
+                  aria-label={bs.start}
+                  className={`grid ${allowWorker ? "grid-cols-3" : "grid-cols-2"} gap-1`}
+                >
+                  {workloadOptions
+                    .filter((opt) => allowWorker || opt.value !== "worker")
+                    .map((opt) => (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        onClick={() => setWorkload(opt.value)}
+                        aria-pressed={workload === opt.value}
+                        className={`px-2 py-1.5 text-sm font-medium rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 ${
+                          workload === opt.value
+                            ? "bg-foreground text-background"
+                            : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
                 </div>
               </div>
               <div className="min-w-0 space-y-4 empty:hidden @min-[40rem]/build-settings:col-start-2 @min-[40rem]/build-settings:row-start-2">
@@ -614,6 +673,8 @@ const BuildSettings: React.FC<BuildSettingsProps> = ({
                 {renderEndpointTargetInputs()}
               </div>
             </div>
+
+            {renderRuntimeSettings()}
 
             {/* ── Advanced (collapsible) ──────────────────── */}
             {advancedFields.length > 0 && (
@@ -722,7 +783,10 @@ const BuildSettings: React.FC<BuildSettingsProps> = ({
   }
 
   // Advanced mode
-  const allVisibleFields = [...visibleBuildFields, ...visibleStartFields, ...generalFields];
+  const allVisibleFields = [...visibleBuildFields, ...visibleStartFields, ...generalFields,
+    ...(buildImageSupported ? [buildImageField] : []),
+    ...(runtimeImageSupported || hasRuntimeOverrides ? [runtimeImageField] : []),
+  ];
   return (
     <div className="bg-card rounded-2xl p-5">
       <h2 className="text-lg font-semibold text-foreground mb-6">

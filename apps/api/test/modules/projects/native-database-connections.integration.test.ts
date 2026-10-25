@@ -137,6 +137,65 @@ async function fixture() {
 afterEach(() => vi.restoreAllMocks());
 
 describe("native database sharing through existing project connections", () => {
+  it("shares PostgreSQL reader endpoints with the same tenant and guards the final replica", async () => {
+    const f = await fixture();
+    let database = await f.sdk.remote.getClusterDatabase(f.source.id, {
+      databaseId: f.database.id,
+    });
+    database = await f.sdk.native.updateClusterDatabase(f.source.id, {
+      databaseId: database.id,
+      expectedSequence: database.sequence,
+      config: { ...database.config, mode: "cluster", instances: 3 },
+    });
+    await repos.clusterDatabase.finish(
+      database.id,
+      database.generation,
+      "ready",
+      {
+        ready: true,
+        message: "Replicas verified",
+        observedAt: new Date().toISOString(),
+        primary: "database-1",
+        pods: [],
+        volumes: [],
+      },
+      null,
+    );
+    database = await f.sdk.remote.getClusterDatabase(f.source.id, { databaseId: database.id });
+    const view = await f.sdk.remote.getAppConnection(f.source.id);
+    expect(view.outputs).toHaveLength(2);
+    const reader = view.outputs.find((output) => output.id === f.input.outputId + ":read")!;
+    expect(reader.envKey).toBe("DATABASE_READ_URL");
+    expect(reader.value).toContain("@database-ro.");
+    const connection = await f.sdk.remote.createConnection(f.consumer.id, {
+      ...f.input,
+      outputId: reader.id,
+      envKey: "DATABASE_READ_URL",
+    });
+    expect(
+      decrypt((await repos.project.getEnvMap(f.consumer.id, "production")).DATABASE_READ_URL),
+    ).toBe(reader.value);
+    await f.sdk.native.createConnection(f.consumer.id, f.input);
+    expect(await repos.projectConnection.listByTarget(f.consumer.id)).toHaveLength(2);
+    expect(await sharedNativeDatabases(f.owner.orgId, f.consumer.id, f.source.runtime.id)).toEqual([
+      { databaseId: database.id, projectId: f.source.id },
+    ]);
+    await expect(
+      f.sdk.native.updateClusterDatabase(f.source.id, {
+        databaseId: database.id,
+        expectedSequence: database.sequence,
+        config: { ...database.config, mode: "standalone", instances: 1 },
+      }),
+    ).rejects.toThrow("Disconnect applications using the reader endpoint");
+    await f.sdk.native.removeConnection(f.consumer.id, connection.connection.id);
+    const scaled = await f.sdk.remote.updateClusterDatabase(f.source.id, {
+      databaseId: database.id,
+      expectedSequence: database.sequence,
+      config: { ...database.config, mode: "standalone", instances: 1 },
+    });
+    expect(scaled.config.instances).toBe(1);
+  });
+
   it("shares through native and HTTP APIs, stores an encrypted reference and revokes only the chosen consumer", async () => {
     const f = await fixture();
     const view = await f.sdk.remote.getAppConnection(f.source.id);
@@ -209,14 +268,12 @@ describe("native database sharing through existing project connections", () => {
   it("requires write access to the source as well as the consumer through both APIs", async () => {
     const f = await fixture(),
       member = await seedOwner({ bound: false });
-    await db
-      .insert(schema.member)
-      .values({
-        id: crypto.randomUUID(),
-        organizationId: f.owner.orgId,
-        userId: member.userId,
-        role: "restricted",
-      });
+    await db.insert(schema.member).values({
+      id: crypto.randomUUID(),
+      organizationId: f.owner.orgId,
+      userId: member.userId,
+      role: "restricted",
+    });
     for (const [resourceId, permissions] of [
       [f.source.id, ["read"]],
       [f.consumer.id, ["read", "write"]],
@@ -231,7 +288,9 @@ describe("native database sharing through existing project connections", () => {
       });
     const c = await clients(member, f.owner.orgId);
     for (const client of [c.native, c.remote]) {
-      await expect(client.getAppConnection(f.source.id)).rejects.toMatchObject({ code: "NOT_FOUND" });
+      await expect(client.getAppConnection(f.source.id)).rejects.toMatchObject({
+        code: "NOT_FOUND",
+      });
       await expect(client.createConnection(f.consumer.id, f.input)).rejects.toMatchObject({
         code: "NOT_FOUND",
       });

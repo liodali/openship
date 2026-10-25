@@ -61,8 +61,14 @@ describe("MCP write-tool body schemas", () => {
 
   it("deploy prepare/respond: prepare all-optional, respond needs action", () => {
     expect(ok(PrepareDeployBody, {})).toBe(true);
-    expect(ok(PrepareDeployBody, { source: "github", owner: "a", repo: "b", branch: "main" })).toBe(true);
+    expect(ok(PrepareDeployBody, { source: "github", owner: "a", repo: "b", branch: "main" })).toBe(
+      true,
+    );
     expect(ok(PrepareDeployBody, { source: "svn" })).toBe(false);
+    for (const rootDirectory of [".", "./apps/web/", "apps/my app"])
+      expect(ok(PrepareDeployBody, { rootDirectory })).toBe(true);
+    for (const rootDirectory of ["/etc", "../other", "apps/../../other", "C:/other", "apps\\other"])
+      expect(ok(PrepareDeployBody, { rootDirectory })).toBe(false);
     expect(ok(BuildRespondBody, { action: "approve" })).toBe(true);
     expect(ok(BuildRespondBody, {})).toBe(false);
   });

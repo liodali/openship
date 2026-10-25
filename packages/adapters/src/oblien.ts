@@ -112,7 +112,7 @@ export function cloudWorkspaceCreationFailure(error: unknown): {
   };
 }
 
-function providerError(status: number, body: unknown): OblienError {
+function providerError(status: number, body: unknown, retryAfter: string | null = null): OblienError {
   const input = body as {
     code?: unknown;
     error?: unknown;
@@ -123,13 +123,23 @@ function providerError(status: number, body: unknown): OblienError {
   const code =
     typeof candidate === "string" && /^[a-z0-9_-]{1,128}$/i.test(candidate)
       ? candidate
-      : "OBLIEN_REQUEST_FAILED";
+      : status === 429 ? "OBLIEN_RATE_LIMITED" : "OBLIEN_REQUEST_FAILED";
   const capacity =
     code.toLowerCase() === "namespace_limit_reached"
       ? namespaceCapacityDetails(input?.details)
       : undefined;
   const workspaceId = workspaceIdFromDetails(input?.details);
-  const details = workspaceId ? { ...capacity, workspace_id: workspaceId } : capacity;
+  // Retry-After permits seconds or an HTTP date. Only carry a bounded numeric
+  // value across our public error boundary; never reflect an arbitrary header.
+  const delay = retryAfter === null ? NaN : /^\d+$/.test(retryAfter)
+    ? Number(retryAfter)
+    : /^[A-Za-z]{3}, /.test(retryAfter) ? Math.ceil((Date.parse(retryAfter) - Date.now()) / 1000) : NaN;
+  const retryAfterSeconds = Number.isSafeInteger(delay) && delay >= 0 && delay <= 86400 ? delay : undefined;
+  const details = capacity || workspaceId || retryAfterSeconds !== undefined ? {
+    ...capacity,
+    ...(workspaceId ? { workspace_id: workspaceId } : {}),
+    ...(retryAfterSeconds !== undefined ? { retryAfterSeconds } : {}),
+  } : undefined;
   const requestId =
     typeof input?.requestId === "string" &&
     /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(input.requestId)
@@ -152,10 +162,11 @@ function providerError(status: number, body: unknown): OblienError {
     })
     .join(" ");
   const message =
-    `${capacityErrors.get(code.toLowerCase()) ?? "Oblien rejected the request"}` +
+    `${capacityErrors.get(code.toLowerCase()) ?? (status === 429 ? "Oblien temporarily throttled the request" : "Oblien rejected the request")}` +
     (allocation ? ` ${allocation}` : "") +
     ` (HTTP ${status}, ${code})` +
-    (requestId ? ` Request ID: ${requestId}.` : "");
+    (requestId ? ` Request ID: ${requestId}.` : "") +
+    (retryAfterSeconds !== undefined ? ` Retry after ${retryAfterSeconds} seconds.` : "");
   const ErrorType =
     status === 401 || status === 403
       ? AuthenticationError
@@ -198,7 +209,13 @@ export class Oblien extends OblienSdk {
     return [...ips.values()];
   }
 
-  constructor(options: OblienOptions) {
+  constructor(options: OblienOptions & {
+    tokenRefresh?: {
+      expiresAt: string;
+      refresh(): Promise<{ token: string; expiresAt: string }>;
+      invalidate?(rejectedToken: string): Promise<void>;
+    };
+  }) {
     const base = new URL(options.baseUrl ?? "https://api.oblien.com");
     if (base.username || base.password || base.search || base.hash ||
         (base.protocol !== "https:" && !(base.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(base.hostname)))) {
@@ -211,22 +228,51 @@ export class Oblien extends OblienSdk {
     let auth = new Headers(original);
     const setToken = this._http.setToken.bind(this._http);
     const restoreAuth = this._http.restoreAuth.bind(this._http);
+    let expiresAt = Date.parse(options.tokenRefresh?.expiresAt ?? "");
+    let refreshing: Promise<void> | undefined;
+    const ensureAuth = () => {
+      if (!options.tokenRefresh || expiresAt - Date.now() > 60_000) return;
+      return (refreshing ??= Promise.resolve().then(() => options.tokenRefresh!.refresh()).then(next => {
+        const expiry = Date.parse(next.expiresAt);
+        if (!next.token || !Number.isFinite(expiry) || expiry <= Date.now())
+          throw new Error("Cloud returned invalid execution credentials");
+        this._http.setToken(next.token);
+        expiresAt = expiry;
+      }).finally(() => { refreshing = undefined; }));
+    };
     this._http.setToken = token => {
       auth = new Headers({ Authorization: `Bearer ${token}` });
       setToken(token);
     };
-    this._http.restoreAuth = () => { auth = new Headers(original); restoreAuth(); };
+    this._http.restoreAuth = () => { auth = new Headers(original); restoreAuth(); expiresAt = 0; };
+    const invalidateRejectedToken = async (rejectedAuthorization: string | null) => {
+      if (!options.tokenRefresh) return;
+      // Invalidate for the next explicit operation; never replay a mutation or
+      // subscription. A late rejection must not expire a newer generation.
+      if (rejectedAuthorization === auth.get("Authorization")) expiresAt = 0;
+      await options.tokenRefresh.invalidate?.(rejectedAuthorization?.replace(/^Bearer /, "") ?? "").catch(error => {
+        observeCaughtError(error, "adapters/oblien");
+      });
+    };
     this.streamWorkspaceMetrics = (workspaceId, signal) => workspaceMetricsStream(async (subscriptionSignal) => {
       if (!/^[a-zA-Z0-9_-]{1,128}$/.test(workspaceId)) throw new Error("Invalid Cloud workspace identity");
+      const renewal = ensureAuth();
+      if (renewal) await renewal;
+      subscriptionSignal.throwIfAborted();
       const url = new URL(`/workspace/${encodeURIComponent(workspaceId)}/stats/stream`, base);
       const headers = new Headers(auth);
       headers.set("Accept", "text/event-stream");
-      return fetch(url, { headers, redirect: "error", signal: subscriptionSignal });
+      const response = await fetch(url, { headers, redirect: "error", signal: subscriptionSignal });
+      if (response.status === 401) await invalidateRejectedToken(headers.get("Authorization"));
+      return response;
     }, signal);
     this._http.request = async <T>(request: RequestOptions): Promise<T> => {
       request.signal?.throwIfAborted();
       const url = new URL(request.path, base);
       if (url.origin !== base.origin || url.username || url.password) throw new Error("Oblien request escaped its API origin");
+      const renewal = ensureAuth();
+      if (renewal) await renewal;
+      request.signal?.throwIfAborted();
       for (const [key, value] of Object.entries(request.query ?? {})) if (value !== undefined) url.searchParams.set(key, String(value));
       const headers = new Headers(request.headers);
       for (const key of ["Authorization", "X-Client-ID", "X-Client-Secret"]) headers.delete(key);
@@ -250,7 +296,10 @@ export class Oblien extends OblienSdk {
         throw new OblienError("Oblien is temporarily unreachable. Retry the operation.", 503, "OBLIEN_UNAVAILABLE");
       }
       request.signal?.throwIfAborted();
-      if (!response.ok) throw providerError(response.status, body);
+      if (!response.ok) {
+        if (response.status === 401) await invalidateRejectedToken(headers.get("Authorization"));
+        throw providerError(response.status, body, response.headers.get("Retry-After"));
+      }
       if (!body || typeof body !== "object") throw providerError(502, body);
       const result = body as { success?: boolean; valid?: boolean; error?: unknown; code?: unknown };
       // Older provider deployments returned HTTP 200 with

@@ -49,12 +49,17 @@ const initial = (cluster: ComputeCluster): ClusterStorageConfig => ({
   })),
 });
 
-export function ClusterStoragePanel({
+export function ClusterStoragePanel(props: { cluster: ComputeCluster; canManage: boolean; scalingReady: boolean; }) {
+  if (!props.cluster.network) return null;
+  return <NativeClusterStoragePanel {...props} cluster={{...props.cluster, network: props.cluster.network}} />;
+}
+
+function NativeClusterStoragePanel({
   cluster,
   canManage,
   scalingReady,
 }: {
-  cluster: ComputeCluster;
+  cluster: ComputeCluster & {network: NonNullable<ComputeCluster["network"]>};
   canManage: boolean;
   scalingReady: boolean;
 }) {

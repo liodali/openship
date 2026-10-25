@@ -83,7 +83,11 @@ export const ClusterDatabaseConfigSchema = Type.Object(
   {
     engine: Type.Union([Type.Literal("postgres"), Type.Literal("redis")]),
     version: Type.Optional(Type.Union([Type.Literal("17"), Type.Literal("18")])),
-    mode: Type.Union([Type.Literal("standalone"), Type.Literal("cluster")]),
+    mode: Type.Union([
+      Type.Literal("standalone"),
+      Type.Literal("cluster"),
+      Type.Literal("replication"),
+    ]),
     instances: Type.Integer({ minimum: 1, maximum: 9 }),
     storageGiB: Type.Integer({ minimum: 1, maximum: 16384 }),
     storageClass: Type.String({ minLength: 1, maxLength: 63 }),
@@ -127,6 +131,7 @@ export const ClusterDatabaseSchema = Type.Object({
   internalHost: Type.String(),
   readOnlyHost: nullable,
   envKey: nullable,
+  readEnvKey: Type.Optional(nullable),
   sourceDatabaseId: Type.Optional(nullable),
   updatedAt: Type.String(),
   createdAt: Type.String(),
@@ -227,6 +232,9 @@ export const ProjectDatabaseSchemas = {
     action: "write",
     input: mutation({
       envKey: Type.Union([Type.String({ pattern: "^[A-Za-z_][A-Za-z0-9_]{0,127}$" }), Type.Null()]),
+      readEnvKey: Type.Optional(
+        Type.Union([Type.String({ pattern: "^[A-Za-z_][A-Za-z0-9_]{0,127}$" }), Type.Null()]),
+      ),
       replace: Type.Optional(
         Type.Object(
           {

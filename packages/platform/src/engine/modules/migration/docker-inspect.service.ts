@@ -10,7 +10,7 @@
 
 import { reportCaughtError as observeCaughtError } from "@repo/core/diagnostics";
 import type { DockerContainerDetail } from "@repo/adapters";
-import { safeErrorMessage, withTimeout } from "@repo/core";
+import { safeErrorMessage, swarmTaskOwner, withTimeout } from "@repo/core";
 import { repos } from "@repo/db";
 import { createMigrationDockerRuntime as createServerDockerRuntime } from "./migration-runtime";
 import { withMigrationExecution } from "./migration-runtime";
@@ -196,9 +196,15 @@ export async function discoverServerStack(
         // driven off this list, so one filter here scopes the whole scan. The volume and
         // network lists stay whole: reconciliation matches mounts against them by name, and a
         // filtered volume list would make a moved volume look like it does not exist.
-        const containers = scoped
+        const selected = scoped
           ? allContainers.filter((c) => scoped.has(c.id))
           : allContainers;
+        // Swarm owns the desired service and replaces its tasks. Adopting a task as a
+        // standalone container would leave two controllers managing the same workload.
+        // This applies to flat imports and containers carrying Openship labels too.
+        const containers = selected.filter(c => !swarmTaskOwner(c.labels));
+        if (containers.length !== selected.length)
+          step(`Excluding ${selected.length - containers.length} Swarm task container(s). Review their stacks from a connected Swarm manager.`);
 
         // OPENSHIP'S OWN STACK IS NEVER A CANDIDATE — structurally, not because the
         // database happens to remember it.
@@ -334,6 +340,10 @@ export async function discoverServerStack(
             const liveProjectIds = new Set<string>([
               ...liveDb.rows.map((p) => p.id),
               ...projectIds,
+              // Excluding scheduler-owned tasks from import must not classify their
+              // existing recovery artifacts as orphaned and prune them during a scan.
+              ...allContainers.filter(c => swarmTaskOwner(c.labels)).map(c => c.labels["openship.project"])
+                .filter((id): id is string => !!id && OPENSHIP_PROJECT_ID_RE.test(id)),
             ]);
             await withMigrationExecution(serverId, organizationId, (exec) =>
                 pruneOrphanManifestArtifacts(exec, { organizationId, liveProjectIds }),

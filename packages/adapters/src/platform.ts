@@ -303,7 +303,7 @@ async function createCloudPlatform(config: PlatformConfig): Promise<Platform> {
   const { BareRuntime } = await import("./runtime/bare");
   const { CloudServerConnection } = await import("./runtime/cloud/server-connection");
   const { CloudProcessSupervisor } = await import("./runtime/cloud/process-supervisor");
-  const { prepareManagedSource } = await import("./runtime/cloud/source");
+  const { prepareRemoteSource } = await import("./runtime/remote-source");
   const { managedProjectRoutingScope } = await import("./runtime/cloud/routing-scope");
   const connection = new CloudServerConnection(client, {
     ...config.cloudServer,
@@ -325,7 +325,7 @@ async function createCloudPlatform(config: PlatformConfig): Promise<Platform> {
     beforeWork: () => connection.resume(),
     supervisorFactory: async () => supervisor,
     prepareSource: (build, directory, logger) =>
-      prepareManagedSource(connection, build, directory, logger),
+      prepareRemoteSource(connection, build, directory, logger),
   });
   // One routing scope handles host processes, static releases and Docker
   // sidecars. Open its Docker transport only if this platform changes routes.
@@ -462,6 +462,15 @@ async function createInfraProvider(
     const { NoopInfraProvider } = await import("./infra/noop");
     const noop = new NoopInfraProvider();
     return { routing: noop, ssl: noop };
+  }
+
+  // Fresh hosts have no bare OpenResty to drive. Provisioning below installs
+  // the canonical container edge, so select that provider before installation
+  // rather than retaining a host-binary executor for the whole first deploy.
+  if (!(await executor.exists(paths.bin))) {
+    const { EDGE_CONTAINER_NAME } = await import("./system/port-owner");
+    const nginx = await containerEdgeProvider(executor, EDGE_CONTAINER_NAME, config.nginx);
+    return { routing: nginx, ssl: nginx };
   }
 
   // Everything from here on WRITES to root-owned paths — nginx.conf, the Lua dir, the

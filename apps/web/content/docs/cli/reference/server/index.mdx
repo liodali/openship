@@ -22,6 +22,8 @@ openship server [options] [command]
 | [`github`](/docs/cli/reference/server/github#openship-server-github) | Manage GitHub credentials on a deployment server |
 | [`tunnel`](/docs/cli/reference/server/tunnel#openship-server-tunnel) | Manage tunnels opened on the selected Openship instance (not this CLI machine) |
 | [`containers`](/docs/cli/reference/server/containers#openship-server-containers) | Inspect and update infrastructure containers through the engine |
+| [`swarm [options] <id>`](/docs/cli/reference/server#openship-server-swarm) | Inspect an existing Docker Swarm without changing its services |
+| [`connect-swarm [options] <id>`](/docs/cli/reference/server#openship-server-connect-swarm) | Use an existing Swarm manager for project deployments; preserves existing stacks |
 | [`destinations`](/docs/cli/reference/server#openship-server-destinations) | List deployment destinations and their supported capabilities |
 | [`get <id>`](/docs/cli/reference/server#openship-server-get) | Read server details, its managed plan and lifecycle progress |
 | [`reachability <id>`](/docs/cli/reference/server#openship-server-reachability) | Probe the controller's current connection to this server |
@@ -39,8 +41,8 @@ openship server [options] [command]
 | [`check [options] <serverId>`](/docs/cli/reference/server#openship-server-check) | Run component health checks against a saved server |
 | [`update [options] <serverId>`](/docs/cli/reference/server#openship-server-update) | Check for and apply native-module migrations (OpenResty, …) |
 | [`install [options] <serverId>`](/docs/cli/reference/server#openship-server-install) | Install components on a server |
-| [`install-session [sessionId]`](/docs/cli/reference/server#openship-server-install-session) | Inspect a server installation session |
-| [`install-events [sessionId]`](/docs/cli/reference/server#openship-server-install-events) | Reattach to installation logs and prompts without starting another install |
+| [`install-session [options] [sessionId]`](/docs/cli/reference/server#openship-server-install-session) | Inspect a server installation session |
+| [`install-events [options] [sessionId]`](/docs/cli/reference/server#openship-server-install-events) | Reattach to installation logs and prompts without starting another install |
 | [`uninstall [options] <serverId> <component>`](/docs/cli/reference/server#openship-server-uninstall) | Remove a component through the server's shared installer |
 | [`install-respond [options] <sessionId>`](/docs/cli/reference/server#openship-server-install-respond) | Respond to an installation prompt |
 | [`rate-limit [options] <serverId>`](/docs/cli/reference/server#openship-server-rate-limit) | Read or update per-server OpenResty rate limiting |
@@ -95,6 +97,23 @@ openship server configure [options] <id> <file>
 | --- | --- |
 | `id` | Server ID |
 | `file` | JSON patch with the fields to change |
+
+## openship server connect-swarm
+
+Use an existing Swarm manager for project deployments; preserves existing stacks
+
+```text
+openship server connect-swarm [options] <id>
+```
+
+| Argument | Meaning |
+| --- | --- |
+| `id` | Connected Swarm manager server ID |
+
+| Option | Meaning |
+| --- | --- |
+| `--name <name>` | Cluster display name |
+| `--request-id <uuid>` | Reuse after a lost response for an idempotent retry |
 
 ## openship server deletion-preview
 
@@ -182,6 +201,10 @@ Reattach to installation logs and prompts without starting another install
 openship server install-events [options] [sessionId]
 ```
 
+| Option | Meaning |
+| --- | --- |
+| `--server <serverId>` | Select the server's current installation |
+
 ## openship server install-respond
 
 Respond to an installation prompt
@@ -201,6 +224,10 @@ Inspect a server installation session
 ```text
 openship server install-session [options] [sessionId]
 ```
+
+| Option | Meaning |
+| --- | --- |
+| `--server <serverId>` | Select the server's current installation |
 
 ## openship server list
 
@@ -318,6 +345,22 @@ openship server ssh|terminal [options] <serverId>
 | --- | --- |
 | `--origin <url>` | Trusted dashboard origin (defaults to the saved context dashboard) |
 | `--timeout <ms>` | Maximum time to open the terminal (default: 30000) |
+
+## openship server swarm
+
+Inspect an existing Docker Swarm without changing its services
+
+```text
+openship server swarm [options] <id>
+```
+
+| Argument | Meaning |
+| --- | --- |
+| `id` | Connected server ID; use a Swarm manager for stack inventory |
+
+| Option | Meaning |
+| --- | --- |
+| `--details` | Include stacks, services, ports, mounts and nodes |
 
 ## openship server test-connection
 

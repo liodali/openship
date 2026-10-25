@@ -51,8 +51,9 @@ export interface ClusterRuntimeHost {
   logs: SetupLog<ClusterRuntimeStep>[];
 }
 export interface ClusterRuntimePlan {
-  networkId: string;
-  networkRevision: number;
+  /** Existing schedulers own their networking; only managed K3s uses these. */
+  networkId: string | null;
+  networkRevision: number | null;
   version: string | null;
   podCidr: string | null;
   serviceCidr: string | null;
@@ -64,7 +65,7 @@ export interface ClusterRuntimePlan {
 export interface ClusterRuntime {
   id: string;
   clusterId: string;
-  provider: "k3s";
+  provider: "k3s" | "swarm";
   status: ClusterRuntimeStatus;
   intent: "setup" | "remove";
   sequence: number;

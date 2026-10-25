@@ -130,3 +130,13 @@ vi.mock("@repo/platform/engine/lib/platform", async () => {
   const servers = createServerOperations(authorization, serverDependencies);
   return { getPlatformKernel: () => ({ servers }) };
 });
+
+it("reports routing requirements independently from the deployed project count", async () => {
+  h.counts.mockImplementation(
+    async (_org?: string, opts?: { withRoutes?: boolean }): Promise<Record<string, number>> =>
+      opts?.withRoutes ? {} : { srv1: 3 },
+  );
+  const { c, sent } = context("srv1");
+  await getServer(c);
+  expect(sent.body).toMatchObject({ projectCount: 3, edgeRequired: false });
+});

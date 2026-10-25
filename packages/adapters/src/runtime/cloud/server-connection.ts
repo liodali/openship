@@ -140,16 +140,16 @@ export class CloudServerConnection {
     if (!options.namespace || !options.workspaceId)
       throw new Error("Managed server requires a workspace and organization scope");
     this.workspaceId = options.workspaceId;
-    this.executor = new CloudWorkspaceExecutor(() => this.runtime(), this.workspaceId);
+    this.executor = new CloudWorkspaceExecutor(options => this.runtime(options), this.workspaceId);
   }
 
   workspace() {
     return this.client.workspace(this.workspaceId);
   }
 
-  runtime(): Promise<Runtime> {
+  runtime(options?: { force?: boolean }): Promise<Runtime> {
     // Runtime tokens are refreshed by the SDK; never cache a token in a project adapter.
-    return this.workspace().runtime();
+    return options ? this.workspace().runtime(options) : this.workspace().runtime();
   }
 
   async state(): Promise<ContainerStatus> {

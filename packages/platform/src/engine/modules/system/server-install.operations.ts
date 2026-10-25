@@ -17,9 +17,10 @@ import { audit, operationAuditContext } from "../../lib/audit-emitter";
 import { sshManager } from "../../lib/ssh-manager";
 import { withPinnedEdgeImage } from "../../lib/edge-image";
 import { resolveEdgeProviderOptions } from "../../lib/edge-provider-options";
-import { assertSelfHosted, assertServerExecution, requireSelfHostedServer } from "./server-access";
 import { ALLOWED_COMPONENTS, deliverEdgeBeforeInstall, installPrerequisites, dependencyFailureMessage, failSystem } from "./server-check.operations";
 import { refreshServerContainer } from "./server-containers.service";
+import { repos } from "@repo/db";
+import { withServerProvisioning } from "./server-provisioning";
 import {
   createSetupSession, getSetupSession, getActiveSetupSession, updateComponentProgress, appendSetupLog,
   finishSetupSession, subscribeSetupSession, promptSetupUser, respondToSetupPrompt, rejectPendingSetupPrompt, setupPromptState,
@@ -29,194 +30,253 @@ const installations = createTaskGroup();
 export const drainServerInstallations = installations.drain;
 
 export const serverInstallationDependencies: NonNullable<ServerDependencies["installations"]> = {
-  async lookup(input) {
-    assertSelfHosted();
-    const session = input.sessionId ? getSetupSession(input.sessionId) : getActiveSetupSession();
+  async lookup(ctx, input) {
+    let session = input.sessionId
+      ? getSetupSession(input.sessionId)
+      : input.serverId
+        ? getActiveSetupSession(input.serverId)
+        : null;
+    if (session && input.serverId && session.serverId !== input.serverId)
+      throw new OperationError("Installation session not found", 404, "NOT_FOUND");
+    if (!input.sessionId && !input.serverId) {
+      // Legacy callers can discover their own active installation. Never choose
+      // a process-global session belonging to a different tenant or grant.
+      for (const server of await repos.server.listByOrganization(ctx.organizationId)) {
+        const candidate = getActiveSetupSession(server.id);
+        if (
+          candidate &&
+          (await authorization.checkPermissionOnResource(ctx, {
+            resourceType: "server",
+            resourceId: server.id,
+            action: "admin",
+          }))
+        ) {
+          session = candidate;
+          break;
+        }
+      }
+    }
     if (!session) return { active: false };
     return {
-      active: true, sessionId: session.id, serverId: session.serverId, status: session.status,
-      components: session.components, startedAt: session.startedAt, finishedAt: session.finishedAt,
+      active: true,
+      sessionId: session.id,
+      serverId: session.serverId,
+      status: session.status,
+      components: session.components,
+      startedAt: session.startedAt,
+      finishedAt: session.finishedAt,
     };
   },
   async respond(ctx, sessionId, action) {
-    if (!respondToSetupPrompt(sessionId, action)) throw new OperationError("no_pending_prompt", 409, "NO_PENDING_PROMPT");
-    audit.recordAsync(operationAuditContext(ctx), { eventType: "server:admin", resourceType: "server", resourceId: getSetupSession(sessionId)!.serverId });
+    if (!respondToSetupPrompt(sessionId, action))
+      throw new OperationError("no_pending_prompt", 409, "NO_PENDING_PROMPT");
+    audit.recordAsync(operationAuditContext(ctx), {
+      eventType: "server:admin",
+      resourceType: "server",
+      resourceId: getSetupSession(sessionId)!.serverId,
+    });
     return { ok: true };
   },
   events(_ctx, sessionId, signal) {
-    return subscriptionEvents(writer => subscribeSetupSession(sessionId, writer), signal);
+    return subscriptionEvents((writer) => subscribeSetupSession(sessionId, writer), signal);
   },
   async start(ctx, serverId, body, signal) {
-    const server = await requireSelfHostedServer(ctx, serverId);
-    await assertServerExecution(server);
     signal?.throwIfAborted();
-    const validNames = body.components.filter(name => ALLOWED_COMPONENTS.has(name));
+    const validNames = body.components.filter((name) => ALLOWED_COMPONENTS.has(name));
     if (validNames.length === 0) return failSystem({ error: "Invalid component names" }, 400);
     const config = withPinnedEdgeImage(body.config ?? {});
     const installNames = resolveSystemComponentInstallPlan(validNames);
     const explicitlyRequested = new Set(validNames);
-    const existing = getActiveSetupSession();
-    if (existing) {
-      let visible = false;
+    let accept!: (source: AsyncIterable<DeploymentEvent>) => void;
+    let reject!: (error: unknown) => void;
+    const admission = new Promise<AsyncIterable<DeploymentEvent>>((resolve, fail) => {
+      accept = resolve;
+      reject = fail;
+    });
+    const work = withServerProvisioning(ctx, serverId, async (server) => {
+      signal?.throwIfAborted();
+      const componentMeta = installNames.map((name) => ({
+        name,
+        label: getSystemComponentDefinition(name).label,
+      }));
+      const session = createSetupSession(componentMeta, serverId);
+      let disconnected = false;
+      let done = false;
+      let grace: ReturnType<typeof setTimeout> | undefined;
+      const disconnect = () => {
+        disconnected = true;
+        if (done || grace) return;
+        grace = setTimeout(() => {
+          const { pending, subscribers } = setupPromptState(session.id);
+          if (pending && subscribers === 0)
+            rejectPendingSetupPrompt(session.id, "client disconnected");
+        }, 20_000);
+        grace.unref?.();
+      };
+      signal?.addEventListener("abort", disconnect, { once: true });
+      const source = subscriptionEvents((writer) => {
+        const subscription = subscribeSetupSession(session.id, writer);
+        return {
+          ...subscription,
+          unsubscribe() {
+            subscription.unsubscribe();
+            disconnect();
+          },
+        };
+      }, signal);
+      accept(source);
+      audit.recordAsync(operationAuditContext(ctx), {
+        eventType: "server:admin",
+        resourceType: "server",
+        resourceId: serverId,
+      });
       try {
-        await authorization.authorize(ctx, { resourceType: "server", resourceId: existing.serverId, action: "admin" });
-        visible = true;
-      } catch (diagnosticFailure) {
-        observeCaughtError(diagnosticFailure, "platform/engine/modules/system/server-install.operations"); /* The busy response must not reveal another tenant's session id. */ }
-      return failSystem({ error: "install_in_progress", ...(visible && { sessionId: existing.id }) }, 409);
-    }
-    const componentMeta = installNames.map(name => ({ name, label: getSystemComponentDefinition(name).label }));
-    const session = createSetupSession(componentMeta, serverId);
-    let disconnected = false;
-    let done = false;
-    let grace: ReturnType<typeof setTimeout> | undefined;
-    const disconnect = () => {
-      disconnected = true;
-      if (done || grace) return;
-      grace = setTimeout(() => {
-        const { pending, subscribers } = setupPromptState(session.id);
-        if (pending && subscribers === 0) rejectPendingSetupPrompt(session.id, "client disconnected");
-      }, 20_000);
-      grace.unref?.();
-    };
-    signal?.addEventListener("abort", disconnect, { once: true });
-    const source = subscriptionEvents(writer => {
-      const subscription = subscribeSetupSession(session.id, writer);
-      return { ...subscription, unsubscribe() { subscription.unsubscribe(); disconnect(); } };
-    }, signal);
-    const work = (async () => {
-      try {
-      let hasFailure = false;
-      /** Per-component failure reason, for the cached row below. */
-      const failures = new Map<string, string>();
+        let hasFailure = false;
+        /** Per-component failure reason, for the cached row below. */
+        const failures = new Map<string, string>();
 
-      for (const name of installNames) {
-        if (disconnected) {
-          hasFailure = true;
-          updateComponentProgress(session.id, name, "failed", "Install stream disconnected before this component started");
-          continue;
-        }
-
-        await authorization.authorize(ctx, { resourceType: "server", resourceId: serverId, action: "admin" });
-        const failedDependencies = installPrerequisites(name).filter((dependency) =>
-          failures.has(dependency),
-        );
-        if (failedDependencies.length > 0) {
-          const msg = dependencyFailureMessage(name, failedDependencies);
-          appendSetupLog(session.id, name, msg, "error");
-          updateComponentProgress(session.id, name, "failed", msg);
-          failures.set(name, msg);
-          hasFailure = true;
-          continue;
-        }
-
-        const installerFn = COMPONENT_INSTALLERS[name as keyof typeof COMPONENT_INSTALLERS];
-        if (!installerFn) {
-          updateComponentProgress(session.id, name, "failed", `No installer for ${name}`);
-          hasFailure = true;
-          continue;
-        }
-
-        updateComponentProgress(session.id, name, "installing");
-
-        // Bind the interactive "hold" to this session so the edge installer can
-        // pause on an 80/443 conflict and surface the SAME prompt modal the deploy
-        // pipeline uses. Installers other than `edge` ignore it.
-        const promptUser: PromptUserFn = (prompt) => promptSetupUser(session.id, prompt);
-
-        const onLog = (log: { message: string; level: "info" | "warn" | "error" }) =>
-          appendSetupLog(session.id, name, log.message, log.level);
-
-        try {
-          // A dependency inserted by the planner is not an operator request to
-          // reinstall it. Probe first and skip a healthy Docker daemon, even if
-          // config.reinstall was intended for the requested Edge component.
-          if (!explicitlyRequested.has(name)) {
-            const healthy = await sshManager.withExecutor(serverId, async (executor) => {
-              const statuses = await checkComponents(executor, [name]);
-              return statuses[0]?.healthy === true;
-            });
-            if (healthy) {
-              appendSetupLog(session.id, name, `${name} is already ready; dependency satisfied`);
-              updateComponentProgress(session.id, name, "installed");
-              continue;
-            }
-          }
-
-          // Docker is now known ready (or its failed install skipped this Edge
-          // step above), so it is safe to inspect the container-backed takeover
-          // journal. Doing this before the dependency loop used Docker too early.
-          if (name === "edge") {
-            try {
-              await sshManager.withExecutor(serverId, (executor) =>
-                recoverInterruptedTakeover(executor, (l) =>
-                  appendSetupLog(session.id, "edge", l.message, l.level),
-                ),
-              );
-            } catch (diagnosticFailure) {
-              observeCaughtError(diagnosticFailure, "platform/engine/modules/system/server-install.operations");
-              /* best-effort */
-            }
-          }
-
-          const result = await sshManager.withExecutor(serverId, async (executor) => {
-            await deliverEdgeBeforeInstall(name, executor, onLog);
-            // Single edge-prepare point: the installer raises the edge-conflict
-            // consent prompt via promptUser; on "migrate", ensureEdge runs the
-            // takeover. Its InstallResult is returned unchanged when no migration.
-            const edge = await ensureEdge(
-              executor,
-              (p) => installerFn(executor, onLog, { ...config, promptUser: p }),
-              {
-                promptUser,
-                onLog,
-                acmeEmail: config?.acmeEmail,
-                edgeImage: config.edgeImage,
-                nginx: {
-                  ...(await resolveEdgeProviderOptions(server)),
-                  ...(config?.acmeEmail ? { acmeEmail: config.acmeEmail } : {}),
-                },
-              },
+        for (const name of installNames) {
+          if (disconnected) {
+            hasFailure = true;
+            updateComponentProgress(
+              session.id,
+              name,
+              "failed",
+              "Install stream disconnected before this component started",
             );
-            if (!edge.migrated) return edge.value;
-            return {
-              component: name,
-              success: edge.ok,
-              error: edge.ok ? undefined : "migration failed — rolled back to the previous proxy",
-            };
-          });
+            continue;
+          }
 
-          if (result.success) {
-            appendSetupLog(session.id, name, `${name} installed successfully${result.version ? ` (${result.version})` : ""}`);
-            updateComponentProgress(session.id, name, "installed");
-          } else {
-            const msg = result.error ?? `${name} installation failed`;
+          await authorization.authorize(ctx, {
+            resourceType: "server",
+            resourceId: serverId,
+            action: "admin",
+          });
+          const failedDependencies = installPrerequisites(name).filter((dependency) =>
+            failures.has(dependency),
+          );
+          if (failedDependencies.length > 0) {
+            const msg = dependencyFailureMessage(name, failedDependencies);
             appendSetupLog(session.id, name, msg, "error");
-            updateComponentProgress(session.id, name, "failed", result.error);
+            updateComponentProgress(session.id, name, "failed", msg);
+            failures.set(name, msg);
+            hasFailure = true;
+            continue;
+          }
+
+          const installerFn = COMPONENT_INSTALLERS[name as keyof typeof COMPONENT_INSTALLERS];
+          if (!installerFn) {
+            updateComponentProgress(session.id, name, "failed", `No installer for ${name}`);
+            hasFailure = true;
+            continue;
+          }
+
+          updateComponentProgress(session.id, name, "installing");
+
+          // Bind the interactive "hold" to this session so the edge installer can
+          // pause on an 80/443 conflict and surface the SAME prompt modal the deploy
+          // pipeline uses. Installers other than `edge` ignore it.
+          const promptUser: PromptUserFn = (prompt) => promptSetupUser(session.id, prompt);
+
+          const onLog = (log: { message: string; level: "info" | "warn" | "error" }) =>
+            appendSetupLog(session.id, name, log.message, log.level);
+
+          try {
+            // A dependency inserted by the planner is not an operator request to
+            // reinstall it. Probe first and skip a healthy Docker daemon, even if
+            // config.reinstall was intended for the requested Edge component.
+            if (!explicitlyRequested.has(name)) {
+              const healthy = await sshManager.withExecutor(serverId, async (executor) => {
+                const statuses = await checkComponents(executor, [name]);
+                return statuses[0]?.healthy === true;
+              });
+              if (healthy) {
+                appendSetupLog(session.id, name, `${name} is already ready; dependency satisfied`);
+                updateComponentProgress(session.id, name, "installed");
+                continue;
+              }
+            }
+
+            // Docker is now known ready (or its failed install skipped this Edge
+            // step above), so it is safe to inspect the container-backed takeover
+            // journal. Doing this before the dependency loop used Docker too early.
+            if (name === "edge") {
+              try {
+                await sshManager.withExecutor(serverId, (executor) =>
+                  recoverInterruptedTakeover(executor, (l) =>
+                    appendSetupLog(session.id, "edge", l.message, l.level),
+                  ),
+                );
+              } catch (diagnosticFailure) {
+                observeCaughtError(
+                  diagnosticFailure,
+                  "platform/engine/modules/system/server-install.operations",
+                );
+                /* best-effort */
+              }
+            }
+
+            const result = await sshManager.withExecutor(serverId, async (executor) => {
+              await deliverEdgeBeforeInstall(name, executor, onLog);
+              // Single edge-prepare point: the installer raises the edge-conflict
+              // consent prompt via promptUser; on "migrate", ensureEdge runs the
+              // takeover. Its InstallResult is returned unchanged when no migration.
+              const edge = await ensureEdge(
+                executor,
+                (p) => installerFn(executor, onLog, { ...config, promptUser: p }),
+                {
+                  promptUser,
+                  onLog,
+                  acmeEmail: config?.acmeEmail,
+                  edgeImage: config.edgeImage,
+                  nginx: {
+                    ...(await resolveEdgeProviderOptions(server)),
+                    ...(config?.acmeEmail ? { acmeEmail: config.acmeEmail } : {}),
+                  },
+                },
+              );
+              if (!edge.migrated) return edge.value;
+              return {
+                component: name,
+                success: edge.ok,
+                error: edge.ok ? undefined : "migration failed — rolled back to the previous proxy",
+              };
+            });
+
+            if (result.success) {
+              appendSetupLog(
+                session.id,
+                name,
+                `${name} installed successfully${result.version ? ` (${result.version})` : ""}`,
+              );
+              updateComponentProgress(session.id, name, "installed");
+            } else {
+              const msg = result.error ?? `${name} installation failed`;
+              appendSetupLog(session.id, name, msg, "error");
+              updateComponentProgress(session.id, name, "failed", result.error);
+              failures.set(name, msg);
+              hasFailure = true;
+            }
+          } catch (err) {
+            observeCaughtError(err, "platform/engine/modules/system/server-install.operations");
+            const msg = safeErrorMessage(err);
+            appendSetupLog(session.id, name, msg, "error");
+            updateComponentProgress(session.id, name, "failed", msg);
             failures.set(name, msg);
             hasFailure = true;
           }
-        } catch (err) {
-          observeCaughtError(err, "platform/engine/modules/system/server-install.operations");
-          const msg = safeErrorMessage(err);
-          appendSetupLog(session.id, name, msg, "error");
-          updateComponentProgress(session.id, name, "failed", msg);
-          failures.set(name, msg);
-          hasFailure = true;
         }
-      }
 
-      // Write what the box now looks like into the cached edge row. Without this the
-      // install told nobody: a SUCCESSFUL "Fix edge" left the stale `down` row in
-      // place, so the operator refreshed and still saw "Edge down" — indistinguishable
-      // from the fix having done nothing. A FAILED one lands its reason on the same
-      // row, so the attention card names the cause (`bind() … Address already in use`)
-      // instead of repeating "is down". Edge only: it's the sole component here that
-      // has a container row (mail is provisioned by its own wizard).
-      if (installNames.includes("edge")) {
-        await refreshServerContainer(serverId, "edge", failures.get("edge"));
-      }
-
+        // Write what the box now looks like into the cached edge row. Without this the
+        // install told nobody: a SUCCESSFUL "Fix edge" left the stale `down` row in
+        // place, so the operator refreshed and still saw "Edge down" — indistinguishable
+        // from the fix having done nothing. A FAILED one lands its reason on the same
+        // row, so the attention card names the cause (`bind() … Address already in use`)
+        // instead of repeating "is down". Edge only: it's the sole component here that
+        // has a container row (mail is provisioned by its own wizard).
+        if (installNames.includes("edge")) {
+          await refreshServerContainer(serverId, "edge", failures.get("edge"));
+        }
 
         done = true;
         finishSetupSession(session.id, hasFailure ? "failed" : "completed");
@@ -225,18 +285,21 @@ export const serverInstallationDependencies: NonNullable<ServerDependencies["ins
         done = true;
         const message = safeErrorMessage(error);
         appendSetupLog(session.id, "setup", message, "error");
-        for (const component of session.components) if (component.status === "pending" || component.status === "installing")
-          updateComponentProgress(session.id, component.name, "failed", message);
+        for (const component of session.components)
+          if (component.status === "pending" || component.status === "installing")
+            updateComponentProgress(session.id, component.name, "failed", message);
         finishSetupSession(session.id, "failed");
       } finally {
         done = true;
         signal?.removeEventListener("abort", disconnect);
         if (grace) clearTimeout(grace);
       }
-    })();
+    }).catch((error) => {
+      reject(error);
+      throw error;
+    });
     trackBackgroundWork(installations.track(work));
-    audit.recordAsync(operationAuditContext(ctx), { eventType: "server:admin", resourceType: "server", resourceId: serverId });
-    return source;
+    return admission;
   },
   async monitor(ctx, serverId, signal, format) {
     return format === "usage"

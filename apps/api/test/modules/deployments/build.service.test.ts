@@ -33,6 +33,7 @@ const {
   kickoffBuild: vi.fn(),
   queueActionDeployment: vi.fn(),
   repos: {
+    routeProtection: { list: vi.fn(async () => []) },
     actions: { deploymentForActionRequest: vi.fn() },
     projectConnection: { listByTarget: vi.fn(async () => []) },
     project: {
@@ -47,6 +48,7 @@ const {
     deployment: {
       listPendingRoleHandovers: vi.fn(async () => []),
       findById: vi.fn(),
+      findLatestByProject: vi.fn(),
       findInProgressByCommit: vi.fn(),
       listInFlightByProject: vi.fn(),
       listByProject: vi.fn(),
@@ -657,6 +659,7 @@ describe("triggerDeployment", () => {
     vi.clearAllMocks();
     queueActionDeployment.mockReset().mockResolvedValue(undefined);
     repos.actions.deploymentForActionRequest.mockReset().mockResolvedValue(undefined);
+    repos.deployment.findLatestByProject.mockReset().mockResolvedValue(undefined);
     repos.deployment.listInFlightByProject.mockResolvedValue([]);
 
     repos.project.findById.mockResolvedValue(baseProject());
@@ -698,6 +701,83 @@ describe("triggerDeployment", () => {
     runPreflightChecks.mockResolvedValue({ ok: true, checks: [] });
     kickoffBuild.mockResolvedValue("session-1");
   });
+
+  it.each(
+    ["manual", "retry", "latest retry"].flatMap((entry) =>
+      ["compose", "single"].map((mode) => ({ entry, mode })),
+    ),
+  )(
+    "keeps $mode source configuration at the selected commit during $entry",
+    async ({ entry, mode }) => {
+      const sha = "a".repeat(40);
+      const project = baseProject({
+        gitProvider: "github",
+        gitOwner: "acme",
+        gitRepo: "app",
+        gitUrl: "https://github.com/acme/app.git",
+        localPath: null,
+        framework: mode === "compose" ? "docker-compose" : "node",
+        composePath: mode === "compose" ? "compose.production.yml" : null,
+      });
+      repos.project.findById.mockResolvedValue(project);
+      const currentEnv = { MANUAL_ENV: encrypt("current-setting") };
+      repos.project.getEnvMap.mockResolvedValue(currentEnv);
+      const state =
+        mode === "compose" ? installStatefulComposeRepo(criticalApiService()) : undefined;
+      resolveProjectInfo.mockImplementation(async ({ branch }) => {
+        // HEAD has since removed the deployment's Compose file. Reading it
+        // must not block rebuilding the selected commit where it still exists.
+        if (branch !== sha)
+          throw new ComposeConfigurationError("Compose file no longer exists at HEAD");
+        return {
+          services: [{ ...criticalApiService(), image: "example/api:selected-commit" }],
+          openshipEnv: { SOURCE_DEFAULT: "selected-commit" },
+        };
+      });
+      resolveProjectSourceEnv.mockImplementation(async ({ branch }) => ({
+        openshipEnv: { SOURCE_DEFAULT: branch === sha ? "selected-commit" : "wrong-head" },
+      }));
+      const actualPipeline = await vi.importActual<
+        typeof import("@repo/platform/engine/modules/deployments/build-pipeline")
+      >("@repo/platform/engine/modules/deployments/build-pipeline");
+      resolveServicePipelineMode.mockImplementation(actualPipeline.resolveServicePipelineMode);
+      if (entry === "manual") {
+        await triggerDeployment(ctx, { projectId: project.id, branch: "main", commitSha: sha });
+      } else {
+        repos.deployment.findById.mockResolvedValue({
+          id: "dep-old",
+          projectId: project.id,
+          organizationId: project.organizationId,
+          branch: "main",
+          environment: "production",
+          commitSha: sha,
+          envVars: { MANUAL_ENV: encrypt("old-release-setting") },
+          meta: {
+            ...baseSnapshot(),
+            localPath: undefined,
+            repoUrl: project.gitUrl,
+            serviceDeploymentMode: mode === "single" ? "single" : "services",
+          },
+        });
+        if (entry === "latest retry")
+          getLatestCommit.mockResolvedValueOnce({ sha, message: "selected commit" });
+        await redeployBuildSession(ctx, "dep-old", { useExistingCommit: entry === "retry" });
+      }
+      const queued = repos.deployment.create.mock.calls.at(-1)![0];
+      expect(queued).toMatchObject({ branch: "main", commitSha: sha });
+      expect(decrypt(queued.envVars.SOURCE_DEFAULT)).toBe("selected-commit");
+      expect(decrypt(queued.envVars.MANUAL_ENV)).toBe("current-setting");
+      if (mode === "compose") {
+        expect(state!.stored().image).toBe("example/api:selected-commit");
+        expect(queued.meta.composeServices).toEqual([
+          expect.objectContaining({ image: "example/api:selected-commit" }),
+        ]);
+      } else {
+        expect(resolveProjectInfo).not.toHaveBeenCalled();
+      }
+      expect(kickoffBuild).toHaveBeenCalledOnce();
+    },
+  );
 
   it("returns a required-check receipt without starting a deployment or reconciling configuration", async () => {
     queueActionDeployment.mockResolvedValue({ id: "receipt-1", status: "waiting" });
@@ -1185,6 +1265,41 @@ describe("triggerDeployment", () => {
     expect(resolveProjectInfo).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    { entry: "smart redeploy", trigger: "manual", smartRoute: true, explicit: false, strict: false, wholeApp: true },
+    { entry: "push", trigger: "webhook", smartRoute: false, explicit: true, strict: false, wholeApp: true },
+    { entry: "exact hook", trigger: "webhook", smartRoute: false, explicit: true, strict: true, wholeApp: false },
+    { entry: "service action", trigger: "manual", smartRoute: false, explicit: true, strict: false, wholeApp: false },
+  ])("keeps primary-app release/role orchestration during $entry without broadening an explicit scope", async ({ trigger, smartRoute, explicit, strict, wholeApp }) => {
+    const targets = ["svc-app", "svc-db"];
+    repos.service.listByProject.mockResolvedValue(targets.map(id => ({ id, name: id, enabled: true, advanced: null })));
+    resolveServicePipelineMode.mockResolvedValue({
+      useServicePipeline: false,
+      useSingleAppPipeline: false,
+      primaryApp: { app: { id: "svc-app", name: "app" }, infrastructure: [{ id: "svc-db" }] },
+      servicePreflightServices: [
+        { name: "app", kind: "monorepo" },
+        { name: "db", kind: "compose", image: "postgres:16" },
+      ],
+    });
+    resolveSmartRoute.mockResolvedValue({ forceAll: false, serviceIds: targets, changedPaths: ["src/app.php"] });
+    await triggerDeployment(ctx, {
+      projectId: "project-1", trigger, smartRoute,
+      ...(explicit ? { serviceIds: targets } : {}),
+      strictServiceScope: strict,
+    });
+    const saved = repos.deployment.create.mock.calls.at(-1)![0];
+    expect(saved.meta).toMatchObject({ primaryAppServiceName: "app" });
+    if (wholeApp) {
+      expect(saved.meta.targetServiceIds).toBeUndefined();
+      expect(saved.meta.refreshServiceIds).toBeUndefined();
+      expect(saved.forceAll).toBe(true);
+    } else {
+      expect(saved.meta.targetServiceIds).toEqual(targets);
+      if (strict) expect(saved.meta.strictServiceScope).toBe(true);
+    }
+  });
+
   it.each(["webhook", "update"])("persists the exact service scope for an %s deployment", async (trigger) => {
     const targets = ["svc-api", "svc-worker"];
     repos.service.listByProject.mockResolvedValue([
@@ -1362,7 +1477,7 @@ describe("triggerDeployment", () => {
         source: "github",
         owner: "acme",
         repo: "app",
-        branch: "main",
+        branch: commitSha,
         composePath: "deploy/stack.yml",
         rootDirectory: "deploy",
       }),
@@ -1794,6 +1909,7 @@ describe("triggerDeployment", () => {
   it("keeps a rollback on its frozen image expression and environment", async () => {
     const frozenEnv = { MY_VERSION: encrypt("1.2.3") };
     const frozenSnapshot = baseSnapshot();
+    frozenSnapshot.securityApproval = { deploymentId: "old-source", approvedBy: "previous-approver", expiresAt: "2026-10-25T00:00:00Z", serviceId: "old-service", image: "node@sha256:old", environmentFingerprint: "old" };
     frozenSnapshot.composeServices = [
       {
         name: "api",
@@ -1819,6 +1935,7 @@ describe("triggerDeployment", () => {
     });
 
     expect(repos.project.getEnvMap).not.toHaveBeenCalled();
+    expect(repos.deployment.create.mock.calls.at(-1)?.[0].meta).not.toHaveProperty("securityApproval");
     expect(resolveProjectInfo).not.toHaveBeenCalled();
     expect(repos.deployment.create).toHaveBeenCalledWith(
       expect.objectContaining({

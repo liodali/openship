@@ -254,6 +254,7 @@ export const ProjectPendingActionSchema = Type.Object({
         "prompt",
         "partial_decision",
         "routing_unsynced",
+        "runtime_health",
         "domain_unverified",
         "ssl_error",
         "port_advisory",
@@ -376,6 +377,7 @@ export const ProjectControlSchemas = {
   },
   listDeployments: {
     action: "read",
+    capability: "deployments:read",
     input: Type.Object({
       ...DeploymentHistoryFilters,
       page: Type.Optional(Type.Integer({ minimum: 1 })),
@@ -429,12 +431,14 @@ export const ProjectControlSchemas = {
       enabled: Type.Boolean(),
       comments: Type.Boolean(),
       baseDomain: Type.Optional(Type.String({ maxLength: 200 })),
+      protectionHostname: Type.Optional(Type.String({ minLength: 1, maxLength: 253 })),
     }),
     output: Type.Object({
       settings: Type.Object({
         enabled: Type.Boolean(),
         comments: Type.Boolean(),
         baseDomain: Type.Optional(Type.String()),
+        protectionHostname: Type.Optional(Type.String()),
       }),
     }),
   },
@@ -446,6 +450,7 @@ export const ProjectControlSchemas = {
           enabled: Type.Boolean(),
           comments: Type.Boolean(),
           baseDomain: Type.Optional(Type.String()),
+          protectionHostname: Type.Optional(Type.String()),
         }),
         Type.Null(),
       ]),

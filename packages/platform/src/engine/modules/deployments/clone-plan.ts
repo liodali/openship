@@ -34,6 +34,8 @@ export interface ClonePlanInput {
   buildStrategy?: "local" | "server";
   /** Whether this instance is the desktop app (relay is desktop-only). */
   isDesktop: boolean;
+  /** Hosted control planes never prepare customer Git sources on the API host. */
+  isHosted?: boolean;
   /** Forward the operator's git identity to the server for an on-server clone.
    *  Tri-state: `true`/`undefined` = forward when possible (the secure + atomic
    *  default for a desktop server clone); `false` = opt out (force an api-host
@@ -101,7 +103,7 @@ export function resolveClonePlan(input: ClonePlanInput): ClonePlan {
   const dockerCanCloneOnTarget =
     input.dockerTransport === undefined || input.dockerTransport === "ssh";
   const localDockerBuildRequested =
-    input.buildStrategy === "local" && input.cloneStrategy !== "server";
+    !input.isHosted && input.buildStrategy === "local" && input.cloneStrategy !== "server";
 
   // Docker acquires source ON THE TARGET when the deploy opted in
   // (cloneStrategy="server") OR the repo is a GitHub HTTPS remote — the server
@@ -115,7 +117,7 @@ export function resolveClonePlan(input: ClonePlanInput): ClonePlan {
     !input.runtimeIsBare &&
     dockerCanCloneOnTarget &&
     !localDockerBuildRequested &&
-    (input.cloneStrategy === "server" || input.repoIsGithub === true);
+    (input.isHosted || input.cloneStrategy === "server" || input.repoIsGithub === true);
 
   // Pipeline: the clone runs on the target (bare always; docker per above).
   const cloneRunsOnTarget =

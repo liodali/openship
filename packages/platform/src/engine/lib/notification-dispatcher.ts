@@ -102,10 +102,21 @@ async function dispatch(input: NotificationEmitInput, prepared?: PendingDelivery
     if (channel?.enabled && channel.verified) await enqueue(sub.userId, channel);
   });
   await tolerate(async () => {
+    const definition = findCategory(category);
     const def = (await read(source.notificationDefault.listByOrganization(org), [])).find(d => d.category === category);
     if (!(def?.defaultEnabled ?? findCategory(category)?.defaultEnabled ?? false)) return;
-    const kinds = (def?.defaultChannelKinds?.length ? def.defaultChannelKinds
-      : strict && ["billing.alert", "quota.warning"].includes(category) ? ["email", "in_app"] : ["email"]) as ChannelKind[];
+    const kinds = (definition?.defaultPerChannel
+      ? (def?.defaultChannelKinds ?? definition.defaultChannelKinds ?? [])
+      : def?.defaultChannelKinds?.length ? def.defaultChannelKinds
+        : (strict && ["billing.alert", "quota.warning"].includes(category) ? ["email", "in_app"] : ["email"])) as ChannelKind[];
+    if (definition?.defaultPerChannel) {
+      const members = await read(source.member.listByOrganization(org), []);
+      const choices = await read(source.notificationSubscription.listForCategory(org, category), []);
+      const explicit = new Set(choices.map((choice) => `${choice.userId}:${choice.channelId}`));
+      const channels = await read(source.notificationChannel.listVerifiedForUsersByKinds(members.map((member) => member.userId), kinds), []);
+      for (const channel of channels) if (!explicit.has(`${channel.userId}:${channel.id}`)) await tolerate(() => enqueue(channel.userId, channel));
+      return;
+    }
     const touched = new Set(await read(source.notificationSubscription.listUserIdsWithSubscription(org, category), []));
     const members = await read(source.member.listByOrganization(org), []);
     const untouched = members.map(m => m.userId).filter(id => !touched.has(id));

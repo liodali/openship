@@ -1,5 +1,10 @@
 import { and, asc, eq, inArray, isNull } from "drizzle-orm";
-import { generateId, ValidationError } from "@repo/core";
+import {
+  generateId,
+  ValidationError,
+  clusterDatabaseConnectionTarget,
+  clusterDatabaseHasReaders,
+} from "@repo/core";
 import type { Database, DatabaseTransaction } from "../client";
 import { projectConnection, project, envVar, clusterDatabase, clusterRuntime } from "../schema";
 
@@ -114,7 +119,9 @@ export function createProjectConnectionRepo(db: Database | DatabaseTransaction) 
             binding.connection.sourceServiceId ||
             binding.connection.mode !== "internal" ||
             !binding.connection.usesPrivateNetwork ||
-            binding.connection.outputId !== "cluster-database:" + database.id ||
+            !clusterDatabaseConnectionTarget(database.id, binding.connection.outputId) ||
+            (clusterDatabaseConnectionTarget(database.id, binding.connection.outputId) === "read" &&
+              !clusterDatabaseHasReaders(database.config)) ||
             binding.connection.targetProjectId !== targetProjectId ||
             binding.connection.organizationId !== target.organizationId ||
             source.organizationId !== target.organizationId ||
@@ -145,15 +152,25 @@ export function createProjectConnectionRepo(db: Database | DatabaseTransaction) 
           inArray(envVar.key, keys),
         );
         const existingVars = await tx.select({ key: envVar.key }).from(envVar).where(scope);
-        const owned = new Set(links.map(link => link.envKey));
+        const owned = new Set(links.map((link) => link.envKey));
         for (const variable of existingVars) {
-          if (!owned.has(variable.key)) throw new ValidationError(`An environment variable "${variable.key}" already exists on this project. Choose another name or remove it before connecting.`);
+          if (!owned.has(variable.key))
+            throw new ValidationError(
+              `An environment variable "${variable.key}" already exists on this project. Choose another name or remove it before connecting.`,
+            );
         }
         await tx.delete(envVar).where(scope);
-        await tx.insert(envVar).values(bindings.map(binding => ({
-          id: generateId("env"), projectId: targetProjectId, environment, serviceId: null,
-          key: binding.connection.envKey, value: binding.encryptedValue, isSecret: true,
-        })));
+        await tx.insert(envVar).values(
+          bindings.map((binding) => ({
+            id: generateId("env"),
+            projectId: targetProjectId,
+            environment,
+            serviceId: null,
+            key: binding.connection.envKey,
+            value: binding.encryptedValue,
+            isSecret: true,
+          })),
+        );
         const repo = createProjectConnectionRepo(tx);
         const result: ProjectConnection[] = [];
         for (const binding of bindings) result.push(await repo.upsert(binding.connection));

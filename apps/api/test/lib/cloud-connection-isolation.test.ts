@@ -241,3 +241,18 @@ describe("namespace-token isolation", () => {
     expect(ttl).toBeLessThanOrEqual(10);
   });
 });
+
+
+describe("Cloud GitHub inventory failures", () => {
+  it.each([401, 403, 502])("does not report HTTP %s as an empty successful installation list", async (status) => {
+    h.fetch.mockResolvedValue(Response.json({ error: "Cloud GitHub unavailable", code: "UPSTREAM_FAILURE" }, { status }));
+    await expect(cloudClient({ organizationId: "local-org" }).github.installations()).rejects.toMatchObject({ status, code: "UPSTREAM_FAILURE" });
+    expect(h.clear).not.toHaveBeenCalled();
+  });
+  it("distinguishes an empty installation list from a malformed response", async () => {
+    h.fetch.mockResolvedValueOnce(Response.json({ data: [] }));
+    expect(await cloudClient({ organizationId: "local-org" }).github.installations()).toEqual([]);
+    h.fetch.mockResolvedValueOnce(Response.json({ data: {} }));
+    await expect(cloudClient({ organizationId: "local-org" }).github.installations()).rejects.toThrow(/invalid GitHub installation list/);
+  });
+});

@@ -631,10 +631,10 @@ describe("billing through the same SDK and HTTP application operations", () => {
     expect(await remote.billing.listPlans({ locale: "ar" })).toEqual(native);
     expect(native.locale).toBe("ar");
     for (const [id, monthlyPrice, monthlyCredits] of [
-      ["hobby", 500, null],
-      ["starter", 2000, null],
-      ["pro", 3900, null],
-      ["team", 9900, null],
+      ["hobby", 1200, null],
+      ["starter", 2400, null],
+      ["pro", 4700, null],
+      ["team", 11900, null],
     ] as const)
       expect(native.plans.find(plan => plan.id === id)).toMatchObject({
         price: { monthly: monthlyPrice, annual: null },
@@ -650,10 +650,10 @@ describe("billing through the same SDK and HTTP application operations", () => {
   });
 
   it.each([
-    ["hobby", 500, 0],
-    ["starter", 2000, 0],
-    ["pro", 3900, 0],
-    ["team", 9900, 0],
+    ["hobby", 1200, 0],
+    ["starter", 2400, 0],
+    ["pro", 4700, 0],
+    ["team", 11900, 0],
   ] as const)("uses the selected tenant and current %s offer without auditing checkout URLs", async (tier, unitAmount, credits) => {
     const owner = await seedOwner(), other = await seedOwner(), c = await clients(owner);
     await db.update(schema.organization).set({ planTierId: "team" }).where(eq(schema.organization.id, other.orgId));
@@ -668,9 +668,9 @@ describe("billing through the same SDK and HTTP application operations", () => {
       expect(input).toMatchObject({
         namespace: managed.namespace,
         kind: "subscription",
-        offer: { reference: `openship:${tier}:v11`, unitAmount, credits, billingMode: "monthly" },
+        offer: { reference: `openship:${tier}:v13`, unitAmount, credits, billingMode: "monthly" },
         billingInterval: "monthly",
-        metadata: { openship_organization: owner.orgId, openship_namespace: managed.namespace, openship_offer_version: "11" },
+        metadata: { openship_organization: owner.orgId, openship_namespace: managed.namespace, openship_offer_version: "13" },
       });
       expect(input).not.toHaveProperty("customer");
       expect(input).not.toHaveProperty("line_items");
@@ -680,6 +680,35 @@ describe("billing through the same SDK and HTTP application operations", () => {
     expect(events.filter(row => row.eventType === "billing:write")).toHaveLength(2);
     expect(events.every(row => row.actorUserId === owner.userId)).toBe(true);
     expect(JSON.stringify(events)).not.toContain("private-session");
+  });
+
+  it("shares annual catalog, custom quotes and exact yearly checkout terms across native and HTTP", async () => {
+    provider.monthlySupport.mockResolvedValue({ ...capacityCatalog, resellerSubscriptionIntervals: ["monthly", "yearly"] });
+    const owner = await seedOwner(), c = await clients(owner);
+    expect((await c.native.listPlans()).annual.enabled).toBe(true);
+    expect(await c.remote.listPlans()).toEqual(await c.native.listPlans());
+    expect((await c.native.listPlans()).plans.find(plan => plan.id === "hobby")?.price).toEqual({ monthly: 1200, annual: 12000 });
+    const resources = { cpuCores: 1, memoryMb: 4096, diskGb: 50 };
+    const annual = await c.native.quoteCustomPlan({ ...resources, interval: "annual" });
+    expect(await c.remote.quoteCustomPlan({ ...resources, interval: "annual" })).toEqual(annual);
+    expect(annual).toMatchObject({ priceCents: 12000, interval: "annual" });
+    const monthly = await c.remote.quoteCustomPlan(resources);
+    for (const client of [c.native, c.remote]) {
+      await expect(client.createSubscription({ planTierId: annual.basePlanTierId, interval: "annual",
+        custom: { resources, quoteReference: monthly.reference }, idempotencyKey: "wrong-interval-checkout" }))
+        .rejects.toMatchObject({ code: "BILLING_QUOTE_CHANGED" });
+    }
+    expect(provider.checkout).not.toHaveBeenCalled();
+    for (const client of [c.native, c.remote]) {
+      await client.createSubscription({ planTierId: annual.basePlanTierId, interval: "annual",
+        custom: { resources, quoteReference: annual.reference }, idempotencyKey: "annual-custom-checkout" });
+    }
+    const workspace = await billingWorkspace(owner);
+    for (const [input] of provider.checkout.mock.calls) expect(input).toMatchObject({
+      namespace: workspace.namespace, kind: "subscription", billingInterval: "yearly",
+      offer: { reference: annual.reference, unitAmount: 12000, credits: 0, billingMode: "monthly" },
+      metadata: { openship_organization: owner.orgId, openship_namespace: workspace.namespace },
+    });
   });
 
   it("enforces membership, billing grants, read-only limits and feature switches before provider calls", async () => {

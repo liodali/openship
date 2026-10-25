@@ -13,6 +13,7 @@
  * PUT is naturally atomic. Either way, restores never see partial bytes.
  */
 
+import { PublicHttpHandler } from "../../system/public-http-handler";
 import { reportCaughtError as observeCaughtError } from "@repo/core/diagnostics";
 import {
   CompleteMultipartUploadCommandOutput,
@@ -142,6 +143,7 @@ class S3DestinationImpl implements BackupDestination {
       region: row.region ?? "auto",
       credentials: { accessKeyId, secretAccessKey },
       forcePathStyle: !isAws,
+      ...(row.publicNetworkOnly ? { requestHandler: new PublicHttpHandler() } : {}),
     });
     this.bucket = row.bucket;
     this.prefix = (row.pathPrefix ?? "").replace(/^\/+|\/+$/g, "");

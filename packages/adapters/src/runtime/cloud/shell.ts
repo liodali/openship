@@ -9,7 +9,8 @@ import { recoverManagedCommand } from "./command-recovery";
 import { CLOUD_TERMINAL_SHELL } from "./exec-framing";
 
 /** Shared provider PTY adapter for service and managed-server terminals. */
-export async function openCloudShell(rt: Runtime, opts?: ShellOptions, workspaceId?: string): Promise<ShellSession> {
+export async function openCloudShell(rt: Runtime, opts?: ShellOptions, workspaceId?: string,
+  recoveryRuntime: () => Promise<Runtime> = async () => rt): Promise<ShellSession> {
   const cols = clampShellWindow(opts?.cols, 80, 1000);
   const rows = clampShellWindow(opts?.rows, 24, 500);
   const tracking = currentManagedCommandTracking();
@@ -24,7 +25,7 @@ export async function openCloudShell(rt: Runtime, opts?: ShellOptions, workspace
     command.terminalId = terminalId;
     await tracking?.record({ ...command });
   } catch (error) {
-    await recoverManagedCommand(rt, command);
+    await recoverManagedCommand(await recoveryRuntime(), command);
     await tracking?.complete(command.marker);
     throw error;
   }
@@ -60,7 +61,7 @@ export async function openCloudShell(rt: Runtime, opts?: ShellOptions, workspace
   function finish(code: number | null = null, signal?: string): Promise<void> {
     if (exit) return cleanup ?? Promise.resolve();
     exit = { code, signal };
-    cleanup = recoverManagedCommand(rt, command).then(() => tracking?.complete(command.marker));
+    cleanup = recoveryRuntime().then(fresh => recoverManagedCommand(fresh, command)).then(() => tracking?.complete(command.marker));
     rejectOpen(new Error("The server terminal connection closed before it was ready"));
     try {
       socket?.close();

@@ -77,7 +77,22 @@ export const ConnectProjectDomainInputSchema = Type.Object({
   domain: Type.String({ minLength: 1, maxLength: 253 }), includeWww: Type.Optional(Type.Boolean()),
   externalIngress: Type.Optional(Type.Boolean()), sslChallenge: Type.Optional(Type.Union([Type.Literal("http-01"), Type.Literal("dns-01")])),
 }, { additionalProperties: false });
+export const RouteProtectionStatusSchema = Type.Object({
+  hostname: Type.String(), enabled: Type.Boolean(),
+  status: Type.Union([Type.Literal("pending"), Type.Literal("applied")]),
+}, { additionalProperties: false });
+export type RouteProtectionStatus = Static<typeof RouteProtectionStatusSchema>;
+export const RouteProtectionInputSchema = Type.Union([
+  Type.Object({ hostname: Type.String({ minLength: 1, maxLength: 253 }), action: Type.Literal("protect"),
+    password: Type.String({ minLength: 12, maxLength: 256, writeOnly: true }) }, { additionalProperties: false }),
+  Type.Object({ hostname: Type.String({ minLength: 1, maxLength: 253 }),
+    action: Type.Union([Type.Literal("unlock"), Type.Literal("revoke"), Type.Literal("retry")]) }, { additionalProperties: false }),
+]);
+export type RouteProtectionInput = Static<typeof RouteProtectionInputSchema>;
+
 export const ProjectRoutingSchemas = {
+  listRouteProtection: { action: "read", output: Type.Array(RouteProtectionStatusSchema) },
+  changeRouteProtection: { action: "write", input: RouteProtectionInputSchema, output: RouteProtectionStatusSchema },
   listRouteRules: { action: "read", output: Type.Array(RouteRuleSchema) },
   createRouteRule: { action: "write", input: RouteRuleInputSchema, output: RouteRuleSchema },
   updateRouteRule: { action: "write", input: UpdateRouteRuleInputSchema, output: RouteRuleSchema },

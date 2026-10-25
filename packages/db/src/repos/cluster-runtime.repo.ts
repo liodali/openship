@@ -159,6 +159,8 @@ export function createClusterRuntimeRepo(db: Database) {
           .where(and(eq(computeCluster.organizationId, org), eq(computeCluster.id, clusterId)))
           .for("update");
         if (!cluster) throw new NotFoundError("Cluster", clusterId);
+        if (!cluster.networkId || !plan.networkId || !plan.networkRevision)
+          throw conflict("An externally managed cluster cannot use the K3s installer.");
         if (cluster.revision !== revision || cluster.networkId !== plan.networkId)
           throw conflict("The cluster changed. Reload it before starting setup.");
         const [network] = await tx
@@ -198,6 +200,7 @@ export function createClusterRuntimeRepo(db: Database) {
         if (!cluster) throw new NotFoundError("Cluster", clusterId);
         const [current] = await tx.select().from(table).where(owned(org, clusterId)).for("update");
         if (!current) throw new NotFoundError("Cluster runtime");
+        if (current.provider !== "k3s") throw conflict("This runtime is externally managed. Disconnect its cluster after removing its projects; OpenShip does not uninstall it.");
         if (action === "remove" && current.status === "removed")
           return { row: current, started: false };
         if (clusterRuntimeRunning(current.status))

@@ -1,3 +1,4 @@
+import { isCustomerServer } from "../billing/management.service";
 /**
  * Apps catalog + one-click installer.
  *
@@ -166,7 +167,7 @@ export async function getAppHostFit(
     fit: { ok: true },
   };
 
-  if (env.CLOUD_MODE && template?.kind === "template") {
+  if (env.CLOUD_MODE && template?.kind === "template" && !await isCustomerServer(ctx.organizationId, target.serverId)) {
     const configuration = await appCloudConfiguration(
       ctx.organizationId,
       template,
@@ -398,16 +399,17 @@ export async function installApp(
   let workspaceId: string | undefined;
   // Linked Cloud servers retain their workspace on self-hosted control planes
   // too. Draft adoption must use the same owner as project creation.
-  const localPlacement = !env.CLOUD_MODE && input.serverId
+  const customerTarget = await isCustomerServer(ctx.organizationId, input.serverId);
+  const localPlacement = input.serverId
     ? await workspaceForServer(ctx.organizationId, input.serverId)
     : null;
-  const cloudTarget = env.CLOUD_MODE || !!localPlacement?.workspace;
+  const cloudTarget = (env.CLOUD_MODE && !customerTarget) || !!localPlacement?.workspace;
   // Default Cloud placement may create the initial workspace. Refuse unsupported
   // apps and GPU requests before invoking that write path.
   if (template.supportsCloud === false && cloudTarget)
     throw new AppError("This app supports self-hosted servers only. Choose a connected self-hosted server.", 400, "APP_CLOUD_UNSUPPORTED");
   const useGpu = resolveAppGpuMode(template, input.useGpu, cloudTarget);
-  const placement = env.CLOUD_MODE
+  const placement = env.CLOUD_MODE && !customerTarget
     ? await resolveCloudProjectServer(ctx.organizationId, input.serverId)
     : localPlacement;
   if (placement?.workspace) {
@@ -419,7 +421,7 @@ export async function installApp(
   // `services` project with image-backed service rows, so it can never be
   // static — a static-only tier is refused here, at the moment the operator
   // clicks Install, rather than at the deploy that follows.
-  await assertPlanAllowsServices(ctx.organizationId, workspaceId);
+  await assertPlanAllowsServices(ctx.organizationId, workspaceId, input.serverId);
 
   // Gate the operator's CHOSEN routing before the first row is written: a free
   // *.opsh.io hostname only resolves behind the Cloud edge, so a disconnected
@@ -645,6 +647,17 @@ export async function installApp(
           : {}),
         ...(svc.build ? { build: resolveBuild(svc.build) } : {}),
         ...(svc.stopGracePeriod ? { stopGracePeriod: svc.stopGracePeriod } : {}),
+        // Advisory CPU/disk sizing is deliberately NOT installed, but swap
+        // behavior is a runtime guarantee rather than a recommendation — and
+        // Docker requires the memory cap that makes it enforceable.
+        ...(svc.resources?.swapDisabled
+          ? {
+              resources: {
+                memoryMb: svc.resources.memoryMb,
+                swapDisabled: true,
+              },
+            }
+          : {}),
       },
       // Routing is exactly what the operator chose — never the template's
       // `exposed` flag turned into a hostname.

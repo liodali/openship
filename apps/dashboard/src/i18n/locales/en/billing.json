@@ -136,7 +136,8 @@
     "billingInterval": "Billing interval",
     "monthly": "Monthly",
     "annual": "Yearly",
-    "billedAnnually": "Billed yearly"
+    "billedAnnually": "Billed yearly",
+    "annualTotal": "{price} billed yearly, cancel renewal anytime"
   },
   "topups": {
     "loadError": "Failed to load top-up packs",
@@ -719,8 +720,10 @@
     "nextPlan": "New plan"
   },
   "purchase": {
+    "manage": "Manage your server",
+    "manageDescription": "Connect your own servers for deployments, domains, monitoring and backups.",
     "mode": "Billing model",
-    "monthly": "Monthly plans",
+    "monthly": "Cloud plans",
     "payg": "Prepaid PAYG",
     "title": "Prepaid hosting",
     "description": "Choose capacity, add credits, and pay for usage.",
@@ -851,6 +854,35 @@
       "processing": "Payment submitted · confirming its status",
       "canceling": "Confirming cancellation…",
       "unavailable": "Payment status is temporarily unavailable"
+    }
+  },
+  "managementPlans": {
+    "label": "Support plan",
+    "basic": "Basic",
+    "priority": "Priority",
+    "email": "Email support",
+    "prioritySupport": "Priority support",
+    "description": "Deploy and update apps, monitor their health, and back up your data. Your servers, managed from Openship.",
+    "basicDescription": "For everyday apps and personal projects.",
+    "priorityDescription": "For production apps that need priority support.",
+    "serversIncluded": "{count} connected servers",
+    "serverCount": "Servers",
+    "extraServers": "{included} included · {price}/month per extra server",
+    "billingNote": "Billed monthly, cancel anytime",
+    "selected": "Selected",
+    "select": "Choose {name}",
+    "monthlyTotal": "Monthly total",
+    "includedTitle": "Included in both plans",
+    "cloudIncluded": "Basic is included with your paid Cloud Space. Priority adds {price}/month.",
+    "cloudBasic": "Included with Cloud",
+    "perMonth": "/mo",
+    "features": {
+      "updates": "App deployments & image updates",
+      "health": "App health checks & alerts",
+      "monitoring": "CPU, memory & storage monitoring",
+      "domains": "Domains & automatic HTTPS",
+      "backups": "Scheduled backups & restores",
+      "automation": "API, SDK & CLI access"
     }
   }
 }

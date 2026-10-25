@@ -80,7 +80,7 @@ export class BuildLogger {
   log(
     message: string,
     level: LogEntry["level"] = "info",
-    meta?: Pick<LogEntry, "serviceName" | "serviceId">,
+    meta?: Pick<LogEntry, "serviceName" | "serviceId" | "resourceIssue">,
   ): void {
     this.onLog?.({ timestamp: new Date().toISOString(), message, level, ...meta });
   }
@@ -335,6 +335,7 @@ export async function runBuildPipeline(
           const gitInvocation = assembleGitClone({
             repoUrl: config.repoUrl,
             gitToken: config.gitToken,
+            gitTokenRepositories: config.gitTokenRepositories,
             gitCredentialHelperPath: config.gitCredentialHelperPath,
             ssh: sshMaterial,
             ambient: config.gitAmbient,

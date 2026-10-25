@@ -141,6 +141,11 @@ const PublicEndpointSchema = Type.Object({
  * empty one rather than fall back to repo root by accident.
  */
 const MonorepoAppSchema = Type.Object({
+  publicEndpoints: Type.Optional(
+    Type.Array(Type.Pick(PublicEndpointSchema, ["port", "domain", "customDomain", "domainType"]), {
+      maxItems: 50,
+    }),
+  ),
   name: Type.String({ minLength: 1, maxLength: 100 }),
   // Spread first, then override rootDirectory to required. The shared
   // block has it Optional to match the DB column; this create payload
@@ -374,6 +379,7 @@ export const SetReleaseSourceBody = Type.Object({
 });
 
 export const CreateProjectBody = Type.Object({
+  autoDeployCancelBuilds: Type.Optional(Type.Boolean()),
   githubChecks: Type.Optional(Type.Union([GitHubDeploymentChecksSchema, Type.Null()])),
   name: Type.String({ minLength: 1, maxLength: 100 }),
   /**
@@ -708,6 +714,7 @@ export const SetSleepModeBody = Type.Object({
  */
 export const SetOptionsBody = Type.Object(
   {
+    autoDeployCancelBuilds: CreateProjectBody.properties.autoDeployCancelBuilds,
     githubChecks: CreateProjectBody.properties.githubChecks,
     /** Save a scanned source ref and its build settings in the same update. */
     gitBranch: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),

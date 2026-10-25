@@ -285,7 +285,26 @@
       "repoCountOther": "{count} 個のリポジトリ",
       "coveredByOrg": "上記の組織全体への付与に含まれます。",
       "noRepos": "リポジトリがありません。",
-      "searchRepos": "リポジトリを検索…"
+      "searchRepos": "リポジトリを検索…",
+      "capabilityAreas": {
+        "domains": "ドメイン",
+        "deployments": "デプロイ"
+      },
+      "capabilityLabels": {
+        "domains:read": "表示",
+        "domains:write": "追加と検証",
+        "domains:delete": "削除",
+        "deployments:read": "表示",
+        "deployments:trigger": "実行"
+      },
+      "capabilityHints": {
+        "domains:read": "ドメイン、DNS レコード、証明書の状態を表示",
+        "domains:write": "ドメインの追加・検証・更新と DNS チャレンジの実行",
+        "domains:delete": "ドメインを削除",
+        "deployments:read": "デプロイ、ログ、ビルド状態を表示",
+        "deployments:trigger": "デプロイの開始・再デプロイ・再起動・固定と、デプロイ判断への対応。キャンセル・ロールバック・削除にはプロジェクトの管理権限が必要です。"
+      },
+      "capabilityImplied": "このリソースのアクセスレベルに含まれています"
     },
     "sourceAccess": {
       "title": "ソースアクセス",
@@ -483,6 +502,31 @@
       "dnsHintSelfhosted": "サーバーの IP を指す A レコードを追加し、次に検証用の TXT レコードを追加してください。",
       "dnsHintCloud": "ルーティング用の CNAME レコードを追加し、次に検証用の TXT レコードを追加してください。",
       "dnsPropagation": "DNS の変更が反映されるまで最大 48 時間かかることがあります。"
+    },
+    "protection": {
+      "unknown": "保護の状態を確認できませんでした。",
+      "title": "パスワード保護",
+      "chooseHostname": "先にホスト名を選択してください",
+      "description": "訪問者は共有パスワードを一度入力すると、24時間ログイン状態が続きます。パスワードを変更すると全員がログアウトします。",
+      "unsupported": "セルフホストのエッジでHTTPSを使用する、完全一致のカスタムホスト名に対応しています。Cloud、無料サブドメイン、外部TLSプロキシにはまだ対応していません。",
+      "loading": "保護を確認中…",
+      "staged": "パスワードを準備しました。このルートを公開する前に保護が設定されます。",
+      "pending": "保存済みですが、エッジでは未確認です。再試行またはプロジェクトのデプロイを行ってください。まだ非公開サイトとして共有しないでください。",
+      "protected": "パスワード保護が有効です",
+      "public": "このルートは公開されています",
+      "password": "サイトのパスワード",
+      "newPassword": "新しいサイトパスワード",
+      "passwordHint": "12文字以上を使用してください。アクセスを許可する人にだけ共有してください。",
+      "save": "パスワードを保存",
+      "loadFailed": "ルートの保護を確認できませんでした。このダイアログを開き直して再試行してください。",
+      "saveFailed": "保護を適用できませんでした。接続を確認して再試行してください。",
+      "retry": "エッジの更新を再試行",
+      "revoke": "全員をログアウト",
+      "remove": "保護を解除",
+      "unlockConfirm": "このURLを知っている人は誰でもサイトを開けるようになります。パスワードを解除しますか？",
+      "unlock": "公開する",
+      "cancel": "キャンセル",
+      "scope": "保護されるのはこのホスト名だけです。他のドメインやサービスへの直接接続ポートには、それぞれのアクセス設定が適用されます。外部CDNに保存済みのキャッシュは削除してください。"
     }
   },
   "updates": {

@@ -32,7 +32,7 @@ function ChangeDescription({ change }: { change: TopologyChange }) {
           ? ` · ${Object.keys(change.input.environment ?? {}).length} environment variables`
           : ""}
         {resources
-          ? ` · ${resources.cpuCores !== undefined ? formatCpuCores(resources.cpuCores) : "Inherited CPU"} / ${resources.memoryMb !== undefined ? formatMemoryMb(resources.memoryMb) : "Inherited memory"}`
+          ? ` · ${resources.cpuCores !== undefined ? formatCpuCores(resources.cpuCores) : "Inherited CPU"} / ${resources.memoryMb !== undefined ? formatMemoryMb(resources.memoryMb) : "Inherited memory"}${resources.swapDisabled ? " · swap disabled" : ""}`
           : ""}
       </>
     );
@@ -50,7 +50,7 @@ function ChangeDescription({ change }: { change: TopologyChange }) {
         if (key === "enabled")
           return change.patch.enabled ? "Enabled for deployment" : "Disable on deployment";
         if (key === "advanced" && resources)
-          return `${resources.cpuCores !== undefined ? formatCpuCores(resources.cpuCores) : "Inherited CPU"} / ${resources.memoryMb !== undefined ? formatMemoryMb(resources.memoryMb) : "Inherited memory"}${Object.keys(change.patch.advanced ?? {}).length > 1 ? " and runtime options" : ""}`;
+          return `${resources.cpuCores !== undefined ? formatCpuCores(resources.cpuCores) : "Inherited CPU"} / ${resources.memoryMb !== undefined ? formatMemoryMb(resources.memoryMb) : "Inherited memory"}${resources.swapDisabled ? ", swap disabled" : ""}${Object.keys(change.patch.advanced ?? {}).length > 1 ? " and runtime options" : ""}`;
         return key === "advanced" ? "Runtime options" : key;
       });
     return <>{fields.join(" · ")}</>;

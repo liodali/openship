@@ -135,7 +135,23 @@
       },
       "cloudConnectTitle": "Precisa de bancos de dados gerenciados ou armazenamento de objetos?",
       "cloudConnectBody": "Conecte a Openship Cloud para provisionar Postgres sem servidor, Redis e buckets compatíveis com S3 junto a este projeto.",
-      "cloudConnectButton": "Explorar complementos da Cloud"
+      "cloudConnectButton": "Explorar complementos da Cloud",
+      "repositorySource": {
+        "catalog": "Catálogo",
+        "title": "Do repositório",
+        "subtitle": "Escolha um serviço pronto, compile do seu repositório ou conecte um serviço existente.",
+        "context": "Contexto de compilação",
+        "dockerfile": "Dockerfile",
+        "browseContext": "Explorar pastas",
+        "browseDockerfile": "Explorar arquivos",
+        "pathHint": "Ambos os caminhos começam na raiz do repositório. O Dockerfile deve estar dentro do contexto de compilação.",
+        "deployHint": "Salve o serviço e implante-o para compilar a imagem com a origem e o destino deste projeto.",
+        "noRepository": "Conecte um repositório GitHub a este projeto para compilar um serviço a partir do código.",
+        "connectRepository": "Conectar repositório",
+        "invalidPath": "Insira um caminho relativo sem “..”, barras invertidas ou barra inicial.",
+        "outsideContext": "O Dockerfile deve estar dentro do contexto de compilação. Escolha uma pasta superior para incluí-lo.",
+        "noMatches": "Tente outra busca ou categoria, ou escolha Imagem personalizada."
+      }
     },
     "detail": {
       "tabs": {
@@ -185,27 +201,29 @@
         "loadFailed": "Não foi possível carregar o ambiente guardado. As suas variáveis não foram alteradas.",
         "checkFailed": "Não foi possível comparar com o serviço em execução. As variáveis guardadas continuam disponíveis.",
         "checking": "A comparar com o serviço em execução…",
-        "check": "Verificar serviço em execução",
+        "check": "Verificar novamente",
         "reload": "Recarregar ambiente",
         "removeOverride": "Remover substituição (um valor herdado pode substituí-la)",
         "removeAtSource": "Remova as variáveis herdadas no Compose ou nas definições do projeto. Defina aqui uma substituição do serviço para alterar o valor.",
         "status": {
           "unchecked": "O ambiente em execução ainda não foi verificado.",
           "synced": "O serviço em execução corresponde ao ambiente guardado.",
-          "pending": "Estas alterações guardadas ainda não foram aplicadas ao serviço em execução:",
+          "pending": "As alterações estão salvas. Aplique para reiniciar o serviço com os novos valores.",
           "unavailable": "Não foi possível verificar o ambiente em execução.",
           "not-deployed": "Estas variáveis serão usadas quando este serviço for implementado.",
           "unsupported": "Volte a implementar este serviço para aplicar o ambiente guardado."
         },
-        "recoveryHint": "O contentor em execução tem variáveis que não estão guardadas no Openship. Recupere-as antes de aplicar se quiser mantê-las:",
-        "recover": "Recuperar do serviço em execução",
-        "removeRuntime": "Aplicar sem recuperar estas variáveis; removê-las do serviço em execução.",
-        "recovered": "Recuperadas do serviço em execução — ainda não guardadas",
-        "recoveredHint": "Os valores recuperados estão prontos para revisão. Guarde para os manter no Openship.",
-        "recoveryFailed": "Não foi possível recuperar as variáveis do serviço em execução. As variáveis guardadas não foram alteradas."
+        "recoveryHint": "Estes valores serão removidos ao aplicar, a menos que você os copie e salve antes.",
+        "recover": "Copiar para o editor",
+        "removeRuntime": "Remover estes valores ao aplicar.",
+        "recovered": "Copiado do contêiner — salve para manter",
+        "recoveredHint": "Copiado para o editor. Revise os valores e salve.",
+        "recoveryFailed": "Não foi possível recuperar as variáveis do serviço em execução. As variáveis guardadas não foram alteradas.",
+        "changedLabel": "Valores que mudarão",
+        "recoveryTitle": "Variáveis presentes apenas no contêiner"
       },
       "environmentApply": {
-        "title": "Aplicar alterações de ambiente",
+        "title": "Aplicar e reiniciar",
         "applying": "Aplicando alterações…",
         "applied": "Alterações de ambiente aplicadas",
         "hint": "Aplique as variáveis salvas a este serviço sem recompilar. O serviço será reiniciado.",
@@ -317,7 +335,20 @@
         "automaticStorage": "Gerenciado automaticamente",
         "invalidMount": "Informe um caminho que comece com / dentro do serviço. Caminhos e nomes de volumes não podem conter :.",
         "mountTooLong": "Cada entrada de volume deve ter no máximo 500 caracteres.",
-        "saveAndBackup": "Salvar e fazer backup"
+        "saveAndBackup": "Salvar e fazer backup",
+        "emptyVolume": {
+          "menu": "Ações do volume",
+          "title": "Iniciar com armazenamento vazio",
+          "description": "O serviço será reimplantado com um volume novo. Os dados anteriores e backups serão mantidos.",
+          "retained": "Volume anterior — mantido",
+          "newVolume": "Novo volume vazio",
+          "recoveryHint": "Para recuperar os dados anteriores, edite esta montagem e restaure o nome do volume anterior. Outros serviços que usam o volume antigo não serão afetados.",
+          "confirm": "Digite {name} para confirmar",
+          "action": "Salvar e reimplantar",
+          "retry": "Tentar implantação novamente",
+          "retryHint": "A configuração do novo volume foi salva, mas a implantação não começou. Tente novamente para continuar. O serviço em execução ainda usa o volume anterior.",
+          "failed": "Não foi possível preparar o armazenamento vazio. Nenhum dado foi apagado."
+        }
       },
       "internalAddress": "Endereço interno",
       "internalAddressHint": "Os contêineres deste projeto acessam este serviço aqui",

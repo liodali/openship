@@ -179,6 +179,10 @@ describe("app template — versioning + engine gate (parseAppTemplate)", () => {
       services: [{ ...base.services[0], resources: value }],
     });
     expect(appTemplateSchema.parse(profile(resources)).services![0]!.resources).toEqual(resources);
+    const swapDisabled = { ...resources, swapDisabled: true };
+    expect(appTemplateSchema.parse(profile(swapDisabled)).services![0]!.resources).toEqual(
+      swapDisabled,
+    );
     for (const invalid of [
       { ...resources, cpuCores: 0 },
       { ...resources, memoryMb: 64 },

@@ -24,6 +24,8 @@ import { repos } from "@repo/db";
  */
 
 const h = vi.hoisted(() => ({
+  cloud: false,
+  server: null as Record<string, unknown> | null,
   project: null as Record<string, unknown> | null,
   activeDeployments: [] as Array<{ id: string; status: string }>,
   activeDeploymentReadError: null as Error | null,
@@ -87,6 +89,7 @@ const h = vi.hoisted(() => ({
 
 vi.mock("@repo/db", () => ({
   repos: {
+    server: { getInOrganization: vi.fn(async () => h.server) },
     clusterDatabase: { list: vi.fn(async () => []) },
     project: {
       findById: vi.fn(async () => h.project),
@@ -147,7 +150,7 @@ vi.mock("@repo/platform/engine/modules/github/github.service", () => ({ deleteWe
 vi.mock("@repo/platform/engine/modules/mail/webmail/webmail-install.service", () => ({
   cleanupWebmailInstall: h.cleanupWebmailInstall,
 }));
-vi.mock("@repo/platform/engine/config/index", () => ({ env: { CLOUD_MODE: false } }));
+vi.mock("@repo/platform/engine/config/index", () => ({ env: { get CLOUD_MODE() { return h.cloud; } } }));
 
 import { teardownProject, type TeardownStep } from "@repo/platform/engine/modules/projects/project-teardown";
 
@@ -173,6 +176,8 @@ const stepOf = (steps: TeardownStep[], name: string) => steps.find((s) => s.step
 
 beforeEach(() => {
   vi.clearAllMocks();
+  h.cloud = false;
+  h.server = null;
   h.project = projectFixture();
   h.activeDeployments = [];
   h.activeDeploymentReadError = null;
@@ -185,6 +190,17 @@ beforeEach(() => {
 });
 
 describe("teardownProject — dependency inspection", () => {
+  it("disconnects a hosted Manage project without touching customer containers, volumes or routes", async () => {
+    h.cloud = true;
+    h.project = projectFixture({ serverId: "customer-host" });
+    h.server = { id: "customer-host", organizationId: "org1", workspaceId: null, isLocal: false, purpose: "deployment" };
+    const result = await teardownProject(ctx, "p1", { force: false, recordOnly: true });
+    expect(result.rowDeleted).toBe(true);
+    expect(h.executeCleanup).not.toHaveBeenCalled();
+    expect(h.collectProjectManifest).not.toHaveBeenCalled();
+    expect(h.removeProjectFromServerManifests).not.toHaveBeenCalled();
+    expect(h.orphanCreate).not.toHaveBeenCalled();
+  });
   it.each([false, true])("keeps the project when its stored-data guard cannot be checked (recordOnly=%s)", async recordOnly => {
     vi.mocked(repos.project.findById).mockRejectedValueOnce(new Error("Database unavailable"));
     await expect(teardownProject(ctx, "p1", { force: true, recordOnly })).rejects.toThrow("Database unavailable");
@@ -594,7 +610,7 @@ describe("teardownProject — cluster namespace cleanup", () => {
         resources: hasWorkloads
           ? [{ type: "container", ref: "k8s:release", label: "application" }]
           : [],
-        runtimes: [{ name: "kubernetes", cleanupProject: vi.fn() }],
+        runtimes: [{ name: "kubernetes", supports: (cap: string) => cap === "clusterStatus", cleanupProject: vi.fn() }],
       };
       h.collectProjectManifest.mockResolvedValueOnce(manifest as never);
 
@@ -614,7 +630,7 @@ describe("teardownProject — cluster namespace cleanup", () => {
       organizationId: "org1",
       projectCleanup: true,
       resources: [],
-      runtimes: [{ name: "kubernetes", cleanupProject: vi.fn() }],
+      runtimes: [{ name: "kubernetes", supports: (cap: string) => cap === "clusterStatus", cleanupProject: vi.fn() }],
     } as never);
     h.executeCleanup.mockResolvedValueOnce({
       total: 1,

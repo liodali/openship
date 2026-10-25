@@ -76,12 +76,14 @@ export default async function BillingTabPage({
   }
 
   if (result.kind === "unavailable") {
-    return <BillingPageView view={view}><BillingContent layout={activeTab === "plans" ? "plans" : "details"} sidebar={null}><BillingUnavailable reason={result.reason} /></BillingContent></BillingPageView>;
+    return <BillingPageView view={view}><BillingContent layout={activeTab === "plans" ? "plans" : "details"} sidebar={null}>
+      <BillingUnavailable reason={result.reason} />
+    </BillingContent></BillingPageView>;
   }
 
   const state = result.state;
   const plansOnly = isNewCloudCustomer(state);
-  if (plansOnly && activeTab !== "plans") {
+  if (plansOnly && activeTab !== "plans" && activeTab !== "payment") {
     redirect(billingTabHref("plans", { ...query, workspaceId: state.workspace?.id ?? workspaceId }));
   }
   if (tab === "invoices") {

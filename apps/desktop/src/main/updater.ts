@@ -17,8 +17,7 @@
 import { reportCaughtError as observeCaughtError, diagnostics as errorDiagnostics } from "@repo/core/diagnostics";
 import { app, net, shell } from "electron";
 import {
-  changelogMarkdownUrl,
-  extractChangelogSection,
+  releaseDocuments,
   resolveDesktopUpdate,
   RELEASES_LATEST_API,
   type DesktopUpdateAsset,
@@ -39,7 +38,6 @@ import {
 } from "node:fs";
 import { open } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { advisoryManifestUrl, parseManifest, type AdvisoryManifest } from "@repo/core";
 import { isAllowedUpdateAssetUrl } from "./security";
 import { verifyUpdateSignature } from "./update-signature";
 import { fetchUpdateAsset } from "./update-download";
@@ -93,7 +91,13 @@ async function checkForUpdateUncached(): Promise<UpdateCheck> {
     if (!tag) return { available: false, latest: null, manifest: null };
     // These are independent, fail-soft reads. A missing changelog must never
     // suppress a critical advisory (or the reverse).
-    const [manifest, changelogNotes] = await Promise.all([fetchManifest(tag), fetchChangelog(tag)]);
+    const documents = await releaseDocuments(tag, ((url, init) =>
+      net.fetch(url instanceof URL ? url.toString() : url, {
+        ...init,
+        headers: { Accept: "application/json, text/markdown", "User-Agent": "Openship-Desktop" },
+        signal: AbortSignal.timeout(10_000),
+      })) as typeof fetch);
+    const manifest = documents.manifest;
     return {
       ...resolveDesktopUpdate({
         releasePayload: data,
@@ -101,53 +105,14 @@ async function checkForUpdateUncached(): Promise<UpdateCheck> {
         arch: process.arch,
         currentVersion: app.getVersion(),
         manifest,
-        changelogNotes,
+        changelogNotes: documents.latest?.notes ?? null,
       }),
-      latest: { version: tag.replace(/^v/, ""), tag, notes: changelogNotes ?? "" },
+      latest: documents.latest,
       manifest,
     };
   } catch (diagnosticFailure) {
     observeCaughtError(diagnosticFailure, "desktop/main/updater");
     return { available: false, latest: null, manifest: null };
-  }
-}
-
-/** Exact release section from the immutable changelog at this release tag. */
-async function fetchChangelog(tag: string): Promise<string | null> {
-  if (!tag) return null;
-  try {
-    const res = await net.fetch(changelogMarkdownUrl(tag), {
-      headers: { Accept: "text/markdown", "User-Agent": "Openship-Desktop" },
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!res.ok) return null;
-    return extractChangelogSection(await res.text(), tag);
-  } catch (diagnosticFailure) {
-    observeCaughtError(diagnosticFailure, "desktop/main/updater");
-    return null;
-  }
-}
-
-/**
- * The advisory manifest for a release tag, validated through the same
- * `parseManifest` the dashboard uses (it's untrusted third-party JSON as far as
- * any client is concerned).
- *
- * Fails CLOSED: no tag, unreachable, or malformed → null → no announcement → we
- * stay quiet. A broken manifest must never become an unexpected modal on launch.
- */
-async function fetchManifest(tag: string): Promise<AdvisoryManifest | null> {
-  if (!tag) return null;
-  try {
-    const res = await net.fetch(advisoryManifestUrl(tag), {
-      headers: { Accept: "application/json", "User-Agent": "Openship-Desktop" },
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!res.ok) return null;
-    return parseManifest(await res.json());
-  } catch (diagnosticFailure) {
-    observeCaughtError(diagnosticFailure, "desktop/main/updater");
-    return null;
   }
 }
 

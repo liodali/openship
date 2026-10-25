@@ -136,7 +136,8 @@
     "billingInterval": "請求間隔",
     "monthly": "月払い",
     "annual": "年払い",
-    "billedAnnually": "年払いで請求"
+    "billedAnnually": "年払いで請求",
+    "annualTotal": "年額 {price} を一括請求。更新はいつでも解約できます"
   },
   "topups": {
     "loadError": "追加購入パックの読み込みに失敗しました",
@@ -719,8 +720,10 @@
     "nextPlan": "新しいプラン"
   },
   "purchase": {
+    "manage": "自分のサーバーを管理",
+    "manageDescription": "自分のサーバーを接続して、デプロイ、ドメイン、監視、バックアップを管理します。",
     "mode": "課金方式",
-    "monthly": "月額プラン",
+    "monthly": "クラウドプラン",
     "payg": "前払い従量課金",
     "title": "前払いホスティング",
     "description": "リソースティアを選び、クレジットを追加してサーバーの使用量に応じて支払います。",
@@ -851,6 +854,35 @@
       "processing": "お支払い送信済み・状況を確認中",
       "canceling": "キャンセルを確認中…",
       "unavailable": "お支払い状況は一時的に利用できません"
+    }
+  },
+  "managementPlans": {
+    "label": "サポートプラン",
+    "basic": "ベーシック",
+    "priority": "優先",
+    "email": "メールサポート",
+    "prioritySupport": "優先サポート",
+    "description": "アプリのデプロイと更新、稼働状況の監視、データのバックアップ。Openshipからお使いのサーバーを管理できます。",
+    "basicDescription": "日常的なアプリや個人プロジェクト向け。",
+    "priorityDescription": "優先サポートが必要な本番アプリ向け。",
+    "serversIncluded": "接続サーバー {count} 台",
+    "serverCount": "サーバー数",
+    "extraServers": "{included} 台込み · 追加1台につき月額 {price}",
+    "billingNote": "月払い、いつでも解約可能",
+    "selected": "選択中",
+    "select": "{name}を選択",
+    "monthlyTotal": "月額合計",
+    "includedTitle": "両プランに含まれる機能",
+    "cloudIncluded": "有料Cloud SpaceにはBasicが含まれます。Priorityは月額 {price} の追加です。",
+    "cloudBasic": "Cloudに含まれます",
+    "perMonth": "/月",
+    "features": {
+      "updates": "アプリのデプロイとイメージ更新",
+      "health": "アプリのヘルスチェックとアラート",
+      "monitoring": "CPU・メモリ・ストレージの監視",
+      "domains": "ドメインと自動HTTPS",
+      "backups": "定期バックアップと復元",
+      "automation": "API・SDK・CLIアクセス"
     }
   }
 }

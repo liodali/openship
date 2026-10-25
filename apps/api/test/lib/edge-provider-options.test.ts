@@ -3,13 +3,22 @@ import { beforeEach, expect, it, vi } from "vitest";
 const h = vi.hoisted(() => ({
   server: vi.fn(),
   advisory: vi.fn(async (_key: string, fn: () => Promise<unknown>) => fn()),
+  env: { CLOUD_MODE: false },
+  acme: {
+    acmeEmail: "operator@example.com",
+    acmeDirectoryUrl: "https://private-ca.example/acme",
+    acmeEabKid: "operator-account",
+    acmeEabHmacKey: "operator-secret",
+    acmeCaBundle: "/etc/operator-ca.pem",
+  },
 }));
+vi.mock("@repo/platform/engine/config/env", () => ({ env: h.env }));
 vi.mock("@repo/db", () => ({
   repos: { server: { get: h.server } },
   withAdvisoryLock: h.advisory,
 }));
 vi.mock("@repo/platform/engine/lib/acme-config", () => ({
-  resolveAcmeProviderOptions: () => ({ acmeEmail: "operator@example.com" }),
+  resolveAcmeProviderOptions: () => h.acme,
 }));
 vi.mock("@repo/platform/engine/lib/box-org", () => ({
   isLocalHostRow: async (server: { isLocal: boolean }) => server.isLocal,
@@ -22,6 +31,31 @@ import {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  h.env.CLOUD_MODE = false;
+});
+
+it("does not pass SaaS operator certificate credentials or configuration to customer hosts", async () => {
+  h.env.CLOUD_MODE = true;
+  const server = { id: "srv_customer", isLocal: false };
+  h.server.mockResolvedValue(server);
+  for (const options of [
+    edgeProviderOptions(server.id),
+    await resolveEdgeProviderOptions(server.id),
+    await resolveEdgeProviderOptions(server as never),
+  ]) {
+    expect(Object.keys(options)).toEqual(["configLock"]);
+    await options.configLock!.run(async () => undefined);
+  }
+  expect(h.advisory.mock.calls.map(([key]) => key)).toEqual([
+    "edge-config:server:srv_customer",
+    "edge-config:server:srv_customer",
+    "edge-config:server:srv_customer",
+  ]);
+});
+
+it("preserves operator certificate settings for self-hosted local and remote edges", () => {
+  expect(edgeProviderOptions()).toMatchObject(h.acme);
+  expect(edgeProviderOptions("srv_remote")).toMatchObject(h.acme);
 });
 
 it("uses the same lock for the local platform and its This Server alias", async () => {

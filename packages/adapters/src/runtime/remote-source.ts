@@ -1,11 +1,10 @@
 import { posix } from "node:path";
-import type { BuildConfig } from "../../types";
-import type { BuildLogger } from "../build-pipeline";
-import type { CloudServerConnection } from "./server-connection";
+import type { BuildConfig, CommandExecutor } from "../types";
+import type { BuildLogger } from "./build-pipeline";
 
 /** Transfer supplied source to a managed host; Git acquisition stays in the shared build engine. */
-export async function prepareManagedSource(
-  connection: CloudServerConnection,
+export async function prepareRemoteSource(
+  connection: { executor: CommandExecutor },
   config: BuildConfig,
   directory: string,
   logger: BuildLogger,

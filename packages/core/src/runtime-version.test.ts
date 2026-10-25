@@ -4,6 +4,8 @@ import {
   RUNTIME_VERSION_PATTERN,
   RUNTIME_VERSION_MAX_LENGTH,
   getRuntimeVersionPolicy,
+  supportsRuntimeImageOverride,
+  supportsBuildImageOverride,
   runtimeNeedsInstall,
   assertRuntimeVersionTarget,
   runtimeProjectUpdate,
@@ -170,10 +172,23 @@ describe("runtime version selection", () => {
     { buildKind: "dockerfile" },
     { workloadType: "static" },
   ])("refuses unsupported execution targets %j", (override) => {
+    expect(supportsRuntimeImageOverride(override)).toBe(false);
     expect(() =>
       assertRuntimeVersionTarget({ runtimeVersion: "8.3", framework: "laravel", ...override }),
     ).toThrow(/generated PHP Docker/);
     expect(() => assertRuntimeVersionTarget(override)).not.toThrow();
+  });
+  it.each(["web", "worker"])("supports generated Docker %s runtime images", (workloadType) => {
+    const target = { runtimeMode: "docker", projectType: "app", buildKind: "buildpack", workloadType };
+    expect(supportsBuildImageOverride(target)).toBe(true);
+    expect(supportsRuntimeImageOverride(target)).toBe(true);
+    expect(() => assertRuntimeVersionTarget({ ...target, runtimeImage: "custom/runtime:1" })).not.toThrow();
+  });
+  it("offers a static builder without enabling a nonexistent application runtime", () => {
+    const target = { runtimeMode: "docker", projectType: "app", buildKind: "static", workloadType: "static" };
+    expect(supportsBuildImageOverride(target)).toBe(true);
+    expect(supportsRuntimeImageOverride(target)).toBe(false);
+    expect(() => assertRuntimeVersionTarget({ ...target, runtimeImage: "custom/runtime:1" })).toThrow(/generated.*Docker/);
   });
 });
 

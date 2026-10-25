@@ -15,6 +15,7 @@ export function PullRequestPreviews({ projectId }: { projectId: string }) {
   const [enabled, setEnabled] = useState(false);
   const [comments, setComments] = useState(true);
   const [baseDomain, setBaseDomain] = useState("");
+  const [protectionHostname, setProtectionHostname] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => {
@@ -34,6 +35,7 @@ export function PullRequestPreviews({ projectId }: { projectId: string }) {
           setEnabled(result.data.settings?.enabled ?? false);
           setComments(result.data.settings?.comments ?? true);
           setBaseDomain(result.data.settings?.baseDomain ?? "");
+          setProtectionHostname(result.data.settings?.protectionHostname ?? "");
           initialized = true;
         }
       } catch (cause) {
@@ -59,6 +61,7 @@ export function PullRequestPreviews({ projectId }: { projectId: string }) {
         enabled,
         comments,
         baseDomain: baseDomain.trim() || undefined,
+        protectionHostname: protectionHostname.trim().toLowerCase() || undefined,
       });
       const result = await api.get<{ data: Previews }>(
         `projects/${encodeURIComponent(projectId)}/previews`,
@@ -85,6 +88,21 @@ export function PullRequestPreviews({ projectId }: { projectId: string }) {
         <p className="text-sm text-muted-foreground">Loading preview settings…</p>
       ) : (
         <>
+          <label className="block text-sm space-y-2">
+            <span>Password source hostname (optional)</span>
+            <Input
+              variant="filled"
+              placeholder="dev.example.com"
+              value={protectionHostname}
+              onChange={(event) => setProtectionHostname(event.target.value)}
+              disabled={busy}
+            />
+            <span className="block text-xs text-muted-foreground">
+              Set a password for this project’s exact hostname in Domains &amp; Routes first.
+              Every preview hostname inherits that password before publication, with separate
+              browser sessions. Requires a custom preview base domain. Leave blank for public previews.
+            </span>
+          </label>
           <label className="flex items-center gap-2 text-sm">
             <Checkbox
               checked={enabled}

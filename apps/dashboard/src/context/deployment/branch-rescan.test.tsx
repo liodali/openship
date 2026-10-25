@@ -21,6 +21,8 @@ const api = vi.hoisted(() => ({
   getInfo: vi.fn(),
   getEnv: vi.fn(),
   listServices: vi.fn(),
+  syncServices: vi.fn(),
+  mergeServiceEnv: vi.fn(),
   setOptions: vi.fn(),
   setBranch: vi.fn(),
   getBranchPage: vi.fn(),
@@ -44,7 +46,7 @@ vi.mock("@/lib/api", () => ({
     setBranch: api.setBranch,
     ensure: api.ensure,
   },
-  servicesApi: { list: api.listServices },
+  servicesApi: { list: api.listServices, sync: api.syncServices, mergeEnv: api.mergeServiceEnv },
   serviceKind: (service: { kind?: string }) => service.kind ?? "compose",
   systemApi: { listServers: async () => [] },
   githubApi: {},
@@ -217,6 +219,8 @@ beforeEach(async () => {
     ],
   });
   api.listServices.mockResolvedValue({ services });
+  api.syncServices.mockResolvedValue({ success: true, services });
+  api.mergeServiceEnv.mockResolvedValue({ success: true });
   api.setOptions.mockResolvedValue({});
   api.setBranch.mockResolvedValue({ success: true });
   api.getBranchPage.mockResolvedValue({
@@ -243,21 +247,140 @@ afterEach(async () => {
 });
 
 describe("deploy branch detection", () => {
-  it.each([true, false])("preserves saved GitHub reporting through hydration, branch scan, save and deploy (self-hosted: %s)", async selfHosted => {
-    api.selfHosted = selfHosted;
-    const githubChecks = { enabled: false, deployment: true, services: ["web"], includeErrors: false };
-    const response = await api.getInfo();
-    api.getInfo.mockResolvedValue({ data: { project: { ...response.data.project, githubChecks } } });
-    await act(async () => { await current.initializeFromProject("project-1"); });
-    expect(current.config.githubChecks).toEqual(githubChecks);
-    await act(async () => current.updateConfig({ branches: ["main", "openship"] }));
-    await selectBranch("openship");
-    expect(current.config.githubChecks).toEqual(githubChecks);
+  it("saves only edited service overrides in their own environment scope", async () => {
+    const baseline = [
+      {
+        key: "POSTGRES_DB",
+        value: "before",
+        visible: true,
+        isSecret: false,
+        sourceId: "env-db",
+        removalDisabled: false,
+      },
+    ];
+    await act(async () =>
+      current.updateConfig({
+        services: [
+          {
+            ...services[0]!,
+            serviceId: "svc-web",
+            environment: { POSTGRES_DB: "${POSTGRES_DB:-application}" },
+            advanced: { environmentTemplateKeys: ["POSTGRES_DB"] },
+            environmentDraft: {
+              environment: "preview",
+              baseline,
+              rows: [{ ...baseline[0]!, value: "after" }],
+            },
+          },
+        ],
+      }),
+    );
     await act(async () => button(baseDictionary.deploy.sidebar.saveChanges).click());
-    expect(api.setOptions).toHaveBeenCalledWith("project-1", expect.objectContaining({ githubChecks }));
-    await act(async () => { await build.startDeployment(); });
-    expect(api.ensure).toHaveBeenCalledWith(expect.objectContaining({ githubChecks }));
+    expect(api.mergeServiceEnv).toHaveBeenCalledExactlyOnceWith("project-1", "svc-web", {
+      environment: "preview",
+      upserts: [{ key: "POSTGRES_DB", value: "after", isSecret: false, sourceId: "env-db" }],
+      deletes: [],
+    });
+    expect(api.syncServices.mock.calls[0][1][0].environment).toEqual({
+      POSTGRES_DB: "${POSTGRES_DB:-application}",
+    });
+    expect(api.syncServices.mock.calls[0][1][0]).not.toHaveProperty("environmentDraft");
+    expect(api.buildAccess).not.toHaveBeenCalled();
   });
+
+  it("cancels an existing project's wizard draft without saving or deploying", async () => {
+    await act(async () => current.updateConfig({ projectName: "Unsaved name" }));
+    await act(async () => button(baseDictionary.projectSettings.settingSection.cancel).click());
+    expect(api.push).toHaveBeenCalledWith("/projects/project-1/advanced");
+    expect(api.setOptions).not.toHaveBeenCalled();
+    expect(api.syncServices).not.toHaveBeenCalled();
+    expect(api.ensure).not.toHaveBeenCalled();
+    expect(api.buildAccess).not.toHaveBeenCalled();
+    await act(async () => {
+      await current.initializeFromProject("project-1");
+    });
+    expect(current.config.projectName).toBe("My project");
+  });
+
+  it("saves Compose configuration with template provenance and does not start a deployment", async () => {
+    const environmentTemplates = { BASE_URL: "${BASE_URL:-https://console.example.com}" };
+    await act(async () =>
+      current.updateConfig({
+        services: [
+          {
+            ...services[0]!,
+            environment: { BASE_URL: "https://console.example.com" },
+            environmentTemplates,
+            advanced: { environmentTemplateKeys: ["BASE_URL"] },
+          },
+        ],
+      }),
+    );
+    await act(async () => button(baseDictionary.deploy.sidebar.saveChanges).click());
+    expect(api.syncServices).toHaveBeenCalledExactlyOnceWith("project-1", [
+      expect.objectContaining({
+        environment: { BASE_URL: "https://console.example.com" },
+        environmentTemplates,
+        advanced: { environmentTemplateKeys: ["BASE_URL"] },
+      }),
+    ]);
+    expect(api.buildAccess).not.toHaveBeenCalled();
+    expect(api.push).toHaveBeenCalledWith("/projects/project-1/advanced");
+  });
+
+  it("blocks cancel and duplicate saves while configuration is being saved", async () => {
+    let finish!: () => void;
+    api.setOptions.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+    );
+    await act(async () => button(baseDictionary.deploy.sidebar.saveChanges).click());
+    expect(button(baseDictionary.projectSettings.settingSection.cancel).disabled).toBe(true);
+    await act(async () => {
+      button(baseDictionary.projectSettings.settingSection.cancel).click();
+      button(baseDictionary.deploy.sidebar.saving).click();
+    });
+    expect(api.setOptions).toHaveBeenCalledTimes(1);
+    expect(api.push).not.toHaveBeenCalled();
+    await act(async () => {
+      finish();
+    });
+    expect(api.push).toHaveBeenCalledWith("/projects/project-1/advanced");
+  });
+
+  it.each([true, false])(
+    "preserves saved GitHub reporting through hydration, branch scan, save and deploy (self-hosted: %s)",
+    async (selfHosted) => {
+      api.selfHosted = selfHosted;
+      const githubChecks = {
+        enabled: false,
+        deployment: true,
+        services: ["web"],
+        includeErrors: false,
+      };
+      const response = await api.getInfo();
+      api.getInfo.mockResolvedValue({
+        data: { project: { ...response.data.project, githubChecks } },
+      });
+      await act(async () => {
+        await current.initializeFromProject("project-1");
+      });
+      expect(current.config.githubChecks).toEqual(githubChecks);
+      await act(async () => current.updateConfig({ branches: ["main", "openship"] }));
+      await selectBranch("openship");
+      expect(current.config.githubChecks).toEqual(githubChecks);
+      await act(async () => button(baseDictionary.deploy.sidebar.saveChanges).click());
+      expect(api.setOptions).toHaveBeenCalledWith(
+        "project-1",
+        expect.objectContaining({ githubChecks }),
+      );
+      await act(async () => {
+        await build.startDeployment();
+      });
+      expect(api.ensure).toHaveBeenCalledWith(expect.objectContaining({ githubChecks }));
+    },
+  );
 
   it("keeps a new project's reporting opt-out while scanning a different Compose file", async () => {
     await act(async () => { await current.initializeFromRepo("example", "fresh"); });
@@ -604,6 +727,57 @@ describe("deploy branch detection", () => {
     });
   });
 
+  it("saves monorepo selections, domains and environment without deploying", async () => {
+    api.getInfo.mockResolvedValueOnce({
+      project: {
+        id: "project-1",
+        name: "mono",
+        projectType: "monorepo",
+        gitOwner: "acme",
+        gitRepo: "mono",
+        gitBranch: "main",
+      },
+    });
+    api.listServices.mockResolvedValueOnce({
+      services: [
+        {
+          id: "svc-api",
+          kind: "monorepo",
+          name: "api",
+          rootDirectory: "apps/api",
+          framework: "node",
+          enabled: false,
+          exposed: false,
+          exposedPort: "3000",
+          environment: { MODE: "production" },
+          publicEndpoints: [{ port: 3000, customDomain: "api.example.com", domainType: "custom" }],
+        },
+      ],
+    });
+    await act(async () => {
+      await current.initializeFromProject("project-1");
+    });
+    expect(current.config.monorepoApps?.[0]).toMatchObject({ enabled: false, exposed: false });
+    await act(async () => {
+      await build.startDeployment({ saveConfigOnly: true });
+    });
+    expect(api.ensure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: "project-1",
+        monorepoApps: [
+          expect.objectContaining({
+            name: "api",
+            enabled: false,
+            exposed: false,
+            environment: { MODE: "production" },
+            publicEndpoints: [expect.objectContaining({ customDomain: "api.example.com" })],
+          }),
+        ],
+      }),
+    );
+    expect(api.buildAccess).not.toHaveBeenCalled();
+  });
+
   it("replaces monorepo apps, workspace defaults, and mode snapshots when returning to a plain branch", async () => {
     const app = scan("openship");
     api.prepare.mockResolvedValueOnce(
@@ -615,7 +789,8 @@ describe("deploy branch detection", () => {
     );
     await selectBranch("openship");
     expect(current.config.monorepoApps).toHaveLength(1);
-    expect(current.config.modeSnapshots).toBeDefined();
+    expect(current.config.monorepoApps?.[0]?.enabled).toBe(false);
+    expect(current.config.modeSnapshots).toBeUndefined();
     await selectBranch("main");
     expect(current.config).toMatchObject({
       projectType: "app",

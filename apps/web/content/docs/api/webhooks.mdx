@@ -96,6 +96,7 @@ relies on:
 | `X-Hub-Signature-256` | HMAC-SHA256 of the raw body (`sha256=…`). Required — a missing or wrong value is rejected. |
 | `X-GitHub-Event` | Event type (`push`, `installation`, `check_run`, `ping`, …). Selects the handler. |
 | `X-GitHub-Delivery` | Unique delivery id. Used for idempotency — a redelivered id is claimed once and dropped on repeat. |
+| `X-GitHub-Hook-ID` | Stable webhook identity used to separate delivery rate limits; it does not replace signature verification. |
 
 The dispatcher:
 
@@ -125,6 +126,17 @@ project's stored `webhookSecret`. If no per-project secret resolves (legacy hook
 that have no owning project), it falls back to the instance's `GITHUB_WEBHOOK_SECRET`. A delivery with no
 resolvable secret cannot be verified and is rejected — there is no unsigned path, even self-hosted.
 
+### Delivery limits
+
+Webhook ingress allows 120 requests per minute for each endpoint and source IP. Incoming hooks and
+backup credentials have separate quotas. GitHub hooks use `X-GitHub-Hook-ID` when supplied; deliveries
+without a usable hook ID share the provider endpoint's quota. Query strings and delivery IDs do not
+reset a quota.
+
+A separate ceiling of 6,000 requests per minute per source IP bounds floods across all webhook
+endpoints. A `429` response includes `Retry-After` and `X-RateLimit-*` headers. Wait for the indicated
+interval before retrying; authentication and signature verification are still required.
+
 ### Provider registration
 
 `github` is registered on the dispatcher at startup, so `POST /api/webhooks/github` is always live. `stripe`
@@ -146,6 +158,8 @@ When a verified `push` event arrives, the handler maps it to deployments like th
 - **Smart per-service routing.** For monorepo/compose projects, the changed files in the push decide which
   services rebuild; unaffected pushes can be skipped entirely. Single-app projects always rebuild. A pending
   "rebuild everything next time" flag forces a full deploy once.
+- **Queue behind a running deploy.** A push that arrives while its project is deploying is recorded as
+  `queued` and deploys when that deployment finishes. Queued pushes collapse to the newest commit.
 - **Idempotency.** The `X-GitHub-Delivery` id is claimed persistently, so an at-least-once redelivery of the
   same push is dropped instead of deploying twice.
 - **Cloud forwarding.** On a self-hosted box, if no local project matches but a linked **cloud** project owns

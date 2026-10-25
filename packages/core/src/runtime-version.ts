@@ -106,17 +106,37 @@ export function runtimeNeedsInstall(
   return getRuntimeVersionPolicy(framework)?.needsInstall(version, installCommand) ?? false;
 }
 
-/** No explicit selection is silently ignored on an unsupported execution path. */
-export function assertRuntimeVersionTarget(config: {
-  runtimeVersion?: unknown;
-  runtimeImage?: unknown;
-  framework?: string | null;
+interface RuntimeImageTarget {
   runtimeMode?: string | null;
   projectType?: string | null;
   composePath?: string | null;
   buildKind?: string | null;
   sourceKind?: string | null;
   workloadType?: string | null;
+}
+
+/** Image overrides belong to generated Docker recipes, including static builds. */
+export function supportsBuildImageOverride(config: RuntimeImageTarget): boolean {
+  return !(
+    config.runtimeMode === "bare" ||
+    ["monorepo", "compose", "services", "docker"].includes(config.projectType ?? "") ||
+    config.composePath ||
+    (config.buildKind && !["buildpack", "static"].includes(config.buildKind)) ||
+    config.sourceKind === "image"
+  );
+}
+
+/** The wizard and server use the same ownership rules for generated runtime images. */
+export function supportsRuntimeImageOverride(config: RuntimeImageTarget): boolean {
+  return supportsBuildImageOverride(config) &&
+    config.buildKind !== "static" && config.workloadType !== "static";
+}
+
+/** No explicit selection is silently ignored on an unsupported execution path. */
+export function assertRuntimeVersionTarget(config: RuntimeImageTarget & {
+  runtimeVersion?: unknown;
+  runtimeImage?: unknown;
+  framework?: string | null;
 }) {
   if (config.runtimeVersion == null && config.runtimeImage == null) return;
   normalizeRuntimeImageOverride(config.runtimeImage);
@@ -128,14 +148,7 @@ export function assertRuntimeVersionTarget(config: {
       typeof config.runtimeImage === "string" ? config.runtimeImage : undefined,
     );
   const policy = getRuntimeVersionPolicy(config.framework);
-  if (
-    config.runtimeMode === "bare" ||
-    ["monorepo", "compose", "services", "docker"].includes(config.projectType ?? "") ||
-    config.composePath ||
-    (config.buildKind && config.buildKind !== "buildpack") ||
-    config.sourceKind === "image" ||
-    config.workloadType === "static"
-  ) {
+  if (!supportsRuntimeImageOverride(config)) {
     throw new ValidationError(
       `${config.runtimeVersion != null ? "runtimeVersion" : "runtimeImage"} requires an Openship-generated ${policy?.label ? `${policy.label} ` : ""}Docker build. Remove runtimeVersion and runtimeImage for bare runtimes, static sites, Compose/monorepo services, prebuilt images or your own Dockerfile.`,
     );

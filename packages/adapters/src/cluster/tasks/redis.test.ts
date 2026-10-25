@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { redisPrimaries, validateRedisManifest } from "./redis";
+import { redisPrimaries, redisReplicationIdentity, validateRedisManifest } from "./redis";
 import { decodeArchiveEntries, encodeArchiveEntries } from "./archive-index";
 import type { RedisArchiveManifest, ArchiveEntry } from "./types";
 
@@ -14,6 +14,24 @@ const topology = () =>
     ),
   ].join("\n");
 describe("native Redis backup integrity", () => {
+  it("checks non-sharded backup leadership without accepting a replica or degraded primary", () => {
+    const healthy = `role:master\r\nconnected_slaves:2\r\nslave0:ip=10.0.0.2,port=6379,state=online,offset=10,lag=0\r\nslave1:ip=10.0.0.3,port=6379,state=online,offset=10,lag=0\r\nmaster_replid:${"a".repeat(40)}\r\n`;
+    expect(redisReplicationIdentity(healthy)).toBe("a".repeat(40));
+    expect(redisReplicationIdentity(healthy, 2)).toBe("a".repeat(40));
+    expect(() => redisReplicationIdentity(healthy, 3)).toThrow(/verified primary/);
+    expect(() =>
+      redisReplicationIdentity(healthy.replace("state=online", "state=wait_bgsave"), 2),
+    ).toThrow(/verified primary/);
+    for (const invalid of [
+      healthy.replace("role:master", "role:slave"),
+      healthy.replace("connected_slaves:2", "connected_slaves:0"),
+      healthy.replace("connected_slaves:2", "connected_slaves:unknown"),
+      healthy.replace("connected_slaves:2", "missing-count:2"),
+      healthy.replace("a".repeat(40), "unknown"),
+      "",
+    ])
+      expect(() => redisReplicationIdentity(invalid)).toThrow(/verified primary/);
+  });
   it("captures elected primaries using all assigned slots and healthy replicas", () => {
     const before = redisPrimaries(topology());
     expect(before.map((node) => node.host)).toEqual(["10.0.0.1", "10.0.0.2", "10.0.0.3"]);

@@ -4,7 +4,7 @@ import { reportCaughtError as observeCaughtError } from "@repo/core/diagnostics"
 import { Icon as UiIcon } from "@repo/ui/icons";
 
 import { useEffect, useState, type ReactNode } from "react";
-import { redirect, useRouter } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { useCloud } from "@/context/CloudContext";
 import { usePlatform } from "@/context/PlatformContext";
 import { ServerAcquisitionPicker } from "@/components/servers/ServerAcquisition";
@@ -91,11 +91,11 @@ export default function AddServerPage() {
   const { selfHosted } = usePlatform();
   const router = useRouter();
   const { requireCloud } = useCloud();
-  if (!selfHosted) redirect(newServerBillingHref());
+
   return (
     <ConnectedServerSetup choice={
       <ServerAcquisitionPicker value="connected" stacked onChange={async (mode) => {
-        if (mode === "managed" && await requireCloud("billing")) router.push(newServerBillingHref());
+        if (mode === "managed" && (!selfHosted || await requireCloud("billing"))) router.push(newServerBillingHref());
       }} />
     } />
   );
@@ -169,7 +169,7 @@ function ConnectedServerSetup({ choice }: { choice?: ReactNode }) {
 
         let session: Awaited<ReturnType<typeof systemApi.getInstallSession>> | null = null;
         try {
-          session = await systemApi.getInstallSession();
+          session = await systemApi.getInstallSession(undefined, editId ?? undefined);
         } catch (diagnosticFailure) {
           observeCaughtError(diagnosticFailure, "dashboard/app/(dashboard)/servers/new/page");
           /* no active session */

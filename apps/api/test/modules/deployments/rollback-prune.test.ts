@@ -23,7 +23,7 @@ const h = vi.hoisted(() => ({
   project: null as Record<string, unknown> | null,
   ready: [] as Array<Record<string, unknown>>,
   /** deploymentId → service_deployment rows (per-service images). */
-  serviceRows: {} as Record<string, Array<{ imageRef: string | null; serviceName?: string | null }>>,
+  serviceRows: {} as Record<string, Array<{ imageRef: string | null; containerId?: string | null; serviceName?: string | null }>>,
   purged: [] as Array<{ id: string; imageRef: string | null }>,
   purgedContainers: [] as Array<string | null>,
   /** Per-service artifact refs the prune asked the runtime to destroy. */
@@ -36,6 +36,14 @@ const h = vi.hoisted(() => ({
   retainedCleared: [] as string[],
   instanceWindow: 5,
   serviceReadFails: new Set<string>(),
+  inFlight: false,
+  disk: [] as Array<{ totalBytes: number | null; freeBytes: number | null }>,
+  diskReads: 0,
+  ownedImages: [] as string[],
+  resolutions: [] as string[],
+  remoteExecutor: { exec: async () => "" },
+  localExecutor: { exec: async () => "" },
+  diskExecutors: [] as unknown[],
 }));
 
 vi.mock("@repo/db", () => ({
@@ -48,10 +56,14 @@ vi.mock("@repo/db", () => ({
     deployment: {
       listPendingRoleHandovers: async () => [],
       listForRetention: async () => h.ready,
-      listInFlightByProject: async () => [],
+      listInFlightByProject: async () => h.inFlight ? [{}] : [],
       findById: async (id: string) => h.ready.find((d) => d.id === id),
       setArtifactRetainedAt: async (id: string, at: Date | null) => {
-        if (at === null) h.retainedCleared.push(id);
+        if (at === null) {
+          h.retainedCleared.push(id);
+          const row = h.ready.find(dep => dep.id === id);
+          if (row) row.artifactRetainedAt = null;
+        }
       },
       setContainerId: async () => {},
       setPinned: async () => {},
@@ -70,10 +82,18 @@ vi.mock("@repo/db", () => ({
   },
 }));
 
-vi.mock("@repo/platform/engine/lib/deployment-runtime", () => ({
-  resolveDeploymentRuntime: async (dep: { id: string }) => ({
-    runtime: {
+vi.mock("@repo/platform/engine/lib/deployment-runtime", async () => {
+  const { DockerRuntime } = await import("@repo/adapters");
+  const resolve = async (dep: { id: string; meta?: { testHost?: string; withoutExecutor?: boolean } }) => {
+    h.resolutions.push(dep.id);
+    return ({
+    serverId: null,
+    hostPortTarget: { targetKey: dep.meta?.testHost ?? "host-1", stable: dep.meta?.testHost !== "unverified" },
+    runtime: Object.assign(Object.create(DockerRuntime.prototype), {
       name: "docker",
+      connectionOptions: {
+        executor: dep.meta?.testHost === "local" || dep.meta?.withoutExecutor ? undefined : h.remoteExecutor,
+      },
       supports: (cap: string) => cap === "rollback",
       purge: async (ref: { imageRef: string | null; containerId: string | null }) => {
         h.purged.push({ id: dep.id, imageRef: ref.imageRef });
@@ -85,9 +105,26 @@ vi.mock("@repo/platform/engine/lib/deployment-runtime", () => ({
         if (h.destroyHangs.has(ref)) await new Promise<void>(() => {});
         if (h.destroyFails.has(ref)) throw new Error(`still present after rm -rf: ${ref}`);
       },
+      listProjectImages: async () => h.ownedImages.map(ref => ({ repoTags: [ref] })),
       dispose: async () => {},
-    },
-  }),
+    }),
+    });
+  };
+  return {
+    resolveDeploymentRuntime: resolve,
+    resolveDeploymentRuntimeForRead: resolve,
+    acquireLocalHostExecutor: async () => h.localExecutor,
+  };
+});
+vi.mock("@repo/platform/engine/lib/host-disk", () => ({
+  getHostDisk: async (_serverId: unknown, _orgId: unknown, options: { executor?: unknown }) => {
+    h.diskExecutors.push(options?.executor);
+    h.diskReads++;
+    return h.disk.length > 1 ? h.disk.shift()! : h.disk[0] ?? { totalBytes: null, freeBytes: null };
+  },
+}));
+vi.mock("@repo/platform/engine/modules/deployments/image-gc", () => ({
+  reapProjectImages: async () => ({ removed: 0, bytes: 0, skippedInUse: 0, errors: 0 }),
 }));
 
 // The orchestrator statically imports build.service (checkNoActiveBuild) and
@@ -98,7 +135,7 @@ vi.mock("@repo/platform/engine/modules/deployments/build.service", () => ({
   triggerDeployment: async () => ({ deployment: { id: "new" } }),
 }));
 
-const { prune } = await import("@repo/platform/engine/modules/deployments/rollback/index");
+const { prune, reconcileProjectRetention } = await import("@repo/platform/engine/modules/deployments/rollback/rollback-orchestrator");
 
 const dep = (over: Record<string, unknown>) => ({
   id: "d",
@@ -123,6 +160,12 @@ beforeEach(() => {
   h.serviceRows = {};
   h.instanceWindow = 5;
   h.serviceReadFails = new Set();
+  h.inFlight = false;
+  h.disk = [];
+  h.diskReads = 0;
+  h.ownedImages = [];
+  h.resolutions = [];
+  h.diskExecutors = [];
   h.project = {
     id: "p1",
     organizationId: "org1",
@@ -458,5 +501,239 @@ describe("prune — recorded runtime roles", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("automatic rollback storage pressure", () => {
+  const GB = 1024 ** 3;
+  const low = { totalBytes: 25 * GB, freeBytes: GB };
+  const enough = { totalBytes: 25 * GB, freeBytes: 6 * GB };
+  const image = (id: string) => `openship/app:bld_${id}`;
+  function automatic() {
+    h.project!.rollbackWindow = null;
+    h.ready = [
+      dep({ id: "d5", imageRef: image("d5") }),
+      ...["d4", "d3", "d2", "d1"].map((id) =>
+        dep({
+          id,
+          imageRef: image(id),
+          commitSha: "a".repeat(40),
+          meta: { repoUrl: "https://github.com/example/app.git" },
+        }),
+      ),
+    ];
+    h.ownedImages = ["d5", "d4", "d3", "d2", "d1"].map(image);
+    h.disk = [low, enough];
+  }
+
+  it("reclaims the oldest rebuildable release and stops when real free space recovers", async () => {
+    automatic();
+    const result = await reconcileProjectRetention("p1");
+    expect(result.purged).toBe(1);
+    expect(h.purged).toEqual([{ id: "d1", imageRef: image("d1") }]);
+    expect(h.purgedContainers).toEqual([null]);
+    expect(h.retainedCleared).toEqual(["d1"]);
+    expect(h.ready.find((row) => row.id === "d1")!.commitSha).toBe(
+      "a".repeat(40),
+    );
+    expect(h.diskReads).toBe(2);
+    expect(h.resolutions).toEqual(["d5", "d1"]);
+  });
+
+  it("uses fresh measurements rather than counting shared image sizes as reclaimed bytes", async () => {
+    automatic();
+    h.disk = [low, low, enough];
+    expect((await reconcileProjectRetention("p1")).purged).toBe(2);
+    expect(h.retainedCleared).toEqual(["d1", "d2"]);
+    expect(
+      h.ready.find((row) => row.id === "d5")!.artifactRetainedAt,
+    ).toBeInstanceOf(Date);
+  });
+
+  it("normalizes legacy refs before protecting containers and unowned service images", async () => {
+    automatic();
+    Object.assign(h.ready.find((row) => row.id === "d1")!, {
+      containerId: " old-main ",
+      roleContainers: [{ role: "worker", replica: 1, containerId: " old-worker " }],
+    });
+    h.serviceRows.d1 = [
+      {
+        serviceName: "external",
+        containerId: " old-service ",
+        imageRef: " ghcr.io/example/custom:v1 ",
+      },
+    ];
+    await reconcileProjectRetention("p1");
+    expect(h.retainedCleared).toEqual(["d1"]);
+    expect(h.destroyed).toEqual([]);
+    expect(h.purgedContainers).toEqual([null, null]);
+    expect(h.purged).toEqual([
+      { id: "d1", imageRef: image("d1") },
+      { id: "d1", imageRef: null },
+    ]);
+  });
+
+  it("protects shared live service images, pins, and unverified releases", async () => {
+    automatic();
+    h.ready.find((row) => row.id === "d2")!.pinned = true;
+    h.ready.find((row) => row.id === "d3")!.status = "reconciling";
+    h.serviceRows.d5 = [{ serviceName: "web", imageRef: image("d1") }];
+    h.disk = [low];
+    await reconcileProjectRetention("p1");
+    expect(h.retainedCleared).toEqual(["d1", "d4"]);
+    expect(h.purged[0]).toEqual({ id: "d1", imageRef: null });
+    expect(h.purgedContainers.every((ref) => ref === null)).toBe(true);
+  });
+
+  it("preserves shared references from legacy history without an archive marker", async () => {
+    automatic();
+    Object.assign(h.ready.find((row) => row.id === "d2")!, {
+      imageRef: image("d1"),
+      meta: null,
+      artifactRetainedAt: null,
+    });
+    await reconcileProjectRetention("p1");
+    expect(h.purged).toEqual([{ id: "d1", imageRef: null }]);
+    expect(h.destroyed).toEqual([]);
+  });
+
+  it("does not reclaim history on a previous deployment host", async () => {
+    automatic();
+    h.ready.find((row) => row.id === "d1")!.meta = {
+      repoUrl: "https://github.com/example/app.git",
+      testHost: "previous-host",
+    };
+    await reconcileProjectRetention("p1");
+    expect(h.retainedCleared).toEqual(["d2"]);
+  });
+
+  it("measures local Docker through the host channel without selecting a server alias", async () => {
+    automatic();
+    for (const row of h.ready) {
+      row.meta = { ...(row.meta as object), testHost: "local" };
+    }
+    await reconcileProjectRetention("p1");
+    expect(h.retainedCleared).toEqual(["d1"]);
+    expect(h.diskExecutors).toEqual([h.localExecutor, h.localExecutor]);
+  });
+
+  it("defers pressure cleanup if the verified remote runtime has no executor", async () => {
+    automatic();
+    h.ready.find((row) => row.id === "d5")!.meta = { withoutExecutor: true };
+    await reconcileProjectRetention("p1");
+    expect(h.retainedCleared).toEqual([]);
+    expect(h.diskReads).toBe(0);
+  });
+
+  it("preserves artifacts when the execution host identity cannot be verified", async () => {
+    automatic();
+    h.ready.find((row) => row.id === "d5")!.meta = { testHost: "unverified" };
+    await reconcileProjectRetention("p1");
+    expect(h.retainedCleared).toEqual([]);
+    expect(h.diskReads).toBe(0);
+  });
+
+  it.each([true, false])(
+    "requires an immutable registry source without a rebuild commit (%s)",
+    async (immutable) => {
+      automatic();
+      Object.assign(h.ready.find((row) => row.id === "d1")!, {
+        commitSha: null,
+        meta: {
+          releaseImageRef: immutable
+            ? `ghcr.io/example/app@sha256:${"a".repeat(64)}`
+            : "ghcr.io/example/app:latest",
+        },
+      });
+      await reconcileProjectRetention("p1");
+      expect(h.retainedCleared).toEqual([immutable ? "d1" : "d2"]);
+    },
+  );
+
+  it("reclaims managed static release files while preserving their rebuild configuration", async () => {
+    automatic();
+    Object.assign(h.ready.find((row) => row.id === "d1")!, {
+      containerId: "/opt/openship/static/releases/d1",
+      imageRef: null,
+    });
+    await reconcileProjectRetention("p1");
+    expect(h.retainedCleared).toEqual(["d1"]);
+    expect(h.purgedContainers).toEqual(["/opt/openship/static/releases/d1"]);
+    expect(h.ready.find((row) => row.id === "d1")!.meta).toHaveProperty(
+      "repoUrl",
+    );
+  });
+
+  it("stops when a fresh disk measurement becomes unavailable", async () => {
+    automatic();
+    h.disk = [low, { totalBytes: null, freeBytes: null }];
+    await reconcileProjectRetention("p1");
+    expect(h.retainedCleared).toEqual(["d1"]);
+  });
+
+  it.each(["upload", "missing-config", "redacted", "foreign-image"])(
+    "preserves a %s release",
+    async (kind) => {
+      automatic();
+      const candidate = h.ready.find((row) => row.id === "d1")!;
+      if (kind === "upload")
+        candidate.meta = {
+          repoUrl: "https://github.com/example/app.git",
+          localPath: "/uploads/source",
+        };
+      if (kind === "missing-config") candidate.meta = null;
+      if (kind === "redacted")
+        candidate.meta = {
+          repoUrl: "https://github.com/example/app.git",
+          composeServices: [{ name: "web", environment: { TOKEN: "***" } }],
+        };
+      if (kind === "foreign-image")
+        h.ownedImages = h.ownedImages.filter((ref) => ref !== image("d1"));
+      await reconcileProjectRetention("p1");
+      expect(h.retainedCleared).toEqual(["d2"]);
+      expect(candidate.artifactRetainedAt).toBeInstanceOf(Date);
+    },
+  );
+
+  it.each([0, 2, 5])(
+    "keeps explicit retention %i authoritative",
+    async (window) => {
+      automatic();
+      h.project!.rollbackWindow = window;
+      await reconcileProjectRetention("p1");
+      expect(h.diskReads).toBe(0);
+      expect(h.retainedCleared.length).toBe(Math.max(0, 4 - window));
+    },
+  );
+
+  it.each([
+    enough,
+    { totalBytes: null, freeBytes: null },
+    { totalBytes: 25 * GB, freeBytes: -1 },
+  ])("preserves artifacts without confirmed pressure (%j)", async (disk) => {
+    automatic();
+    h.disk = [disk];
+    await reconcileProjectRetention("p1");
+    expect(h.retainedCleared).toEqual([]);
+  });
+
+  it("defers everything while a deployment still owns this project", async () => {
+    automatic();
+    h.inFlight = true;
+    await reconcileProjectRetention("p1");
+    expect(h.retainedCleared).toEqual([]);
+    expect(h.diskReads).toBe(0);
+  });
+
+  it("keeps a failed reclaim retryable and does not evict a newer release", async () => {
+    automatic();
+    h.purgeFails.add("d1");
+    expect((await reconcileProjectRetention("p1")).errors).toBe(1);
+    expect(h.retainedCleared).toEqual([]);
+    expect(h.purged.map((row) => row.id)).toEqual(["d1"]);
+    h.purgeFails.clear();
+    h.disk = [low, enough];
+    await reconcileProjectRetention("p1");
+    expect(h.retainedCleared).toEqual(["d1"]);
   });
 });

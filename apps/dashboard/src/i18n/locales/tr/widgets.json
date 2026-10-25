@@ -285,7 +285,26 @@
       "repoCountOther": "{count} depo",
       "coveredByOrg": "Yukarıdaki organizasyon geneli yetkinin kapsamında.",
       "noRepos": "Depo yok.",
-      "searchRepos": "Depolarda ara…"
+      "searchRepos": "Depolarda ara…",
+      "capabilityAreas": {
+        "domains": "Alan adları",
+        "deployments": "Dağıtımlar"
+      },
+      "capabilityLabels": {
+        "domains:read": "Görüntüle",
+        "domains:write": "Ekle ve doğrula",
+        "domains:delete": "Sil",
+        "deployments:read": "Görüntüle",
+        "deployments:trigger": "Başlat"
+      },
+      "capabilityHints": {
+        "domains:read": "Alan adlarını, DNS kayıtlarını ve sertifika durumunu listele",
+        "domains:write": "Alan adı ekle, doğrula, yenile ve DNS doğrulamalarını çalıştır",
+        "domains:delete": "Alan adlarını sil",
+        "deployments:read": "Dağıtımları, günlükleri ve derleme durumunu oku",
+        "deployments:trigger": "Dağıtım başlatma, yeniden dağıtma, yeniden başlatma, sabitleme ve dağıtım kararlarını yönetme. İptal, geri alma ve silme proje yönetici yetkisi gerektirir."
+      },
+      "capabilityImplied": "Bu kaynağın erişim düzeyine dahil"
     },
     "sourceAccess": {
       "title": "Kaynak kodu erişimi",
@@ -483,6 +502,31 @@
       "dnsHintSelfhosted": "Sunucu IP'nize yönlendiren A kaydını ekleyin, ardından doğrulama için TXT kaydını ekleyin.",
       "dnsHintCloud": "Yönlendirme için CNAME kaydını ekleyin, ardından doğrulama için TXT kaydını ekleyin.",
       "dnsPropagation": "DNS değişiklikleri 48 saate kadar sürebilir."
+    },
+    "protection": {
+      "unknown": "Koruma durumu denetlenemedi.",
+      "title": "Parola koruması",
+      "chooseHostname": "Önce bir ana makine adı seçin",
+      "description": "Ziyaretçiler ortak parolayı bir kez girer ve 24 saat oturumları açık kalır. Parolayı değiştirmek tüm oturumları kapatır.",
+      "unsupported": "Kendi barındırdığınız edge üzerinde HTTPS kullanan tam özel ana makine adları için kullanılabilir. Cloud, ücretsiz alt alan adları ve harici TLS proxy’leri henüz desteklenmiyor.",
+      "loading": "Koruma denetleniyor…",
+      "staged": "Parola hazırlandı. Bu rota yayımlanmadan önce koruma kurulacak.",
+      "pending": "Kaydedildi, ancak edge üzerinde doğrulanmadı. Yeniden deneyin veya bu projeyi dağıtın; henüz özel site olarak paylaşmayın.",
+      "protected": "Parola koruması etkin",
+      "public": "Bu rota herkese açık",
+      "password": "Site parolası",
+      "newPassword": "Yeni site parolası",
+      "passwordHint": "En az 12 karakter kullanın. Yalnızca erişmesi gereken kişilerle paylaşın.",
+      "save": "Parolayı kaydet",
+      "loadFailed": "Rota koruması denetlenemedi. Yeniden denemek için bu pencereyi tekrar açın.",
+      "saveFailed": "Koruma uygulanamadı. Bağlantıyı denetleyip yeniden deneyin.",
+      "retry": "Edge güncellemesini yeniden dene",
+      "revoke": "Tüm oturumları kapat",
+      "remove": "Korumayı kaldır",
+      "unlockConfirm": "Bu URL’yi bilen herkes siteyi açabilecek. Parola kaldırılsın mı?",
+      "unlock": "Herkese aç",
+      "cancel": "İptal",
+      "scope": "Bu yalnızca bu ana makine adını korur. Diğer alan adları ve doğrudan servis bağlantı noktaları kendi erişim ayarlarını korur. Harici CDN’lerde önceden önbelleğe alınmış içeriği temizleyin."
     }
   },
   "updates": {

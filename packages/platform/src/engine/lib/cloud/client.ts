@@ -116,9 +116,10 @@ export function cloudClient(scope: CloudClientScope, expectedIdentity?: CloudIde
         const json = await readCloudJson<{ data: { url: string; state: string } }>(res);
         return json?.data ?? null;
       },
-      async oauthHandoff() {
+      async oauthHandoff(state) {
         const res = await fetchScoped("/api/cloud/github/oauth-handoff", {
           method: "POST",
+          ...(state ? { body: JSON.stringify({ state }) } : {}),
         });
         if (!res || !res.ok) return null;
         const json = await readCloudJson<{ data: { url: string } }>(res);
@@ -136,9 +137,11 @@ export function cloudClient(scope: CloudClientScope, expectedIdentity?: CloudIde
         const res = await fetchScoped("/api/cloud/github/installations", {
           method: "GET",
         });
-        if (!res || !res.ok) return null;
+        if (!res) throw new Error("Openship Cloud is unavailable. Reconnect Cloud and try again.");
+        if (!res.ok) throw await cloudRequestError(res, "Cloud GitHub installation discovery");
         const json = await readCloudJson<{ data: CloudGithubInstallation[] }>(res);
-        return json?.data ?? null;
+        if (!Array.isArray(json?.data)) throw new Error("Cloud returned an invalid GitHub installation list. Try again.");
+        return json.data;
       },
       async installationToken(owner, repos, permissions) {
         const res = await fetchScoped("/api/cloud/github/installation-token", {

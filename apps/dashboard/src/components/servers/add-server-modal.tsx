@@ -70,7 +70,7 @@ function AddServerDialog({
         </header>
       )}
       <div className={`min-h-0 space-y-4 overflow-y-auto ${managed ? "px-5 pb-5" : ""}`}>
-        {selfHosted && !connectedOnly && (
+        {!connectedOnly && (
           <ServerAcquisitionPicker value={mode} onChange={setMode} />
         )}
         {managed ? (

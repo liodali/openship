@@ -4,6 +4,7 @@
     "index",
     "change",
     "checkout",
+    "manage",
     "subscription"
   ]
 }

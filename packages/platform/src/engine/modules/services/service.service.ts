@@ -1,3 +1,5 @@
+import { isMaterializedAppRow } from "./materialized-app-row";
+export { isMaterializedAppRow } from "./materialized-app-row";
 /**
  * Service business logic - CRUD and compose sync.
  */
@@ -387,6 +389,10 @@ export async function keepServiceDrift(ctx: RequestContext, projectId: string, s
  * evidence, and `healPhantomAppServiceRow` for what makes the removal safe.
  */
 async function reconcileAppServiceRow(project: Project): Promise<void> {
+  // An explicit Compose source already declares the app as a service. Framework
+  // detection and inherited build commands can still describe its source app;
+  // they must not make the stack look like a standalone app with sidecars.
+  if (project.composePath?.trim()) return;
   // A web app AND a worker are both long-running containers that must survive a
   // sidecar being added; only a STATIC site has no container to keep (#538-B).
   if (deploymentWorkload(project) === "static") return;
@@ -467,53 +473,6 @@ async function reconcileAppServiceRow(project: Project): Promise<void> {
     // compose/deploy.service.ts), so editing it on the project keeps reaching the
     // app after a sidecar is added — copying it here would freeze it instead.
   });
-}
-
-/**
- * Is this row one the materializer above WROTE, rather than one a person
- * configured? Keyed on the full signature it creates: the project slug as the
- * name, `sortOrder: -1` (which nothing else in the codebase writes), and every
- * build-identity field left null so it inherits the project snapshot.
- *
- * A row is only reclaimable while its build identity is pristine. `enabled` is
- * deliberately NOT part of the signature — disabling the mystery service is the
- * first thing an operator hit by #589 tries, and that workaround must not make
- * the row un-healable. Nor are `environment` / `ports` / `volumes`: the caller
- * gates on the row never having deployed successfully, which is the real
- * data-safety property (no container was ever created from it, so no volume
- * holds anything), and a few unused form fields are not worth leaving a project
- * un-deployable over.
- */
-export function isMaterializedAppRow(
-  project: Pick<Project, "slug">,
-  row: Pick<
-    Service,
-    | "kind"
-    | "name"
-    | "sortOrder"
-    | "image"
-    | "build"
-    | "dockerfile"
-    | "framework"
-    | "installCommand"
-    | "buildCommand"
-    | "startCommand"
-    | "outputDirectory"
-  >,
-): boolean {
-  return (
-    row.kind === "monorepo" &&
-    row.name === project.slug &&
-    row.sortOrder === -1 &&
-    !row.image &&
-    !row.build &&
-    !row.dockerfile &&
-    !row.framework &&
-    !row.installCommand &&
-    !row.buildCommand &&
-    !row.startCommand &&
-    !row.outputDirectory
-  );
 }
 
 /**
@@ -667,7 +626,7 @@ export async function createService(
   // Refuse the row too, not just its start: a static-only tier can never run
   // this container, and persisting a service the org will be blocked from
   // starting is a worse experience than refusing it here.
-  await assertPlanAllowsServices(ctx.organizationId, project.workspaceId ?? null);
+  await assertPlanAllowsServices(ctx.organizationId, project.workspaceId ?? null, project.serverId);
 
   // Through mergeAdvanced even on CREATE: there is nothing to preserve, but it
   // strips the `null`-means-remove sentinels the update path accepts, so a
@@ -983,7 +942,7 @@ export async function updateService(
 
   if (env.CLOUD_MODE && patch.enabled === true) {
     await createProvisionLock(`cloud:service-quota:${ctx.organizationId}`).run(async () => {
-      await assertPlanAllowsServices(ctx.organizationId, project.workspaceId ?? null);
+      await assertPlanAllowsServices(ctx.organizationId, project.workspaceId ?? null, project.serverId);
       await assertServiceDefinitionQuota(ctx.organizationId, projectId, 1, [serviceId]);
       await repos.service.update(serviceId, patch);
     });
@@ -2151,7 +2110,7 @@ async function provisionServiceContainer(
   // never sees it. A provisioned service container IS a container, so a
   // static-only tier can't have one, and without this a free org could add a
   // Postgres service and start it with no gating at all.
-  await assertPlanAllowsServices(ctx.organizationId, project.workspaceId ?? null);
+  await assertPlanAllowsServices(ctx.organizationId, project.workspaceId ?? null, project.serverId);
 
   if (!project.activeDeploymentId) {
     throw new Error("Deploy the project first, then start its services.");
@@ -2287,14 +2246,14 @@ async function prepareServiceStart(ctx: RequestContext, projectId: string, servi
     const services = await repos.service.listByProject(projectId);
     const service = services.find(item => item.id === serviceId);
     if (!service) throw new Error("Service not found");
-    await assertPlanAllowsServices(ctx.organizationId, project.workspaceId ?? null);
-    await assertRunningServiceQuota(ctx.organizationId, 1, [serviceId], project.workspaceId ?? null);
+    await assertPlanAllowsServices(ctx.organizationId, project.workspaceId ?? null, project.serverId);
+    await assertRunningServiceQuota(ctx.organizationId, 1, [serviceId], project.workspaceId ?? null, project.serverId);
     const existing = await resolve();
     try {
       if (existing) {
         await assertCloudRuntimeLimits(ctx.organizationId, existing.runtime, [{
           containerId: existing.containerId, allocatedResources: existing.row?.allocatedResources,
-        }], project.workspaceId ?? null);
+        }], project.workspaceId ?? null, project.serverId);
       } else {
         await assertCloudDeploymentLimits(ctx.organizationId, {
           projectId, resources: project.resources as Record<string, unknown> | null,

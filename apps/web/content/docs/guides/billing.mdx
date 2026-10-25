@@ -1,14 +1,42 @@
 ---
 title: Billing (Openship Cloud)
-description: Monthly managed servers, resource coverage, plan changes and payment history. Self-hosted Openship stays free.
+description: Hosted management for your servers, managed Cloud Spaces, plan changes and payment history.
 ---
 
 <Callout title="Self-hosted has no software subscription">
-Billing applies to **Openship Cloud** resources. Your own servers remain free to
-manage; a linked self-hosted installation can also buy and manage Cloud servers.
+Running the Openship control plane yourself remains free. **Openship Manage** pays
+for our hosted control plane while your apps run on your own servers.
+**Openship Cloud** includes the compute and its management.
 </Callout>
 
-## Monthly managed servers
+## Your infrastructure: Openship Manage
+
+Manage costs **$5/month per workspace (organization)** and includes two connected
+servers. Each additional server is **$3/month**. Connect a server using direct SSH
+with a password or an uploaded private key. Your apps, builds, volumes and edge
+routes run on that server; this plan provides no Cloud compute or storage.
+
+Open **Billing → Your infrastructure** to subscribe, review a prorated increase,
+schedule a smaller allowance at renewal, cancel a pending checkout, or cancel and
+resume renewal. Payment is verified by the server before access is granted.
+Disconnect unused servers before reducing the allowance.
+
+A paid Cloud Space includes the base two-server allowance once per organization;
+Cloud Spaces do not consume these slots. Existing Manage base charges end at
+renewal after Cloud coverage activates. Extra-server charges keep their saved
+terms. If Cloud coverage ends, a discounted Manage renewal stops rather than
+automatically increasing its price. The already-paid period remains available;
+choose a full Manage subscription after it ends.
+
+Canceling or expiring Manage stops hosted management after the paid period. It
+does **not** stop or delete customer apps or data. Disconnecting a server keeps
+its workloads by default; destructive removal remains an explicit separate choice.
+Product support is included; dedicated operations and hardware have separate terms.
+
+For physical dedicated hardware, request a quote from the pricing page. Hardware,
+region and support terms must be confirmed before purchase.
+
+## Monthly Cloud Spaces
 
 Each [managed Cloud server](/docs/guides/cloud-workspaces) has its own subscription.
 A monthly plan covers the purchased CPU, RAM and disk for the full paid period.
@@ -17,10 +45,12 @@ paid monthly server running. CPU is shared capacity, not exclusive physical core
 
 | Plan | Per month | vCPU | RAM | Disk |
 | --- | --- | --- | --- | --- |
-| Hobby | $5 | 1 | 2 GiB | 40 GiB |
 | Starter | $20 | 2 | 8 GiB | 128 GiB |
 | Pro | $39 | 4 | 16 GiB | 250 GiB |
 | Scale | $99 | 8 | 32 GiB | 600 GiB |
+
+Existing $5 Hobby subscriptions keep their saved renewal price and capacity.
+That offer is closed to new purchases; new monthly Cloud plans start at $20.
 
 The [pricing page](/pricing) and `GET /api/billing/plans` publish the current offers.
 Choose **Custom** to set CPU, RAM and disk and review a monthly quote before

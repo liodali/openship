@@ -1,7 +1,7 @@
 "use client";
 
 import { cloudSpaceHref } from "@/lib/cloud-spaces";
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import type { BillingCheckoutActionResult, BillingPendingCheckout } from "@repo/contracts";
@@ -19,6 +19,7 @@ import { beginCheckoutNavigation } from "@/lib/checkout-navigation";
 import { ManagedServerActionFeedback } from "@/components/servers/managed/ManagedServerActionFeedback";
 import { useManagedServerActions } from "@/components/servers/managed/useManagedServerActions";
 import { useBillingScope } from "./BillingWorkspaceContext";
+import { PendingCheckoutsProvider, usePendingCheckouts } from "./PendingCheckoutsContext";
 
 interface RecoveryProps {
   workspaceId?: string;
@@ -27,25 +28,6 @@ interface RecoveryProps {
   onCheckoutStarted?: (url: string) => void;
   onServerRemoved?: (workspaceId: string) => void;
   onChoosePlan?: () => void;
-}
-
-/** Always accessible from Billing, including servers which have never been paid for. */
-export function PendingPaymentsButton({ workspaceId }: { workspaceId?: string }) {
-  const { t } = useI18n();
-  const [open, setOpen] = useState(false);
-  return (
-    <>
-      <Button variant="secondary" onClick={() => setOpen(true)}>
-        <Icon name="credit-card" className="size-4" aria-hidden="true" />
-        {t.billing.pendingPayments.title}
-      </Button>
-      <CheckoutRecoveryDialog
-        isOpen={open}
-        workspaceId={workspaceId}
-        onClose={() => setOpen(false)}
-      />
-    </>
-  );
 }
 
 export function CheckoutRecoveryDialog({
@@ -104,48 +86,29 @@ export function PendingCheckoutsPanel(props: RecoveryProps & { titleId?: string 
   const { data: session, isPending } = useSession();
   const cloudKey = useCloudResourceKey();
   const { organizationId } = useBillingScope();
+  const shared = usePendingCheckouts();
   if (isPending || (organizationId && organizationId !== session?.session.activeOrganizationId))
     return null;
   const owner = `${cloudKey}:${session?.user.id ?? "local"}:${session?.session.activeOrganizationId ?? ""}`;
-  return <CheckoutList key={`${owner}:${props.workspaceId ?? "all"}`} {...props} />;
+  if (shared && shared.workspaceId === props.workspaceId)
+    return <CheckoutList key={`${owner}:${props.workspaceId ?? "all"}`} {...props} />;
+  return (
+    <PendingCheckoutsProvider workspaceId={props.workspaceId}>
+      <CheckoutList {...props} />
+    </PendingCheckoutsProvider>
+  );
 }
 
 function CheckoutList({ titleId, ...props }: RecoveryProps & { titleId?: string }) {
   const { t } = useI18n();
   const copy = t.billing.pendingPayments;
-  const [items, setItems] = useState<BillingPendingCheckout[]>([]);
-  const [closed, setClosed] = useState<Set<string>>(() => new Set());
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const mounted = useRef(false);
-  const revision = useRef(0);
+  const checkouts = usePendingCheckouts()!;
+  const { items, count, loading, error, refresh, markCleared } = checkouts;
   const onCleared = useRef(props.onCleared);
   onCleared.current = props.onCleared;
-  const refresh = useCallback(async () => {
-    const request = ++revision.current;
-    setLoading(true);
-    setError(null);
-    try {
-      const result = await billingApi.listCheckouts(props.workspaceId);
-      if (!mounted.current || revision.current !== request) return;
-      if (!Array.isArray(result?.items)) throw new Error(copy.loadError);
-      setItems(result.items);
-      if (!result.items.length) onCleared.current?.();
-    } catch (err) {
-      if (mounted.current && revision.current === request)
-        setError(getApiErrorMessage(err, copy.loadError));
-    } finally {
-      if (mounted.current && revision.current === request) setLoading(false);
-    }
-  }, [props.workspaceId, copy.loadError]);
   useEffect(() => {
-    mounted.current = true;
-    void refresh();
-    return () => {
-      mounted.current = false;
-      revision.current++;
-    };
-  }, [refresh]);
+    if (!loading && !error && items.length === 0) onCleared.current?.();
+  }, [items, loading, error]);
 
   return (
     <section className="space-y-4" aria-busy={loading}>
@@ -162,7 +125,7 @@ function CheckoutList({ titleId, ...props }: RecoveryProps & { titleId?: string 
           {loading
             ? copy.loading
             : interpolate(copy.count, {
-                count: String(items.filter((item) => !closed.has(item.id)).length),
+                count: String(count),
               })}
         </span>
         <Button variant="ghost" size="sm" disabled={loading} onClick={() => void refresh()}>
@@ -186,7 +149,7 @@ function CheckoutList({ titleId, ...props }: RecoveryProps & { titleId?: string 
             item={item}
             onRefresh={refresh}
             onCleared={() => {
-              setClosed((previous) => new Set(previous).add(item.id));
+              markCleared(item.id);
               props.onCleared?.();
             }}
           />

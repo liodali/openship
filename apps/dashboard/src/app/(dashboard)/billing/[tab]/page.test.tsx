@@ -30,7 +30,7 @@ import { BillingCheckoutStatus } from "../_components/BillingCheckoutStatus";
 import { CloudBillingLink } from "@/components/billing/CloudBillingLink";
 import BillingPage from "../page";
 import { ManagedServerPurchase } from "@/components/servers/managed/ManagedServerPurchase";
-import { BillingPlanSummary } from "../_components/billing-shared";
+import { BillingPlanSummary, BillingPaymentsPanel } from "../_components/billing-shared";
 import { BillingContent } from "../_components/BillingContent";
 
 const free = {
@@ -76,6 +76,12 @@ describe("billing page failure recovery", () => {
     await errorReporter.flush();
     errorReporter.setEnabled(false);
     vi.restoreAllMocks();
+  });
+
+  it("reports unavailable Cloud billing without duplicating the layout's Manage view", async () => {
+    mocks.get.mockRejectedValue(new ServerApiError(503, "Unavailable", { code: "OBLIEN_BILLING_UNAVAILABLE" }));
+    const page = await BillingTabPage({ params: Promise.resolve({ tab: "plans" }), searchParams: Promise.resolve({}) });
+    expect(findElement(page, BillingUnavailable)).toBeDefined();
   });
 
   it.each([
@@ -172,10 +178,22 @@ describe("billing page failure recovery", () => {
     expect(mocks.get).toHaveBeenCalledExactlyOnceWith("billing/state?workspaceId=cws_production", { cache: "no-store", timeout: 45_000 });
   });
 
-  it.each(["overview", "usage", "topups", "payment", "invoices"])("takes new customers from %s directly to plans", async tab => {
+  it.each(["overview", "usage", "topups"])("takes new customers from %s directly to plans", async tab => {
     mocks.get.mockResolvedValue({ data: free });
     await expect(BillingTabPage({ params: Promise.resolve({ tab }), searchParams: Promise.resolve({}) }))
       .rejects.toMatchObject({ digest: "NEXT_REDIRECT;replace;/billing/plans;307;" });
+  });
+
+  it("keeps pending payment recovery available before the first subscription", async () => {
+    mocks.get.mockResolvedValue({ data: free });
+    const page = await BillingTabPage({ params: Promise.resolve({ tab: "payment" }), searchParams: Promise.resolve({}) });
+    expect(findElement(page, BillingPaymentsPanel)?.props).toMatchObject({ hasHistory: false });
+  });
+
+  it("keeps unpaid invoice bookmarks on the shared recovery page with their scope", async () => {
+    mocks.get.mockResolvedValue({ data: free });
+    await expect(BillingTabPage({ params: Promise.resolve({ tab: "invoices" }), searchParams: Promise.resolve({ workspaceId: "cws-unpaid" }) }))
+      .rejects.toMatchObject({ digest: "NEXT_REDIRECT;replace;/billing/payment?workspaceId=cws-unpaid;307;" });
   });
 
   it("redirects invoice bookmarks to the shared payments page with their billing and checkout scope", async () => {

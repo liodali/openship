@@ -29,6 +29,8 @@ import { resolveSafeSshKeyPath } from "../../lib/ssh-key-path";
 import { safeErrorMessage } from "@repo/core";
 import { assertLocalDestinationAllowed } from "./local-gate";
 import { assertNativeSshSettings } from "../../native/execution-policy";
+import { env } from "../../config/env";
+import { assertOperatorSshAccess } from "../../lib/operator-ssh-access";
 
 /**
  * Take a raw backup_destination DB row and produce a BackupDestinationRow
@@ -60,6 +62,7 @@ export async function toAdapterRow(row: BackupDestination): Promise<BackupDestin
   // All other kinds: straight pass-through of the row fields the
   // adapter expects.
   return {
+    publicNetworkOnly: env.CLOUD_MODE,
     id: row.id,
     organizationId: row.organizationId,
     name: row.name,
@@ -111,6 +114,7 @@ export async function hydrateServerAdapterRow(params: {
 
   // A stored destination must obey the same native host-key-file policy as deployments.
   assertNativeSshSettings(server);
+  await assertOperatorSshAccess(server, organizationId);
 
   let sftpPasswordEnc: string | null = null;
   let sftpPrivateKeyEnc: string | null = null;
@@ -164,6 +168,7 @@ export async function hydrateServerAdapterRow(params: {
   }
 
   return {
+    publicNetworkOnly: env.CLOUD_MODE,
     id,
     organizationId,
     name,
@@ -175,6 +180,7 @@ export async function hydrateServerAdapterRow(params: {
     sshHost: server.sshHost,
     sshPort: server.sshPort ?? 22,
     sshUser: server.sshUser ?? "root",
+    sshHostKey: server.sshHostKey,
     serverId,
     accessKeyIdEnc: null,
     secretAccessKeyEnc: null,

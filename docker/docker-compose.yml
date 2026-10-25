@@ -190,7 +190,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "bun -e \"fetch('http://127.0.0.1:${API_PORT:-4000}/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:${API_PORT:-4000}/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -208,6 +208,7 @@ services:
     environment:
       NODE_ENV: production
       PORT: "${DASHBOARD_PORT:-3001}"
+      HOSTNAME: "0.0.0.0"
       INTERNAL_API_URL: http://api:${API_PORT:-4000}
     depends_on:
       api:

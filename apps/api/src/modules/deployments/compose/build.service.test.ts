@@ -13,7 +13,7 @@ import { describe, expect, it, vi } from "vitest";
 // (Importing the real @repo/db would also risk the PGlite single-instance lock.)
 const { listByProjectMock } = vi.hoisted(() => ({ listByProjectMock: vi.fn() }));
 vi.mock("@repo/db", () => ({
-  repos: { service: { listByProject: listByProjectMock } },
+  repos: { service: { listByProject: listByProjectMock, startServiceDeploymentTiming: vi.fn(async () => {}) } },
 }));
 vi.mock("@repo/platform/engine/modules/deployments/session-manager", () => ({
   broadcastServiceStatus: vi.fn(),
@@ -131,7 +131,7 @@ async function run(
   imageRefFor?: (item: Captured) => string,
   composeInterpolationEnv: Record<string, string> = buildEnvVars,
   options: { cloud?: boolean; targetServiceIds?: Set<string>; refreshServiceIds?: Set<string>;
-    buildResources?: BuildConfig["resources"] } = {},
+    buildResources?: BuildConfig["resources"]; onBuildMeasured?: (durationMs: number) => void } = {},
 ) {
   listByProjectMock.mockResolvedValue(services);
   const captured: Captured[] = [];
@@ -177,6 +177,7 @@ async function run(
     buildResources: options.buildResources ?? DEFAULT_RESOURCE_CONFIG,
     targetServiceIds: options.targetServiceIds,
     refreshServiceIds: options.refreshServiceIds,
+    onBuildMeasured: options.onBuildMeasured,
   });
   return { result, captured, prepareSource: runtime.prepareComposeSource };
 }
@@ -186,6 +187,41 @@ function runCloud(services: unknown[], snapshot?: Partial<BuildConfigSnapshotLik
 }) {
   return run(services, undefined, snapshot, {}, undefined, {}, { ...options, cloud: true });
 }
+
+describe("service build phase measurement", () => {
+  it("records the shared wall clock across service builds rather than adding their durations", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(1000);
+    const measured = vi.fn();
+    try {
+      const { result } = await run([
+        inlineService("first", { dockerfile: "FROM scratch" }),
+        inlineService("second", { dockerfile: "FROM scratch" }),
+      ], (_root, item) => {
+        now.mockReturnValue(item.serviceName === "first" ? 2000 : 3500);
+      }, undefined, {}, undefined, {}, { onBuildMeasured: measured });
+      expect(result.durationMs).toBe(2500);
+      expect(measured).toHaveBeenCalledExactlyOnceWith(2500);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it("freezes elapsed build time when the runtime throws instead of returning a result", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(1000);
+    const measured = vi.fn();
+    try {
+      await expect(run([
+        inlineService("broken", { dockerfile: "FROM scratch" }),
+      ], () => {
+        now.mockReturnValue(4500);
+        throw new Error("Build transport disconnected");
+      }, undefined, {}, undefined, {}, { onBuildMeasured: measured })).rejects.toThrow("Build transport disconnected");
+      expect(measured).toHaveBeenCalledExactlyOnceWith(3500);
+    } finally {
+      now.mockRestore();
+    }
+  });
+});
 
 describe("shared host build budget", () => {
   it.each([true, false])("forwards the resolved host budget to every sequential build (Cloud: %s)", async cloud => {
@@ -281,6 +317,19 @@ describe("Cloud Docker uses the shared Compose source planner", () => {
 });
 
 describe("prebuilt registry images (#878)", () => {
+  it("keeps retained artifacts local and acquires force-pulled registry digests before cutover", async () => {
+    const image = `docker.io/library/node@sha256:${"a".repeat(64)}`;
+    const service = { ...repoService({ build: null }), image: "node:22-alpine" };
+    const retained = await run([service], undefined, { handoverImages: { dinohash: image } });
+    expect(retained.result.preparedLocalImages.get("svc-1")).toBe(image);
+    const patch = await run([service], undefined, { handoverImages: { dinohash: image },
+      forcePullImages: true,
+    });
+    expect(patch.captured).toEqual([]);
+    expect(patch.result.imageRefs.get("svc-1")).toBe(image);
+    expect(patch.result.preparedLocalImages.size).toBe(0);
+  });
+
   it("keeps an image-only GHCR reference without invoking a source build", async () => {
     const image = "ghcr.io/acme/web:sha-abc123";
     const { result, captured } = await run([{ ...repoService({ build: null }), image }]);

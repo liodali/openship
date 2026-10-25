@@ -1,5 +1,5 @@
 import type { VerifiedIdentity, PermissionRepositories, StoredDeployment } from "../src";
-import type { Permission } from "@repo/core";
+import type { GrantPermission } from "@repo/core";
 import { deploymentFixture } from "../../contracts/test/fixtures";
 
 export function authorizationFixture() {
@@ -9,8 +9,8 @@ export function authorizationFixture() {
   const services = new Map<string, { projectId: string }>();
   const domains = new Map<string, { projectId: string }>();
   const servers = new Map<string, { organizationId: string }>();
-  const grants = new Map<string, { permissions: Permission[] }>();
-  const tokenGrants = new Map<string, { permissions: Permission[] }>();
+  const grants = new Map<string, { permissions: GrantPermission[] }>();
+  const tokenGrants = new Map<string, { permissions: GrantPermission[] }>();
   const findGrant = (table: typeof grants, prefix: string, type: string, id: string) =>
     table.get(`${prefix}:${type}:${id}`) ?? table.get(`${prefix}:${type}:*`) ?? null;
   const repos: PermissionRepositories = {

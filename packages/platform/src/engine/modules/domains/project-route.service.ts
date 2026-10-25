@@ -759,6 +759,11 @@ export async function reapplyProjectLiveRoutes(
         port = resolveServicePort(staticContainerService);
         targetServiceId = staticContainerService.id;
       }
+      if (!port && redirectHost) {
+        // A redirect serves nothing of its own, so it needs no upstream port (#1418).
+        registers.push({ ...common, notFound: true });
+        continue;
+      }
       if (!port) {
         warn(
           `[project-route] ${project.slug}: select a target port for ${domain.hostname} in Domains & Routes` +
@@ -796,6 +801,7 @@ export async function reapplyProjectLiveRoutes(
       ...(resolved.platform.executor
         ? { edgeProxy: edgeProxyFor(resolved.platform.executor, "openresty", { ours: true }) }
         : {}),
+      ...(opts.isSelfApp ? { controlPlanePort: env.OPENSHIP_DASHBOARD_PORT || 3001 } : {}),
       registers,
       removes,
     });

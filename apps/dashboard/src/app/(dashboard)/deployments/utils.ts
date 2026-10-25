@@ -31,7 +31,8 @@ export const mapRowToDeployment = (row: any): Deployment => {
       author: row.meta?.gitOwner ?? "",
       timestamp: row.createdAt,
     },
-    buildTime: row.buildDurationMs ? Math.round(row.buildDurationMs / 1000) : null,
+    buildTime: typeof row.buildDurationMs === "number" && Number.isFinite(row.buildDurationMs) && row.buildDurationMs >= 0
+      ? Math.round(row.buildDurationMs / 1000) : null,
     createdAt: row.createdAt,
     type: "git",
     environment: row.environment ?? "production",
@@ -76,7 +77,7 @@ export const formatDistanceToNow = (
  * Formats build time in seconds to a readable string
  */
 export const formatBuildTime = (seconds: number | null): string | null => {
-  if (!seconds) return null;
+  if (seconds === null || !Number.isFinite(seconds) || seconds < 0) return null;
   const mins = Math.floor(seconds / 60);
   const secs = seconds % 60;
   return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;

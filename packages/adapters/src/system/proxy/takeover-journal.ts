@@ -30,6 +30,7 @@ import {
 } from "./detect";
 import { rootOrDegrade } from "../privilege";
 import { tryExec } from "../probe-exec";
+import { assertNoSwarmEdge } from "./swarm";
 
 const JOURNAL_DIR = "/var/lib/openship";
 export const JOURNAL_PATH = `${JOURNAL_DIR}/edge-takeover.json`;
@@ -351,7 +352,7 @@ export async function beginEdgeTakeover(
   onLog: SystemLogCallback,
   targets?: EdgeStopTarget[],
 ): Promise<EdgeTakeoverBegun> {
-  await writeJournal(executor, await buildJournal(executor, status, onLog));
+  assertNoSwarmEdge(status);
   // Freeing the ports is host MUTATION — `systemctl disable --now`, `docker update
   // --restart=no`, `kill` — and freeEdgeTargets swallows every one of them (`|| true`).
   // Unelevated on a non-root login they are all refused, so nothing stops, the ports
@@ -372,6 +373,7 @@ export async function beginEdgeTakeover(
     stopExecutor,
     targets?.length ? targets : stopTargetsForStatus(status),
     (m, l) => onLog(log(m, l)),
+    { beforeStop: async () => writeJournal(executor, await buildJournal(executor, status, onLog)) },
   );
   return { ...freed, privilegeDegraded };
 }

@@ -635,31 +635,31 @@ shared storage before removing the cluster runtime.
 
 | Operation | SDK | REST API |
 | --- | --- | --- |
-| Apply a managed container configuration. | `servers.applyContainer(id, input, options?)` | `POST /api/system/servers/:id/containers/:component/apply/stream`<br />`server:write` · Self-hosted |
-| Stream a managed-container apply session. | `servers.containerApplyEvents(id, input, options?)` | `GET /api/system/servers/:id/containers/:component/apply/stream`<br />`server:read` · Self-hosted |
-| List managed containers across accessible servers. | `servers.listAllContainers()` | `GET /api/system/containers`<br />`server:read` · Self-hosted |
-| Refresh managed-container state across accessible servers. | `servers.scanAllContainers()` | `POST /api/system/containers/scan`<br />`server:write` · Self-hosted |
-| List managed containers with available updates. | `servers.containersBehind()` | `GET /api/system/containers/behind`<br />`server:read` · Self-hosted |
-| List managed-container health or configuration issues. | `servers.containerIssues()` | `GET /api/system/containers/issues`<br />`server:read` · Self-hosted |
-| Read currently active container apply sessions. | `servers.applyingContainers()` | `GET /api/system/containers/applying`<br />`server:read` · Self-hosted |
-| Apply requested managed-container changes across servers. | `servers.applyAllContainers(input?)` | `POST /api/system/containers/apply-all`<br />`server:write` · Self-hosted |
-| List one server’s managed containers. | `servers.listContainers(id)` | `GET /api/system/servers/:id/containers`<br />`server:read` · Self-hosted |
-| Refresh one server’s managed-container state. | `servers.scanContainers(id)` | `POST /api/system/servers/:id/containers/scan`<br />`server:write` · Self-hosted |
-| Read a container’s active apply session. | `servers.containerApplySession(id, input)` | `GET /api/system/servers/:id/containers/:component/apply/session`<br />`server:read` · Self-hosted |
+| Apply a managed container configuration. | `servers.applyContainer(id, input, options?)` | `POST /api/system/servers/:id/containers/:component/apply/stream`<br />`server:write` |
+| Stream a managed-container apply session. | `servers.containerApplyEvents(id, input, options?)` | `GET /api/system/servers/:id/containers/:component/apply/stream`<br />`server:read` |
+| List managed containers across accessible servers. | `servers.listAllContainers()` | `GET /api/system/containers`<br />`server:read` |
+| Refresh managed-container state across accessible servers. | `servers.scanAllContainers()` | `POST /api/system/containers/scan`<br />`server:write` |
+| List managed containers with available updates. | `servers.containersBehind()` | `GET /api/system/containers/behind`<br />`server:read` |
+| List managed-container health or configuration issues. | `servers.containerIssues()` | `GET /api/system/containers/issues`<br />`server:read` |
+| Read currently active container apply sessions. | `servers.applyingContainers()` | `GET /api/system/containers/applying`<br />`server:read` |
+| Apply requested managed-container changes across servers. | `servers.applyAllContainers(input?)` | `POST /api/system/containers/apply-all`<br />`server:write` |
+| List one server’s managed containers. | `servers.listContainers(id)` | `GET /api/system/servers/:id/containers`<br />`server:read` |
+| Refresh one server’s managed-container state. | `servers.scanContainers(id)` | `POST /api/system/servers/:id/containers/scan`<br />`server:write` |
+| Read a container’s active apply session. | `servers.containerApplySession(id, input)` | `GET /api/system/servers/:id/containers/:component/apply/session`<br />`server:read` |
 
 ### Components and installation
 
 | Operation | SDK | REST API |
 | --- | --- | --- |
-| Read an installation session. | `servers.getInstallSession(input?)` | `GET /api/system/install/session`<br />`server:read` · Self-hosted |
-| Answer a pending installation prompt. | `servers.respondToInstall(input)` | `POST /api/system/install/respond`<br />`server:admin` · Self-hosted |
-| Submit installation of selected components. | `servers.installComponents(id, input, options?)` | `POST /api/system/install/stream`<br />`server:admin` · Self-hosted |
-| Stream installation progress. | `servers.installEvents(input?, options?)` | `GET /api/system/install/stream`<br />`server:read` · Self-hosted |
-| List the server’s managed components. | `servers.listModules(id)` | `GET /api/system/servers/:id/modules`<br />`server:read` · Self-hosted |
-| Refresh managed-component state. | `servers.scanModules(id)` | `POST /api/system/servers/:id/modules/scan`<br />`server:write` · Self-hosted |
-| Apply a managed component’s configuration. | `servers.applyModule(id, input)` | `POST /api/system/servers/:id/modules/:module/apply`<br />`server:write` · Self-hosted |
-| Install one managed component. | `servers.installComponent(id, input)` | `POST /api/system/install`<br />`server:admin` · Self-hosted |
-| Remove a managed component. | `servers.removeComponent(id, input)` | `POST /api/system/remove`<br />`server:admin` · Self-hosted |
+| Read an installation session. | `servers.getInstallSession(input?)` | `GET /api/system/install/session`<br />`server:read` |
+| Answer a pending installation prompt. | `servers.respondToInstall(input)` | `POST /api/system/install/respond`<br />`server:admin` |
+| Submit installation of selected components. | `servers.installComponents(id, input, options?)` | `POST /api/system/install/stream`<br />`server:admin` |
+| Stream installation progress. | `servers.installEvents(input?, options?)` | `GET /api/system/install/stream`<br />`server:read` |
+| List the server’s managed components. | `servers.listModules(id)` | `GET /api/system/servers/:id/modules`<br />`server:read` |
+| Refresh managed-component state. | `servers.scanModules(id)` | `POST /api/system/servers/:id/modules/scan`<br />`server:write` |
+| Apply a managed component’s configuration. | `servers.applyModule(id, input)` | `POST /api/system/servers/:id/modules/:module/apply`<br />`server:write` |
+| Install one managed component. | `servers.installComponent(id, input)` | `POST /api/system/install`<br />`server:admin` |
+| Remove a managed component. | `servers.removeComponent(id, input)` | `POST /api/system/remove`<br />`server:admin` |
 
 ### Server lifecycle
 
@@ -667,14 +667,14 @@ shared storage before removing the cluster runtime.
 | --- | --- | --- |
 | Stream server monitoring data. | `servers.monitor(id, options?)` | `GET /api/system/monitor/stream`<br />`server:read` |
 | List accessible connected or managed servers with their supported capabilities. | `servers.list()` | `GET /api/system/servers`<br />`server:list` |
-| Register an SSH server. | `servers.create(input)` | `POST /api/system/servers`<br />`server:write` · Self-hosted |
-| Test the supplied SSH connection configuration. | `servers.testConnection(input)` | `POST /api/system/test-connection`<br />`server:write` · Self-hosted |
-| Read the private networks and compute cluster associated with a server. | `servers.infrastructure(id)` | `GET /api/system/servers/:id/infrastructure`<br />`server:read` · Self-hosted |
+| Register an SSH server. | `servers.create(input)` | `POST /api/system/servers`<br />`server:write` |
+| Test the supplied SSH connection configuration. | `servers.testConnection(input)` | `POST /api/system/test-connection`<br />`server:write` |
+| Read the private networks and compute cluster associated with a server. | `servers.infrastructure(id)` | `GET /api/system/servers/:id/infrastructure`<br />`server:read` |
 | Read server details, managed plan, live provider state and durable operation progress. | `servers.get(id)` | `GET /api/system/servers/:id`<br />`server:read` |
 | Read server reachability. | `servers.reachability(id)` | `GET /api/system/servers/:id/reachability`<br />`server:read` |
 | Change registered server configuration. | `servers.update(id, input)` | `PATCH /api/system/servers/:id`<br />`server:write` |
-| Inspect workloads affected by removing the server. | `servers.deletionPreview(id)` | `GET /api/system/servers/:id/deletion-preview`<br />`server:read` · Self-hosted |
-| Remove a server using the requested workload cleanup policy. | `servers.remove(id, input?)` | `DELETE /api/system/servers/:id`<br />`server:admin` · Self-hosted |
+| Inspect workloads affected by removing the server. | `servers.deletionPreview(id)` | `GET /api/system/servers/:id/deletion-preview`<br />`server:read` |
+| Remove a server using the requested workload cleanup policy. | `servers.remove(id, input?)` | `DELETE /api/system/servers/:id`<br />`server:admin` |
 | Execute an authorized command on the server. | `servers.exec(id, input)` | `POST /api/system/servers/:id/exec`<br />`server:admin` |
 | Run a server health check. | `servers.check(id, input?)` | `POST /api/system/check`<br />`server:admin` |
 | Scan ports on an authorized server. | `servers.scanPorts(id)` | `POST /api/system/servers/:id/ports/scan`<br />`server:read` |
@@ -737,6 +737,18 @@ shared storage before removing the cluster runtime.
 | Remove an empty storage installation using its latest sequence. Persistent or retained volumes block removal; external archives are preserved. | `servers.removeClusterStorage(input)` | `DELETE /api/system/compute-clusters/:id/storage`<br />`server:admin` · Self-hosted |
 | Subscribe to saved storage setup and removal progress through replayable SSE. | `servers.clusterStorageEvents(id, options?)` | `GET /api/system/compute-clusters/:id/storage/stream`<br />`server:read` · Self-hosted |
 
+### Docker Swarm
+
+| Operation | SDK | REST API |
+| --- | --- | --- |
+| Connect a verified existing Swarm manager for new project deployments. Requires fleet administration. Reuse requestId after a lost response; does not alter existing stacks or nodes. | `servers.connectSwarm(id, input)` | `POST /api/system/servers/:id/swarm/connect`<br />`server:admin` · Self-hosted |
+
+### Docker Swarm inspection
+
+| Operation | SDK | REST API |
+| --- | --- | --- |
+| Inspect membership on a connected self-hosted Docker server. Set details=true for a manager's stacks, services and nodes. Requires server administration; does not adopt or change workloads. | `servers.inspectSwarm(id, input?)` | `GET /api/system/servers/:id/swarm`<br />`server:admin` · Self-hosted |
+
 ### Legacy network methods
 
 | Operation | SDK | REST API |
@@ -770,8 +782,8 @@ shared storage before removing the cluster runtime.
 | Start an authorized port forward. | `servers.startTunnel(id, input)` | `POST /api/system/servers/:id/tunnels/:tunnelId/start`<br />`server:write` · Self-hosted |
 | Stop a port forward. | `servers.stopTunnel(id, input)` | `POST /api/system/servers/:id/tunnels/:tunnelId/stop`<br />`server:write` · Self-hosted |
 | Remove a port-forward configuration. | `servers.removeTunnel(id, input)` | `DELETE /api/system/servers/:id/tunnels/:tunnelId`<br />`server:write` · Self-hosted |
-| Read per-server request rate-limit configuration. | `servers.getRateLimit(id)` | `GET /api/system/servers/:id/rate-limit`<br />`server:read` · Self-hosted |
-| Update per-server request rate limits. | `servers.updateRateLimit(id, input)` | `PATCH /api/system/servers/:id/rate-limit`<br />`server:admin` · Self-hosted |
+| Read per-server request rate-limit configuration. | `servers.getRateLimit(id)` | `GET /api/system/servers/:id/rate-limit`<br />`server:read` |
+| Update per-server request rate limits. | `servers.updateRateLimit(id, input)` | `PATCH /api/system/servers/:id/rate-limit`<br />`server:admin` |
 
 ### Managed servers
 

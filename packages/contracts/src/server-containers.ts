@@ -28,7 +28,7 @@ export const ServerContainerStatusSchema = Type.Object({
   }), Type.Null()]), checkedAt: Type.String(), createdAt: Type.String(), updatedAt: Type.String(),
 });
 export const ServerContainerGroupSchema = Type.Object({
-  server: Type.Object({ id: Type.String(), name: Type.String(), sshHost: Type.String(), isLocal: Type.Boolean(), projectCount: Type.Number() }),
+  server: Type.Object({ id: Type.String(), name: Type.String(), sshHost: Type.String(), isLocal: Type.Boolean(), projectCount: Type.Number(), edgeRequired: Type.Optional(Type.Boolean()) }),
   components: Type.Array(ServerContainerStatusSchema),
 });
 export const ServerContainerIssuesSchema = Type.Object({

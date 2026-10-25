@@ -1,4 +1,7 @@
 import { reportCaughtError as observeCaughtError } from "@repo/core/diagnostics";
+import { AppError } from "@repo/core";
+import { OblienError } from "oblien";
+import { STATUS_CODES } from "node:http";
 import { createServer, type Server, type Socket } from "node:net";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -204,8 +207,19 @@ export function createCloudDockerTransport(open: () => Promise<Duplex>): DockerT
           if (closed || client.destroyed || client.writableEnded) return client.destroy();
           const message = (error instanceof Error ? error.message : "Cloud Docker connection failed")
             .replace(/([?&](?:token|access_token)=)[^&\s]+/gi, "$1[redacted]");
-          const body = JSON.stringify({ message });
-          client.end(`HTTP/1.1 502 Bad Gateway\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`);
+          const knownError = error instanceof OblienError || error instanceof AppError ? error : undefined;
+          const candidateStatus = knownError instanceof AppError ? knownError.statusCode : knownError?.status;
+          // Provider connection failures happen before Docker receives a request.
+          // A provider 404 must not imply that a Docker resource is absent.
+          const status = candidateStatus && Number.isInteger(candidateStatus) && [429, 502, 503, 504].includes(candidateStatus)
+            ? candidateStatus : 502;
+          const code = knownError?.code && /^[a-z0-9_-]{1,128}$/i.test(knownError.code) ? knownError.code : undefined;
+          const details = (knownError as { details?: { retryAfterSeconds?: unknown } } | undefined)?.details;
+          const retry = details?.retryAfterSeconds;
+          const retryAfterSeconds = typeof retry === "number" && Number.isInteger(retry) && retry >= 0 && retry <= 86400 ? retry : undefined;
+          const body = JSON.stringify({ message, code, retryAfterSeconds });
+          const retryHeader = retryAfterSeconds === undefined ? "" : `Retry-After: ${retryAfterSeconds}\r\n`;
+          client.end(`HTTP/1.1 ${status} ${STATUS_CODES[status] ?? "Error"}\r\n${retryHeader}Content-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`);
         });
       });
       // Per-connection failures are handled above; a late listener error must

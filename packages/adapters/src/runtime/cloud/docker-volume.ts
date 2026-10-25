@@ -1,12 +1,7 @@
 import type Dockerode from "dockerode";
-import { createHash } from "node:crypto";
 import { AppError } from "@repo/core";
 import { ensureScopedVolumeName } from "../volume-namespace";
-
-/** Immutable project identity, independent of a reusable app/organization slug. */
-function projectVolumePrefix(projectId: string): string {
-  return `openship-project-${createHash("sha256").update(projectId).digest("hex").slice(0, 32)}-`;
-}
+import { projectVolumePrefix, ensureProjectVolume } from "../docker-project-volume";
 
 async function inspectVolume(docker: Pick<Dockerode, "getVolume">, name: string) {
   try {
@@ -62,15 +57,6 @@ export async function resolveCloudProjectVolumeName(
 /** Creating an existing Docker volume returns it unchanged. Always inspect the
  * persisted ownership after creation, including when another request raced us. */
 export async function ensureCloudProjectVolume(docker: Pick<Dockerode, "getVolume" | "createVolume">, name: string, projectId: string) {
-  let volume;
-  try {
-    volume = await docker.getVolume(name).inspect();
-  } catch (error) {
-    if ((error as { statusCode?: number; status?: number }).statusCode !== 404 &&
-        (error as { status?: number }).status !== 404) throw error;
-    await docker.createVolume({ Name: name, Labels: { "openship.project": projectId } });
-    volume = await docker.getVolume(name).inspect();
-  }
-  if (volume.Labels?.["openship.project"] !== projectId)
+  if (!await ensureProjectVolume(docker, name, projectId))
     throw new AppError("A volume with this name belongs to another project. Choose a different name.", 409, "CLOUD_VOLUME_CONFLICT");
 }

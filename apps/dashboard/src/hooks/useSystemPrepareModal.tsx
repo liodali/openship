@@ -823,44 +823,28 @@ export function useServerEdgeInstallModal(present?: SystemPreparePresenter) {
 
 /** Port-80/443 edge takeover — the first `useSystemPrepareModal` consumer.
  *  `openEdgeModal(projectId, { onDone })`. */
-export function useEdgeModal() {
-  const prepare = useSystemPrepareModal();
+export function useEdgeModal(present?: SystemPreparePresenter) {
+  const prepare = useSystemPrepareModal(present);
+  const { t } = useI18n();
   return useCallback(
-    (projectId: string, opts?: { onDone?: () => void }): string =>
+    (
+      projectId: string,
+      opts?: Pick<SystemPrepareOptions, "onDone" | "onSettled">,
+    ): string =>
       prepare({
         streamUrl: `projects/${projectId}/routing/ensure-edge/stream`,
         respondUrl: `projects/${projectId}/routing/ensure-edge/respond`,
-        title: "Set up edge routing",
+        title: t.projectSettings.domains.edge.setUp,
         labels: {
-          working: "Preparing the server's edge…",
-          done: "Edge ready — your routes are live.",
-          failed:
-            "Edge setup didn't finish — the app stays on its port; routing is flagged on this tab.",
+          working: t.projects.routingRetry.retrying,
+          done: t.projects.routingRetry.success,
+          failed: t.projects.routingRetry.failed,
         },
         onDone: opts?.onDone,
-        // Edge setup installs OpenResty and can take a takeover path, so it's the
-        // flow most likely to outlive its own connection. The result is readable
-        // from the server afterwards — ask, the way the verify modal does, rather
-        // than reporting an unknown outcome for an install that finished.
-        resolveOutcome: async () => {
-          const status = await projectsApi.getEdgeStatus(projectId);
-          if (status.ready) {
-            return {
-              ok: true,
-              message:
-                "The server's edge is set up and owns ports 80/443 — the connection dropped after the run finished.",
-            };
-          }
-          return {
-            ok: false,
-            message:
-              status.reason ??
-              (status.reachable === false
-                ? "The server isn't reachable, so the edge couldn't be checked. The log above is what the run got through."
-                : `The edge is not set up yet${status.classification ? ` (ports 80/443: ${status.classification})` : ""}. The log above is what the run got through.`),
-          };
-        },
+        onSettled: opts?.onSettled,
+        // A ready proxy does not prove that route application or HTTPS finished.
+        // A lost terminal event stays unknown; onSettled refreshes canonical state.
       }),
-    [prepare],
+    [prepare, t],
   );
 }

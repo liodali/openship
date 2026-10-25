@@ -580,7 +580,7 @@ export default function AppInstallPage() {
         if (!project || !Array.isArray(svcRes?.services))
           throw new Error("Incomplete draft response");
         if (template?.gpu) setGpuChoice(svcRes.services.some((service) => hasComposeGpuRequest(service.advanced)));
-        if (!selfHosted || project.deployTarget === "cloud" || project.workspaceId) {
+        if (project.deployTarget === "cloud" || project.workspaceId) {
           setDestination({ deployTarget: "cloud", workspaceId: project.workspaceId ?? undefined, serverId: project.serverId ?? undefined, serverName: project.serverName });
         } else if (project.serverId) {
           setDestination({ deployTarget: "server", serverId: project.serverId, serverName: project.serverName });

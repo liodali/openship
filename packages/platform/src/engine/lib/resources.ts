@@ -120,14 +120,22 @@ export function withDefaults(
   config?: ResourceConfig | Record<string, unknown> | null,
   defaults = UNLIMITED_RESOURCES,
 ): ResourceConfig {
-  if (!config) return { ...defaults };
+  if (!config) return { cpuCores: defaults.cpuCores, memoryMb: defaults.memoryMb, diskMb: defaults.diskMb };
 
   const raw = config as Record<string, unknown>;
   const cpuCores = extractCpuCores(raw) ?? defaults.cpuCores;
   const memoryMb = (typeof raw.memoryMb === "number" ? raw.memoryMb : undefined) ?? defaults.memoryMb;
   const diskMb = (typeof raw.diskMb === "number" ? raw.diskMb : undefined) ?? defaults.diskMb;
+  // Never inherit a project's swap setting implicitly; only an explicit true
+  // survives resolution, and it stays with the service that opted in.
+  const swapDisabled = raw.swapDisabled === true ? true : undefined;
 
-  return { cpuCores, memoryMb, diskMb };
+  return {
+    cpuCores,
+    memoryMb,
+    diskMb,
+    ...(swapDisabled && { swapDisabled }),
+  };
 }
 
 /** Normalize saved limits without adding a target-specific fallback. */

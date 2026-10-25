@@ -60,6 +60,41 @@ function render() {
 }
 
 describe("shared Compose environment editor", () => {
+  it("shows a saved Compose default as an editable value and keeps its expression when another row changes", () => {
+    h.config.projectId = "project-id";
+    const service = h.config.services[0]!;
+    service.environment = {
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-source-password}",
+      NODE_ENV: "production",
+    };
+    service.advanced = { environmentTemplateKeys: ["POSTGRES_PASSWORD"] };
+    const { editor, html } = render();
+    expect(editor.envVars).toContainEqual({
+      key: "POSTGRES_PASSWORD",
+      value: "source-password",
+      visible: true,
+    });
+    expect(html).not.toContain("${POSTGRES_PASSWORD");
+    expect(h.update).not.toHaveBeenCalled();
+    editor.onEnvVarsChange!([
+      { key: "POSTGRES_PASSWORD", value: "source-password", visible: false },
+      { key: "NODE_ENV", value: "test", visible: true },
+    ]);
+    expect(h.update).toHaveBeenCalledWith({
+      services: [
+        expect.objectContaining({
+          environment: {
+            POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-source-password}",
+            NODE_ENV: "test",
+          },
+          advanced: { environmentTemplateKeys: ["POSTGRES_PASSWORD"] },
+        }),
+        h.config.services[1],
+      ],
+    });
+    expect(h.stored).not.toHaveBeenCalled();
+  });
+
   it.each(["", "https://api.example.com/?token="])(
     "clears missing badges after filling an unresolved preview (%s) and restores them when emptied",
     (preview) => {
@@ -120,10 +155,28 @@ describe("shared Compose environment editor", () => {
     h.config.projectId = "project-id";
     h.config.services[0]!.serviceId = "service-id";
     h.config.services[0]!.environment.POSTGRES_PASSWORD = MASK;
+    const rows = [
+      {
+        key: "POSTGRES_PASSWORD",
+        value: MASK,
+        visible: false,
+        isSecret: true,
+        keyReadOnly: true,
+        removalDisabled: true,
+      },
+    ];
+    h.config.services[0]!.environmentDraft = { environment: "production", baseline: rows, rows };
     const { editor } = render();
     expect(h.stored).not.toHaveBeenCalled();
-    expect(await editor.onReveal!(["POSTGRES_PASSWORD"])).toEqual({ POSTGRES_PASSWORD: "stored-secret" });
-    expect(h.stored).toHaveBeenCalledExactlyOnceWith("project-id", "service-id", ["POSTGRES_PASSWORD"], undefined);
+    expect(await editor.onReveal!(["POSTGRES_PASSWORD"])).toEqual({
+      POSTGRES_PASSWORD: "stored-secret",
+    });
+    expect(h.stored).toHaveBeenCalledExactlyOnceWith(
+      "project-id",
+      "service-id",
+      ["POSTGRES_PASSWORD"],
+      "production",
+    );
     expect(h.config.services[0]!.environment.POSTGRES_PASSWORD).toBe(MASK);
     expect(h.update).not.toHaveBeenCalled();
   });

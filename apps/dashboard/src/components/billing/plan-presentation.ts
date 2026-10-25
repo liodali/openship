@@ -14,7 +14,7 @@ export function serverPlanChoices({ plans, currentOffer, interval, allocatedDisk
   const available = plans.filter(plan => {
     const amount = plan.price[interval];
     const disk = plan.resourceLimits?.max_total_disk_gb;
-    return amount != null && amount > 0 && (minimumDisk <= 0 || (disk != null && disk >= minimumDisk));
+    return plan.availableForPurchase !== false && amount != null && amount > 0 && (minimumDisk <= 0 || (disk != null && disk >= minimumDisk));
   });
   const matchesCurrent = (plan: ApiPlan) => {
     if (!currentOffer || currentOffer.configuration === "custom" || plan.id !== currentOffer.id || plan.price[interval] !== price) return false;

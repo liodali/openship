@@ -3,7 +3,7 @@ import { act, StrictMode, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PRICING, pricingUi, resolvePlan, type CustomServerResources, type PlanTierId } from "@repo/core";
-import type { BillingCustomQuote, BillingPlans, BillingSubscription, CloudWorkspaceSummary } from "@repo/contracts";
+import type { ManagementState, BillingCustomQuote, BillingPlans, BillingSubscription, CloudWorkspaceSummary } from "@repo/contracts";
 import { I18nProvider } from "@/components/i18n-provider";
 import { PlatformProvider } from "@/context/PlatformContext";
 import { ModalProvider } from "@/context/ModalContext";
@@ -11,6 +11,8 @@ import { SidebarLayoutProvider, useSidebarLayout } from "@/context/SidebarLayout
 import { useSidebarCollapse } from "@/hooks/useSidebarCollapse";
 import { baseDictionary } from "@/i18n";
 import { BillingPlanSummary } from "@/app/(dashboard)/billing/_components/billing-shared";
+import { BillingPlansRoute } from "@/app/(dashboard)/billing/_components/BillingPlansRoute";
+import { BillingPurchaseContent } from "@/app/(dashboard)/billing/_components/BillingPurchaseContent";
 import { BillingHeader } from "@/app/(dashboard)/billing/_components/BillingHeader";
 import { ManagedServerPurchase } from "@/components/servers/managed/ManagedServerPurchase";
 import { ManagedServerSetup } from "@/components/servers/ServerAcquisition";
@@ -57,9 +59,10 @@ const server: CloudWorkspaceSummary = {
 };
 function customQuote(resources: CustomServerResources): BillingCustomQuote {
   return { basePlanTierId: "team", reference: `quoted-${resources.cpuCores}-${resources.memoryMb}-${resources.diskGb}`,
-    resources, priceCents: 9900 + (resources.cpuCores - 8) * 500, currency: "usd", billingMode: "monthly", monthlyCredits: null,
-    breakdown: { basePriceCents: 9900, cpuCents: (resources.cpuCores - 8) * 500, memoryCents: 0, diskCents: 0 } };
+    resources: { cpuCores: resources.cpuCores, memoryMb: resources.memoryMb, diskGb: resources.diskGb }, priceCents: 11900 + (resources.cpuCores - 8) * 600, currency: "usd", billingMode: "monthly", monthlyCredits: null,
+    breakdown: { basePriceCents: 11900, cpuCents: (resources.cpuCores - 8) * 600, memoryCents: 0, diskCents: 0 } };
 }
+let management: ManagementState;
 let root: Root;
 let host: HTMLDivElement;
 let popup: { opener: object | null; closed: boolean; location: { href: string }; close: ReturnType<typeof vi.fn> };
@@ -104,7 +107,9 @@ beforeEach(() => {
   vi.resetAllMocks(); vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   h.user = "user-a"; h.org = "org-a"; h.connected = true; h.sessionPending = false;
   window.location.href = "http://localhost:3000/";
-  h.get.mockImplementation(async (path, options) => path.endsWith("/quote")
+  management = { pricing: PRICING.management, purchasesAvailable: true, cloudIncluded: false,
+    active: false, serverLimit: 0, connectedServers: 0, pendingCheckout: false, subscription: null, change: null };
+  h.get.mockImplementation(async (path, options) => path === "/billing/manage" ? { data: management } : path.endsWith("/quote")
     ? { data: customQuote(options.params) } : catalog);
   h.create.mockResolvedValue(server);
   h.readServer.mockResolvedValue({ id: server.serverId, name: server.name, managed: server });
@@ -118,30 +123,158 @@ afterEach(async () => {
   await act(async () => root.unmount()); host.remove(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals();
 });
 
+describe("Manage purchase tab", () => {
+  const billing = () => <CloudPurchaseProvider management tabs="header" scopeKey={`${h.user}:${h.org}`}>
+    <BillingHeader /><CloudPurchaseTabs />
+    <BillingPurchaseContent><BillingPlansRoute currentPlan="free" subscription={null} workspaceId="cws-production" billingEnabled /></BillingPurchaseContent>
+  </CloudPurchaseProvider>;
+  const panel = () => {
+    const tab = buttons(copy.purchase.manage)[0]!;
+    return document.getElementById(tab.getAttribute("aria-controls")!)!;
+  };
+
+  it("offers Manage third and loads its shared subscription view only when selected", async () => {
+    await render(billing());
+    expect([...host.querySelectorAll('[role="tab"]')].map(tab => tab.textContent)).toEqual([
+      copy.purchase.monthly, copy.purchase.payg, copy.purchase.manage,
+    ]);
+    expect(planNames()).toEqual(["Hobby", "Starter", "Pro", "Scale"]);
+    expect(h.get.mock.calls.some(([path]) => path === "/billing/manage")).toBe(false);
+    expect(host.querySelector('a[href="/billing/manage"]')).toBeNull();
+    await click(copy.purchase.manage);
+    expect(panel().hidden).toBe(false);
+    expect(panel().textContent).toContain("$5/mo");
+    expect(panel().textContent).toContain("2 connected servers");
+    expect(host.querySelector("h1")?.textContent).toBe(copy.purchase.manage);
+    expect(h.get.mock.calls.filter(([path]) => path === "/billing/manage")).toHaveLength(1);
+    expect(h.create).not.toHaveBeenCalled();
+    expect(h.post).not.toHaveBeenCalled();
+    expect(sidebarState()).toBe("expanded");
+  });
+
+  it("preserves Custom input and hides Cloud controls while Manage is open", async () => {
+    vi.useFakeTimers();
+    await render(billing());
+    await click(copy.custom.name); await flushQuote();
+    await edit(input(copy.custom.cpu)!, "3"); await flushQuote();
+    await click(copy.purchase.manage);
+    expect(buttons(copy.custom.name)[0]?.closest("[hidden]")).not.toBeNull();
+    expect(input(copy.custom.cpu)?.closest("[hidden]")).not.toBeNull();
+    await click(copy.purchase.monthly);
+    expect(panel().hidden).toBe(true);
+    expect(input(copy.custom.cpu)?.value).toBe("3");
+    expect(buttons(copy.custom.name)[0]?.closest("[hidden]")).toBeNull();
+  });
+
+  it("uses the existing management checkout and blocks switching until it settles", async () => {
+    await render(billing()); await click(copy.purchase.manage);
+    let finish!: (value: unknown) => void;
+    h.post.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    await click("Continue to checkout");
+    expect(h.post).toHaveBeenCalledExactlyOnceWith("/billing/manage/checkout", {
+      servers: 2, plan: "basic", idempotencyKey: expect.any(String),
+    });
+    expect(buttons(copy.purchase.monthly)[0]?.closest("fieldset")?.disabled).toBe(true);
+    expect(h.create).not.toHaveBeenCalled();
+    await act(async () => finish({ data: { quoteId: "manage-quote", monthlyCents: 500, amountDueNow: 500 } }));
+    expect(panel().textContent).toContain("Review your change");
+    expect(buttons(copy.purchase.monthly)[0]?.closest("fieldset")?.disabled).toBe(false);
+  });
+
+  it("resets the view on an organization change and ignores the previous account's late response", async () => {
+    let finish!: (value: unknown) => void;
+    h.get.mockImplementation(path => path === "/billing/manage" ? new Promise(resolve => { finish = resolve; }) : Promise.resolve(catalog));
+    await render(billing()); await click(copy.purchase.manage);
+    h.org = "org-b";
+    await render(billing());
+    expect(buttons(copy.purchase.monthly)[0]?.getAttribute("aria-selected")).toBe("true");
+    await act(async () => finish({ data: { ...management, connectedServers: 77 } }));
+    expect(panel().textContent).not.toContain("77");
+    expect(panel().hidden).toBe(true);
+  });
+
+  it("keeps Manage usable when the compute catalog is unavailable", async () => {
+    h.get.mockImplementation(path => path === "/billing/manage" ? Promise.resolve({ data: management }) : Promise.reject(new Error("Cloud unavailable")));
+    await render(billing()); await click(copy.purchase.manage);
+    expect(panel().textContent).toContain("Continue to checkout");
+    expect(panel().hidden).toBe(false);
+  });
+
+  it("does not add a management choice to the deployment or server-acquisition picker", async () => {
+    await render(<ManagedServerPurchase preserveProject />);
+    expect(buttons(copy.purchase.manage)).toHaveLength(0);
+    expect(h.get.mock.calls.some(([path]) => path === "/billing/manage")).toBe(false);
+  });
+});
+
+describe("annual Cloud purchases", () => {
+  beforeEach(() => {
+    h.get.mockImplementation(async (path, options) => {
+      if (path.endsWith("/quote")) {
+        const annual = options.params.interval === "annual";
+        return { data: { ...customQuote(options.params), reference: annual ? "quote-annual" : "quote-monthly",
+          interval: options.params.interval, priceCents: annual ? 118800 : 11900 } };
+      }
+      return { data: { ...catalog.data, annual: { enabled: true, monthsFree: 2 } } };
+    });
+  });
+  const purchase = () => <CloudPlanPicker currentPlan="free" subscription={null} workspaceId="cws-production" billingEnabled />;
+
+  it("shows monthly equivalents with the upfront annual charge and submits yearly checkout", async () => {
+    await render(purchase());
+    expect(buttons(copy.pricing.annual)[0]?.getAttribute("aria-pressed")).toBe("true");
+    expect(host.querySelector("article .text-2xl")?.textContent).toBe("$10");
+    await click(copy.pricing.monthly);
+    expect(host.querySelector("article .text-2xl")?.textContent).toBe("$12");
+    await click(copy.pricing.annual);
+    expect(host.querySelector("article")?.textContent).toContain("$10");
+    expect(host.querySelector("article")?.textContent).toContain("$120 billed yearly");
+    await click("Choose Hobby");
+    expect(h.post).toHaveBeenCalledExactlyOnceWith("billing/subscription", expect.objectContaining({
+      planTierId: "hobby", interval: "annual", workspaceId: "cws-production",
+    }));
+  });
+  it("invalidates Custom quotes when switching intervals and submits the selected annual quote", async () => {
+    vi.useFakeTimers();
+    await render(purchase()); await click(copy.pricing.monthly); await click(copy.custom.name); await flushQuote();
+    await click(copy.pricing.annual);
+    expect(host.querySelector('form button[type="submit"]')?.hasAttribute("disabled")).toBe(true);
+    expect(h.post).not.toHaveBeenCalled();
+    await flushQuote();
+    expect(host.querySelector("aside")?.textContent).toContain("$1188 billed yearly");
+    await act(async () => host.querySelector<HTMLFormElement>("form")!.requestSubmit());
+    expect(h.post).toHaveBeenCalledExactlyOnceWith("billing/subscription", expect.objectContaining({
+      interval: "annual", custom: expect.objectContaining({ quoteReference: "quote-annual" }),
+    }));
+    const query = h.get.mock.calls.filter(([path]) => path.endsWith("/quote")).at(-1)![1];
+    expect(query.params.interval).toBe("annual");
+  });
+});
+
 describe("plans for an existing server", () => {
   it("shows the saved paid plan once and offers only larger presets by default", async () => {
     await render(picker("starter", { billingState: { tier: "starter", status: "active", plan: offer("starter"), subscription: subscription("starter") } as BillingState }));
     expect(host.querySelectorAll('section[aria-label="Current plan"]')).toHaveLength(1);
     expect(host.querySelector('section[aria-label="Current plan"]')?.textContent).toContain("Starter");
-    expect(host.querySelector('section[aria-label="Current plan"]')?.textContent).toContain("$20");
+    expect(host.querySelector('section[aria-label="Current plan"]')?.textContent).toContain("$24");
     expect(planNames()).toEqual(["Pro", "Scale"]);
     expect(sidebarState()).toBe("expanded");
     expect(host.textContent).toContain(copy.plansRoute.upgradeServer);
     expect(h.post).not.toHaveBeenCalled();
   });
 
-  it("keeps lower-cost choices behind Other plans and reviews them against the selected server", async () => {
-    // No allocated disk in this fixture: the preview still validates actual disk size.
-    await render(picker("starter"));
+  it("keeps lower-cost choices behind Other plans and excludes retired offers", async () => {
+    h.get.mockResolvedValueOnce({ data: { ...catalog.data, plans: plans.map(plan => ({ ...plan, availableForPurchase: plan.id !== "hobby" })) } });
+    await render(picker("pro"));
     await click(copy.plansRoute.otherPlans);
-    expect(planNames()).toContain("Hobby");
-    expect(sidebarState()).toBe("collapsed");
+    expect(planNames()).toContain("Starter");
+    expect(planNames()).not.toContain("Hobby");
     expect(host.textContent).toContain(copy.plansRoute.otherPlansHint);
     h.post.mockRejectedValueOnce(new Error("Preview offline"));
     await click(copy.planChange.review);
-    expect(h.post).toHaveBeenCalledWith("billing/subscription/change/preview", expect.objectContaining({ workspaceId: "cws-production", planTierId: "hobby" }));
+    expect(h.post).toHaveBeenCalledWith("billing/subscription/change/preview", expect.objectContaining({ workspaceId: "cws-production", planTierId: "starter" }));
     await click(copy.plansRoute.backToUpgrades);
-    expect(planNames()).toEqual(["Pro", "Scale"]);
+    expect(planNames()).toEqual(["Scale"]);
     expect(sidebarState()).toBe("expanded");
   });
 
@@ -410,7 +543,7 @@ describe("buying another managed server", () => {
     await render(<CloudPurchaseProvider tabs="header">
       <BillingHeader /><CloudPurchaseTabs /><ManagedServerPurchase preserveProject />
     </CloudPurchaseProvider>);
-    await click("Choose Hobby");
+    await click("Choose Starter");
     const monthly = buttons(copy.purchase.monthly)[0]!;
     const payg = buttons(copy.purchase.payg)[0]!;
     expect(payg.closest('fieldset')?.disabled).toBe(true);
@@ -440,7 +573,7 @@ describe("buying another managed server", () => {
     expect(host.querySelector("input")).toBeNull();
     expect(h.create).not.toHaveBeenCalled();
     expect(h.post).not.toHaveBeenCalled();
-    await click("Choose Hobby");
+    await click("Choose Starter");
     expect(h.create).toHaveBeenCalledExactlyOnceWith({ name: copy.workspaces.defaultName });
   });
 
@@ -499,6 +632,14 @@ describe("buying another managed server", () => {
     expect(host.textContent).toContain(copy.plansRoute.requestedPlanUnavailable);
     expect(h.create).not.toHaveBeenCalled();
     expect(h.post).not.toHaveBeenCalled();
+  });
+
+  it("continues the entry compute plan selected on pricing through the shared checkout", async () => {
+    await render(<ManagedServerPurchase requestedPlanId="hobby" autoCheckout />);
+    expect(h.create).toHaveBeenCalledOnce();
+    expect(h.post).toHaveBeenCalledExactlyOnceWith("billing/subscription", expect.objectContaining({
+      planTierId: "hobby", interval: "monthly", workspaceId: server.id,
+    }));
   });
 
   it("keeps disabled purchases inactive even with an explicit pricing selection", async () => {
@@ -597,7 +738,7 @@ describe("buying another managed server", () => {
     const location = window.location.href;
     await render(<ModalProvider><AddServerFromProject /></ModalProvider>);
     await click("Add a destination");
-    await click("Choose Hobby");
+    await click("Choose Starter");
     expect(h.create).toHaveBeenCalledOnce();
     expect(h.post).toHaveBeenCalledExactlyOnceWith("billing/subscription", expect.objectContaining({ workspaceId: server.id }));
     expect(h.readServer).toHaveBeenCalledExactlyOnceWith(server.serverId);
@@ -688,7 +829,7 @@ describe("buying another managed server", () => {
   it("discards an unavailable checkout when the customer changes organization", async () => {
     h.post.mockRejectedValueOnce(new ApiError(503, "Unavailable", { code: "OBLIEN_CHECKOUT_UNAVAILABLE" }));
     await render(<ManagedServerPurchase preserveProject />);
-    await click("Choose Hobby");
+    await click("Choose Starter");
     expect(document.querySelector('[role="dialog"]')?.textContent).toContain(copy.checkoutUnavailable.checkoutTitle);
     h.org = "org-b";
     await render(<ManagedServerPurchase preserveProject />);
@@ -700,24 +841,24 @@ describe("buying another managed server", () => {
     let created!: (value: CloudWorkspaceSummary) => void;
     h.create.mockReturnValueOnce(new Promise(resolve => { created = resolve; }));
     const purchase = <ManagedServerPurchase preserveProject />;
-    await render(purchase); await click("Choose Hobby");
+    await render(purchase); await click("Choose Starter");
     h.org = "org-b";
     await render(<ManagedServerPurchase preserveProject />);
     await act(async () => created(server));
     expect(h.post).not.toHaveBeenCalled();
     expect(popup.close).toHaveBeenCalled();
     h.create.mockResolvedValueOnce({ ...server, id: "cws-org-b" });
-    await click("Choose Hobby");
+    await click("Choose Starter");
     expect(h.post).toHaveBeenCalledWith("billing/subscription", expect.objectContaining({ workspaceId: "cws-org-b" }));
   });
 
   it("allows retrying a failed server creation without starting checkout prematurely", async () => {
     h.create.mockRejectedValueOnce(new Error("Server could not be created"));
-    await render(<ManagedServerPurchase preserveProject />); await click("Choose Hobby");
-    expect(buttons("Choose Hobby")[0]?.disabled).toBe(false);
+    await render(<ManagedServerPurchase preserveProject />); await click("Choose Starter");
+    expect(buttons("Choose Starter")[0]?.disabled).toBe(false);
     expect(host.textContent).toContain("Server could not be created");
     expect(h.post).not.toHaveBeenCalled();
-    await click("Choose Hobby");
+    await click("Choose Starter");
     expect(h.create).toHaveBeenCalledTimes(2);
     expect(h.post).toHaveBeenCalledOnce();
   });

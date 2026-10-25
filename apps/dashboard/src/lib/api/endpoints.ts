@@ -554,6 +554,8 @@ export const endpoints = {
     behind: "updates?behind=1",
     scan: "updates/scan",
     apply: (projectId: string) => `updates/${projectId}/apply`,
+    runtime: (projectId: string) => `updates/${projectId}/runtime`,
+    runtimeCheck: (projectId: string) => `updates/${projectId}/runtime/check`,
   },
 
   /* ---------------------------------------------------------------- */

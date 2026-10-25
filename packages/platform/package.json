@@ -1,6 +1,6 @@
 {
   "name": "@repo/platform",
-  "version": "0.9.3-fork.9",
+  "version": "0.9.5-fork.1",
   "private": true,
   "type": "module",
   "main": "src/index.ts",
@@ -50,7 +50,7 @@
     "ioredis": "^5.10.0",
     "jose": "6.2.0",
     "maxmind": "^5.0.6",
-    "nodemailer": "^9.0.3",
+    "nodemailer": "^10.1.7",
     "pino": "^10.3.1",
     "ssh2": "^1.17.0",
     "stripe": "^20.4.0",
@@ -65,7 +65,6 @@
     "@types/ssh2": "^1.15.5",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
-    "vitest": "^4.0.18",
-    "@types/nodemailer": "^8.0.1"
+    "vitest": "^4.0.18"
   }
 }

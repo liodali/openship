@@ -20,7 +20,7 @@ import { env } from "@repo/platform/engine/config/env";
 import type { RuntimeAdapter, ShellSession } from "@repo/adapters";
 import { disposeRuntime } from "@repo/platform/engine/lib/deployment-runtime";
 import type { TerminalExitReason } from "@repo/db";
-import type { ExecutionContext as RequestContext } from "@repo/platform";
+import { freezeContext, type ExecutionContext as RequestContext } from "@repo/platform";
 import { safeErrorMessage } from "@repo/core";
 import type { CloudTerminalTicket } from "./cloud/terminal-bridge";
 import { trackBackgroundWork } from "@repo/platform/engine/lib/background-work";
@@ -28,6 +28,7 @@ import { trackBackgroundWork } from "@repo/platform/engine/lib/background-work";
 // ─── Tickets ────────────────────────────────────────────────────────────────
 
 interface Ticket {
+  context: RequestContext;
   token: string;
   userId: string;
   /** Org the user was acting in at mint time — locks the consume-time
@@ -54,6 +55,7 @@ export function issueServiceTerminalTicket(
   const ttl = env.TERMINAL_TICKET_TTL_MS;
   const token = newToken();
   tickets.set(token, {
+    context: freezeContext(ctx),
     token,
     userId: ctx.userId,
     organizationId: ctx.organizationId,
@@ -67,7 +69,7 @@ export function issueServiceTerminalTicket(
 
 export function consumeServiceTerminalTicket(
   token: string,
-): { userId: string; organizationId: string; serviceId: string; cloud?: CloudTerminalTicket } | null {
+): { context: RequestContext; userId: string; organizationId: string; serviceId: string; cloud?: CloudTerminalTicket } | null {
   if (!token) return null;
   const ticket = tickets.get(token);
   if (!ticket) return null;
@@ -75,6 +77,7 @@ export function consumeServiceTerminalTicket(
   if (ticket.used) return null;
   if (ticket.expiresAt <= Date.now()) return null;
   return {
+    context: ticket.context,
     userId: ticket.userId,
     organizationId: ticket.organizationId,
     serviceId: ticket.serviceId,

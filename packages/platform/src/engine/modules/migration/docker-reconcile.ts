@@ -21,7 +21,7 @@ import type {
 } from "@repo/adapters";
 import { classifyProxy, isBuildHelperMarkers, OPENSHIP_LABEL } from "@repo/adapters";
 import type { ComposeHealthcheck, ProxySettings, ComposeGpuConfig } from "@repo/core";
-import { isLoopbackHost } from "@repo/core";
+import { assertStandaloneContainer, isLoopbackHost } from "@repo/core";
 import type { ComposeService } from "../../lib/compose-parser";
 import type { ManifestProjectEntry } from "../../lib/openship-manifest";
 import type { ExistingRoute, ProxyRouteScan } from "./proxy-route-scan";
@@ -87,8 +87,9 @@ export interface DiscoveredService {
   restart?: string;
   healthcheck?: ComposeHealthcheck;
   /** Live cpu/memory caps the container is running with, so adoption preserves
-   *  them instead of resetting to the project default. Undefined = uncapped. */
-  resources?: { cpuCores?: number; memoryMb?: number };
+   *  them instead of resetting to the project default. Undefined = uncapped.
+   *  `swapDisabled` reflects HostConfig MemorySwap === Memory. */
+  resources?: { cpuCores?: number; memoryMb?: number; swapDisabled?: boolean };
   /** Reverse-proxy kind when this container IS the edge proxy (image/command
    *  matches AND it binds a host edge port). Openship's OpenResty replaces it,
    *  so it's dropped from import — importing it is the 80/443 conflict. */
@@ -495,6 +496,7 @@ export function toDiscoveredService(
   imageCmd?: string[],
   proxyRoutesByPort?: Map<number, ExistingRoute[]>,
 ): DiscoveredService {
+  assertStandaloneContainer(detail.labels);
   const mounts = toDiscoveredMounts(detail.mounts);
   const warnings: string[] = [];
   if (detail.gpuImportError) warnings.push(detail.gpuImportError);
@@ -542,7 +544,19 @@ export function toDiscoveredService(
 
   // Prefer what the compose file DECLARES; fall back to the container's live
   // HostConfig, which also captures a hand-applied `docker update --memory`.
-  const resources = declared?.advanced?.resources ?? detail.resources;
+  // `swapDisabled` has no compose syntax, so preserve the live setting even
+  // when the file supplies its own cpu/memory caps.
+  const declaredResources = declared?.advanced?.resources;
+  const resources =
+    declaredResources && detail.resources?.swapDisabled && declaredResources.swapDisabled === undefined
+      ? {
+          ...declaredResources,
+          // The live swap guarantee needs its memory cap too. A Compose CPU-only
+          // declaration must not drop that prerequisite during adoption.
+          memoryMb: declaredResources.memoryMb ?? detail.resources.memoryMb,
+          swapDisabled: true,
+        }
+      : declaredResources ?? detail.resources;
 
   const name = discoveredServiceName(detail, declared);
   const image = detail.image || declared?.image;

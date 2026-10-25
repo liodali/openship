@@ -11,6 +11,19 @@ export interface ExactServiceTargetRow {
   advanced?: unknown;
 }
 
+/** Read-only scopes need membership validation without rollout dependency constraints. */
+export function assertServiceTargetMembership(
+  services: ExactServiceTargetRow[],
+  requested: string[],
+  subject = "Operation",
+): void {
+  const availableIds = new Set(services.filter((service) => service.enabled).map((service) => service.id));
+  const unavailable = requested.filter((id) => !availableIds.has(id));
+  if (unavailable.length > 0) {
+    throw new Error(`${subject} targets missing, disabled, or cross-project services: ${unavailable.join(", ")}`);
+  }
+}
+
 /**
  * Validate an exclusive deployment target set against one current project
  * snapshot. Missing/disabled IDs fail closed. A selected namespace provider
@@ -22,15 +35,8 @@ export function assertExactServiceTargets(
   requested: string[],
   subject = "Deployment",
 ): void {
+  assertServiceTargetMembership(services, requested, subject);
   const enabled = services.filter((service) => service.enabled);
-  const availableIds = new Set(enabled.map((service) => service.id));
-  const unavailable = requested.filter((id) => !availableIds.has(id));
-  if (unavailable.length > 0) {
-    throw new Error(
-      `${subject} targets missing, disabled, or cross-project services: ${unavailable.join(", ")}`,
-    );
-  }
-
   const selectedIds = new Set(requested);
   const byName = new Map(enabled.map((service) => [service.name, service]));
 

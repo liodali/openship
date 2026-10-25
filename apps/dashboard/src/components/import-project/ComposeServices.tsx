@@ -2,7 +2,7 @@
 
 import { Icon as UiIcon } from "@repo/ui/icons";
 
-import React, { useState, useCallback, useEffect, useMemo } from "react";
+import React, { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { useDeployment } from "@/context/DeploymentContext";
 import { isMaskedValue } from "@repo/core";
 import { useServiceEnvReveal } from "@/hooks/use-service-env-reveal";
@@ -21,15 +21,20 @@ import { Modal } from "@/components/ui/Modal";
 import DropdownMenu from "@/components/ui/DropdownMenu";
 import { Input } from "@/components/ui/input";
 import { CustomSelect } from "@/components/ui/CustomSelect";
-import EnvironmentVariables from "./EnvironmentVariables";
+import EnvironmentVariables, { type EnvironmentVariableRow } from "./EnvironmentVariables";
+import { servicesApi } from "@/lib/api/services";
+import { getApiErrorMessage } from "@/lib/api/client";
+import { serviceEnvironmentRows } from "@/lib/service-environment-editor";
+import { Button } from "@/components/ui/button";
 import { isEnvironmentValueMissing } from "./environment-resolution";
+import { composeEnvironmentPreview, editComposeEnvironment } from "./compose-environment-preview";
 import BuildSettings from "./BuildSettings";
 import { cn } from "@/lib/utils";
 import { useI18n, interpolate } from "@/components/i18n-provider";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-type EnvVarRow = { key: string; value: string; visible: boolean };
+type EnvVarRow = EnvironmentVariableRow;
 
 /** Convert Record<string,string> ↔ Array<{key,value,visible}> */
 const envToArray = (
@@ -699,21 +704,73 @@ const ServiceCard: React.FC<{
   service: ComposeServiceInfo;
   projectName: string;
   onUpdate: (updates: Partial<ComposeServiceInfo>) => void;
-  onEnvChange: (env: Record<string, string>) => void;
   onDelete: () => void;
-}> = ({ service, projectName, onUpdate, onEnvChange, onDelete }) => {
+}> = ({ service, projectName, onUpdate, onDelete }) => {
   const { t } = useI18n();
   const { config } = useDeployment();
   const cs = t.importProject.composeServices;
   const cnt = t.importProject.counts;
-  const missingCount = missingEnvCount(service);
-  const envCount = Object.keys(service.environment).length;
+  const preview = useMemo(
+    () => composeEnvironmentPreview(service, config.envVars, config.rootEnvVars),
+    [service, config.envVars, config.rootEnvVars],
+  );
+  const missingCount = missingEnvCount({ ...service, ...preview });
+  const envCount = Object.keys(preview.environment).length;
   const [envModalOpen, setEnvModalOpen] = useState(false);
   // Fresh scans already supply editable values. Only saved, masked rows fetch
   // on demand, using the same lookup as the project's service detail panel.
-  const onReveal = useServiceEnvReveal(config.projectId, service.serviceId);
+  const onReveal = useServiceEnvReveal(
+    config.projectId,
+    service.serviceId,
+    service.environmentDraft?.environment,
+  );
+  const [envReadError, setEnvReadError] = useState<string | null>(null);
+  const [envReadAttempt, retryEnvRead] = useState(0);
+  const updateRef = useRef(onUpdate);
+  updateRef.current = onUpdate;
+  const envLabels = t.projectDetail.services.detail.environmentState;
+  const needsSavedEnvironment = Boolean(
+    config.projectId && service.serviceId && !service.environmentDraft,
+  );
+  useEffect(() => {
+    if (!envModalOpen || !needsSavedEnvironment || !config.projectId || !service.serviceId) return;
+    let active = true;
+    setEnvReadError(null);
+    void servicesApi
+      .getEnvironment(config.projectId, service.serviceId)
+      .then((result) => {
+        if (!result.success) throw new Error(envLabels.loadFailed);
+        if (!active) return;
+        const rows = serviceEnvironmentRows(result.environment, envLabels);
+        updateRef.current({
+          environmentDraft: {
+            environment: result.environment.environment,
+            baseline: rows,
+            rows,
+            generated: Object.fromEntries(
+              result.environment.variables
+                .filter((row) => row.source === "generated")
+                .map((row) => [row.key, row.value]),
+            ),
+          },
+        });
+      })
+      .catch((error) => {
+        if (active) setEnvReadError(getApiErrorMessage(error, envLabels.loadFailed));
+      });
+    return () => {
+      active = false;
+    };
+  }, [
+    envModalOpen,
+    needsSavedEnvironment,
+    config.projectId,
+    service.serviceId,
+    envReadAttempt,
+    envLabels,
+  ]);
   const [envRows, setEnvRows] = useState<EnvVarRow[]>(() =>
-    envToArray(service.environment),
+    needsSavedEnvironment ? [] : envToArray(preview.environment),
   );
 
   const statusLabel = service.exposed
@@ -725,18 +782,40 @@ const ServiceCard: React.FC<{
 
   /** Bridge: EnvironmentVariables uses editable rows - our service config persists Record<string,string>. */
   useEffect(() => {
+    if (needsSavedEnvironment) return;
     setEnvRows((current) => {
-      if (envRecordsEqual(arrayToEnv(current), service.environment)) return current;
-      return envToArray(service.environment, visibilityByKey(current));
+      const draftRows = service.environmentDraft?.rows;
+      if (draftRows) {
+        const next = draftRows.map((row) => ({
+          ...row,
+          value: preview.environment[row.key] ?? row.value,
+          visible: current.find((item) => item.key === row.key)?.visible ?? row.visible,
+        }));
+        return JSON.stringify(current) === JSON.stringify(next) ? current : next;
+      }
+      if (envRecordsEqual(arrayToEnv(current), preview.environment)) return current;
+      return envToArray(preview.environment, visibilityByKey(current));
     });
-  }, [service.environment, service.environmentMeta]);
+  }, [preview.environment, service.environmentDraft, needsSavedEnvironment]);
 
   const handleEnvChange = useCallback(
     (vars: EnvVarRow[]) => {
       setEnvRows(vars);
-      onEnvChange(arrayToEnv(vars));
+      const edited = arrayToEnv(vars);
+      const draft = service.environmentDraft;
+      if (draft) {
+        const rows = vars.map((row) => {
+          const original = draft.rows.find((before) => before.key === row.key);
+          return original && row.value === preview.environment[row.key]
+            ? { ...row, value: original.value }
+            : row;
+        });
+        onUpdate({ environmentDraft: { ...draft, rows } });
+      } else if (!envRecordsEqual(edited, preview.environment)) {
+        onUpdate(editComposeEnvironment(service, preview.environment, edited));
+      }
     },
-    [onEnvChange],
+    [onUpdate, service, preview.environment],
   );
 
   // Environment-variables card — sits in the right column beside the domain card.
@@ -895,18 +974,37 @@ const ServiceCard: React.FC<{
         </div>
 
         <div className="max-h-[calc(86vh-92px)] overflow-y-auto">
-          <EnvironmentVariables
-            mode="settings"
-            showEditControls={true}
-            isEditingMode={true}
-            showSettingsActions={false}
-            borderless
-            hideTitle
-            envVars={envRows}
-            envMeta={service.environmentMeta}
-            onEnvVarsChange={handleEnvChange}
-            onReveal={onReveal}
-          />
+          {needsSavedEnvironment ? (
+            <div className="p-5" role="status">
+              {envReadError ? (
+                <div className="space-y-3" role="alert">
+                  <p className="text-sm text-danger">{envReadError}</p>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => retryEnvRead((attempt) => attempt + 1)}
+                  >
+                    {envLabels.reload}
+                  </Button>
+                </div>
+              ) : (
+                <div className="h-32 animate-pulse rounded-xl bg-muted/40" />
+              )}
+            </div>
+          ) : (
+            <EnvironmentVariables
+              mode="settings"
+              showEditControls={true}
+              isEditingMode={true}
+              showSettingsActions={false}
+              borderless
+              hideTitle
+              envVars={envRows}
+              envMeta={preview.environmentMeta}
+              onEnvVarsChange={handleEnvChange}
+              onReveal={onReveal}
+            />
+          )}
         </div>
       </Modal>
     </div>
@@ -931,14 +1029,6 @@ const ComposeServices: React.FC = () => {
   const updateService = useCallback(
     (index: number, updates: Partial<ComposeServiceInfo>) => {
       const next = services.map((s, i) => (i === index ? { ...s, ...updates } : s));
-      updateConfig({ services: next });
-    },
-    [services, updateConfig],
-  );
-
-  const updateServiceEnv = useCallback(
-    (index: number, env: Record<string, string>) => {
-      const next = services.map((s, i) => (i === index ? { ...s, environment: env } : s));
       updateConfig({ services: next });
     },
     [services, updateConfig],
@@ -1074,7 +1164,6 @@ const ComposeServices: React.FC = () => {
                       service={svc}
                       projectName={config.projectName || config.repo}
                       onUpdate={(updates) => updateService(i, updates)}
-                      onEnvChange={(env) => updateServiceEnv(i, env)}
                       onDelete={() => deleteService(i)}
                     />
                   ))}

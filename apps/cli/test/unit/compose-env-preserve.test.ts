@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { parse as parseYaml } from "yaml";
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
@@ -21,6 +22,7 @@ const h = vi.hoisted(() => ({
   existing: new Set<string>(),
   written: new Map<string, string>(),
   composeCalls: [] as string[][],
+  failHealthWait: false,
   /** `docker ps` rows for the port query: "<config_files>\t<published ports>". */
   dockerPsPorts: "",
   /** Postgres data volumes this box already has, by full volume name. */
@@ -69,7 +71,10 @@ vi.mock("node:child_process", () => ({
   execFile: (_c: unknown, _a: unknown, cb: (e: null, o: { stdout: string }) => void) =>
     cb(null, { stdout: "" }),
   spawnSync: (cmd: string, args: string[] = []) => {
-    if (cmd === "docker" && args[0] === "compose") h.composeCalls.push(args);
+    if (cmd === "docker" && args[0] === "compose") {
+      h.composeCalls.push(args);
+      if (h.failHealthWait && args.includes("--wait")) return { status: 1, stdout: "", stderr: "service unhealthy" };
+    }
     // `docker volume inspect <name>`. Empty by default, so the password-reconcile path
     // stays out of the compose sequences most of these tests assert on.
     if (cmd === "docker" && args[0] === "volume") {
@@ -267,6 +272,7 @@ beforeEach(() => {
   h.existing = new Set([DOCKER_SOCK]);
   h.written = new Map();
   h.composeCalls = [];
+  h.failHealthWait = false;
   h.dockerPsPorts = "";
   h.dbVolumes = new Set();
   h.volumeInspectError = null;
@@ -789,7 +795,8 @@ describe("compose port resolution", () => {
     expect(file).toContain(
       "${OPENSHIP_BIND_ADDR:-127.0.0.1}:${DASHBOARD_PORT:-3001}:${DASHBOARD_PORT:-3001}",
     );
-    expect(file).not.toContain("0.0.0.0");
+    const spec = parseYaml(file);
+    expect([...spec.services.api.ports, ...spec.services.dashboard.ports].join(" ")).not.toContain("0.0.0.0");
     // A local install leaves the key out entirely → the loopback fallback applies.
     expect(writtenEnv().OPENSHIP_BIND_ADDR).toBeUndefined();
   });
@@ -914,6 +921,37 @@ describe("composeUpdate", () => {
     // New images + a recreate, in that order.
     expect(verbs()).toContainEqual(["pull"]);
     expect(verbs().at(-1)?.slice(0, 3)).toEqual(["up", "-d", "--force-recreate"]);
+  });
+  it("recreates only application services and waits for readiness when the target env is already saved", async () => {
+    seedEnv({ ...CONFIGURED, OPENSHIP_VERSION: "0.4.6" });
+    expect(await composeUpdate("0.4.6")).toEqual({ applied: true, refused: false });
+    const up = verbs().at(-1)!;
+    expect(up).toContain("--force-recreate");
+    expect(up).toContain("--wait");
+    expect(up).toContain("--wait-timeout");
+    expect(up.slice(-3)).toEqual(["api", "dashboard", "edge"]);
+    expect(up).not.toContain("postgres");
+    expect(up).not.toContain("redis");
+    const spec = parseYaml(h.written.get(composePaths.file)!);
+    expect(spec.services.dashboard.environment.HOSTNAME).toBe("0.0.0.0");
+    expect(spec.services.dashboard.healthcheck.test).toContain("node");
+    expect(spec.services.edge.depends_on).toEqual({
+      api: { condition: "service_healthy" },
+      dashboard: { condition: "service_healthy" },
+    });
+  });
+
+  it("does not report an applied update when the new services fail readiness", async () => {
+    seedEnv(CONFIGURED);
+    h.failHealthWait = true;
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(await composeUpdate("0.4.6")).toEqual({ applied: false, refused: false });
+      expect(writtenEnv().POSTGRES_PASSWORD).toBe(CONFIGURED.POSTGRES_PASSWORD);
+      expect(writtenEnv().BETTER_AUTH_SECRET).toBe(CONFIGURED.BETTER_AUTH_SECRET);
+    } finally {
+      error.mockRestore();
+    }
   });
 
   it("is a no-op when there's no compose install", async () => {

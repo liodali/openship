@@ -10,11 +10,9 @@
  * pooled SSH bridge, and it reports what the daemon can actually allocate. The
  * local host falls back to `os.*` when Docker isn't reachable.
  *
- * SELF-HOSTED ONLY. A cloud (CLOUD_MODE) instance never probes: an Oblien
- * workspace is sized from the tier table, not from host hardware, and the
- * multi-tenant control plane must not open SSH to a tenant's box just to read a
- * number. `getHostCapacity` short-circuits to UNKNOWN there — see the guard
- * below, which is deliberately redundant with the caller's own `isCloud` branch.
+ * Provider workspaces use their purchased capacity. Customer-owned servers use
+ * the same authorized SSH probe in hosted Manage and self-hosted installations.
+ * The SaaS control plane is never a local fallback.
  *
  * A probe failure is NOT fatal anywhere. It returns UNKNOWN_CAPACITY, and every
  * consumer treats unknown as "don't enforce a ceiling" — refusing to save a
@@ -31,6 +29,7 @@
 import { reportCaughtError as observeCaughtError } from "@repo/core/diagnostics";
 import { UNKNOWN_CAPACITY, type HostCapacity } from "@repo/core";
 import { env } from "../config/env";
+import { isCustomerServer } from "../modules/billing/management.service";
 import { cacheStore } from "./cache-store/index";
 import { createServerDockerRuntime } from "./deployment-runtime";
 
@@ -149,10 +148,7 @@ export async function getHostCapacity(
   organizationId: string,
   opts?: { refresh?: boolean; localFallback?: boolean },
 ): Promise<HostCapacity> {
-  // Cloud never probes host hardware. Redundant with the caller's isCloud
-  // branch on purpose: this is the hard gate, so a future caller can't
-  // accidentally make the multi-tenant control plane dial a tenant's box.
-  if (env.CLOUD_MODE) return { ...UNKNOWN_CAPACITY };
+  if (env.CLOUD_MODE && !await isCustomerServer(organizationId, serverId)) return { ...UNKNOWN_CAPACITY };
 
   const key = cacheKey(serverId, organizationId);
   const store = await cacheStore<HostCapacity>(NAMESPACE, { maxSize: 500 });
@@ -165,7 +161,7 @@ export async function getHostCapacity(
   }
 
   const run = probe(serverId, organizationId, {
-    localFallback: opts?.localFallback ?? true,
+    localFallback: !env.CLOUD_MODE && (opts?.localFallback ?? true),
   })
     .then(async (value) => {
       // Only cache a real answer. Caching "unknown" for the full TTL would keep

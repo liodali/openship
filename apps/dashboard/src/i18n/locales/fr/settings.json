@@ -782,7 +782,8 @@
   "notifications": {
     "deliveryHistory": {
       "title": "Historique des envois",
-      "description": "Les 50 derniers envois, tous canaux confondus.",
+      "description": "Envois sur tous les canaux.",
+      "page": "Page n° {page}",
       "refresh": "Actualiser",
       "loading": "Chargement des envois…",
       "error": "Impossible de charger l’historique. Actualisez pour réessayer.",
@@ -868,7 +869,9 @@
       "allTab": "Tous",
       "eventHeader": "Événement",
       "cellAria": "{category} via {channel}",
-      "notifyMe": "Me notifier"
+      "notifyMe": "Me notifier",
+      "search": "Rechercher des alertes",
+      "noResults": "Aucune alerte correspondante."
     },
     "orgDefaults": {
       "title": "Valeurs par défaut de l'organisation",
@@ -881,6 +884,7 @@
       "description": "Les canaux appartiennent à votre compte et sont partagés entre organisations. Les préférences et valeurs par défaut concernent l’organisation active.",
       "ready": "{count} canaux prêts sur {total}",
       "preferences": "Préférences des alertes",
+      "configuration": "Canaux et alertes",
       "retry": "Réessayer"
     },
     "groups": {
@@ -892,7 +896,8 @@
       "domains": "Domaines & SSL",
       "members": "Membres",
       "mail": "E-mail",
-      "billing": "Facturation"
+      "billing": "Facturation",
+      "security": "Sécurité"
     },
     "categories": {
       "deploy.failed": {
@@ -1026,6 +1031,10 @@
       "quota.warning": {
         "label": "Avertissement de quota",
         "description": "Vous approchez d'une limite de forfait (stockage, déploiements, membres). Avertissement avant que des erreurs ne surviennent."
+      },
+      "security.advisory": {
+        "label": "Avis de sécurité",
+        "description": "Un avis de sécurité concerne Openship ou un service déployé. Inclut la cause et la mise à jour disponible."
       }
     }
   },

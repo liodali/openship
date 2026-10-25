@@ -2,12 +2,13 @@
 
 import { Icon as UiIcon } from "@repo/ui/icons";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ComponentProps } from "react";
 import {
   CLUSTER_DATABASE_TEMPLATES,
   CLUSTER_DATABASE_STEPS,
   MANAGED_STORAGE_CLASS,
   clusterDatabasePodCount,
+  clusterDatabaseUnsupportedReason,
   clusterDatabaseRunning,
   validateClusterDatabase,
   type ClusterDatabaseConfig,
@@ -28,8 +29,11 @@ import { randomUUID } from "@/lib/random-uuid";
 import { ClusterDatabaseBackupSettings, ClusterDatabaseBackups } from "./ClusterDatabaseBackups";
 import { ClusterDatabaseImport } from "./ClusterDatabaseImport";
 import { ClusterDatabaseCopy } from "./ClusterDatabaseCopy";
+import { ClusterDatabaseScaling } from "./ClusterDatabaseScaling";
 import { computeClustersApi } from "@/lib/api/compute-clusters";
 import { clusterScalingState } from "@/components/servers/clusters/ClusterScalingStatus";
+import { useResourceScope } from "@/hooks/use-scoped-resource";
+import { databaseInstanceStatus } from "./model";
 
 const defaults = (engine: ClusterDatabaseConfig["engine"]): ClusterDatabaseConfig => ({
   engine,
@@ -52,7 +56,17 @@ const stepLabels = {
   restore: "Recover saved data",
 };
 
-export function ClusterDatabasePanel({
+export function ClusterDatabasePanel(props: ComponentProps<typeof ClusterDatabasePanelContent>) {
+  const scope = useResourceScope();
+  return (
+    <ClusterDatabasePanelContent
+      key={`${scope}:${props.projectId}:${props.database?.id ?? "new"}`}
+      {...props}
+    />
+  );
+}
+
+function ClusterDatabasePanelContent({
   projectId,
   clusterId,
   database,
@@ -76,46 +90,72 @@ export function ClusterDatabasePanel({
   disabled?: boolean;
 }) {
   const { t } = useI18n();
+  const scaleText = t.projects.quickScale;
+  const [tab, setTab] = useState<"overview" | "scaling">("overview");
   const [sharing, setSharing] = useState(false);
   const [config, setConfig] = useState<ClusterDatabaseConfig | null>(database?.config ?? null);
   const [name, setName] = useState(database?.name ?? "");
   const [editing, setEditing] = useState(!database);
+  const [editingSequence, setEditingSequence] = useState(database?.sequence ?? null);
   const [envKey, setEnvKey] = useState(
     database?.envKey ?? (database?.config.engine === "redis" ? "REDIS_URL" : "DATABASE_URL"),
   );
+  const [readEnvKey, setReadEnvKey] = useState(database?.readEnvKey ?? "DATABASE_READ_URL");
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [clusterClient, setClusterClient] = useState(false);
-  const [selectedCluster, setSelectedCluster] = useState(clusterId ?? database?.clusterId ?? "");
+  const [selectedCluster, setSelectedCluster] = useState(database?.clusterId ?? "");
   const [clusters, setClusters] = useState<ComputeCluster[]>([]);
   const [clustersLoading, setClustersLoading] = useState(!clusterId && !database);
   const [importFrom, setImportFrom] = useState<{ runId: string; artifactName: string }>();
   const [switchReviewed, setSwitchReviewed] = useState(false);
-  const [rebalanceReviewed, setRebalanceReviewed] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [removeName, setRemoveName] = useState("");
   const [deleteData, setDeleteData] = useState(false);
   const request = useRef(randomUUID());
   const lock = useRef(false);
+  const active = useRef(true);
+  useEffect(() => {
+    active.current = true;
+    return () => {
+      active.current = false;
+    };
+  }, []);
   const [sharedStorage, setSharedStorage] = useState(false);
   const [storageLoading, setStorageLoading] = useState(!!clusterId && !database);
   const [customStorage, setCustomStorage] = useState(
     !!database && !["openship-local", MANAGED_STORAGE_CLASS].includes(database.config.storageClass),
   );
   useEffect(() => {
-    if (clusterId || database) return;
+    if (database) return;
     let active = true;
-    void computeClustersApi
-      .list()
+    setClustersLoading(true);
+    const load = clusterId
+      ? computeClustersApi.get(clusterId).then((row) => [row])
+      : computeClustersApi.list();
+    void load
       .then((rows) => {
         if (!active) return;
-        const ready = rows.filter((row) => clusterScalingState(row) === "ready");
+        const ready = rows.filter(
+          (row) =>
+            clusterScalingState(row) === "ready" &&
+            !clusterDatabaseUnsupportedReason(row.scaling?.provider),
+        );
         setClusters(ready);
-        if (ready.length === 1) setSelectedCluster(ready[0].id);
+        if (clusterId) {
+          setSelectedCluster(ready[0]?.id ?? "");
+          const unavailable = clusterDatabaseUnsupportedReason(rows[0]?.scaling?.provider);
+          if (unavailable) setError(unavailable);
+          else if (!ready.length)
+            setError("Finish preparing this Kubernetes cluster before adding a database.");
+        } else if (ready.length === 1) setSelectedCluster(ready[0].id);
       })
       .catch((reason) => {
-        if (active) setError(getApiErrorMessage(reason));
+        if (active) {
+          setSelectedCluster("");
+          setError(getApiErrorMessage(reason));
+        }
       })
       .finally(() => {
         if (active) setClustersLoading(false);
@@ -125,7 +165,10 @@ export function ClusterDatabasePanel({
     };
   }, [clusterId, database]);
   useEffect(() => {
-    if (!selectedCluster || database) return;
+    if (!selectedCluster || database) {
+      setStorageLoading(false);
+      return;
+    }
     let active = true;
     setStorageLoading(true);
     setSharedStorage(false);
@@ -145,14 +188,14 @@ export function ClusterDatabasePanel({
     };
   }, [selectedCluster, database]);
   const running = !!database && clusterDatabaseRunning(database.status);
+  const databaseReady = !!database && databaseInstanceStatus(database).settled;
   const locked = disabled || busy || running || storageLoading || clustersLoading;
   const previousConnection = databases.find(
     (row) => row.id !== database?.id && row.envKey === envKey.trim(),
   );
   const applicationOnCluster = !!database && database.clusterId === clusterId;
   const template = CLUSTER_DATABASE_TEMPLATES.find((item) => item.id === config?.engine);
-  const rebalancing =
-    !!database && config?.engine === "redis" && config.instances !== database.config.instances;
+  const staleSettings = !!database && editingSequence !== database.sequence;
   const change = <K extends keyof ClusterDatabaseConfig>(key: K, value: ClusterDatabaseConfig[K]) =>
     setConfig((old) => (old ? { ...old, [key]: value } : old));
   const run = async (work: () => Promise<ClusterDatabase>, message?: string) => {
@@ -162,10 +205,12 @@ export function ClusterDatabasePanel({
     setError(null);
     try {
       const row = await work();
+      if (!active.current) return;
       onSaved(row);
       if (message) setNotice(message);
       return row;
     } catch (err) {
+      if (!active.current) return;
       setError(
         getApiErrorMessage(
           err,
@@ -174,11 +219,11 @@ export function ClusterDatabasePanel({
       );
     } finally {
       lock.current = false;
-      setBusy(false);
+      if (active.current) setBusy(false);
     }
   };
   const submit = async () => {
-    if (!config || locked || (!database && !selectedCluster)) return;
+    if (!config || locked || (database && staleSettings) || (!database && !selectedCluster)) return;
     if (!database && config.engine === "redis" && config.mode === "cluster" && !clusterClient)
       return;
     try {
@@ -191,9 +236,8 @@ export function ClusterDatabasePanel({
       database
         ? clusterDatabasesApi.update(projectId, {
             databaseId: database.id,
-            expectedSequence: database.sequence,
+            expectedSequence: editingSequence!,
             config,
-            ...(rebalancing && rebalanceReviewed ? { confirmRedisRebalance: true as const } : {}),
           })
         : clusterDatabasesApi.create(projectId, {
             requestId: request.current,
@@ -235,6 +279,26 @@ export function ClusterDatabasePanel({
           <UiIcon name="close" />
         </Button>
       </div>
+      {database && !editing && (
+        <div
+          role="tablist"
+          aria-label={scaleText.databaseControls}
+          className="flex shrink-0 gap-1 border-b border-border/50 px-3 py-2"
+        >
+          {(["overview", "scaling"] as const).map((item) => (
+            <button
+              key={item}
+              type="button"
+              role="tab"
+              aria-selected={tab === item}
+              className={`flex-1 rounded-lg px-2 py-2 text-xs ${tab === item ? "bg-muted/60 font-medium text-foreground" : "text-muted-foreground hover:bg-muted/30"}`}
+              onClick={() => setTab(item)}
+            >
+              {item === "scaling" ? scaleText.scale : scaleText.overview}
+            </button>
+          ))}
+        </div>
+      )}
       <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-4">
         {error && (
           <p role="alert" className="rounded-xl bg-danger/10 p-3 text-sm text-danger">
@@ -349,47 +413,62 @@ export function ClusterDatabasePanel({
                 maxLength={63}
               />
             </label>
-            <div className="space-y-1.5 text-sm">
-              <span>Deployment</span>
-              <CustomSelect
-                variant="filled"
-                aria-label="Database deployment"
-                value={config.mode}
-                disabled={!!database || locked}
-                options={[
-                  {
-                    value: "standalone",
-                    label: "Standalone",
-                    description: "One database instance with persistent storage.",
-                  },
-                  { value: "cluster", label: "Cluster", description: template?.clusterDescription },
-                ]}
-                onChange={(value) =>
-                  setConfig({
-                    ...config,
-                    mode: value as "standalone" | "cluster",
-                    instances: value === "cluster" ? 3 : 1,
-                  })
-                }
-              />
-            </div>
-            {config.mode === "cluster" && (
+            {!database && (
+              <div className="space-y-1.5 text-sm">
+                <span>Deployment</span>
+                <CustomSelect
+                  variant="filled"
+                  aria-label="Database deployment"
+                  value={config.mode}
+                  disabled={!!database || locked}
+                  options={[
+                    {
+                      value: "standalone",
+                      label: "Standalone",
+                      description: "One database instance with persistent storage.",
+                    },
+                    ...(config.engine === "redis"
+                      ? [
+                          {
+                            value: "replication",
+                            label: scaleText.replication,
+                            description: scaleText.redisHint,
+                          },
+                        ]
+                      : []),
+                    {
+                      value: "cluster",
+                      label:
+                        config.engine === "postgres" ? scaleText.replication : scaleText.sharding,
+                      description: template?.clusterDescription,
+                    },
+                  ]}
+                  onChange={(value) =>
+                    setConfig({
+                      ...config,
+                      mode: value as ClusterDatabaseConfig["mode"],
+                      instances: value === "standalone" ? 1 : 3,
+                    })
+                  }
+                />
+              </div>
+            )}
+            {!database && config.mode !== "standalone" && (
               <label className="block space-y-1.5 text-sm">
                 <span>
-                  {config.engine === "postgres"
-                    ? "Instances, including the primary"
-                    : "Shards, each with one replica"}
+                  {config.engine === "postgres" || config.mode === "replication"
+                    ? scaleText.instancesIncludingPrimary
+                    : scaleText.shardsWithReplica}
                 </span>
                 <Input
                   variant="filled"
                   type="number"
-                  min={3}
+                  min={config.engine === "postgres" ? 2 : 3}
                   max={9}
                   step={1}
                   value={config.instances}
                   disabled={locked}
                   onChange={(event) => {
-                    setRebalanceReviewed(false);
                     change("instances", Number(event.target.value));
                   }}
                 />
@@ -558,6 +637,11 @@ export function ClusterDatabasePanel({
                     ? "PostgreSQL synchronously replicates to at least one standby before acknowledging writes. Writes wait if no standby is available."
                     : "Redis replicates asynchronously. A failover can lose recently acknowledged writes. Each shard and replica uses a different server."}
               </p>
+              {config.mode === "replication" && (
+                <p className="text-xs leading-relaxed text-muted-foreground">
+                  {scaleText.sentinelHint}
+                </p>
+              )}
             </div>
             {!database && config.engine === "redis" && config.mode === "cluster" && (
               <label className="flex items-start gap-2 text-sm">
@@ -580,40 +664,24 @@ export function ClusterDatabasePanel({
               <p className="text-xs leading-relaxed text-muted-foreground">
                 {config.mode === "cluster"
                   ? "Replicas provide failover and do not replace a backup."
-                  : "Standalone Redis has no failover replica."}{" "}
+                  : config.mode === "replication"
+                    ? scaleText.redisHint
+                    : "Standalone Redis has no failover replica."}{" "}
                 Save backups to recover older data or move it into a new database.
               </p>
             )}
-            {rebalancing && (
-              <div className="space-y-3 rounded-xl bg-warning/5 p-3 text-sm">
-                <p>
-                  Redis will move data between {database.config.instances} and {config.instances}{" "}
-                  partitions. OpenShip verifies a backup first; requests may be slower while data
-                  moves.
-                </p>
-                {!database.config.backup ? (
-                  <p className="text-muted-foreground">
-                    Save a backup destination with the current partition count first.
-                  </p>
-                ) : (
-                  <label className="flex items-start gap-2">
-                    <Checkbox
-                      checked={rebalanceReviewed}
-                      onCheckedChange={setRebalanceReviewed}
-                      disabled={locked}
-                    />
-                    <span>I have reviewed this data redistribution.</span>
-                  </label>
-                )}
-              </div>
+            {database && staleSettings && (
+              <p role="alert" className="text-xs text-warning">
+                {scaleText.settingsChanged}
+              </p>
             )}
             <Button
               type="submit"
               className="w-full"
               disabled={
                 locked ||
+                (!!database && staleSettings) ||
                 (!database && !selectedCluster) ||
-                (rebalancing && (!database?.config.backup || !rebalanceReviewed)) ||
                 (!database &&
                   config.engine === "redis" &&
                   config.mode === "cluster" &&
@@ -643,7 +711,33 @@ export function ClusterDatabasePanel({
             )}
           </form>
         )}
-        {database && !editing && (
+        {database && !editing && tab === "scaling" && (
+          <ClusterDatabaseScaling
+            database={database}
+            disabled={locked || database.status !== "ready"}
+            onRecovery={() => {
+              setTab("overview");
+              if (!database.config.backup) {
+                setConfig(database.config);
+                setEditingSequence(database.sequence);
+                setEditing(true);
+              }
+            }}
+            onApply={async (nextConfig, expectedSequence, confirmRedisRebalance) => {
+              const row = await run(() =>
+                clusterDatabasesApi.update(projectId, {
+                  databaseId: database.id,
+                  expectedSequence,
+                  config: nextConfig,
+                  ...(confirmRedisRebalance ? { confirmRedisRebalance } : {}),
+                }),
+              );
+              if (row) setTab("overview");
+              return row;
+            }}
+          />
+        )}
+        {database && !editing && tab === "overview" && (
           <>
             <div className="flex items-center gap-2 text-sm">
               <span className="flex-1 font-medium">
@@ -654,7 +748,7 @@ export function ClusterDatabasePanel({
                       ? "Saving backup"
                       : "Setting up database"
                   : database.status === "ready"
-                    ? database.observation?.ready
+                    ? databaseReady
                       ? "Database ready"
                       : "Database needs attention"
                     : database.status === "retained"
@@ -763,6 +857,18 @@ export function ClusterDatabasePanel({
             )}
             {database.status === "ready" && (
               <>
+                <Button
+                  variant="secondary"
+                  className="w-full justify-between"
+                  disabled={locked}
+                  onClick={() => setTab("scaling")}
+                >
+                  <span className="flex items-center gap-2">
+                    <UiIcon name="layers" />
+                    {scaleText.scale}
+                  </span>
+                  <UiIcon name="arrow-right" />
+                </Button>
                 <div className="space-y-3 rounded-xl bg-muted/30 p-3">
                   <p className="text-sm font-medium">Application connection</p>
                   <p className="text-xs leading-relaxed text-muted-foreground">
@@ -854,6 +960,85 @@ export function ClusterDatabasePanel({
                       </Button>
                     </>
                   )}
+                  {applicationOnCluster &&
+                    database.config.engine === "postgres" &&
+                    database.config.instances > 1 && (
+                      <div className="space-y-3 border-t border-border/50 pt-3">
+                        <p className="text-sm font-medium">{scaleText.readerConnection}</p>
+                        <p className="text-xs leading-relaxed text-muted-foreground">
+                          {scaleText.readerHint}
+                        </p>
+                        {database.readEnvKey ? (
+                          <div className="flex items-center gap-2">
+                            <code className="min-w-0 flex-1 break-all text-sm">
+                              {database.readEnvKey}
+                            </code>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              aria-label={scaleText.disconnectReader}
+                              disabled={locked}
+                              onClick={() =>
+                                void run(
+                                  () =>
+                                    clusterDatabasesApi.connect(
+                                      projectId,
+                                      database,
+                                      database.envKey,
+                                      undefined,
+                                      null,
+                                    ),
+                                  scaleText.connectionSaved,
+                                )
+                              }
+                            >
+                              <UiIcon name="unplug" />
+                            </Button>
+                          </div>
+                        ) : (
+                          <>
+                            <label className="block space-y-1.5 text-sm">
+                              <span>{scaleText.readerVariable}</span>
+                              <Input
+                                variant="filled"
+                                value={readEnvKey}
+                                disabled={locked}
+                                onChange={(event) => setReadEnvKey(event.target.value)}
+                              />
+                            </label>
+                            <Button
+                              className="w-full"
+                              variant="secondary"
+                              disabled={
+                                locked ||
+                                !readEnvKey.trim() ||
+                                readEnvKey.trim() === database.envKey
+                              }
+                              onClick={() =>
+                                void run(
+                                  () =>
+                                    clusterDatabasesApi.connect(
+                                      projectId,
+                                      database,
+                                      database.envKey,
+                                      undefined,
+                                      readEnvKey.trim(),
+                                    ),
+                                  scaleText.connectionSaved,
+                                )
+                              }
+                            >
+                              {scaleText.connectReader}
+                            </Button>
+                            {readEnvKey.trim() === database.envKey && (
+                              <p role="alert" className="text-xs text-danger">
+                                {scaleText.distinctVariables}
+                              </p>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    )}
                 </div>
                 <Button
                   variant="secondary"
@@ -861,6 +1046,7 @@ export function ClusterDatabasePanel({
                   disabled={locked}
                   onClick={() => {
                     setConfig(database.config);
+                    setEditingSequence(database.sequence);
                     setEditing(true);
                   }}
                 >
@@ -953,7 +1139,7 @@ export function ClusterDatabasePanel({
                 </Button>
                 {removing && (
                   <div className="mt-3 space-y-3 rounded-xl bg-muted/30 p-3 text-sm">
-                    {database.envKey ? (
+                    {database.envKey || database.readEnvKey ? (
                       <p>Disconnect the application before removing this database.</p>
                     ) : (
                       <>

@@ -169,7 +169,7 @@ export async function cloneProjectToServer(input: {
   const sourceEnv = await repos.project.listEnvVars(source.id);
 
   const { project: created } = await withProjectCreationLock(input.organizationId, async () => {
-    await assertProjectQuota(input.organizationId, target.workspaceId);
+    await assertProjectQuota(input.organizationId, target.workspaceId, target.id);
     const slug = await uniqueProjectSlug(input.organizationId, slugify(desiredName));
     return repos.project.createProjectWithRecords({
       group: {

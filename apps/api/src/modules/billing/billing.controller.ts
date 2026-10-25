@@ -46,6 +46,7 @@ export async function quoteCustomPlan(c: Context) {
     cpuCores: Number(c.req.query("cpuCores")),
     memoryMb: Number(c.req.query("memoryMb")),
     diskGb: Number(c.req.query("diskGb")),
+    ...(c.req.query("interval") ? { interval: c.req.query("interval") as "monthly" | "annual" } : {}),
   })) });
 }
 export async function createSubscription(c: Context) { return c.json({ data: await operationData(c, getPlatformKernel().billing.createSubscription(operationContext(c), await c.req.json())) }, 201); }

@@ -34,6 +34,8 @@ interface Row {
   serviceName: string;
   serverId: string | null;
   containerId: string | null;
+  deploymentId: string | null;
+  trackedContainerId: string | null;
   kind: string;
   status: string;
   reason: string | null;
@@ -181,6 +183,11 @@ vi.mock("@repo/db", () => {
         create: vi.fn(async () => ({ id: `audit-${h.incidents.length}` })),
       },
       serviceIncident: {
+        listOpenForActiveProjects: vi.fn(async (scopes: Array<{ id: string; organizationId: string; activeDeploymentId: string }>) =>
+          h.incidents.filter((incident) => incident.status === "open" && scopes.some(scope =>
+            scope.id === incident.projectId && scope.organizationId === incident.organizationId &&
+            h.deployments.some(dep => dep.id === scope.activeDeploymentId && dep.containerId === incident.containerId))),
+        ),
         listOpen: vi.fn(async () =>
           h.incidents.filter((r) => r.status === "open" && r.projectId).map((r) => ({ ...r })),
         ),
@@ -207,6 +214,8 @@ vi.mock("@repo/db", () => {
             reason: null,
             logExcerpt: null,
             containerId: null,
+            deploymentId: null,
+            trackedContainerId: null,
             serviceId: null,
             serverId: null,
             projectId: null,
@@ -2611,5 +2620,101 @@ describe("filtered run", () => {
     // would keep themselves alive and turning the health-watch job off would never
     // drain the streams.
     expect(h.renew).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("project attention from the existing watcher", () => {
+  it.each(["label", "name", "compose"] as const)(
+    "records the release and stored hint for a recreated container discovered by %s",
+    async (identity) => {
+      const { projectId, containerId } = seedComposeService();
+      const project = h.projects.find((row) => row.id === projectId)!;
+      const deploymentId = project.activeDeploymentId as string;
+      const original = h.containers.get(containerId)!;
+      const currentId = `recreated-${projectId}`;
+      const labels =
+        identity === "label"
+          ? original.labels
+          : identity === "compose"
+            ? {
+                "com.docker.compose.project": project.slug,
+                "com.docker.compose.service": "web",
+              }
+            : {};
+      if (identity === "compose")
+        h.deployments.find((row) => row.id === deploymentId)!.meta = {
+          serverId: "srv1",
+          runtimeMode: "docker",
+          adopt: true,
+        };
+      h.containers.delete(containerId);
+      h.containers.set(currentId, {
+        ...original,
+        id: currentId,
+        names: identity === "name" ? [`openship-${project.slug}-web`] : ["recreated"],
+        labels,
+      });
+      h.containerBox.set(currentId, "srv1");
+      setState(currentId, "restarting");
+      await confirm();
+      const [incident] = openFor(projectId);
+      expect(incident).toMatchObject({
+        containerId: currentId,
+        deploymentId,
+        trackedContainerId: containerId,
+      });
+      expect(h.serviceDeployments.get(deploymentId)![0]!.containerId).toBe(containerId);
+      const notifications = h.emit.mock.calls.length;
+
+      // Refresh an existing incident immediately on another recreation, then
+      // confirm a worse fault. Both writes must keep its identity binding current.
+      const nextId = `${currentId}-next`;
+      const next = { ...h.containers.get(currentId)!, id: nextId };
+      h.serviceDeployments.get(deploymentId)![0]!.containerId = currentId;
+      h.containers.delete(currentId);
+      h.containers.set(nextId, next);
+      h.containerBox.set(nextId, "srv1");
+      setState(nextId, "exited", { exitCode: 1 });
+      await tick();
+      expect(openFor(projectId)).toMatchObject([
+        {
+          id: incident!.id,
+          containerId: nextId,
+          deploymentId,
+          trackedContainerId: currentId,
+        },
+      ]);
+      expect(h.emit).toHaveBeenCalledTimes(notifications);
+      await tick();
+      expect(openFor(projectId)).toMatchObject([
+        {
+          id: incident!.id,
+          kind: "down",
+          containerId: nextId,
+          deploymentId,
+          trackedContainerId: currentId,
+        },
+      ]);
+      expect(h.serviceDeployments.get(deploymentId)![0]!.containerId).toBe(currentId);
+    },
+  );
+
+  it("shows a confirmed fault and clears after recovery without a second sampler or notification", async () => {
+    const { projectId, containerId } = seedApp();
+    const project = h.projects.find(row => row.id === projectId)!;
+    const { loadProjectRuntimeHealth } = await import("@repo/platform/engine/modules/projects/project-runtime-health");
+    setState(containerId, "exited", { exitCode: 1 });
+    await confirm();
+    expect(openFor(projectId)).toHaveLength(1);
+    const notified = h.emit.mock.calls.length;
+    expect((await loadProjectRuntimeHealth([project as never])).get(projectId)).toHaveLength(1);
+    expect((await loadProjectRuntimeHealth([project as never])).get(projectId)).toHaveLength(1);
+    expect(h.emit).toHaveBeenCalledTimes(notified);
+    setState(containerId, "running");
+    await tick();
+    expect(openFor(projectId)).toHaveLength(0);
+    expect((await loadProjectRuntimeHealth([project as never])).size).toBe(0);
+    expect(h.deployments.find(dep => dep.projectId === projectId)?.status).toBe("ready");
   });
 });

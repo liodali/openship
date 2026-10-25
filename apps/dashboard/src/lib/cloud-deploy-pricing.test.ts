@@ -1,10 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { ApiError } from "./api/client";
 import type { BillingState } from "./api/billing";
-import { cloudDeployRecovery, cloudDeployRestriction, cloudCapacityRestriction, cloudDeployFailure } from "./cloud-deploy-pricing";
+import { cloudDeployRecovery, cloudDeployRestriction, cloudCapacityRestriction, cloudDeployFailure, cloudDeployCapacityFailure } from "./cloud-deploy-pricing";
 import { monthlyCompute } from "../../test/helpers/monthly-billing";
 
 describe("Cloud deployment recovery", () => {
+  it("restores managed build-capacity refusal while keeping payment recovery separate", () => {
+    expect(cloudDeployCapacityFailure({ errorCode: "CLOUD_WORKSPACE_BUILD_CAPACITY", projectId: "project",
+      errorDetails: { workspaceId: "space" } })?.body).toMatchObject({ code: "CLOUD_WORKSPACE_BUILD_CAPACITY", workspaceId: "space" });
+    expect(cloudDeployCapacityFailure({ errorCode: "CLOUD_BILLING_BLOCKED", projectId: "project" })).toBeNull();
+  });
   it.each(["CLOUD_BILLING_BLOCKED", "PLAN_UPGRADE_REQUIRED"])("restores persisted %s failures for app and project deployments", (errorCode) => {
     expect(cloudDeployRestriction(cloudDeployFailure({ errorCode, errorDetails: { reason: "resource-tier" } })))
       .toEqual({ code: errorCode, reason: "resource-tier" });

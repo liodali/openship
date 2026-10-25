@@ -5,7 +5,7 @@ export { resolveProjectAuthority, type ProjectSource } from "@repo/platform/engi
  * selector lives in a body/query. Resource routes use the secure router's
  * shared gateway, so new project/server actions cannot omit forwarding. */
 import type { Context, Next } from "hono";
-import { CLOUD_UNREACHABLE_CODE } from "@repo/core";
+import { CLOUD_UNREACHABLE_CODE, type Capability } from "@repo/core";
 import { authorization } from "@repo/platform/engine/lib/authorization";
 import { env } from "@repo/platform/engine/config/index";
 import { getRequestContext } from "../request-context";
@@ -115,11 +115,11 @@ export async function maybeProxyCloudProject(
  * the SaaS when that project is cloud-owned; no-ops (runs locally) for org-wide
  * requests that carry no projectId. Mount after the permission middleware.
  */
-export async function cloudProjectProxyByQuery(c: Context, next: Next): Promise<Response | void> {
+export async function cloudProjectProxyByQuery(c: Context, next: Next, capability?: Capability): Promise<Response | void> {
   if (env.CLOUD_MODE) return next();
   const projectId = c.req.query("projectId");
   if (!projectId) return next(); // org-wide request — nothing project-specific to proxy
-  const context = await authorization.authorize(getRequestContext(c), { resourceType: "project", resourceId: projectId, action: "read" });
+  const context = await authorization.authorize(getRequestContext(c), { resourceType: "project", resourceId: projectId, action: "read", ...(capability && { capability }) });
   c.set("scopedOrganizationId", context.organizationId);
   c.set("ctx", { ...context, hono: c });
   const organizationId = context.organizationId;

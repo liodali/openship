@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CloudWorkspaceSummary } from "@repo/contracts";
+import { PRICING } from "@repo/core";
 
 vi.mock("../../src/lib/config", () => ({
   getApiUrl: () => "https://cloud.example.test",
@@ -56,14 +57,65 @@ describe("Cloud server and billing commands", () => {
     });
   });
 
-  it("continues to reject SSH-server registration on a Cloud control plane", async () => {
-    fetchStub = stubFetch(() => {
-      throw new Error("Must not register an SSH host on Cloud");
+  it("registers a customer-owned host through Cloud and surfaces its paid-access refusal", async () => {
+    fetchStub = stubFetch(() => ({
+      status: 402,
+      json: { error: "Choose a Manage plan", code: "MANAGEMENT_PLAN_REQUIRED" },
+    }));
+    const args = [
+      "add", "--host", "example.test", "--auth-method", "password", "--password", "test-password",
+    ];
+    const denied = await runCommand(serverCommand, args);
+    expect(denied.code).toBe(1);
+    expect(denied.err).toContain("Choose a Manage plan");
+    expect(fetchStub.calls[0]).toMatchObject({
+      method: "POST",
+      url: "https://cloud.example.test/api/system/servers",
     });
-    const result = await runCommand(serverCommand, ["add", "--host", "example.test"]);
-    expect(result.code).toBe(1);
-    expect(result.err).toContain("Self-hosted only");
-    expect(fetchStub.calls).toEqual([]);
+    fetchStub.restore();
+    const { projectCount: _count, hostChannel: _channel, ...created } = serverFixture("customer-owned");
+    fetchStub = stubFetch(() => ({ json: created }));
+    const connected = await runCommand(serverCommand, args);
+    expect(connected.code, connected.err).toBe(0);
+    expect(JSON.parse(connected.out).id).toBe("customer-owned");
+  });
+
+  it("reviews Manage quotes before applying and requires explicit cancellation consent", async () => {
+    fetchStub = stubFetch((req) => ({
+      json: {
+        data: req.url.endsWith("/checkout")
+          ? {
+              kind: "quote", quoteId: "quote-manage", monthlyCents: 800,
+              amountDueNow: 200, url: null, effectiveAt: null,
+            }
+          : {
+              pricing: PRICING.management, purchasesAvailable: true, active: true,
+              cloudIncluded: false, serverLimit: 3, connectedServers: 2,
+              pendingCheckout: false, subscription: null, change: null,
+            },
+      },
+    }));
+    const quote = await runCommand(billingCommand, [
+      "manage", "purchase", "--servers", "3", "--idempotency-key", "manage-purchase-fixture",
+    ]);
+    expect(quote.code, quote.err).toBe(0);
+    expect(JSON.parse(quote.out).quoteId).toBe("quote-manage");
+    expect(fetchStub.calls).toHaveLength(1);
+    expect(fetchStub.calls[0].body).toEqual({ servers: 3, idempotencyKey: "manage-purchase-fixture" });
+    const refused = await runCommand(billingCommand, ["manage", "cancel"]);
+    expect(refused.code).toBe(1);
+    expect(fetchStub.calls).toHaveLength(1);
+    const applied = await runCommand(billingCommand, ["manage", "apply", "quote-manage", "--yes"]);
+    expect(applied.code, applied.err).toBe(0);
+    expect(fetchStub.calls[1]).toMatchObject({
+      url: "https://cloud.example.test/api/billing/manage/change",
+      body: { quoteId: "quote-manage" },
+    });
+    const invalid = await runCommand(billingCommand, [
+      "manage", "purchase", "--servers", "1", "--idempotency-key", "manage-purchase-fixture",
+    ]);
+    expect(invalid.code).toBe(1);
+    expect(fetchStub.calls).toHaveLength(2);
   });
 
   it("keeps Cloud management inside the selected Openship API and its SDK", async () => {

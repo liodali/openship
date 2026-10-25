@@ -183,6 +183,7 @@ export interface PlanLimits {
  * already interpolated and locale-formatted) — the UI renders them verbatim.
  */
 export interface PlanDefinition {
+  availableForPurchase: boolean;
   id: PlanTierId;
   name: string;
   /**
@@ -324,6 +325,7 @@ export function resolvePlan(planId: PlanTierId, locale: PricingLocale = "en"): P
     });
   return {
     id: plan.id as PlanTierId,
+    availableForPurchase: plan.availableForPurchase,
     name: planName(plan.id, locale),
     description: planTagline(plan.id, locale),
     price: plan.price,

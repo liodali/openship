@@ -264,7 +264,7 @@ export const DeploymentCard: React.FC<DeploymentCardProps> = ({
           <span className="text-xs text-muted-foreground shrink-0">
             {formatDistanceToNow(new Date(deployment.createdAt), t.deployments.time)}
           </span>
-          {deployment.buildTime ? (
+          {deployment.buildTime !== null ? (
             <>
               <span className="text-muted-foreground/40">·</span>
               <span className="text-xs text-muted-foreground shrink-0 flex items-center gap-1">

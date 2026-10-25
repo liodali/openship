@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   assertBuildStorage,
+  buildKitCacheConfig,
   DOCKER_BUILD_STORAGE_COMMAND,
   ensureProjectBuildCache,
   managedBuildCaches,
@@ -177,6 +178,25 @@ fi
     expect(h.removed).toEqual([]);
   });
 
+  it("scales the automatic cache ceiling to a small host and leaves active state alone", async () => {
+    const h = fixture([volume("a"), volume("b"), volume("c")]);
+    const exec = h.exec.getMockImplementation()!;
+    h.exec.mockImplementation(command => command.includes("df -Pk")
+      ? Promise.resolve("26214400 18874368\n200000 100000\n") : exec(command));
+    h.docker.listContainers.mockResolvedValue([
+      { Mounts: [{ Name: projectBuildCacheVolume("c"), Source: "/cache/c" }] },
+    ]);
+    await pruneManagedBuildCaches(h.docker as never, h.executor, { now: 2000000200000 });
+    expect(h.removed).toEqual([]);
+    h.docker.listContainers.mockResolvedValue([]);
+    await pruneManagedBuildCaches(h.docker as never, h.executor, { now: 2000000200000 });
+    expect(h.removed).toEqual([projectBuildCacheVolume("a")]);
+    expect(buildKitCacheConfig({ totalBytes: 25 * GIB, freeBytes: 18 * GIB, freeInodes: 100 }))
+      .toContain(`maxUsedSpace = ${2.5 * GIB}`);
+    expect(buildKitCacheConfig({ totalBytes: 25 * GIB, freeBytes: 18 * GIB, freeInodes: 100 }))
+      .toContain('minFreeSpace = "20%"');
+  });
+
   it("protects attached state even when the host is over budget", async () => {
     const h = fixture();
     h.docker.listContainers.mockResolvedValue([
@@ -226,13 +246,56 @@ fi
     await pruneManagedBuildCaches(h.docker as never, h.executor, { projectId: "b" });
     expect(h.removed).toEqual([projectBuildCacheVolume("b")]);
     expect(h.exec.mock.calls.filter(([command]) => command.startsWith("du ")))
-      .toEqual([["du -sk -- '/cache/b'", { timeout: 15_000 }]]);
+      .toEqual([["du -sk -- '/cache/b'", { timeout: 120_000 }]]);
     h.docker.listContainers.mockResolvedValue([
       { Mounts: [{ Name: projectBuildCacheVolume("a"), Source: "/cache/a" }] },
     ]);
     await expect(
       pruneManagedBuildCaches(h.docker as never, h.executor, { projectId: "a" }),
     ).rejects.toMatchObject({ code: "BUILD_CACHE_IN_USE" });
+  });
+
+  it("retains a cache whose optional size scan times out without blocking healthy builds", async () => {
+    const h = fixture();
+    const exec = h.exec.getMockImplementation()!;
+    h.exec.mockImplementation(command => command.startsWith("du ") && command.includes("/cache/a")
+      ? Promise.reject(new DOMException("Cloud command timed out", "TimeoutError")) : exec(command));
+    const result = await pruneManagedBuildCaches(h.docker as never, h.executor, { keepBytes: GIB });
+    expect(result).toEqual({ cachesDeleted: [], spaceReclaimed: 0 });
+    expect(h.removed).toEqual([]);
+    expect(h.exec.mock.calls.some(([command]) => command.includes("df -Pk"))).toBe(true);
+  });
+
+  it("still refuses exhausted storage after a cache accounting timeout", async () => {
+    const h = fixture();
+    const storage = "104857600 0\n200000 0\n";
+    h.exec.mockImplementation(command => command.startsWith("du ")
+      ? Promise.reject(new DOMException("Cloud command timed out", "TimeoutError"))
+      : Promise.resolve(command.includes("df -Pk") ? storage : ""));
+    await pruneManagedBuildCaches(h.docker as never, h.executor);
+    expect(() => assertBuildStorage(parseBuildStorage(storage)))
+      .toThrow(expect.objectContaining({ code: "BUILD_STORAGE_LOW" }));
+    expect(h.removed).toEqual([]);
+  });
+
+  it.each([{ projectId: "a" }, { keepBytes: 0 }])("does not report explicit cleanup complete after timeout: %j", async options => {
+    const h = fixture([volume("a")]);
+    const timeout = new DOMException("Cloud command timed out", "TimeoutError");
+    h.exec.mockRejectedValue(timeout);
+    await expect(pruneManagedBuildCaches(h.docker as never, h.executor, options)).rejects.toBe(timeout);
+    expect(h.removed).toEqual([]);
+    expect(h.exec).toHaveBeenCalledWith("du -sk -- '/cache/a'", { timeout: 120_000 });
+  });
+
+  it.each([
+    new Error("permission denied"),
+    Object.assign(new Error("Command exit unconfirmed"), { code: "CLOUD_COMMAND_EXIT_UNCONFIRMED" }),
+    new DOMException("Cancelled by operator", "AbortError"),
+  ])("does not suppress unsafe or cancelled cache inspection: %s", async error => {
+    const h = fixture();
+    h.exec.mockRejectedValue(error);
+    await expect(pruneManagedBuildCaches(h.docker as never, h.executor)).rejects.toBe(error);
+    expect(h.removed).toEqual([]);
   });
 
   it("stops deletion when ownership changes between discovery and remove", async () => {

@@ -22,3 +22,7 @@ export function savedMetadata(
     openship_limits: JSON.stringify(savedLimits(tier)),
   };
 }
+
+// Last Hobby offer, captured before it was retired from new sales.
+import hobbyV11 from "../fixtures/cloud-hobby-v11.json";
+export const savedMonthlyHobby = (): OblienOffer => structuredClone(hobbyV11) as OblienOffer;

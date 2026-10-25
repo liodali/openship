@@ -58,6 +58,76 @@ describe("explicit monorepo creation through SDK/HTTP (#873)", () => {
     ).toEqual([]);
   });
 
+  it("rejects duplicate app identities before writing any project", async () => {
+    const { owner, targets } = await clients();
+    for (const [index, client] of targets.entries()) {
+      const input = {
+        name: `Duplicate mono ${index}`,
+        projectType: "monorepo" as const,
+        monorepoApps: [
+          { name: "web", rootDirectory: "apps/web" },
+          { name: "web", rootDirectory: "other/web" },
+        ],
+      };
+      await expect(client.projects.create(input)).rejects.toThrow(/unique name/);
+      await expect(client.projects.ensure(input)).rejects.toThrow(/unique name/);
+    }
+    expect(
+      await db.select().from(schema.project).where(eq(schema.project.organizationId, owner.orgId)),
+    ).toEqual([]);
+  });
+
+  it("round-trips selection and app-owned domains without matching on a shared port", async () => {
+    const { targets } = await clients();
+    for (const [index, client] of targets.entries()) {
+      const apps = ["api", "admin"].map((name) => ({
+        name,
+        rootDirectory: `apps/${name}`,
+        framework: "node",
+        port: 3000,
+        enabled: name === "api",
+        exposed: false,
+        startCommand: "",
+        environment: { MODE: "production" },
+        publicEndpoints: [
+          { port: 3000, customDomain: `${name}.example.com`, domainType: "custom" as const },
+        ],
+      }));
+      const created = await client.projects.create({
+        name: `Selected mono ${index}`,
+        projectType: "monorepo",
+        publicEndpoints: [],
+        monorepoApps: apps,
+      });
+      await client.projects.ensure({
+        projectId: created.id,
+        name: `Selected mono ${index}`,
+        projectType: "monorepo",
+        monorepoApps: apps,
+      });
+      const rows = await repos.service.listByProject(created.id);
+      expect(
+        rows.map((row) => ({
+          name: row.name,
+          enabled: row.enabled,
+          exposed: row.exposed,
+          startCommand: row.startCommand,
+          environment: row.environment,
+          publicEndpoints: row.publicEndpoints,
+        })),
+      ).toEqual(
+        apps.map(({ name, enabled, exposed, startCommand, environment, publicEndpoints }) => ({
+          name,
+          enabled,
+          exposed,
+          startCommand,
+          environment,
+          publicEndpoints,
+        })),
+      );
+    }
+  });
+
   it("retains supported multi-app creation when the detected app metadata is supplied", async () => {
     const { targets } = await clients();
     for (const [index, client] of targets.entries()) {

@@ -23,7 +23,7 @@ vi.mock("@repo/db", () => ({
 }));
 vi.mock("../../../src/lib/ws", () => ({ upgradeWebSocket: (fn: unknown) => fn }));
 vi.mock("@repo/platform/engine/lib/auth", () => ({ auth: { api: { getSession: vi.fn() } } }));
-vi.mock("@repo/platform/engine/lib/authorization", () => ({ checkPermission: async () => true }));
+vi.mock("@repo/platform/engine/lib/authorization", () => ({ authorization: { checkPermissionOnResource: async () => true } }));
 vi.mock("@repo/platform/engine/lib/deployment-runtime", () => ({
   resolveDeploymentRuntime: h.resolve,
   disposeRuntime: h.dispose,

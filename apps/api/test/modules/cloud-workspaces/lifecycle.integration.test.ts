@@ -1,3 +1,4 @@
+import { savedMonthlyHobby } from "../../helpers/saved-cloud-offer";
 import capacityCatalog from "../../fixtures/oblien-capacity-catalog.json";
 import { monthlyCloudBilling } from "../../helpers/monthly-cloud-offer";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
@@ -158,8 +159,8 @@ function subscribe(tier: "hobby" | "starter" = "hobby") {
     periodEnd: "2026-11-01T00:00:00Z",
     cancelAtPeriodEnd: false,
     canceledAt: null,
-    offer: subscriptionOffer(tier, "monthly"),
-    metadata: subscriptionMetadata(tier, owner.orgId, namespace),
+    offer: tier === "hobby" ? savedMonthlyHobby() : { ...subscriptionOffer(tier, "monthly"), reference: "openship:starter:v12", unitAmount: 2000 },
+    metadata: { ...subscriptionMetadata(tier, owner.orgId, namespace), openship_offer_version: tier === "hobby" ? "11" : "12" },
   });
 }
 async function addProject(name: string) {
@@ -894,7 +895,7 @@ describe("workspace payment and deletion races", () => {
       namespace: workspace.namespace!,
       kind: "subscription" as const,
       billingInterval: "monthly" as const,
-      offer: subscriptionOffer("hobby", "monthly"),
+      offer: savedMonthlyHobby(),
       metadata: subscriptionMetadata("hobby", owner.orgId, workspace.namespace!),
       successUrl: "https://app.openship.io/billing",
       cancelUrl: "https://app.openship.io/billing",

@@ -8,10 +8,10 @@ import { billingApi } from "@/lib/api/billing";
 import { getApiErrorMessage } from "@/lib/api/client";
 
 /** Read-only quote, shared by monthly checkout and prepaid price comparisons. */
-export function useCustomPlanQuote(resources: CustomServerResources | null, revision = 0) {
+export function useCustomPlanQuote(resources: CustomServerResources | null, revision = 0, interval: "monthly" | "annual" = "monthly") {
   const { t } = useI18n();
   const resourceKey = JSON.stringify(resources);
-  const requestKey = `${resourceKey}:${revision}`;
+  const requestKey = `${resourceKey}:${interval}:${revision}`;
   const [result, setResult] = useState<{ key: string; quote: BillingCustomQuote } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
@@ -24,7 +24,7 @@ export function useCustomPlanQuote(resources: CustomServerResources | null, revi
     if (resourceKey === "null") return;
     const timer = setTimeout(() => {
       void billingApi
-        .quoteCustomPlan(JSON.parse(resourceKey) as CustomServerResources)
+        .quoteCustomPlan(JSON.parse(resourceKey) as CustomServerResources, interval)
         .then((quote) => {
           if (!disposed) setResult({ key: requestKey, quote });
         })
@@ -39,7 +39,7 @@ export function useCustomPlanQuote(resources: CustomServerResources | null, revi
       disposed = true;
       clearTimeout(timer);
     };
-  }, [resourceKey, requestKey, attempt, t.billing.custom.quoteError]);
+  }, [resourceKey, requestKey, interval, attempt, t.billing.custom.quoteError]);
 
   // Never expose a stale price while another resource selection is being quoted.
   const quote = resources && !pending && !error && result?.key === requestKey ? result.quote : null;

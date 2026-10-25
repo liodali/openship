@@ -81,9 +81,9 @@ export function useRollbackSettings(projectId?: string | null, enabled = true) {
     savingWindow: saving === "window",
     togglingStrategy: saving === "strategy",
     reload,
-    changeWindow: async (value: number) => {
-      const next = normalizeRollbackWindow(value);
-      if (capacity && next !== capacity.window) await save("window", { rollbackWindow: next });
+    changeWindow: async (value: number | null) => {
+      const next = value === null ? null : normalizeRollbackWindow(value);
+      if (capacity && (next === null ? capacity.explicit !== null : next !== capacity.window || capacity.explicit === null)) await save("window", { rollbackWindow: next });
     },
     toggleStrategy: () => save("strategy", {
       defaultRollbackStrategy: capacity?.strategy === "snapshot" ? "git" : "snapshot",

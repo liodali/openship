@@ -1,5 +1,7 @@
 "use client";
 
+import { serviceRepositorySource } from "@/app/(dashboard)/projects/[id]/components/services/repository-source";
+
 import { Icon as UiIcon } from "@repo/ui/icons";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -33,6 +35,7 @@ import { randomUUID } from "@/lib/random-uuid";
 import {
   buildProjectTopology,
   addClusterDatabases,
+  expandDatabaseReplicas,
   addClusterVolumes,
   volumeNodeId,
   buildDatabaseReplicaTopology,
@@ -58,6 +61,7 @@ import {
 } from "./changes";
 import { TopologyCanvas, TopologyResourceIcon, type TopologySelection } from "./TopologyCanvas";
 import { TopologySkeleton } from "./TopologySkeleton";
+import { TopologyResourcePicker } from "./TopologyResourcePicker";
 import { TopologyInspector } from "./TopologyInspector";
 import { TopologyReview } from "./TopologyReview";
 import { TopologyPlacement } from "./TopologyPlacement";
@@ -110,6 +114,7 @@ export default function ProjectTopology({
     "overview",
   );
   const [instanceServiceId, setInstanceServiceId] = useState<string | null>(null);
+  const [showReplicas, setShowReplicas] = useState(true);
   const [adding, setAdding] = useState(false);
   const [addKind, setAddKind] = useState<"database" | "volume" | "service" | null>(null);
   const [reviewing, setReviewing] = useState(false);
@@ -230,13 +235,17 @@ export default function ProjectTopology({
     volumes.volumes,
   ]);
 
+  const overviewGraph = useMemo(
+    () => expandDatabaseReplicas(fullGraph, project),
+    [fullGraph, project],
+  );
   const instanceService = fullGraph.nodes.find(
     (node) =>
       (node.serviceId === instanceServiceId && node.kind === "service") ||
       (node.id === instanceServiceId && (node.kind === "application" || node.kind === "database")),
   );
   const graph = useMemo<ProjectTopologyGraph>(() => {
-    if (!instanceServiceId) return fullGraph;
+    if (!instanceServiceId) return showReplicas ? overviewGraph : fullGraph;
     if (instanceService?.database)
       return buildDatabaseReplicaTopology(project, instanceService.database);
     if (instanceService?.replicaStatus)
@@ -253,7 +262,7 @@ export default function ProjectTopology({
       ],
       edges: [],
     };
-  }, [fullGraph, instanceService, instanceServiceId, project]);
+  }, [fullGraph, overviewGraph, instanceService, instanceServiceId, project, showReplicas]);
   const resource =
     selection?.kind === "node" ? graph.nodes.find((node) => node.id === selection.id) : undefined;
   const relation =
@@ -562,7 +571,7 @@ export default function ProjectTopology({
   };
 
   const stageResources = (
-    values: { cpuCores: number; memoryMb: number },
+    values: { cpuCores: number; memoryMb: number; swapDisabled?: boolean },
     before: ProjectResources,
     service?: Service,
   ) => {
@@ -581,7 +590,7 @@ export default function ProjectTopology({
             kind: "resources",
             title: "Resize environment defaults",
             before: previous?.kind === "resources" ? previous.before : before.production,
-            values,
+            values: { cpuCores: values.cpuCores, memoryMb: values.memoryMb },
           },
         ];
       });
@@ -733,18 +742,35 @@ export default function ProjectTopology({
                 <UiIcon name="refresh" className={runtime.loading ? "animate-spin" : ""} />
               </Button>
               {!instanceServiceId && (
-                <Button
-                  className="topology-add-service h-8 px-3 text-xs"
-                  disabled={busy || hasSavedChanges || !!servicesData.error}
-                  onClick={() => {
-                    setSelection(null);
-                    setAddKind(null);
-                    setAdding(true);
-                  }}
-                >
-                  <UiIcon name="plus" />
-                  {resourcePicker ? "Add resource" : "Add service"}
-                </Button>
+                <>
+                  {overviewGraph.nodes.some((node) => node.replicaGroup) && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      aria-pressed={showReplicas}
+                      aria-label="Show database replicas"
+                      onClick={() => {
+                        setSelection(null);
+                        setShowReplicas((current) => !current);
+                      }}
+                    >
+                      <UiIcon name="layers" />
+                      {showReplicas ? "Group replicas" : "Show replicas"}
+                    </Button>
+                  )}
+                  <Button
+                    className="topology-add-service h-8 px-3 text-xs"
+                    disabled={busy || hasSavedChanges || !!servicesData.error}
+                    onClick={() => {
+                      setSelection(null);
+                      setAddKind(null);
+                      setAdding(true);
+                    }}
+                  >
+                    <UiIcon name="plus" />
+                    {resourcePicker ? "Add resource" : "Add service"}
+                  </Button>
+                </>
               )}
               <DropdownMenu
                 actions={topologyActions}
@@ -788,8 +814,8 @@ export default function ProjectTopology({
           <div className="absolute inset-0">
             {runtime.ready ? (
               <TopologyCanvas
-                key={instanceServiceId ?? "overview"}
-                layoutKey={`openship:topology-layout:v1:${id}:${instanceServiceId ?? "overview"}`}
+                key={instanceServiceId ?? (showReplicas ? "overview-replicas" : "overview")}
+                layoutKey={`openship:topology-layout:v1:${id}:${instanceServiceId ?? (showReplicas ? "overview-replicas" : "overview")}`}
                 graph={graph}
                 selection={selection}
                 fullscreen={fullscreen}
@@ -984,6 +1010,7 @@ export default function ProjectTopology({
           )}
           {adding && resourcePicker && addKind !== "service" && (
             <ScaleDetailsPanel
+              fitContent={addKind === null}
               title={
                 addKind === "volume"
                   ? "Shared files"
@@ -999,64 +1026,11 @@ export default function ProjectTopology({
               onClose={() => setAdding(false)}
             >
               {addKind === null ? (
-                <div className="space-y-3">
-                  <p className="mb-4 text-sm text-muted-foreground">
-                    Add what your application needs. OpenShip handles the setup across your servers.
-                  </p>
-                  {[
-                    ...(!clusterTarget
-                      ? [
-                          {
-                            kind: "service" as const,
-                            title: "Service",
-                            description: "Add a service on this application's current server.",
-                            icon: "server" as const,
-                            color: "text-success bg-success/10",
-                          },
-                        ]
-                      : []),
-                    {
-                      kind: "database" as const,
-                      title: "Database on a cluster",
-                      description:
-                        "PostgreSQL or Redis, with replication, backups and an option to import your data.",
-                      icon: "database" as const,
-                      color: "text-primary bg-primary/10",
-                    },
-                    ...(clusterTarget
-                      ? [
-                          {
-                            kind: "volume" as const,
-                            title: "Shared files",
-                            description:
-                              "Uploads and files available to every application instance.",
-                            icon: "hard-drive" as const,
-                            color: "text-info bg-info/10",
-                          },
-                        ]
-                      : []),
-                  ].map((item) => (
-                    <button
-                      key={item.kind}
-                      type="button"
-                      className="flex w-full items-center gap-3 rounded-xl bg-muted/30 p-4 text-start transition-colors hover:bg-muted/50"
-                      onClick={() => setAddKind(item.kind)}
-                    >
-                      <span
-                        className={`grid size-10 shrink-0 place-items-center rounded-xl ${item.color}`}
-                      >
-                        <UiIcon name={item.icon} className="size-5" />
-                      </span>
-                      <span className="min-w-0 flex-1">
-                        <span className="block text-sm font-medium">{item.title}</span>
-                        <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">
-                          {item.description}
-                        </span>
-                      </span>
-                      <UiIcon name="chevron-right" className="size-4 text-muted-foreground" />
-                    </button>
-                  ))}
-                </div>
+                <TopologyResourcePicker
+                  clusterTarget={clusterTarget}
+                  onSelect={setAddKind}
+                  onClose={() => setAdding(false)}
+                />
               ) : addKind === "volume" ? (
                 <ClusterVolumePanel
                   projectId={id}
@@ -1093,6 +1067,7 @@ export default function ProjectTopology({
       <AddServiceModal
         open={adding && (!resourcePicker || addKind === "service")}
         projectId={id}
+        repository={serviceRepositorySource(projectData)}
         projectName={project.name}
         isCloudProject={project.deployTarget === "cloud"}
         onClose={() => setAdding(false)}

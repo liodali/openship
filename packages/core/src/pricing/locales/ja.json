@@ -54,7 +54,7 @@
     "selfHostedServices": "マネージドサービスはすべて利用可能 — Postgres、Redis、メール",
     "selfHostedClients": "CLI、Web、デスクトップ — バックエンドは一つ",
     "selfHostedFreeSubdomains": "Openship Cloud に接続すると、無料の {freeDomainSuffix} サブドメインが {freeSubdomains} 個",
-    "monthlyCoverage": "支払い済みの月はCPU・RAM・ストレージを利用可能",
+    "monthlyCoverage": "支払い済みの期間はCPU・RAM・ストレージを利用可能",
     "namespaceCapacity": "合計: {namespaceCpu} vCPU、RAM {namespaceRamGb} GB、ディスク {namespaceDiskGb} GB"
   },
   "selfHosted": {

@@ -9,17 +9,21 @@ const {
   resolveServerGitCredential,
   getLocalGhToken,
   probeServerGitAccess,
+  canResolveTokenFor,
+  probeAnonymousRepoVisibility,
 } = vi.hoisted(() => ({
   tokenFor: vi.fn(),
   requireTokenFor: vi.fn(),
+  canResolveTokenFor: vi.fn(),
+  probeAnonymousRepoVisibility: vi.fn(),
   isPublicRepo: vi.fn(),
   resolveServerGitCredential: vi.fn(),
   getLocalGhToken: vi.fn(),
   probeServerGitAccess: vi.fn(),
 }));
 
-vi.mock("@repo/platform/engine/modules/github/github.token", () => ({ tokenFor, requireTokenFor }));
-vi.mock("@repo/platform/engine/modules/github/github.http", () => ({ isPublicRepo }));
+vi.mock("@repo/platform/engine/modules/github/github.token", () => ({ tokenFor, requireTokenFor, canResolveTokenFor }));
+vi.mock("@repo/platform/engine/modules/github/github.http", () => ({ isPublicRepo, probeAnonymousRepoVisibility }));
 vi.mock("@repo/platform/engine/modules/github/server-github.service", () => ({ resolveServerGitCredential }));
 vi.mock("@repo/platform/engine/modules/github/github.local-auth", () => ({
   getLocalGhToken,
@@ -42,6 +46,10 @@ beforeEach(() => {
   resolveServerGitCredential.mockResolvedValue(null);
   probeServerGitAccess.mockResolvedValue(null);
   requireTokenFor.mockRejectedValue(new Error("GITHUB_REMOTE_TOKEN_REQUIRED"));
+  canResolveTokenFor.mockResolvedValue(null);
+  // Visibility unknown keeps upstream's "proceed anonymously" behavior for the
+  // precedence tests; the fail-loudly path is pinned in clone-auth-submodules.
+  probeAnonymousRepoVisibility.mockResolvedValue("unknown");
 });
 
 describe("resolveBuildGitToken — local build", () => {

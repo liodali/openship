@@ -1,5 +1,10 @@
 import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
-import { AppError, NotFoundError, type ComputeClusterConfig } from "@repo/core";
+import {
+  AppError,
+  NotFoundError,
+  type ComputeClusterConfig,
+  type ClusterRuntimeHost,
+} from "@repo/core";
 import type { Database, DatabaseTransaction } from "../client";
 import { hashStringToInt } from "../advisory-lock-factory";
 import {
@@ -12,6 +17,8 @@ import {
   serverNetworkAttachment,
   managedNetworkOperation,
   servers,
+  project,
+  deployment,
 } from "../schema";
 
 const conflict = (message: string) => new AppError(message, 409, "CLUSTER_CONFLICT");
@@ -84,7 +91,11 @@ export function createComputeClusterRepo(db: Database) {
     const [row] = await tx
       .select({
         cluster: computeCluster,
-        scaling: { status: clusterRuntime.status, verifiedAt: clusterRuntime.verifiedAt },
+        scaling: {
+          provider: clusterRuntime.provider,
+          status: clusterRuntime.status,
+          verifiedAt: clusterRuntime.verifiedAt,
+        },
       })
       .from(computeCluster)
       .leftJoin(
@@ -188,6 +199,94 @@ export function createComputeClusterRepo(db: Database) {
     );
   }
   return {
+    /** Register a verified, externally managed scheduler. No host/network mutation. */
+    async connectSwarm(
+      org: string,
+      input: {
+        name: string;
+        requestId: string;
+        inputHash: string;
+        clusterUid: string;
+        manager: ClusterRuntimeHost;
+      },
+    ) {
+      return db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(${hashStringToInt(`compute-cluster:${org}:${input.requestId}`)})`,
+        );
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(${hashStringToInt(`swarm-cluster:${org}:${input.clusterUid}`)})`,
+        );
+        const [prior] = await tx
+          .select()
+          .from(computeCluster)
+          .where(
+            and(
+              eq(computeCluster.organizationId, org),
+              eq(computeCluster.requestId, input.requestId),
+            ),
+          );
+        if (prior) {
+          if (prior.inputHash !== input.inputHash)
+            throw conflict("This request was already used for different cluster settings.");
+          return read(tx, org, prior.id);
+        }
+        const [server] = await tx
+          .select()
+          .from(servers)
+          .where(and(eq(servers.id, input.manager.serverId), eq(servers.organizationId, org)))
+          .for("update");
+        if (!server) throw new NotFoundError("Server");
+        const [member] = await tx
+          .select()
+          .from(computeClusterMember)
+          .where(eq(computeClusterMember.serverId, server.id));
+        const [registered] = await tx
+          .select()
+          .from(clusterRuntime)
+          .where(
+            and(
+              eq(clusterRuntime.organizationId, org),
+              eq(clusterRuntime.provider, "swarm"),
+              sql`${clusterRuntime.plan}->>'clusterUid' = ${input.clusterUid}`,
+            ),
+          );
+        if (member || registered)
+          throw conflict("This server or Swarm is already connected to a compute cluster.");
+        const [created] = await tx
+          .insert(computeCluster)
+          .values({
+            organizationId: org,
+            name: input.name,
+            networkId: null,
+            requestId: input.requestId,
+            inputHash: input.inputHash,
+          })
+          .returning();
+        await tx
+          .insert(computeClusterMember)
+          .values({ clusterId: created!.id, networkId: null, serverId: server.id });
+        await tx.insert(clusterRuntime).values({
+          clusterId: created!.id,
+          organizationId: org,
+          clusterRevision: 1,
+          requestId: input.requestId,
+          provider: "swarm",
+          status: "ready",
+          verifiedAt: new Date(),
+          plan: {
+            networkId: null,
+            networkRevision: null,
+            version: null,
+            podCidr: null,
+            serviceCidr: null,
+            clusterUid: input.clusterUid,
+            hosts: [input.manager],
+          },
+        });
+        return read(tx, org, created!.id);
+      });
+    },
     /** Only associations of the authorized server; never exposes other network members. */
     async forServer(org: string, serverId: string) {
       return db.transaction(async (tx) => {
@@ -277,6 +376,10 @@ export function createComputeClusterRepo(db: Database) {
           .where(owned(org, id))
           .for("update");
         if (!current) throw new NotFoundError("Cluster", id);
+        if (!current.networkId)
+          throw conflict(
+            "This cluster is managed by Docker Swarm. Its membership and network must be changed on its manager.",
+          );
         if (current.revision !== revision)
           throw conflict("The cluster changed. Reload it before continuing.");
         const [runtime] = await tx
@@ -328,7 +431,21 @@ export function createComputeClusterRepo(db: Database) {
           .select()
           .from(clusterRuntime)
           .where(eq(clusterRuntime.clusterId, id));
-        if (runtime && runtime.status !== "removed")
+        if (runtime?.provider === "swarm") {
+          const [bound] = await tx
+            .select({ id: project.id })
+            .from(project)
+            .where(eq(project.clusterId, id));
+          const [release] = await tx
+            .select({ id: deployment.id })
+            .from(deployment)
+            .where(sql`${deployment.meta}->>'clusterRuntimeId' = ${runtime.id}`);
+          if (bound || release)
+            throw conflict(
+              "Projects or retained releases still use this Swarm connection. Remove those projects before disconnecting it.",
+            );
+        }
+        if (runtime && runtime.provider !== "swarm" && runtime.status !== "removed")
           throw new AppError(
             "Remove the cluster runtime first so OpenShip can clean up its installation on every server.",
             409,

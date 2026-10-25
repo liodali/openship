@@ -7,8 +7,9 @@
  */
 
 import { PRICING } from "@repo/core";
-import type { BuildStrategy, ProxySettings, BuildStep, LogEntry } from "@repo/core";
-import type { Readable, Duplex } from "node:stream";
+import type { BaseImageReceipt, BuildStrategy, ProxySettings, BuildStep, LogEntry } from "@repo/core";
+import type { Readable, Writable, Duplex } from "node:stream";
+import type { RouteProtection } from "./infra/route-protection";
 export type { BuildStrategy } from "@repo/core";
 
 /**
@@ -35,6 +36,9 @@ export interface ResourceConfig {
   memoryMb: number;
   /** Writable disk in megabytes */
   diskMb: number;
+  /** Docker-only opt-in: run the container with no swap (MemorySwap = Memory).
+   *  Requires a positive `memoryMb`. */
+  swapDisabled?: boolean;
 }
 
 /** CLOUD-ONLY production default (the metered free tier). Deliberately small: a
@@ -128,6 +132,9 @@ export interface BuildConfig {
   /** Internal: cache mounts are enabled only after the runtime confirms a
    * compatible BuildKit path. False preserves legacy/capped Engine builds. */
   buildCache?: boolean;
+  /** Internal deployment intent: refresh Dockerfile base images from their
+   * registries before rebuilding. Normal builds preserve local-only bases. */
+  refreshBaseImages?: boolean;
   /** Shell command to install dependencies */
   installCommand: string;
   /**
@@ -220,6 +227,8 @@ export interface BuildConfig {
   resources: ResourceConfig;
   /** Ephemeral token for cloning private repos - never persisted */
   gitToken?: string;
+  /** Server-authorized expanded App repository grant, never persisted. */
+  gitTokenRepositories?: string[];
   /**
    * Desktop-only: absolute path to a git credential-helper script on the
    * REMOTE build host (written by the deploy git-credential relay). When set,
@@ -400,6 +409,8 @@ export interface DeployConfig {
    * O(full_size + small_delta × N). Docker/Cloud ignore the field.
    */
   previousDeploymentId?: string;
+  /** Exact outgoing container on this target, for retaining image-declared data. */
+  previousContainerId?: string;
   /**
    * Adopt an ALREADY-RUNNING process instead of starting one. When true, a
    * runtime that supports adoption (currently Bare) skips build promotion and
@@ -428,6 +439,9 @@ export interface BuildResult {
   artifactOwned?: boolean;
   /** Cache mounts proven by the successfully built generated image. */
   managedCacheTargets?: string[];
+  /** Registry bases pinned into the Dockerfile used by this successful build.
+   * Absent means the build's complete base-image identity is unknown. */
+  baseImages?: BaseImageReceipt[];
   durationMs?: number;
   /** Human-readable error description when status is "failed" */
   errorMessage?: string;
@@ -494,7 +508,7 @@ export interface ContainerInfo {
   usage?: ResourceUsage;
   /** Applied limits, independent of usage or the next deployment's settings.
    * Zero means unlimited; undefined means the runtime could not report them. */
-  resources?: { cpuCores: number; memoryMb: number };
+  resources?: { cpuCores: number; memoryMb: number; swapDisabled?: boolean };
 }
 
 export interface ResourceUsage {
@@ -582,6 +596,8 @@ export interface RouteHostRedirect {
 }
 
 interface BaseRouteConfig {
+  /** Private edge material. null explicitly unlocks; omission preserves an existing lock. */
+  protection?: RouteProtection | null;
   /** External domain (e.g. "my-app.example.com") */
   domain: string;
   /** Whether TLS is enabled */
@@ -1053,11 +1069,11 @@ export interface ShellOptions {
  */
 export interface ShellSession {
   /** Writable stream for keystrokes / commands. */
-  stdin: import("node:stream").Writable;
+  stdin: Writable;
   /** Readable byte stream of shell stdout (already interleaved with stderr by the PTY). */
-  stdout: import("node:stream").Readable;
+  stdout: Readable;
   /** Readable byte stream of stderr (typically empty when a PTY is allocated). */
-  stderr: import("node:stream").Readable;
+  stderr: Readable;
   /** Resize the remote PTY window. Safe to call any number of times. */
   setWindow(cols: number, rows: number): void;
   /** Close the session. Best-effort: the underlying channel may already be gone. */

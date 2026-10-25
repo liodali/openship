@@ -4,6 +4,7 @@ import {
   setBackupCredentialSecret,
   setDefaultEdgeImage,
   setDefaultMailImage,
+  setDefaultBuildKitImage,
   setManagedImagesFromSource,
 } from "@repo/adapters";
 import { isDevWatchReload } from "@repo/db";
@@ -19,6 +20,8 @@ import { getAuthMode } from "@repo/platform/engine/lib/auth-mode";
 import { edgeBuildSpec, pinnedEdgeImage } from "@repo/platform/engine/lib/edge-image";
 import { reportHostChannelAtBoot } from "./lib/host-channel-banner";
 import { mailBuildSpec, pinnedMailImage } from "@repo/platform/engine/lib/mail-image";
+import { buildKitBuildSpec, pinnedBuildKitImage } from "@repo/platform/engine/lib/buildkit-image";
+import { deliverManagedImage } from "@repo/platform/engine/lib/deliver-managed-image";
 import { shutdownJobRunner } from "@repo/platform/engine/lib/job-runner/index";
 import { enforceRouteScanAtBoot } from "./lib/route-scanner";
 import { attachTunnelingLifecycle, type TunnelingLifecycle } from "./modules/tunneling";
@@ -53,6 +56,8 @@ setDefaultEdgeImage(pinnedEdgeImage());
 // ref, so declare it once here so a mail install that passes no image still runs
 // the engine matching this build (dev-suffixed the same way).
 setDefaultMailImage(pinnedMailImage());
+setDefaultBuildKitImage(pinnedBuildKitImage, (executor, image, onLog) =>
+  deliverManagedImage({ kind: "buildkit", image, targetExecutor: executor, onLog }));
 
 // Tell the adapters, PER COMPONENT, whether its managed image is FROM SOURCE (a dev
 // checkout with a build spec) vs a pulled published tag (prod). Same signal that
@@ -63,6 +68,7 @@ setDefaultMailImage(pinnedMailImage());
 // other's published tag. No build spec (prod / compiled) ⇒ false ⇒ pulls as before.
 setManagedImagesFromSource("edge", Boolean(edgeBuildSpec()));
 setManagedImagesFromSource("mail", Boolean(mailBuildSpec()));
+setManagedImagesFromSource("buildkit", Boolean(buildKitBuildSpec()));
 
 // Refuse to start if any registered route is mis-tagged or any
 // mutation route was mounted on a raw Hono instance (bypassing

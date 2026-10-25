@@ -22,6 +22,7 @@ import { portOccupantDetails, probeListeningPort } from "../port-conflict";
 import { managedDeploymentUnitName } from "../../system/port-owner";
 import { execReliable } from "../../system/remote-journal";
 import { DeployError } from "@repo/core";
+import { ensureOwnedDir } from "../../system/elevated-executor";
 
 /**
  * Escape an env value for a double-quoted systemd `Environment=` assignment.
@@ -75,7 +76,6 @@ export class SystemdSupervisor implements ProcessSupervisor {
   }
 
   private async writeArtifactPath(id: string, path: string): Promise<void> {
-    await this.artifactExecutor.mkdir(`${this.workDir}/.artifacts`);
     await this.artifactExecutor.writeFile(this.artifactFile(id), path);
   }
 
@@ -133,6 +133,9 @@ WantedBy=multi-user.target
   // ── Lifecycle ────────────────────────────────────────────────────────
 
   async deploy(opts: SupervisorDeployOpts): Promise<void> {
+    // Metadata uses the deployment login, even when systemctl uses sudo.
+    // Check its directory before activating a process we could not track.
+    await ensureOwnedDir(this.artifactExecutor, `${this.workDir}/.artifacts`);
     const unitContent = this.buildUnitFile(opts);
     const unitPath = this.unitPath(opts.deploymentId);
     const unitName = this.unitName(opts.deploymentId);

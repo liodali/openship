@@ -3,7 +3,7 @@
   "currency": "usd",
   "freeDomainSuffix": ".opsh.io",
   "annual": {
-    "enabled": false,
+    "enabled": true,
     "monthsFree": 2
   },
   "oblien": {
@@ -33,9 +33,14 @@
       }
     },
     "extraMonthlyCents": {
-      "cpuCore": 500,
-      "memoryGb": 250,
-      "diskGb": 10
+      "cpuCore": 600,
+      "memoryGb": 300,
+      "diskGb": 12
+    },
+    "extraAnnualCents": {
+      "cpuCore": 6000,
+      "memoryGb": 3000,
+      "diskGb": 120
     }
   },
   "payg": {
@@ -138,8 +143,8 @@
     {
       "id": "hobby",
       "price": {
-        "monthly": 500,
-        "annual": null
+        "monthly": 1200,
+        "annual": 12000
       },
       "stripePriceEnv": {
         "monthly": "STRIPE_PRICE_HOBBY_MONTHLY",
@@ -147,7 +152,7 @@
       },
       "popular": false,
       "contactSales": null,
-      "support": "community",
+      "support": "email",
       "inherits": "free",
       "limits": {
         "workloads": [
@@ -161,7 +166,7 @@
         "maxResourceTier": "low",
         "maxServiceResources": {
           "cpuCores": 1,
-          "memoryMb": 2048
+          "memoryMb": 4096
         },
         "computeMinutesPerMonth": null,
         "buildMinutesPerMonth": null,
@@ -179,7 +184,7 @@
         "runningServices",
         "power",
         "projects",
-        "communitySupport"
+        "emailSupport"
       ],
       "billing": {
         "creditsPerCycle": 0,
@@ -190,20 +195,21 @@
         "resourceLimits": {
           "max_workspaces": 1,
           "max_vcpus": 1,
-          "max_ram_mb": 2048,
-          "max_disk_gb": 40,
+          "max_ram_mb": 4096,
+          "max_disk_gb": 50,
           "max_total_vcpus": 1,
-          "max_total_ram_mb": 2048,
-          "max_total_disk_gb": 40
+          "max_total_ram_mb": 4096,
+          "max_total_disk_gb": 50
         },
         "mode": "monthly"
-      }
+      },
+      "availableForPurchase": true
     },
     {
       "id": "starter",
       "price": {
-        "monthly": 2000,
-        "annual": null
+        "monthly": 2400,
+        "annual": 24000
       },
       "stripePriceEnv": {
         "monthly": "STRIPE_PRICE_STARTER_MONTHLY",
@@ -265,8 +271,8 @@
     {
       "id": "pro",
       "price": {
-        "monthly": 3900,
-        "annual": null
+        "monthly": 4700,
+        "annual": 46800
       },
       "stripePriceEnv": {
         "monthly": "STRIPE_PRICE_PRO_MONTHLY",
@@ -328,8 +334,8 @@
     {
       "id": "team",
       "price": {
-        "monthly": 9900,
-        "annual": null
+        "monthly": 11900,
+        "annual": 118800
       },
       "stripePriceEnv": {
         "monthly": "STRIPE_PRICE_TEAM_MONTHLY",
@@ -347,7 +353,7 @@
         ],
         "services": true,
         "runningServices": 100,
-        "maxProjects": 100,
+        "maxProjects": 50,
         "maxResourceTier": "xlarge",
         "maxServiceResources": {
           "cpuCores": 8,
@@ -518,5 +524,15 @@
       "selfHostedFreeSubdomains",
       "communitySupport"
     ]
+  },
+  "management": {
+    "version": 2,
+    "monthlyCents": 500,
+    "includedServers": 2,
+    "extraServerMonthlyCents": 300,
+    "maxServers": 100,
+    "includedWithCloud": true,
+    "dedicatedContact": "sales@openship.io",
+    "priorityMonthlyCents": 2000
   }
 }

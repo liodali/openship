@@ -171,6 +171,12 @@ export async function handleOblienWebhook(
     const owner = await findBillingOwnerByNamespace(namespace);
     if (!owner) return { status: 200, payload: { received: true } };
     const organizationId = orgId = owner.organizationId;
+    if (owner.kind === "management") {
+      const { syncManagementBilling } = await import("./management.service");
+      await syncManagementBilling(organizationId);
+      await upsertWebhookEventProcessed(db, eventId, eventType);
+      return { status: 200, payload: { received: true } };
+    }
     if (owner.kind === "actions") {
       // Actions funding is independent of a customer's monthly server. Only
       // enqueue a fresh receipt check; event amounts never grant retail funds.
@@ -228,6 +234,10 @@ export async function handleOblienWebhook(
         await upsertWebhookEventProcessed(tx, eventId, eventType);
       });
     }, owner.workspaceId);
+    if (await repos.managementBilling.get(organizationId)) {
+      const { syncManagementBilling } = await import("./management.service");
+      await syncManagementBilling(organizationId);
+    }
     if (owner.workspaceId) {
       const { reconcileWorkspaceSubscriptionChange } = await import("./billing-plan-change");
       await reconcileWorkspaceSubscriptionChange(organizationId, owner.workspaceId);

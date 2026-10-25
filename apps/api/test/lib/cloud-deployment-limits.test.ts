@@ -31,7 +31,7 @@ const base = { cpuCores: 1, memoryMb: 1024, diskMb: 8192 };
 const services = () => [{ enabled: true }, { enabled: true }, { enabled: true }];
 describe("Cloud deploy and update resource gates", () => {
   it.each([
-    ["hobby", 1, 2048], ["starter", 2, 8192], ["pro", 4, 16384], ["team", 8, 32768],
+    ["hobby", 1, 4096], ["starter", 2, 8192], ["pro", 4, 16384], ["team", 8, 32768],
   ] as const)("applies the new %s ceiling to resource edits, deployments and existing runtimes", async (tier, cpuCores, memoryMb) => {
     h.tier = tier;
     h.workspaceId = "shared-workspace";

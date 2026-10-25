@@ -120,6 +120,7 @@ describe("Cloud Docker route tables", () => {
     });
   beforeEach(() => {
     vi.clearAllMocks();
+    projectRepo.findById.mockResolvedValue(base);
     domainRepo.listByProject.mockResolvedValue([]);
     publish.mockResolvedValue(undefined);
     target.mockImplementation(async (container: string, port: number) => {

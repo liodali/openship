@@ -44,3 +44,13 @@ export function runtimeRoleLogTargets(data: ProjectRuntimeRoles | null) {
       })),
   );
 }
+
+/** Whether to offer role configuration; the API's role configuration answer stays authoritative.
+ *  Projects created before `runtimeMode` was recorded carry none and run on Docker by default. */
+export function canConfigureRuntimeRoles(project: {
+  runtimeMode?: string | null;
+  deployTarget?: string | null;
+  clusterId?: string | null;
+}) {
+  return project.runtimeMode !== "bare" && project.deployTarget !== "cloud" && !project.clusterId;
+}

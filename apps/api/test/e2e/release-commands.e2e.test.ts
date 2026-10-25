@@ -19,6 +19,7 @@ const image = `openship-release-e2e:${process.pid}`;
 let runtime: DockerRuntime;
 let liveContainer: string;
 const scratchVolumes = new Set<string>();
+const liveVolumes = new Map<string, string>();
 
 async function docker(...args: string[]): Promise<string> {
   return (await exec("docker", ["--host", `unix://${dockerSocketPath}`, ...args], { timeout: 120_000 })).stdout.trim();
@@ -40,7 +41,12 @@ async function release(commands: string[], options: ReleaseCommandOptions = {}, 
       ...options,
       beforeStart: async containerId => {
         const mounts = JSON.parse(await docker("inspect", "--format", "{{json .Mounts}}", containerId));
-        for (const mount of mounts) if (mount.Destination === "/scratch") scratchVolumes.add(mount.Name);
+        for (const mount of mounts) if (mount.Destination === "/scratch") {
+          scratchVolumes.add(mount.Name);
+          // Image-declared volumes are persistent app data too. A release
+          // command must see the exact mount used by the serving application.
+          expect(mount.Name).toBe(liveVolumes.get("/scratch"));
+        }
         await runtime.attachToExternalNetworks(projectId, [externalNetwork], [], {
           onlyContainerIds: [containerId], strict: true,
         });
@@ -54,7 +60,9 @@ async function expectLiveAppAndNoReleaseContainer() {
   const containers = await docker("ps", "-a", "--filter", `label=openship.project=${projectId}`, "--format", "{{.Names}}");
   expect(containers).not.toContain("openship-release-candidate-");
   const remaining = new Set((await docker("volume", "ls", "-q")).split("\n"));
-  expect([...scratchVolumes].filter(name => remaining.has(name))).toEqual([]);
+  const persistent = new Set(liveVolumes.values());
+  expect([...scratchVolumes].filter(name => remaining.has(name) && !persistent.has(name))).toEqual([]);
+  for (const name of persistent) expect(remaining.has(name), `app volume ${name} was removed`).toBe(true);
   const networks = await docker("inspect", "--format", "{{json .NetworkSettings.Networks}}", liveContainer);
   expect(networks).not.toContain(externalNetwork);
 }
@@ -73,6 +81,8 @@ describeDockerE2E("release commands against Docker", () => {
     await docker("run", "-d", "--name", sourceName, "--network", externalNetwork, "--network-alias", "database",
       baseImage, "sh", "-c", "mkdir -p /www; printf database-ready > /www/index.html; exec httpd -f -p 8080 -h /www");
     liveContainer = (await runtime.deploy(config("live"))).containerId!;
+    const mounts = JSON.parse(await docker("inspect", "--format", "{{json .Mounts}}", liveContainer));
+    for (const mount of mounts) if (mount.Type === "volume") liveVolumes.set(mount.Destination, mount.Name);
     await vi.waitFor(() => expectLiveAppAndNoReleaseContainer());
   });
   afterAll(async () => {
@@ -80,7 +90,7 @@ describeDockerE2E("release commands against Docker", () => {
       const ids = (await docker("ps", "-aq", "--filter", `label=openship.project=${projectId}`)).split("\n").filter(Boolean);
       if (ids.length) await docker("rm", "-fv", ...ids);
       await docker("rm", "-f", sourceName).catch(() => {});
-      await docker("volume", "rm", volume, ...scratchVolumes).catch(() => {});
+      await docker("volume", "rm", ...new Set([volume, ...scratchVolumes, ...liveVolumes.values()])).catch(() => {});
       await docker("network", "rm", externalNetwork, `openship-${slug}`).catch(() => {});
       await docker("image", "rm", image).catch(() => {});
     } finally { await runtime?.dispose(); }
@@ -90,9 +100,12 @@ describeDockerE2E("release commands against Docker", () => {
     await release([
       'test "$(wget -qO- http://database:8080)" = database-ready && printf "%s" "$MIGRATION_VALUE" > /app/data/schema',
       'test "$(cat /app/data/schema)" = production-value && printf :migrated >> /app/data/schema',
+      'printf image-volume-shared > /scratch/release-proof',
     ]);
     const deployed = await runtime.deploy(config("next"));
     expect(await docker("exec", deployed.containerId!, "cat", "/app/data/schema")).toBe("production-value:migrated");
+    expect(await docker("exec", liveContainer, "cat", "/scratch/release-proof")).toBe("image-volume-shared");
+    expect(await docker("exec", deployed.containerId!, "cat", "/scratch/release-proof")).toBe("image-volume-shared");
     await expectLiveAppAndNoReleaseContainer();
   });
 

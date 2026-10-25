@@ -32,12 +32,19 @@ describe("server subscription choices", () => {
   const plans = ["hobby", "starter", "pro", "team"].map(id => plan(id as PlanTierId));
   const choices = (currentOffer?: ApiPlan, allocatedDiskGb?: number) => serverPlanChoices({ plans, currentOffer, allocatedDiskGb, interval: "monthly" });
 
-  it("offers the full paid catalog for a new server and only larger offers for Starter", () => {
+  it("includes the entry plan and retains larger offers relative to an existing purchase", () => {
     expect(choices().available.map(plan => plan.id)).toEqual(["hobby", "starter", "pro", "team"]);
     const result = choices(plan("starter"));
     expect(result.current).toBe("starter");
     expect(result.upgrades.map(plan => plan.id)).toEqual(["pro", "team"]);
     expect(result.other.map(plan => plan.id)).toEqual(["hobby"]);
+    expect(choices(plan("hobby")).upgrades.map(plan => plan.id)).toEqual(["starter", "pro", "team"]);
+  });
+
+  it("excludes offers retired by the catalog", () => {
+    const retired = plans.map(plan => ({ ...plan, availableForPurchase: plan.id !== "hobby" }));
+    expect(serverPlanChoices({ plans: retired, interval: "monthly" }).available.map(plan => plan.id))
+      .toEqual(["starter", "pro", "team"]);
   });
 
   it("does not advertise a smaller disk for an inactive or subscribed server", () => {
@@ -77,7 +84,7 @@ describe("server subscription choices", () => {
 
   it("compares annual offers using their annual saved price", () => {
     const annualPlans = plans.map(plan => ({ ...plan, price: { ...plan.price, annual: plan.price.monthly! * 10 } }));
-    const currentOffer = { ...annualPlans[1]!, price: { monthly: null, annual: 20_000 } };
+    const currentOffer = { ...annualPlans[1]!, price: { monthly: null, annual: annualPlans[1]!.price.annual } };
     const result = serverPlanChoices({ plans: annualPlans, currentOffer, interval: "annual" });
     expect(result.current).toBe("starter");
     expect(result.upgrades.map(plan => plan.id)).toEqual(["pro", "team"]);

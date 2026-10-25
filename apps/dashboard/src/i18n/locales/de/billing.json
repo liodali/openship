@@ -136,7 +136,8 @@
     "billingInterval": "Abrechnungsintervall",
     "monthly": "Monatlich",
     "annual": "Jährlich",
-    "billedAnnually": "Jährliche Abrechnung"
+    "billedAnnually": "Jährliche Abrechnung",
+    "annualTotal": "{price} jährlich abgerechnet, Verlängerung jederzeit kündbar"
   },
   "topups": {
     "loadError": "Aufladepakete konnten nicht geladen werden",
@@ -719,8 +720,10 @@
     "nextPlan": "Neuer Tarif"
   },
   "purchase": {
+    "manage": "Eigenen Server verwalten",
+    "manageDescription": "Verbinde eigene Server für Deployments, Domains, Monitoring und Backups.",
     "mode": "Abrechnungsmodell",
-    "monthly": "Monatliche Tarife",
+    "monthly": "Cloud-Pläne",
     "payg": "Prepaid-Nutzung",
     "title": "Prepaid-Hosting",
     "description": "Wähle eine Ressourcenstufe, kaufe Guthaben und bezahle die Servernutzung.",
@@ -851,6 +854,35 @@
       "processing": "Zahlung übermittelt · Status wird bestätigt",
       "canceling": "Stornierung wird bestätigt…",
       "unavailable": "Zahlungsstatus vorübergehend nicht verfügbar"
+    }
+  },
+  "managementPlans": {
+    "label": "Supportplan",
+    "basic": "Basic",
+    "priority": "Priority",
+    "email": "E-Mail-Support",
+    "prioritySupport": "Priorisierter Support",
+    "description": "Apps bereitstellen und aktualisieren, ihren Zustand überwachen und Daten sichern. Ihre Server, verwaltet über Openship.",
+    "basicDescription": "Für alltägliche Apps und persönliche Projekte.",
+    "priorityDescription": "Für produktive Apps, die bevorzugten Support benötigen.",
+    "serversIncluded": "{count} verbundene Server",
+    "serverCount": "Server",
+    "extraServers": "{included} enthalten · {price}/Monat je zusätzlichem Server",
+    "billingNote": "Monatliche Abrechnung, jederzeit kündbar",
+    "selected": "Ausgewählt",
+    "select": "{name} wählen",
+    "monthlyTotal": "Monatliche Gesamtkosten",
+    "includedTitle": "In beiden Tarifen enthalten",
+    "cloudIncluded": "Basic ist in Ihrem bezahlten Cloud Space enthalten. Priority kostet zusätzlich {price}/Monat.",
+    "cloudBasic": "In Cloud enthalten",
+    "perMonth": "/Monat",
+    "features": {
+      "updates": "App-Bereitstellung und Image-Updates",
+      "health": "App-Zustandsprüfungen und Warnungen",
+      "monitoring": "CPU-, Speicher- und Festplattenüberwachung",
+      "domains": "Domains und automatisches HTTPS",
+      "backups": "Geplante Backups und Wiederherstellung",
+      "automation": "Zugriff per API, SDK und CLI"
     }
   }
 }

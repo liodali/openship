@@ -33,7 +33,7 @@ import {
   measureCloudWorkspace,
   unavailableWorkspaceUsage,
 } from "../../lib/cloud-workspace-host";
-import { withCloudWorkspaceActivity, reconcileSettledCloudActivity } from "../../lib/cloud-workspace-lock";
+import { withCloudWorkspaceActivity, reconcileSettledCloudActivity, recoverOrphanedCloudTerminal } from "../../lib/cloud-workspace-lock";
 import { createProvisionLock } from "../../lib/provision-lock";
 import { trackBackgroundWork } from "../../lib/background-work";
 import { withProjectRuntimeLock } from "../../lib/project-runtime-lock";
@@ -631,8 +631,8 @@ export async function processWorkspaceOperation(id: string): Promise<void> {
             throw new Error("The Cloud space capacity change target is unavailable");
           const allowed = await cloudSubscriptionWorkspaceResources(row.organizationId, id);
           if (
-            Object.entries(op.resources).some(
-              ([key, value]) => value > allowed[key as keyof typeof allowed]!,
+            (["cpuCores", "memoryMb", "diskMb"] as const).some(
+              key => op.resources![key] > allowed[key],
             )
           )
             throw new Error(
@@ -764,6 +764,9 @@ export async function retry(ctx: ExecutionContext, id: string) {
 }
 
 export async function runCloudWorkspaceRecovery() {
+  for (const row of await repos.cloudWorkspace.listLocalTerminalActivities())
+    await recoverOrphanedCloudTerminal(row).catch(error =>
+      errorDiagnostics.warn("platform/engine/modules/cloud-workspaces/cloud-workspace.service", `[cloud-terminal-recovery] ${row.id}: ${safeErrorMessage(error)}`, error));
   if (env.CLOUD_MODE) {
     const { reconcileWorkspaceSubscriptionChange } = await import("../billing/billing-plan-change");
     for (const row of await repos.cloudWorkspace.listPendingSubscriptionChanges())

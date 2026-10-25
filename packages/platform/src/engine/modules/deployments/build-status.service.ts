@@ -11,6 +11,8 @@ import { getCloudBuildQueueStatus } from "./cloud-build-queue-status";
 import { terminalMessages } from "./terminal-messages";
 import { maskServicesEnv } from "../../lib/secret-env";
 import { resolveProjectRouteState } from "../domains/project-route.service";
+import { hasRetryableBuild } from "./deployment-artifacts";
+import { retainedArtifacts } from "./retained-artifacts";
 
 function terminalBuildStatus(status: string): "ready" | "failed" | "cancelled" | undefined {
   switch (status) {
@@ -277,6 +279,8 @@ export async function getBuildSessionStatus(deploymentId: string) {
     // modal reappear after a refresh, until the user keeps or rejects.
     deploymentStatus: dep.status,
     completionPending,
+    canRetryDeployment: !completionPending && hasRetryableBuild(dep) &&
+      (await retainedArtifacts(project)).retryableDeploymentId === dep.id,
     cancellationPending,
     decisionPending: snapshot?.composeDeployment?.decision === "pending",
     partial: snapshot?.composeDeployment

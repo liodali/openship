@@ -2,6 +2,8 @@ import { reportCaughtError as observeCaughtError } from "@repo/core/diagnostics"
 import { spawn } from "node:child_process";
 import { mkdir, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { isIP } from "node:net";
+import { setTimeout as delay } from "node:timers/promises";
 import Redis, { Cluster, type RedisOptions } from "ioredis";
 import type { RedisEndpoint, RedisArchiveManifest } from "./types";
 import type { TaskArchiveStore } from "./files";
@@ -77,7 +79,9 @@ const options = (password?: string): RedisOptions => ({
 });
 export function redisConnection(endpoint: RedisEndpoint, password = process.env.REDISCLI_AUTH) {
   const client = new Redis(endpoint.port, endpoint.host, options(password));
-  client.on("error", (eventDiagnosticError) => { observeCaughtError(eventDiagnosticError, "adapters/cluster/tasks/redis"); });
+  client.on("error", (eventDiagnosticError) => {
+    observeCaughtError(eventDiagnosticError, "adapters/cluster/tasks/redis");
+  });
   return client;
 }
 export function validateRedisManifest(
@@ -108,6 +112,135 @@ export function validateRedisManifest(
   )
     throw new Error("The Redis archive does not match this recovery request.");
 }
+/** A non-sharded backup must come from the elected primary, not a lagging
+ * replica or a connection that changed roles during snapshot transfer. */
+export function redisReplicationIdentity(info: string, expectedReplicas = 1): string {
+  const values = Object.fromEntries(
+    info
+      .split(/\r?\n/)
+      .filter((line) => line.includes(":"))
+      .map((line) => {
+        const at = line.indexOf(":");
+        return [line.slice(0, at), line.slice(at + 1)];
+      }),
+  );
+  const connectedReplicas = Number(values.connected_slaves);
+  const onlineReplicas = Object.entries(values).filter(
+    ([key, value]) => /^slave\d+$/.test(key) && /(?:^|,)state=online(?:,|$)/.test(value),
+  ).length;
+  if (
+    values.role !== "master" ||
+    !/^[a-f0-9]{40}$/.test(values.master_replid ?? "") ||
+    !Number.isSafeInteger(connectedReplicas) ||
+    !Number.isInteger(expectedReplicas) ||
+    expectedReplicas < 1 ||
+    connectedReplicas < expectedReplicas ||
+    onlineReplicas < expectedReplicas
+  )
+    throw new Error(
+      "Redis replication has no verified primary with a connected replica. Retry after its health recovers.",
+    );
+  return values.master_replid;
+}
+
+async function sentinelPrimary(endpoint: RedisEndpoint, signal: AbortSignal) {
+  const config = endpoint.sentinel;
+  if (!config || !/^[a-zA-Z0-9_-]{1,128}$/.test(config.masterName))
+    throw new Error("The Redis backup has no saved Sentinel discovery configuration.");
+  signal.throwIfAborted();
+  const sentinel = redisConnection({ ...endpoint, host: config.host, port: config.port });
+  const cancel = () => sentinel.disconnect();
+  signal.addEventListener("abort", cancel, { once: true });
+  try {
+    const quorum = String(await sentinel.call("SENTINEL", "CKQUORUM", config.masterName));
+    if (!quorum.startsWith("OK ")) throw new Error("Redis Sentinel has no verified quorum.");
+    const reply = await sentinel.call("SENTINEL", "MASTER", config.masterName);
+    if (!Array.isArray(reply) || reply.length % 2)
+      throw new Error("Redis Sentinel returned an invalid primary.");
+    const fields = Object.fromEntries(
+      Array.from({ length: reply.length / 2 }, (_, index) => [
+        String(reply[index * 2]),
+        String(reply[index * 2 + 1]),
+      ]),
+    );
+    const port = Number(fields.port);
+    if (
+      fields.name !== config.masterName ||
+      fields.flags !== "master" ||
+      !isIP(fields.ip ?? "") ||
+      port !== endpoint.port
+    )
+      throw new Error("Redis Sentinel is still recovering its elected primary.");
+    signal.throwIfAborted();
+    return { host: fields.ip, port };
+  } finally {
+    signal.removeEventListener("abort", cancel);
+    sentinel.disconnect();
+  }
+}
+
+/** Pod readiness and Service selectors may settle before Redis finishes
+ * failover. Discover and pin the elected data member before touching its RDB. */
+async function replicationSource(
+  endpoint: RedisEndpoint,
+  signal: AbortSignal,
+  log: (message: string) => void,
+) {
+  if (
+    !endpoint.sentinel ||
+    !Number.isInteger(endpoint.replicas) ||
+    endpoint.replicas! < 2 ||
+    endpoint.replicas! > 8
+  )
+    throw new Error("The Redis backup has no valid saved replication topology.");
+  const deadline = AbortSignal.any([signal, AbortSignal.timeout(180_000)]);
+  let waiting = false;
+  while (true) {
+    deadline.throwIfAborted();
+    let source: Redis | undefined;
+    let cancel: (() => void) | undefined;
+    try {
+      const primary = await sentinelPrimary(endpoint, deadline);
+      source = redisConnection({ ...endpoint, ...primary });
+      cancel = () => source!.disconnect();
+      deadline.addEventListener("abort", cancel, { once: true });
+      const identity = redisReplicationIdentity(
+        String(await source.call("INFO", "replication")),
+        endpoint.replicas,
+      );
+      deadline.throwIfAborted();
+      deadline.removeEventListener("abort", cancel);
+      return { source, primary, identity };
+    } catch (error) {
+      source?.disconnect();
+      if (cancel) deadline.removeEventListener("abort", cancel);
+      signal.throwIfAborted();
+      if (deadline.aborted)
+        throw new Error(
+          "Redis Sentinel and its primary did not recover before the backup deadline.",
+          { cause: error },
+        );
+      if (!waiting) {
+        log(
+          "Waiting for Redis Sentinel and the elected primary's replicas to recover before taking a snapshot.",
+        );
+        waiting = true;
+      }
+      try {
+        await delay(2_000, undefined, { signal: deadline });
+      } catch (waitError) {
+        signal.throwIfAborted();
+        throw new Error(
+          "Redis Sentinel and its primary did not recover before the backup deadline.",
+          {
+            cause: waitError,
+          },
+        );
+      }
+    }
+  }
+}
+
 export async function captureRedis(
   endpoint: RedisEndpoint,
   store: TaskArchiveStore,
@@ -116,16 +249,25 @@ export async function captureRedis(
   identity: { databaseId: string; runtimeId: string },
   log: (message: string) => void,
 ): Promise<RedisArchiveManifest> {
-  const source = redisConnection(endpoint);
+  const replicated =
+    endpoint.mode === "replication" ? await replicationSource(endpoint, store.signal, log) : null;
+  const source = replicated?.source ?? redisConnection(endpoint);
   try {
     const primaries =
       endpoint.mode === "cluster"
         ? redisPrimaries(String(await source.call("CLUSTER", "NODES")))
-        : [{ id: "standalone", host: endpoint.host, port: endpoint.port, slots: [] }];
+        : [
+            {
+              id: "standalone",
+              ...(replicated?.primary ?? { host: endpoint.host, port: endpoint.port }),
+              slots: [],
+            },
+          ];
     const manifest: RedisArchiveManifest = {
       format: "openship-redis-rdb-v1",
       ...identity,
-      mode: endpoint.mode,
+      // Replication uses the existing one-RDB format; topology is not part of the archive payload.
+      mode: endpoint.mode === "cluster" ? "cluster" : "standalone",
       createdAt: new Date().toISOString(),
       files: [],
     };
@@ -161,6 +303,29 @@ export async function captureRedis(
       throw new Error(
         "Redis changed its data partitions during backup. No recovery point was committed; retry after it settles.",
       );
+    if (replicated) {
+      // Sentinel Service connections can reach different voters while a resumed
+      // node catches up. Use the same bounded convergence check after transfer;
+      // a transient NOQUORUM must not discard an otherwise consistent RDB.
+      // Recovery still has to confirm the exact primary and replication history
+      // captured above, and the original connection must still be a primary.
+      const verified = await replicationSource(endpoint, store.signal, log);
+      try {
+        if (
+          verified.identity !== replicated.identity ||
+          JSON.stringify(verified.primary) !== JSON.stringify(replicated.primary) ||
+          redisReplicationIdentity(
+            String(await source.call("INFO", "replication")),
+            endpoint.replicas,
+          ) !== replicated.identity
+        )
+          throw new Error(
+            "Redis changed primary during backup. No recovery point was committed; retry after it settles.",
+          );
+      } finally {
+        verified.source.disconnect();
+      }
+    }
     return manifest;
   } finally {
     source.disconnect();
@@ -185,7 +350,9 @@ export async function restoreRedis(
           maxRedirections: 16,
         })
       : redisConnection(endpoint);
-  target.on("error", (eventDiagnosticError) => { observeCaughtError(eventDiagnosticError, "adapters/cluster/tasks/redis"); });
+  target.on("error", (eventDiagnosticError) => {
+    observeCaughtError(eventDiagnosticError, "adapters/cluster/tasks/redis");
+  });
   try {
     for (const [index, file] of manifest.files.entries()) {
       const folder = join(directory, `restore-${index}`);
@@ -230,7 +397,8 @@ export async function restoreRedis(
         error = (error + data).slice(-2000);
       });
       let failure: Error | undefined;
-      process.on("error", (reason) => { observeCaughtError(reason, "adapters/cluster/tasks/redis");
+      process.on("error", (reason) => {
+        observeCaughtError(reason, "adapters/cluster/tasks/redis");
         failure = reason;
       });
       process.once("exit", (code) => {
@@ -243,7 +411,9 @@ export async function restoreRedis(
         maxRetriesPerRequest: null,
         enableOfflineQueue: true,
       });
-      temporary.on("error", (eventDiagnosticError) => { observeCaughtError(eventDiagnosticError, "adapters/cluster/tasks/redis"); });
+      temporary.on("error", (eventDiagnosticError) => {
+        observeCaughtError(eventDiagnosticError, "adapters/cluster/tasks/redis");
+      });
       try {
         await Promise.race([
           temporary.ping(),
@@ -267,7 +437,7 @@ export async function restoreRedis(
         let restored = 0;
         for (const db of dbs) {
           await temporary.select(db);
-          if (endpoint.mode === "standalone") await (target as Redis).select(db);
+          if (endpoint.mode !== "cluster") await (target as Redis).select(db);
           let cursor = "0";
           do {
             store.signal.throwIfAborted();
@@ -310,6 +480,15 @@ export async function restoreRedis(
         }
         await rm(folder, { recursive: true, force: true });
       }
+    }
+    if (endpoint.mode === "replication") {
+      if (!Number.isInteger(endpoint.replicas) || endpoint.replicas! < 2 || endpoint.replicas! > 8)
+        throw new Error("The Redis replication recovery request has an invalid replica count.");
+      redisReplicationIdentity(String(await target.call("INFO", "replication")));
+      if (Number(await target.call("WAIT", endpoint.replicas!, 10000)) < endpoint.replicas!)
+        throw new Error(
+          "Restored Redis data has not reached every replica. Retry after replication is healthy.",
+        );
     }
     if (target instanceof Cluster)
       for (const primary of target.nodes("master")) {

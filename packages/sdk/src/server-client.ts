@@ -16,6 +16,15 @@ import { createRemoteResourceOperations, createRemoteScopedOperations } from "./
 
 export function createRemoteServerOperations(http: HttpClient): ServerOperations {
   const path = (id: string) => `/system/servers/${encodeURIComponent(id)}`;
+  const installSessionQuery = (command: unknown) => {
+    const input = parseInput(ServerInstallSessionInputSchema, command ?? {});
+    const params = new URLSearchParams();
+    // Released servers read `id`; keep that wire alias while the shared public
+    // contract uses sessionId. New servers accept both without ambiguity.
+    if (input.sessionId) params.set("id", input.sessionId);
+    if (input.serverId) params.set("serverId", input.serverId);
+    return params.size ? `?${params}` : "";
+  };
   const clusterPath = (input?: unknown) =>
     `/system/clusters/${encodeURIComponent((input as { clusterId: string }).clusterId)}`;
   const networkPath = (input?: unknown) =>
@@ -209,6 +218,8 @@ export function createRemoteServerOperations(http: HttpClient): ServerOperations
     }),
     ...createRemoteResourceOperations(http, ServerResourceSchemas, {
       infrastructure: { method: "GET", path: (id) => path(id) + "/infrastructure" },
+      inspectSwarm: { method: "GET", path: (id) => path(id) + "/swarm", inputLocation: "query" },
+      connectSwarm: { method: "POST", path: (id) => path(id) + "/swarm/connect" },
       inspectNetwork: { method: "POST", path: (id) => path(id) + "/network/inspect" },
       githubStatus: {
         method: "GET",
@@ -324,12 +335,7 @@ export function createRemoteServerOperations(http: HttpClient): ServerOperations
       getInstallSession: {
         method: "GET",
         inputLocation: "path",
-        path: (input) => {
-          const { sessionId } = input as { sessionId?: string };
-          return (
-            "/system/install/session" + (sessionId ? `?id=${encodeURIComponent(sessionId)}` : "")
-          );
-        },
+        path: (input) => "/system/install/session" + installSessionQuery(input),
       },
       respondToInstall: { method: "POST", path: () => "/system/install/respond" },
     }),
@@ -385,10 +391,8 @@ export function createRemoteServerOperations(http: HttpClient): ServerOperations
       });
     },
     async *installEvents(command = {}, options = {}) {
-      const input = parseInput(ServerInstallSessionInputSchema, command);
       yield* http.events(
-        "/system/install/stream" +
-          (input.sessionId ? `?id=${encodeURIComponent(input.sessionId)}` : ""),
+        "/system/install/stream" + installSessionQuery(command),
         { signal: options.signal },
       );
     },

@@ -32,6 +32,8 @@ export const ProjectSchema = Type.Object({
   workspaceId: Type.Optional(nullableString()),
   clusterId: Type.Optional(nullableString()),
   activeDeploymentId: Type.Optional(nullableString()),
+  /** Current open workload incident on the active release; not a live health probe. */
+  runtimeUnhealthy: Type.Optional(Type.Boolean()),
   deletionInProgress: Type.Optional(Type.Boolean()),
   lifecycleOperation: Type.Optional(
     Type.Union([
@@ -58,6 +60,7 @@ export const ProjectSchema = Type.Object({
   hasServer: Type.Optional(Type.Boolean()),
   hasBuild: Type.Optional(Type.Boolean()),
   autoDeploy: Type.Optional(Type.Boolean()),
+  autoDeployCancelBuilds: Type.Optional(Type.Boolean()),
   githubChecks: EnsureProjectBody.properties.githubChecks,
   port: Type.Optional(Type.Union([Type.Number(), Type.Null()])),
 }, { additionalProperties: true });

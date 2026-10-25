@@ -1,3 +1,4 @@
+import { env } from "../config/env";
 /**
  * SSH Connection Manager - per-server cached executors with idle-TTL.
  *
@@ -47,6 +48,7 @@ import { formatDuration, systemDebug } from "./system-debug";
 import { decryptSecretField } from "./credential-encryption";
 import { operatorSshKeyRoots, resolveSafeSshKeyPath } from "./ssh-key-path";
 import { isLocalHostRow } from "./box-org";
+import { assertOperatorSshAccess } from "./operator-ssh-access";
 import { assertSshDestination, normalizeSshTransport, parseSshTuningArgs, safeErrorMessage } from "@repo/core";
 import { assertNativeSshSettings } from "../native/execution-policy";
 import { resolvePinnedHost } from "./ssrf-guard";
@@ -56,6 +58,7 @@ import { AppError } from "@repo/core";
 
 /** Settings shape accepted by `buildSshConfig`. */
 export interface SshSettingsInput {
+  organizationId?: string | null;
   purpose?: string;
   sshHostKey?: string | null;
   sshHost: string | null;
@@ -81,10 +84,11 @@ export interface SshSettingsInput {
  */
 export async function buildSshConfig(
   settings: SshSettingsInput,
-  options?: { trustOnFirstUse: (key: Buffer) => boolean },
+  options?: { trustOnFirstUse?: (key: Buffer) => boolean; localBootstrap?: boolean },
 ): Promise<SshConfig | null> {
   if (!settings.sshHost) return null;
   assertNativeSshSettings(settings);
+  await assertOperatorSshAccess(settings, settings.organizationId, options?.localBootstrap);
 
   const config: SshConfig = {
     host: settings.sshHost,
@@ -100,13 +104,13 @@ export async function buildSshConfig(
   assertSshDestination(config);
   parseSshTuningArgs(config.sshArgs);
 
-  if (settings.purpose === "migration_source") {
+  if (env.CLOUD_MODE || settings.purpose === "migration_source") {
     // These are customer-owned sources reached by the SaaS, never operator SSH
     // configuration. Pin the actual dial address on EVERY reconnect (no DNS TOCTOU).
     if (transport !== "direct" || settings.sshKeyPath || settings.sshJumpHost || settings.sshArgs ||
         !["password", "key"].includes(settings.sshAuthMethod ?? "") ||
         (!settings.sshHostKey && !options?.trustOnFirstUse)) {
-      throw new AppError("Migration sources require direct SSH with a password or uploaded private key", 400, "INVALID_MIGRATION_CONNECTION");
+      throw new AppError("Customer-owned servers require direct SSH with a password or uploaded private key", 400, "INVALID_MIGRATION_CONNECTION");
     }
     config.host = (await resolvePinnedHost(settings.sshHost)).ip;
     config.hostVerifier = settings.sshHostKey
@@ -424,6 +428,16 @@ export class SshConnectionManager {
   async acquire(serverId: string): Promise<CommandExecutor> {
     const startedAt = Date.now();
     if (this.destroyed) throw new Error("SshManager has been destroyed");
+    if (env.CLOUD_MODE) {
+      const server = await repos.server.get(serverId);
+      if (!server) throw new AppError("Server not found", 404, "SERVER_NOT_FOUND");
+      // Includes pooled connections and background jobs. Saved import-only
+      // connections retain their separate, explicitly scoped migration flow.
+      if (server.purpose !== "migration_source") {
+        const { assertServerExecution } = await import("../modules/system/server-access");
+        await assertServerExecution(server);
+      }
+    }
 
     // A row we've ALREADY classified as this host resolves to the shared channel
     // directly — BEFORE the generic cache fast-path below. That path returns the
@@ -918,7 +932,6 @@ export class SshConnectionManager {
    */
   async diagnoseReachability(serverId: string, timeoutMs = 2500): Promise<ReachabilityDiagnosis> {
     if (this.destroyed) return { reachable: false, code: "unknown" };
-    if (this.isConnected(serverId)) return { reachable: true, code: "ok" };
 
     // Read the cooldown BEFORE the row so a remote box in cooldown still pays no
     // probe; the row read that follows is a local DB hit, and it's what decides
@@ -928,6 +941,12 @@ export class SshConnectionManager {
 
     const server = await repos.server.get(serverId).catch((diagnosticFailure) => { observeCaughtError(diagnosticFailure, "platform/engine/lib/ssh-manager"); return undefined; });
     if (!server) return { reachable: false, code: "unknown" };
+    if (env.CLOUD_MODE && server.purpose !== "migration_source") {
+      const { assertServerExecution } = await import("../modules/system/server-access");
+      await assertServerExecution(server);
+    }
+    // A cached connection proves reachability, never ongoing authorization.
+    if (this.isConnected(serverId)) return { reachable: true, code: "ok" };
 
     // An isLocal row is THIS box (the auto-registered "This Server"). Its ssh*
     // fields are display-only — self-server.ts writes `127.0.0.1`/SERVER_IP purely
@@ -992,7 +1011,13 @@ export class SshConnectionManager {
       }
     }
 
-    const ok = await probeTcp(host, port, timeoutMs);
+    // Apply the same destination policy as SSH on every new dial. Passing the
+    // validated address (not the hostname) prevents a second DNS lookup rebinding
+    // this diagnostic to the SaaS control plane or its private network.
+    const dialHost = env.CLOUD_MODE || server.purpose === "migration_source"
+      ? (await resolvePinnedHost(host)).ip
+      : host;
+    const ok = await probeTcp(dialHost, port, timeoutMs);
     if (ok) this.recordSuccess(serverId);
     else this.recordFailure(serverId);
     return { reachable: ok, code: ok ? "ok" : "unreachable", ...endpoint };

@@ -23,6 +23,7 @@ export function CustomPlanConfigurator({
   quoteRevision = 0,
   allocatedDiskGb,
   actionLabel,
+  interval = "monthly",
 }: {
   catalog: NonNullable<BillingPlans["custom"]>;
   plans: ApiPlan[];
@@ -34,6 +35,7 @@ export function CustomPlanConfigurator({
   quoteRevision?: number;
   allocatedDiskGb?: number | null;
   actionLabel?: string;
+  interval?: "monthly" | "annual";
   onSelect: (quote: BillingCustomQuote) => void;
 }) {
   const { t } = useI18n();
@@ -53,7 +55,7 @@ export function CustomPlanConfigurator({
   }));
   const resources = readServerResources(values, ranges);
   const valid = resources !== null;
-  const { quote, pending, error, retry } = useCustomPlanQuote(resources, quoteRevision);
+  const { quote, pending, error, retry } = useCustomPlanQuote(resources, quoteRevision, interval);
   const current = Boolean(
     quote &&
     subscription &&
@@ -63,9 +65,12 @@ export function CustomPlanConfigurator({
         saved.max_total_vcpus === quote.resources.cpuCores &&
         saved.max_total_ram_mb === quote.resources.memoryMb &&
         saved.max_total_disk_gb === quote.resources.diskGb &&
-        currentOffer?.price.monthly === quote.priceCents &&
+        currentOffer?.price[interval] === quote.priceCents &&
         currentOffer.monthlyCredits === quote.monthlyCredits)),
   );
+  const annualRates = interval === "annual" ? catalog.extraAnnualCents : undefined;
+  const rates = annualRates ?? catalog.extraMonthlyCents;
+  const rateMonths = annualRates ? 12 : 1;
   const bundle = plans.find((plan) => plan.id === quote?.basePlanTierId);
   const money = (cents: number) => `$${(cents / 100).toFixed(cents % 100 === 0 ? 0 : 2)}`;
 
@@ -105,7 +110,7 @@ export function CustomPlanConfigurator({
             >
               {quote ? (
                 <span className="text-3xl font-semibold tracking-tight tabular-nums">
-                  {money(quote.priceCents)}
+                  {money(interval === "annual" ? quote.priceCents / 12 : quote.priceCents)}
                 </span>
               ) : (
                 <span
@@ -115,7 +120,9 @@ export function CustomPlanConfigurator({
               )}
               <span className="text-sm text-muted-foreground">{ui.perMonth}</span>
             </div>
-            <p className="mt-1 text-xs text-muted-foreground">{ui.billedMonthly}</p>
+            <p className="mt-1 text-xs text-muted-foreground">{interval === "annual" && quote
+              ? interpolate(t.billing.pricing.annualTotal, { price: money(quote.priceCents) })
+              : ui.billedMonthly}</p>
           </div>
           <Button type="submit" className="w-full" disabled={!quote || disabled || busy || current}>
             {busy ? (
@@ -158,7 +165,7 @@ export function CustomPlanConfigurator({
                 ].map(([label, cents]) => (
                   <div key={label} className="flex items-baseline justify-between gap-3">
                     <dt className="text-muted-foreground">{label}</dt>
-                    <dd className="shrink-0 tabular-nums">{money(Number(cents))}</dd>
+                    <dd className="shrink-0 tabular-nums">{money(Number(cents) / (interval === "annual" ? 12 : 1))}</dd>
                   </div>
                 ))}
               </dl>
@@ -174,9 +181,9 @@ export function CustomPlanConfigurator({
             )}
             <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
               {interpolate(copy.rates, {
-                cpu: money(catalog.extraMonthlyCents.cpuCore),
-                memory: money(catalog.extraMonthlyCents.memoryGb),
-                disk: money(catalog.extraMonthlyCents.diskGb),
+                cpu: money(rates.cpuCore / rateMonths),
+                memory: money(rates.memoryGb / rateMonths),
+                disk: money(rates.diskGb / rateMonths),
               })}
             </p>
           </details>

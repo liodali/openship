@@ -9,6 +9,7 @@ import { remoteCloudRequest, requireLinkedCloudServer } from "./cloud/server-lin
 import { sharesCloudBuildAdmission } from "./cloud-build-activity-context";
 
 const held = new AsyncLocalStorage<ReadonlyMap<string, { active: boolean; owner: CloudWorkspace; activity: CloudWorkspaceActivity }>>();
+const activityController = (row: CloudWorkspace) => row.remote ? `installation:${row.id}` : "saas";
 
 /** Clear inherited admission for detached work without releasing its parent. */
 export function runOutsideCloudWorkspaceActivity<T>(work: () => T): T {
@@ -34,6 +35,39 @@ async function recoverCommands(row: CloudWorkspace) {
   }
 }
 
+/** An acquired advisory lock proves no local replica still owns the session.
+ * Never expire another controller's claim, or release before remote exit. */
+export async function recoverOrphanedCloudTerminal(row: CloudWorkspace): Promise<boolean> {
+  if (row.activity?.controllerId !== activityController(row) || row.activity.scope !== "terminal")
+    return false;
+  if (held.getStore()?.get(row.id)?.active) return false;
+  return (
+    (await tryWithProvisionLock(`cloud:workspace-activity:${row.id}`, async () => {
+      const current = await repos.cloudWorkspace.findById(row.id);
+      if (
+        !current ||
+        current.organizationId !== row.organizationId ||
+        JSON.stringify(current.remote) !== JSON.stringify(row.remote) ||
+        current.activity?.id !== row.activity!.id ||
+        current.activity.controllerId !== activityController(current) ||
+        current.activity.scope !== "terminal"
+      )
+        return false;
+      await recoverCommands(current);
+      if (current.remote) {
+        await repos.cloudWorkspace.settleActivity(current.id, current.activity.id);
+        await reconcileSettledCloudActivity((await repos.cloudWorkspace.findById(current.id))!);
+      } else {
+        await repos.cloudWorkspace.finishTerminalRecovery(
+          current.id,
+          current.organizationId,
+          current.activity.id,
+        );
+      }
+      return true;
+    })) ?? false
+  );
+}
 /** Interactive sessions retain the same admission until their final close. */
 export async function holdCloudWorkspaceActivity(workspaceId: string | null, scope: string) {
   if (!workspaceId) return { run: <T>(work: () => Promise<T>) => work(), release: async () => {} };
@@ -68,7 +102,10 @@ export async function reconcileSettledCloudActivity(row: CloudWorkspace) {
   const activity = row.activity;
   if (!row.remote || !activity?.settled) return;
   await remoteActivity(row, activity, true);
-  await repos.cloudWorkspace.releaseActivity(row.id, row.organizationId, activity.id, activity.controllerId);
+  if (activity.scope === "terminal" && activity.controllerId === activityController(row))
+    await repos.cloudWorkspace.finishTerminalRecovery(row.id, row.organizationId, activity.id);
+  else
+    await repos.cloudWorkspace.releaseActivity(row.id, row.organizationId, activity.id, activity.controllerId);
 }
 
 /** Local advisory locking plus a durable Cloud admission claim coordinates the
@@ -114,7 +151,7 @@ async function runCloudWorkspaceActivity<T>(
     await reconcileSettledCloudActivity(row);
     row = (await repos.cloudWorkspace.findById(workspaceId))!;
   }
-  const controllerId = row.remote ? `installation:${row.id}` : "saas";
+  const controllerId = activityController(row);
   const scope = options.scope ?? "server";
   const previous = row.activity;
   // The advisory lock fences local callers, not remote children. Recover any

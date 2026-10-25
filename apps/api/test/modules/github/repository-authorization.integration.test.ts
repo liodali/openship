@@ -13,11 +13,13 @@ vi.mock("@repo/platform/engine/config/env", async (original) => {
     env: {
       ...config.env,
       CLOUD_MODE: true,
+      GITHUB_AUTH_MODE: "auto",
       GITHUB_APP_ID: "9",
       GITHUB_CLIENT_ID: "test-repository-app",
       GITHUB_CLIENT_SECRET: "test-provider-secret",
       GITHUB_PRIVATE_KEY: key.privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
     },
+    cloudRuntimeTarget: { api: "https://api.openship.test" },
     runtimeTarget: {
       ...config.runtimeTarget,
       api: "https://api.openship.test",
@@ -56,7 +58,10 @@ import { OpenshipClient } from "@repo/sdk/client";
 import { githubRoutes } from "../../../src/modules/github/github.routes";
 import { authRoutes } from "../../../src/modules/auth/auth.routes";
 import { healthRoutes } from "../../../src/modules/health/health.routes";
-import { githubInstallCallback } from "../../../src/modules/cloud/cloud-saas.controller";
+import { githubInstallCallback, githubOauthHandoff, account } from "../../../src/modules/cloud/cloud-saas.controller";
+import { authMiddleware } from "../../../src/middleware/auth";
+import { connect, claimInstallation, pollConnect } from "@repo/platform/engine/modules/github/github-application.service";
+import { cloudGitHubConnection } from "@repo/platform/engine/modules/github/github-cloud-connection";
 import { handleApiError } from "../../../src/middleware/error-handler";
 
 installFakeRunner();
@@ -70,7 +75,9 @@ const app = new Hono()
   .route("/api/github", githubRoutes)
   .route("/api/auth", authRoutes)
   .route("/api/health", healthRoutes)
-  .get("/api/cloud/github/install-callback", githubInstallCallback);
+  .get("/api/cloud/github/install-callback", githubInstallCallback)
+  .post("/api/cloud/github/oauth-handoff", authMiddleware, githubOauthHandoff)
+  .get("/api/cloud/account", authMiddleware, account);
 const apiOrigin = "https://api.openship.test";
 const installation = {
   id: 42,
@@ -127,6 +134,11 @@ beforeEach(() => {
   external = vi.fn(async (input, init) => {
     const request = new Request(input, init);
     const url = new URL(request.url);
+    if (url.origin === apiOrigin) {
+      const previous = env.CLOUD_MODE;
+      env.CLOUD_MODE = true;
+      try { return await app.request(request); } finally { env.CLOUD_MODE = previous; }
+    }
     if (url.origin === "https://github.com" && url.pathname === "/login/oauth/access_token") {
       const fields = new URLSearchParams(await request.text());
       exchanges.push(fields);
@@ -513,7 +525,15 @@ describe("Cloud repository authorization from browser callback through library a
       cookie: result.forwardCookies[0]!.split(";")[0]!,
       verifier: "",
     });
-    expect(response.headers.get("location")).toBe(`${apiOrigin}/api/cloud/github/oauth-success`);
+    const next = response.headers.get("location")!;
+    expect(next).toBe(`${apiOrigin}/api/cloud/github/install-callback?${new URLSearchParams({ flow: "select", state })}`);
+    const picker = await app.request(next);
+    expect(picker.status).toBe(200);
+    expect(await picker.text()).toContain('name="installation_id" value="42"');
+    expect((await repos.githubInstallState.find(state))?.flow).toBe("install");
+    expect(await owner.client.github.pollConnect({ state })).toEqual({ status: "waiting" });
+    await claim(owner, state);
+    expect(await owner.client.github.pollConnect({ state })).toEqual({ status: "complete" });
     expect(await startGithubLinkFromBridgeToken(bridge)).toEqual({ kind: "expired" });
   });
 });
@@ -600,5 +620,72 @@ describe("repository grant refresh and disconnect", () => {
     );
     expect(await getUserToken(owner.userId)).toBeNull();
     expect((await start(owner)).state).not.toBe(attempt.state);
+  });
+});
+
+
+describe("self-hosted hosted-App connection over the real Cloud transport", () => {
+  async function selfHosted<T>(call: () => Promise<T>): Promise<T> {
+    env.CLOUD_MODE = false;
+    try { return await call(); } finally { env.CLOUD_MODE = true; }
+  }
+  async function linked(owner: Actor) {
+    const local = await seedOwner();
+    await repos.settings.upsert({ id: randomUUID(), userId: local.userId });
+    await repos.settings.setCloudSession(local.userId, encrypt(JSON.stringify({
+      token: owner.sessionToken, apiUrl: apiOrigin, userId: owner.userId, organizationId: owner.orgId,
+    })));
+    return buildBackgroundContext({ userId: local.userId, organizationId: local.orgId, role: "owner" });
+  }
+
+  it("keeps one Cloud attempt through OAuth, existing-install selection, claim and polling, without local rows", async () => {
+    const owner = await actor();
+    const local = await linked(owner);
+    const started = await selfHosted(() => connect(local, { source: "oauth" }));
+    if (started.connected || started.flow !== "redirect" || !started.url || !started.state) throw new Error("Expected Cloud OAuth bridge");
+    expect(started.completion).toBe("attempt");
+    const token = new URL(started.url).searchParams.get("token")!;
+    expect(token).toBeTruthy();
+    expect(await selfHosted(() => pollConnect(local, { state: started.state }))).toEqual({ status: "waiting" });
+    const bridge = await startGithubLinkFromBridgeToken(token);
+    if (bridge.kind !== "redirect") throw new Error(`Bridge failed: ${bridge.kind}`);
+    expect(new URL(bridge.url).searchParams.get("state")).toBe(started.state);
+    const completed = await callback({ state: started.state, cookie: bridge.forwardCookies[0]!.split(";")[0]!, verifier: "" });
+    const page = await app.request(completed.headers.get("location")!);
+    expect(page.status).toBe(200);
+    expect(await page.text()).toContain('name="installation_id" value="42"');
+    const selected = await selfHosted(() => connect(local, { source: "oauth", state: started.state }));
+    expect(selected).toMatchObject({ flow: "installations", state: started.state, installations: [{ id: 42 }] });
+    expect(await selfHosted(() => claimInstallation(local, { state: started.state!, installationId: 42 }))).toMatchObject({ ok: true });
+    expect(await selfHosted(() => pollConnect(local, { state: started.state }))).toEqual({ status: "complete" });
+    expect(await repos.gitInstallation.listByOrganization(local.organizationId)).toEqual([]);
+    expect(await repos.gitInstallation.listByOrganization(owner.orgId)).toHaveLength(1);
+    expect((await owner.client.github.getHome()).repos).toMatchObject([{ full_name: "Acme/private-app", private: true }]);
+    await expect(cloudGitHubConnection(local, "claimInstallation", { state: started.state, installationId: 42 })).rejects.toThrow(/expired/);
+    expect(await repos.gitInstallation.listByOrganization(owner.orgId)).toHaveLength(1);
+  });
+
+  it.each(["{", "null", "[]"])("rejects a malformed OAuth bridge request %s", async body => {
+    const owner = await actor();
+    const response = await app.request(`${apiOrigin}/api/cloud/github/oauth-handoff`, {
+      method: "POST", headers: { authorization: `Bearer ${owner.sessionToken}`, "content-type": "application/json" }, body,
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it("refuses to bridge or claim an attempt bound to another Cloud workspace", async () => {
+    const owner = await actor();
+    const other = await actor();
+    const attempt = await start(other);
+    const local = await linked(owner);
+    const response = await app.request(`${apiOrigin}/api/cloud/github/oauth-handoff`, {
+      method: "POST", headers: { authorization: `Bearer ${owner.sessionToken}`, "content-type": "application/json", "X-Organization-Id": owner.orgId },
+      body: JSON.stringify({ state: attempt.state }),
+    });
+    expect(response.status).toBe(403);
+    await expect(cloudGitHubConnection(local, "claimInstallation", { state: attempt.state, installationId: 42 })).rejects.toMatchObject({ statusCode: 403 });
+    expect(await repos.githubInstallState.find(attempt.state)).toBeTruthy();
+    expect(await repos.gitInstallation.listByOrganization(owner.orgId)).toEqual([]);
+    expect(await repos.gitInstallation.listByOrganization(other.orgId)).toEqual([]);
   });
 });

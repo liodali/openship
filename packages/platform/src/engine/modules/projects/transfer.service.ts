@@ -1,3 +1,4 @@
+import { assertRouteProtectionTarget } from "../../lib/route-protection";
 /**
  * Project transfer service — local <-> Openship Cloud mobility.
  *
@@ -155,6 +156,7 @@ async function transferProjectToCloudLocked(input: TransferToCloudInput): Promis
   // 1) Pre-flight: project exists in this org and isn't already on cloud.
   const project = await loadProject(input.projectId, input.organizationId);
   if (!project) throw new TransferProjectNotFoundError(input.projectId);
+  await assertRouteProtectionTarget(project, "cloud");
   assertNotControlPlane(project);
   if (project.workspaceId) {
     throw new TransferAlreadyOnTargetError("cloud");

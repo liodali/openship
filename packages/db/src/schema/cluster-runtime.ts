@@ -28,7 +28,7 @@ export const clusterRuntime = pgTable(
       .references(() => organization.id, { onDelete: "cascade" }),
     clusterRevision: integer("cluster_revision").notNull(),
     requestId: text("request_id").notNull(),
-    provider: text("provider").$type<"k3s">().notNull().default("k3s"),
+    provider: text("provider").$type<"k3s" | "swarm">().notNull().default("k3s"),
     status: text("status").$type<ClusterRuntimeStatus>().notNull(),
     intent: text("intent").$type<"setup" | "remove">().notNull().default("setup"),
     generation: integer("generation").notNull().default(1),
@@ -43,7 +43,10 @@ export const clusterRuntime = pgTable(
   (table) => [
     uniqueIndex("cluster_runtime_cluster_idx").on(table.clusterId),
     index("cluster_runtime_org_status_idx").on(table.organizationId, table.status),
-    check("cluster_runtime_provider_check", sql`${table.provider} = 'k3s'`),
+    check("cluster_runtime_provider_check", sql`${table.provider} IN ('k3s', 'swarm')`),
+    uniqueIndex("cluster_runtime_swarm_identity_idx")
+      .on(table.organizationId, sql`(${table.plan}->>'clusterUid')`)
+      .where(sql`${table.provider} = 'swarm'`),
     check(
       "cluster_runtime_status_check",
       sql`${table.status} IN ('setting_up','ready','failed','interrupted','removing','removed')`,

@@ -15,7 +15,9 @@ const h = vi.hoisted(() => ({
   update: vi.fn(),
   deploy: vi.fn(),
   selfHosted: true,
+  scope: "user:org:instance",
 }));
+vi.mock("@/hooks/use-scoped-resource", () => ({ useResourceScope: () => h.scope }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: h.push }) }));
 vi.mock("@/context/PlatformContext", () => ({ usePlatform: () => ({ selfHosted: h.selfHosted }) }));
 vi.mock("@/context/ProjectSettingsContext", () => ({
@@ -63,6 +65,7 @@ beforeEach(() => {
   vi.resetAllMocks();
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   h.selfHosted = true;
+  h.scope = "user:org:instance";
   h.get.mockResolvedValue(state());
   h.list.mockResolvedValue([
     {
@@ -103,6 +106,12 @@ async function selectCluster(id: string) {
 }
 
 describe("topology cluster scaling", () => {
+  it("does not offer scaling just because a Compose stack has multiple services", async () => {
+    h.get.mockResolvedValue({ ...state(), activeReplicas: 3, status: { ...state().status, desired: 7, ready: 7 } });
+    await render();
+    expect(host.textContent).toContain("7 / 7");
+    expect(button("Apply scaling")).toBeUndefined();
+  });
   it("shows observed replicas and holds the action lock until deployment navigation", async () => {
     let resolve!: (value: { deploymentId: string }) => void;
     h.scale.mockReturnValue(
@@ -119,7 +128,10 @@ describe("topology cluster scaling", () => {
     )!;
     expect(technical.open).toBe(false);
     expect(technical.textContent).toContain("api-pod");
-    const apply = button("Apply scaling");
+    const open = button("Review scaling");
+    await act(async () => open.click());
+    expect(h.scale).not.toHaveBeenCalled();
+    const apply = [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find(element => element.textContent?.trim() === "Apply scaling")!;
     await act(async () => {
       apply.click();
       apply.click();
@@ -135,14 +147,43 @@ describe("topology cluster scaling", () => {
     expect(h.push).toHaveBeenCalledWith("/build/next-release");
     expect(apply.disabled).toBe(true);
   });
+  it("cancels review without changing the desired count or starting a release", async () => {
+    await render();
+    await act(async () => button("Review scaling").click());
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain("2 → 3 instances");
+    await act(async () => [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find(element => element.textContent?.trim() === "Back")!.click());
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(h.scale).not.toHaveBeenCalled();
+    expect(h.set).not.toHaveBeenCalled();
+    expect(h.push).not.toHaveBeenCalled();
+  });
+  it("clears review and private cluster state when the account scope changes", async () => {
+    await render();
+    await act(async () => button("Review scaling").click());
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+    h.scope = "other:org:instance";
+    h.get.mockResolvedValue({ ...state(), config: { replicas: 2 }, status: null });
+    await render();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(h.scale).not.toHaveBeenCalled();
+  });
+  it("shows the backend's unsupported reason without editable scaling controls", async () => {
+    h.get.mockResolvedValue({ ...state(), unavailableReason: "This environment contains services." });
+    await render();
+    expect(host.textContent).toContain("This environment contains services.");
+    expect(host.querySelector('[aria-label="Project cluster"]')).toBeNull();
+    expect(button("Review scaling")).toBeUndefined();
+    expect(h.set).not.toHaveBeenCalled();
+  });
   it("reconciles a failed response once and leaves retry to the user", async () => {
     h.scale.mockRejectedValue(new Error("Registry could not be reached"));
     await render();
-    await act(async () => button("Apply scaling").click());
+    await act(async () => button("Review scaling").click());
+    await act(async () => [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find(element => element.textContent?.trim() === "Apply scaling")!.click());
     expect(host.textContent).toContain("Registry could not be reached");
     expect(h.get).toHaveBeenCalledTimes(2);
     expect(h.scale).toHaveBeenCalledOnce();
-    expect(button("Apply scaling").disabled).toBe(false);
+    expect(button("Review scaling").disabled).toBe(false);
     expect(h.push).not.toHaveBeenCalled();
   });
   it("keeps observed application scaling available when the fleet catalog cannot be read", async () => {
@@ -150,7 +191,7 @@ describe("topology cluster scaling", () => {
     await render();
     expect(host.textContent).toContain("Servers unavailable");
     expect(host.querySelector('a[href="/servers/clusters/new"]')).toBeNull();
-    expect(button("Apply scaling").disabled).toBe(false);
+    expect(button("Review scaling").disabled).toBe(false);
     expect(host.querySelector('[aria-label="Project cluster"]')?.hasAttribute("disabled")).toBe(
       true,
     );
@@ -171,11 +212,9 @@ describe("topology cluster scaling", () => {
       { id: "cluster", name: "Production", serverIds: ["a", "b"], scaling },
     ]);
     await render();
-    expect(host.querySelector('a[href="/servers/clusters/cluster"]')?.textContent).toContain(
-      "Open cluster setup",
-    );
+    expect(button("Prepare scaling")).toBeDefined();
     expect(host.querySelector('input[type="number"]')).toBeNull();
-    const apply = button(scaling === undefined ? "Review deployment" : "Apply scaling");
+    const apply = button(scaling === undefined ? "Review deployment" : "Review scaling");
     expect(apply.disabled).toBe(true);
     await act(async () => apply.click());
     expect(h.scale).not.toHaveBeenCalled();
@@ -264,7 +303,7 @@ describe("topology cluster scaling", () => {
       host.querySelector<HTMLButtonElement>('[aria-label="Refresh scaling status"]')!.click(),
     );
     expect(host.textContent).toContain("Application status unavailable");
-    expect(button("Apply scaling")).toBeUndefined();
+    expect(button("Review scaling")).toBeUndefined();
     expect(h.scale).not.toHaveBeenCalled();
   });
   it("requires image delivery for a source build before deployment review", async () => {
@@ -305,8 +344,8 @@ describe("topology cluster scaling", () => {
       await render("server", framework);
       expect(host.textContent).toContain("Database scaling");
       expect(host.querySelector('input[type="number"]')).toBeNull();
-      expect(h.get).not.toHaveBeenCalled();
-      expect(h.list).not.toHaveBeenCalled();
+      expect(h.set).not.toHaveBeenCalled();
+      expect(h.scale).not.toHaveBeenCalled();
     },
   );
 });

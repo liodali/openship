@@ -70,7 +70,7 @@ describe("first-run authorization", () => {
     h.env.DEPLOY_MODE = "bare";
     h.env.OPENSHIP_ALLOW_ZERO_AUTH = true;
     expect((await request("/onboarding/test-connection")).status).toBe(200);
-    expect(h.testConnection).toHaveBeenCalledWith(expect.objectContaining({ sshHost: "server.lan" }));
+    expect(h.testConnection).toHaveBeenCalledWith(expect.objectContaining({ sshHost: "server.lan" }), { localBootstrap: true });
   });
 
   it("preserves SaaS signup without opening its onboarding prober", async () => {

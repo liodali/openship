@@ -135,6 +135,22 @@
         "mail": "Mail & SMTP",
         "runtime": "Runtimes",
         "other": "Other"
+      },
+      "repositorySource": {
+        "catalog": "Catalog",
+        "title": "From repository",
+        "subtitle": "Choose a ready-made service, build from your repository, or connect an existing service.",
+        "context": "Build context",
+        "dockerfile": "Dockerfile",
+        "browseContext": "Browse folders",
+        "browseDockerfile": "Browse files",
+        "pathHint": "Both paths start at the repository root. The Dockerfile must be inside the build context.",
+        "deployHint": "Save the service, then deploy it to build the image using this project’s source and destination.",
+        "noRepository": "Connect a GitHub repository to this project to build a service from its code.",
+        "connectRepository": "Connect repository",
+        "invalidPath": "Enter a relative repository path without “..”, backslashes, or a leading slash.",
+        "outsideContext": "The Dockerfile must be inside the build context. Choose a parent folder to include it.",
+        "noMatches": "Try another search or category, or choose Custom image."
       }
     },
     "detail": {
@@ -189,27 +205,29 @@
         "loadFailed": "Could not load the saved environment. Your variables have not been changed.",
         "checkFailed": "Could not compare with the running service. Saved variables are still available.",
         "checking": "Comparing with the running service…",
-        "check": "Check running service",
+        "check": "Check again",
         "reload": "Reload environment",
         "removeOverride": "Remove override (an inherited value may take its place)",
         "removeAtSource": "Remove inherited variables in Compose or project settings. Set a service override here to change the value.",
         "status": {
           "unchecked": "The running environment has not been checked.",
           "synced": "The running service matches the saved environment.",
-          "pending": "These saved environment changes have not been applied to the running service:",
+          "pending": "Saved changes are ready. Apply to restart this service with the new values.",
           "unavailable": "The running environment could not be checked.",
           "not-deployed": "These variables will be used when this service is deployed.",
           "unsupported": "Redeploy this service to apply its saved environment."
         },
-        "recoveryHint": "The running container has variables that are not saved in Openship. Recover them before applying if you want to keep them:",
-        "recover": "Recover from running service",
-        "removeRuntime": "Apply without recovering these variables; remove them from the running service.",
-        "recovered": "Recovered from running service — not saved yet",
-        "recoveredHint": "Recovered values are ready for review. Save to keep them in Openship.",
-        "recoveryFailed": "Could not recover variables from the running service. Saved variables have not been changed."
+        "recoveryHint": "These values will be removed on Apply unless you copy and save them first.",
+        "recover": "Copy to editor",
+        "removeRuntime": "Remove these values when applying.",
+        "recovered": "Copied from container — save to keep",
+        "recoveredHint": "Copied to the editor. Review the values, then Save.",
+        "recoveryFailed": "Could not recover variables from the running service. Saved variables have not been changed.",
+        "changedLabel": "Values to update",
+        "recoveryTitle": "Variables found only in the container"
       },
       "environmentApply": {
-        "title": "Apply environment changes",
+        "title": "Apply & restart",
         "applying": "Applying changes…",
         "applied": "Environment changes applied",
         "hint": "Apply saved variables to this service without rebuilding. The service will restart.",
@@ -321,7 +339,20 @@
         "automaticStorage": "Managed automatically",
         "invalidMount": "Enter a path starting with / inside the service. Paths and volume names cannot contain :.",
         "mountTooLong": "Each volume entry must be 500 characters or fewer.",
-        "saveAndBackup": "Save and back up"
+        "saveAndBackup": "Save and back up",
+        "emptyVolume": {
+          "menu": "Volume actions",
+          "title": "Start with empty storage",
+          "description": "This service will redeploy with a new volume. Its previous data and backups will be kept.",
+          "retained": "Previous volume — kept",
+          "newVolume": "New empty volume",
+          "recoveryHint": "To recover the previous data later, edit this mount and restore the previous volume name. Other services using the old volume are unaffected.",
+          "confirm": "Type {name} to confirm",
+          "action": "Save & redeploy",
+          "retry": "Retry deployment",
+          "retryHint": "The new volume setting is saved, but deployment has not started. Retry to continue. The running service has not switched volumes.",
+          "failed": "Could not prepare empty storage. No data was erased."
+        }
       }
     },
     "settingsForm": {

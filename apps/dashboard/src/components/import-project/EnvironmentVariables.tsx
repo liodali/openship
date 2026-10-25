@@ -4,7 +4,7 @@ import { reportCaughtError as observeCaughtError } from "@repo/core/diagnostics"
 import { Icon as UiIcon, type IconName } from "@repo/ui/icons";
 import { Input } from "@/components/ui/input";
 
-import React, { useCallback, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { ENV_MASK, isMaskedValue, looksLikeSecretKey } from "@repo/core";
 import { useOptionalDeployment } from "@/context/DeploymentContext";
 import { useToast } from "@/context/ToastContext";
@@ -194,12 +194,12 @@ const EnvironmentVariables: React.FC<EnvironmentVariablesPropsOptional> = ({
   // header racing a row's eye — shares a request instead of re-asking the server
   // for the same secret. Rejects (after toasting) so callers bail without
   // surfacing a second error; resolves null when no reveal source is wired.
-  const inFlightRef = useRef<Map<string, Promise<Record<string, string>>>>(new Map());
+  const inFlightRef = useRef<Map<string, Promise<Record<string, string> | null>>>(new Map());
   const ensureRevealed = useCallback(
     async (keys: string[]): Promise<Record<string, string> | null> => {
       if (!onReveal) return null;
       const known: Record<string, string> = {};
-      const pending: Promise<Record<string, string>>[] = [];
+      const pending: Promise<Record<string, string> | null>[] = [];
       const toFetch: string[] = [];
       for (const key of keys) {
         // hasOwn, not `in`: an env var named `constructor` would otherwise "hit"
@@ -212,20 +212,28 @@ const EnvironmentVariables: React.FC<EnvironmentVariablesPropsOptional> = ({
         }
       }
       if (toFetch.length > 0) {
-        const request = onReveal(toFetch)
+        const request: Promise<Record<string, string> | null> = onReveal(toFetch)
           .then((vals) => {
-            setRevealedValues((prev) => ({ ...prev, ...vals }));
-            return vals;
+            const currentKeys = toFetch.filter((key) => inFlightRef.current.get(key) === request);
+            if (currentKeys.length === 0) return null;
+            const currentValues = Object.fromEntries(
+              currentKeys.filter((key) => Object.hasOwn(vals, key)).map((key) => [key, vals[key]]),
+            );
+            setRevealedValues((prev) => ({ ...prev, ...currentValues }));
+            return currentValues;
           })
           .catch((err) => {
+            if (!toFetch.some((key) => inFlightRef.current.get(key) === request)) return null;
             showToast(ev.reveal?.error ?? "Failed to reveal values", "error", ev.toast.title);
             throw err;
           })
           .finally(() => {
-            for (const key of toFetch) inFlightRef.current.delete(key);
+            const finished = toFetch.filter((key) => inFlightRef.current.get(key) === request);
+            if (finished.length === 0) return;
+            for (const key of finished) inFlightRef.current.delete(key);
             setRevealingKeys((prev) => {
               const next = new Set(prev);
-              for (const key of toFetch) next.delete(key);
+              for (const key of finished) next.delete(key);
               return next;
             });
           });
@@ -234,7 +242,9 @@ const EnvironmentVariables: React.FC<EnvironmentVariablesPropsOptional> = ({
         pending.push(request);
       }
       if (pending.length === 0) return known;
-      return Object.assign(known, ...(await Promise.all(pending)));
+      const results = await Promise.all(pending);
+      if (Object.keys(known).length === 0 && results.every((value) => value === null)) return null;
+      return Object.assign(known, ...results);
     },
     [revealedValues, onReveal, showToast, ev],
   );
@@ -260,11 +270,35 @@ const EnvironmentVariables: React.FC<EnvironmentVariablesPropsOptional> = ({
   // it again re-fetches (per key) — one round trip is worth not holding it.
   const hideKeys = useCallback((keys: string[]) => {
     const dropped = new Set(keys);
+    for (const key of keys) inFlightRef.current.delete(key);
+    setRevealingKeys((prev) => new Set([...prev].filter((key) => !dropped.has(key))));
     setShownKeys((prev) => new Set([...prev].filter((key) => !dropped.has(key))));
     setRevealedValues((prev) =>
       Object.fromEntries(Object.entries(prev).filter(([key]) => !dropped.has(key))),
     );
   }, []);
+
+  // A revealed value belongs to the saved row it was fetched for. Editing,
+  // renaming, deleting, or replacing that row invalidates both its plaintext
+  // overlay and any pending lookup before a save can mask the new value again.
+  const revealRows = useRef(currentEnvVars);
+  useEffect(() => {
+    const current = new Map(currentEnvVars.map((row) => [row.key, row]));
+    const changed = revealRows.current.filter((previous) => {
+      const row = current.get(previous.key);
+      return (
+        !row ||
+        row.value !== previous.value ||
+        row.sourceId !== previous.sourceId ||
+        row.originalKey !== previous.originalKey ||
+        row.preserveValue !== previous.preserveValue
+      );
+    });
+    revealRows.current = currentEnvVars;
+    if (changed.length > 0) hideKeys(changed.map((row) => row.key));
+  }, [currentEnvVars, hideKeys]);
+
+  useEffect(() => () => { inFlightRef.current.clear(); }, []);
 
   // The per-row eye. A masked row holds only the sentinel, so showing it fetches
   // THAT key's real value (nothing else) into the overlay. A plaintext row (new /

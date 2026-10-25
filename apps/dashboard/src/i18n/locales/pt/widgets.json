@@ -285,7 +285,26 @@
       "repoCountOther": "{count} repositórios",
       "coveredByOrg": "Coberto pela concessão para toda a organização acima.",
       "noRepos": "Nenhum repositório.",
-      "searchRepos": "Pesquisar repositórios…"
+      "searchRepos": "Pesquisar repositórios…",
+      "capabilityAreas": {
+        "domains": "Domínios",
+        "deployments": "Implantações"
+      },
+      "capabilityLabels": {
+        "domains:read": "Ver",
+        "domains:write": "Adicionar e verificar",
+        "domains:delete": "Excluir",
+        "deployments:read": "Ver",
+        "deployments:trigger": "Disparar"
+      },
+      "capabilityHints": {
+        "domains:read": "Listar domínios, registros DNS e status do certificado",
+        "domains:write": "Adicionar, verificar e renovar domínios, executar desafios DNS",
+        "domains:delete": "Excluir domínios",
+        "deployments:read": "Ler implantações, logs e status de build",
+        "deployments:trigger": "Iniciar, reimplantar, reiniciar e fixar implantações; resolver decisões. Cancelar, reverter e excluir exigem administração do projeto."
+      },
+      "capabilityImplied": "Incluído no nível de acesso deste recurso"
     },
     "sourceAccess": {
       "title": "Acesso ao código-fonte",
@@ -483,6 +502,31 @@
       "dnsHintSelfhosted": "Adicione o registro A apontando para o IP do seu servidor e, em seguida, o registro TXT para verificação.",
       "dnsHintCloud": "Adicione o registro CNAME para roteamento e, em seguida, o registro TXT para verificação.",
       "dnsPropagation": "As alterações de DNS podem levar até 48 horas."
+    },
+    "protection": {
+      "unknown": "Não foi possível verificar o estado da proteção.",
+      "title": "Proteção por senha",
+      "chooseHostname": "Escolha primeiro um nome de host",
+      "description": "Os visitantes inserem uma senha compartilhada uma vez e permanecem conectados por 24 horas. Alterar a senha encerra todas as sessões.",
+      "unsupported": "Disponível para nomes de host personalizados exatos com HTTPS em um edge auto-hospedado. Cloud, subdomínios gratuitos e proxies TLS externos ainda não são compatíveis.",
+      "loading": "Verificando proteção…",
+      "staged": "Senha preparada. A proteção será instalada antes da publicação desta rota.",
+      "pending": "Salvo, mas ainda não confirmado no edge. Tente novamente ou implante este projeto; ainda não o compartilhe como privado.",
+      "protected": "A proteção por senha está ativa",
+      "public": "Esta rota é pública",
+      "password": "Senha do site",
+      "newPassword": "Nova senha do site",
+      "passwordHint": "Use pelo menos 12 caracteres. Compartilhe apenas com quem deve ter acesso.",
+      "save": "Salvar senha",
+      "loadFailed": "Não foi possível verificar a proteção. Reabra esta janela para tentar novamente.",
+      "saveFailed": "Não foi possível aplicar a proteção. Verifique a conexão e tente novamente.",
+      "retry": "Tentar atualizar o edge novamente",
+      "revoke": "Encerrar todas as sessões",
+      "remove": "Remover proteção",
+      "unlockConfirm": "Qualquer pessoa com esta URL poderá abrir o site. Remover a senha?",
+      "unlock": "Tornar público",
+      "cancel": "Cancelar",
+      "scope": "Isso protege apenas este nome de host. Outros domínios e portas diretas dos serviços mantêm suas próprias regras de acesso. Limpe o conteúdo já armazenado em qualquer CDN externo."
     }
   },
   "updates": {

@@ -38,7 +38,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version-file: .bun-version
 
       - name: Cache bun install
         uses: actions/cache@v6
@@ -57,6 +57,13 @@ jobs:
 
       - name: Typecheck SDK
         run: bun run --cwd packages/sdk lint
+
+      - name: Typecheck shared packages
+        run: |
+          bun run --cwd packages/contracts lint
+          bun run --cwd packages/db lint
+          bun run --cwd packages/adapters lint
+          bun run --cwd packages/platform lint
 
       - name: Audit structured error boundaries
         run: |
@@ -117,21 +124,39 @@ jobs:
               test/e2e/migration-direct-transfer.e2e.test.ts
               test/e2e/migration-takeover.e2e.test.ts
               test/e2e/backup-volume-roundtrip.e2e.test.ts
+              test/e2e/backup-project-app.e2e.test.ts
               test/e2e/docker-exec-watchdog.e2e.test.ts
           # Inventory identity, atomic cutover and role handover use real Docker.
           - suite: Compose cutover and rollback
             command: >-
               RUN_DOCKER_E2E=1 bun run --cwd apps/api test:e2e
+              test/e2e/deployment-artifact-retry.e2e.test.ts
               test/e2e/compose-port-preflight-atomic.e2e.test.ts
               test/e2e/rollback-compose-cycle.e2e.test.ts
               test/e2e/runtime-roles.e2e.test.ts
+              test/e2e/primary-app-infrastructure.e2e.test.ts
+              test/e2e/image-volume-persistence.e2e.test.ts
+              test/e2e/image-gc-concurrent-build.e2e.test.ts
+              test/e2e/image-refresh.e2e.test.ts
+              test/e2e/service-swap.e2e.test.ts
+              test/e2e/compose-overlap-cutover.e2e.test.ts
+              test/e2e/compose-engine-overlap.e2e.test.ts
+          - suite: Security advisories
+            command: >-
+              RUN_DOCKER_E2E=1 bun run --cwd apps/api test:e2e
+              test/e2e/security-advisories.e2e.test.ts
           # Run routing, certificate selection and the rule guard with real HTTP on
           # every PR. A missing daemon must fail, not silently skip this gate.
           - suite: Edge routing
             command: >-
               RUN_DOCKER_E2E=1 bun run --cwd apps/api test:e2e
               test/e2e/routing-rules.e2e.test.ts
+              test/e2e/route-protection.e2e.test.ts
               test/e2e/edge-not-found-page.e2e.test.ts
+          - suite: Swarm inspection and deployment
+            command: >-
+              RUN_DOCKER_E2E=1 bun run --cwd apps/api test:e2e
+              test/e2e/swarm-inspection.e2e.test.ts
           # Both suites rebuild the same native bundle. Keep them sequential on
           # their own runner; the other packages do not share that filesystem.
           - suite: SDK and CLI
@@ -143,6 +168,7 @@ jobs:
             command: |
               bunx turbo run test --filter=!@repo/api --filter=!@repo/db --filter=!@repo/sdk --filter=!@repo/cli --filter=!@repo/email --concurrency=1 --log-order=stream
               bun run test:scripts
+              bun run --cwd packages/adapters test:bun
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -166,6 +192,11 @@ jobs:
       - name: Prepare execution assets used by installed-package tests
         if: matrix.suite == 'SDK and CLI' || matrix.suite == 'Other packages'
         uses: ./.github/actions/actions-runner
+
+      - name: Install composer dependencies for the real browser compatibility test
+        if: matrix.suite == 'Other packages'
+        working-directory: apps/email/client
+        run: bun install --frozen-lockfile --ignore-scripts
 
       # Run every workspace test, with the large API suite split across runners.
       # Direct Vitest runs and Turbo's stream mode expose progress immediately.
@@ -213,7 +244,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version-file: .bun-version
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -228,6 +259,9 @@ jobs:
 
       - name: Build documentation website
         run: bun run --cwd apps/web build
+
+      - name: Verify social preview images on public pages
+        run: bun run --cwd apps/web test:metadata
 
   # The webmail server's own suite, which nothing else runs.
   #
@@ -254,7 +288,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version-file: .bun-version
 
       - name: Cache bun install
         uses: actions/cache@v6
@@ -286,7 +320,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version-file: .bun-version
 
       - name: Install webmail server dependencies for shared client imports
         working-directory: apps/email/server

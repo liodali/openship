@@ -16,7 +16,14 @@ vi.mock("@repo/db", () => ({
     cloudDockerWorkspace: { find: h.find, reserve: h.reserve, attach: h.attach, markReady: h.ready, discardUncreated: h.discard } },
 }));
 vi.mock("@repo/platform/engine/config/env", () => ({ env: h.env }));
-vi.mock("@repo/platform/engine/lib/openship-cloud", () => ({ issueNamespaceToken: h.token }));
+vi.mock("@repo/platform/engine/lib/openship-cloud", () => ({
+  getNamespaceClient: async (...args: unknown[]) => {
+    const credentials = await h.token(...args);
+    const { Oblien } = await import("@repo/adapters");
+    return { namespace: credentials.namespace,
+      client: new Oblien({ token: credentials.token, baseUrl: h.env.OBLIEN_API_URL }) };
+  },
+}));
 vi.mock("@repo/platform/engine/lib/cloud/client", () => ({ getOrgCloudToken: vi.fn() }));
 vi.mock("@repo/platform/engine/modules/billing/billing-oblien-quota", () => ({ assertCloudCanSpend: h.spend, syncOblienEntitlement: h.entitlement }));
 vi.mock("@repo/adapters", async (original) => ({

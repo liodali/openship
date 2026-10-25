@@ -10,7 +10,7 @@ export interface CustomServerResources {
 
 /** Openship retail bundle pricing. Oblien validates funding and reserves the
  * pool at checkout; this calculation never grants paid coverage. */
-export function quoteCustomResources(resources: CustomServerResources, catalog: PricingCatalogRaw = PRICING) {
+export function quoteCustomResources(resources: CustomServerResources, catalog: PricingCatalogRaw = PRICING, interval: "monthly" | "annual" = "monthly") {
   for (const key of Object.keys(catalog.custom.resources) as Array<keyof CustomServerResources>) {
     const value = resources[key];
     const { min, max, step } = catalog.custom.resources[key];
@@ -18,12 +18,13 @@ export function quoteCustomResources(resources: CustomServerResources, catalog: 
       throw new ValidationError(`Choose ${key} between ${min} and ${max}, in increments of ${step}.`);
     }
   }
-  const rates = catalog.custom.extraMonthlyCents;
+  const rates = interval === "annual" ? catalog.custom.extraAnnualCents : catalog.custom.extraMonthlyCents;
   const candidates = catalog.plans.flatMap(plan => {
-    if (!plan.price.monthly || plan.billing.mode !== "monthly" || plan.contactSales) return [];
+    const basePrice = plan.price[interval];
+    if (!plan.availableForPurchase || !basePrice || plan.billing.mode !== "monthly" || plan.contactSales) return [];
     const included = plan.billing.resourceLimits;
     const breakdown = {
-      basePriceCents: plan.price.monthly,
+      basePriceCents: basePrice,
       cpuCents: Math.max(0, resources.cpuCores - included.max_total_vcpus!) * rates.cpuCore,
       memoryCents: Math.max(0, resources.memoryMb - included.max_total_ram_mb!) / 1024 * rates.memoryGb,
       diskCents: Math.max(0, resources.diskGb - included.max_total_disk_gb!) * rates.diskGb,
@@ -32,7 +33,7 @@ export function quoteCustomResources(resources: CustomServerResources, catalog: 
     return [{
       plan,
       breakdown,
-      priceCents: plan.price.monthly + extras,
+      priceCents: basePrice + extras,
     }];
   });
   // A richer bundle may be cheaper than adding each resource separately. Its

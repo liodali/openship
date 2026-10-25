@@ -54,7 +54,7 @@
     "selfHostedServices": "Alle Managed Services – Postgres, Redis, Mail",
     "selfHostedClients": "CLI, Web und Desktop – ein Backend",
     "selfHostedFreeSubdomains": "{freeSubdomains} kostenlose Subdomains unter {freeDomainSuffix} bei Verbindung mit Openship Cloud",
-    "monthlyCoverage": "CPU, RAM und Speicher für den bezahlten Monat enthalten",
+    "monthlyCoverage": "CPU, RAM und Speicher für den bezahlten Zeitraum enthalten",
     "namespaceCapacity": "Insgesamt: {namespaceCpu} vCPU, {namespaceRamGb} GB RAM, {namespaceDiskGb} GB Speicher"
   },
   "selfHosted": {

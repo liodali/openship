@@ -3,6 +3,7 @@ import { findActiveDeployment } from "@repo/platform/engine/lib/active-deploymen
 import type { Domain, Project } from "@repo/db";
 import type { ManualCert, Platform, SslProvider, SslResult, ProvisionCertOptions, DnsCertificateProvider } from "@repo/adapters";
 import {
+  AppError,
   ForbiddenError,
   ValidationError,
   NotFoundError,
@@ -882,6 +883,9 @@ async function provisionAuthorizedDomainCert(
               // An unreachable provider API cannot authorize another order.
               return ssl.certificateManagement === "provider" ? {
                 domain: domainRecord.hostname, verified: false, expiresAt: "", issuer: "", reason: "read_error" as const,
+                // Structured operation failures already carry safe recovery
+                // guidance. Keep it instead of claiming a connection outage.
+                ...(diagnosticFailure instanceof AppError ? { detail: safeErrorMessage(diagnosticFailure) } : {}),
               } : null;
             });
             // An issued provider certificate served incorrectly is an edge

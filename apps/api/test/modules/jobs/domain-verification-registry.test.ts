@@ -45,13 +45,13 @@ describe("domains:verify-pending system job", () => {
 });
 
 
-it("schedules shared SSL renewal on desktop and self-hosted, never cloud", () => {
+it("schedules shared SSL renewal for customer hosts on every control plane", () => {
   const spy = vi.spyOn(platformConfig, "platform");
   const job = SYSTEM_JOB_BY_KEY.get("ssl:renew")!;
   try {
     for (const target of ["desktop", "selfhosted", "cloud"] as const) {
       spy.mockReturnValue({ target } as never);
-      expect(job.available?.()).toBe(target !== "cloud");
+      expect(job.available?.()).toBe(true);
     }
   } finally {
     spy.mockRestore();

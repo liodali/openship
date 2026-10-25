@@ -246,7 +246,7 @@ export async function buildStatus(c: Context) {
  *   resolves the latest commit on the branch — the auto-redeploy semantic.
  */
 export async function buildRedeploy(c: Context) {
-  const body = await c.req.json<{ useExistingCommit?: boolean }>().catch((diagnosticFailure) => { observeCaughtError(diagnosticFailure, "api/modules/deployments/deployment.controller"); return ({}); });
+  const body = await c.req.json<{ useExistingCommit?: boolean; reuseBuild?: boolean }>().catch((diagnosticFailure) => { observeCaughtError(diagnosticFailure, "api/modules/deployments/deployment.controller"); return ({}); });
   const result = await getPlatformKernel().deployments.redeploy(operationContext(c), param(c, "id"), body);
   applyOperationContext(c, result.context);
   return c.json({ success: true, ...result.data });

@@ -375,6 +375,8 @@ export function getMonorepoSingleAppSourceSignature(
       id: app.id,
       name: app.name,
       enabled: app.enabled,
+      exposed: app.exposed,
+      publicEndpoints: app.publicEndpoints,
       framework: app.framework,
       packageManager: app.packageManager,
       rootDirectory: app.rootDirectory,
@@ -472,7 +474,9 @@ function pickMonorepoPrimary(
       hasServer: primaryApp.hasServer,
       hasBuild: primaryApp.hasBuild,
     },
-    endpoints: candidates.map((c) => c.endpoint),
+    endpoints: candidates.flatMap(({ app }) =>
+      app.exposed === false ? [] : clonePublicEndpoints(app.publicEndpoints),
+    ),
     productionPort: primaryApp.port || primaryCandidate.endpoint.port,
   };
 }
@@ -590,6 +594,9 @@ export function getModeSwitchUpdates(
           single: singleSnapshot,
         },
     ...restoreModeSnapshot(singleSnapshot),
+    ...(config.projectType === "monorepo"
+      ? { noPublicRoute: singleSnapshot.publicEndpoints.length === 0 }
+      : {}),
   };
 }
 

@@ -33,7 +33,7 @@ it("downloads and verifies redirected updates in real Electron, with cancellatio
       plugins: [{
         name: "fixture-publisher-key",
         setup(builder) {
-          builder.onLoad({ filter: /update-trust\.json$/ }, () => ({
+          builder.onLoad({ filter: /signing-public-key\.json$/ }, () => ({
             contents: JSON.stringify({ publicKey: keys.publicKey }), loader: "json",
           }));
         },

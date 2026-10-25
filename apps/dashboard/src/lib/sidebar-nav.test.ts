@@ -78,8 +78,8 @@ describe("getNavSections (the platform rail)", () => {
     });
     expect(s.at(-1)?.items.at(-1)).toMatchObject({ key: "support", href: "/support" });
     expect(keysOf(find(s, "settings"))).toEqual(["settings", "billing", "audit"]);
-    expect(keysOf(find(s, "infrastructure"))).toEqual(["resources", "emails", "jobs", "backups"]);
-    expect(find(s, "infrastructure")?.items[0]).toMatchObject({ href: "/resources", alsoAt: ["/servers"] });
+    expect(keysOf(find(s, "infrastructure"))).toEqual(["resources", "servers", "emails", "jobs", "backups"]);
+    expect(find(s, "infrastructure")?.items[0]).toMatchObject({ href: "/resources" });
   });
 
   it("keeps Infrastructure before Settings on a cloud-linked self-hosted box", () => {

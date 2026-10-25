@@ -227,9 +227,19 @@ export class DatabaseArchiveTasks {
           }
         : {
             redis: {
-              host: `${this.config.mode === "cluster" ? "database-leader" : "database"}.${this.namespace}.svc.cluster.local`,
+              host: `${this.config.mode === "cluster" ? "database-leader" : this.config.mode === "replication" ? "database-master" : "database"}.${this.namespace}.svc.cluster.local`,
               port: 6379,
               mode: this.config.mode,
+              ...(this.config.mode === "replication"
+                ? {
+                    replicas: this.config.instances - 1,
+                    sentinel: {
+                      host: `database-sentinel.${this.namespace}.svc.cluster.local`,
+                      port: 26379,
+                      masterName: "mymaster",
+                    },
+                  }
+                : {}),
             },
           }),
       retentionDays: this.config.backup?.retentionDays,

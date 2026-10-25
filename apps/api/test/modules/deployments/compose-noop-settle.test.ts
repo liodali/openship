@@ -1,6 +1,10 @@
 import { BuildLogger, type LogEntry } from "@repo/adapters";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("@repo/platform/engine/modules/deployments/compose/required-env-preflight", () => ({
+  assertRequiredServiceEnvironment: async () => {},
+}));
+
 /**
  * The two halves of #498, driven through the REAL `executeComposePipeline` with a
  * canned `deployComposeServices` result:
@@ -57,7 +61,10 @@ vi.mock("@repo/db", () => ({
       setCloudWorkspaceId: async () => {},
       update: async () => {},
     },
-    service: { listByDeployment: async () => [] },
+    service: {
+      listByDeployment: async () => [],
+      finishStartedServiceDeploymentTimings: async () => {},
+    },
   },
 }));
 
@@ -110,6 +117,7 @@ vi.mock("@repo/platform/engine/modules/deployments/compose/deploy.service", asyn
 }));
 
 const { executeComposePipeline } = await import("@repo/platform/engine/modules/deployments/compose/pipeline");
+const { reportPipelineError } = await import("@repo/platform/engine/modules/deployments/deployment-lifecycle");
 type PipelineOpts = Parameters<typeof executeComposePipeline>[0];
 
 /** db first, app second — topoSort's dependency-first order, i.e. the order in
@@ -168,6 +176,20 @@ beforeEach(() => {
 });
 
 describe("executeComposePipeline — an all-carried redeploy must not take over", () => {
+  it("keeps the measured build time when a later capacity-release hook throws", async () => {
+    const opts = optsFor();
+    opts.onBuildFinished = async () => {
+      throw new Error("capacity release failed");
+    };
+
+    await expect(executeComposePipeline(opts)).rejects.toThrow("capacity release failed");
+    expect(h.statusWrites.some((write) => write.status === "deploying")).toBe(false);
+    await reportPipelineError(opts.ctx, "capacity release failed", opts.logger);
+
+    expect(h.statusWrites.find((write) => write.status === "failed")?.extra?.buildDurationMs).toBe(4200);
+    expect(h.activePointer).toEqual([]);
+  });
+
   it("settles no_changes without advancing the pointer, recording a container, or destroying anything", async () => {
     h.deployResult = {
       status: "ready",
@@ -201,6 +223,7 @@ describe("executeComposePipeline — an all-carried redeploy must not take over"
     expect(h.activePointer).toEqual([]);
     const settle = h.statusWrites.find((w) => w.status === "no_changes");
     expect(settle, "a no-op must record a no_changes row").toBeTruthy();
+    expect(settle?.extra?.buildDurationMs).toBe(4200);
     expect(h.containerIdWrites).toEqual([]);
     expect(h.notifications).toEqual(["deployment.no_changes"]);
     expect(h.audits).toEqual(["deployment.no_changes"]);
@@ -234,6 +257,7 @@ describe("executeComposePipeline — an all-carried redeploy must not take over"
     expect(h.containerIdWrites).not.toContain("cid-db");
     expect(h.notifications).toContain("deployment.succeeded");
     expect(h.statusWrites.some((w) => w.status === "no_changes")).toBe(false);
+    expect(h.statusWrites.find((w) => w.status === "ready")?.extra?.buildDurationMs).toBe(4200);
   });
 
   it("a carried pass that reaped a container or persisted env is NOT a no-op", async () => {

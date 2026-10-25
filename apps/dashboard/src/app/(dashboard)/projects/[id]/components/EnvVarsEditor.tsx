@@ -173,7 +173,7 @@ export function EnvVarsEditor({
   };
 
   // Remove a linked connection: drops the injected env var + the link, then
-  // re-syncs. On a live deployment, offer the no-rebuild apply.
+  // re-syncs. The connection API already requests a redeploy for a live target.
   const handleUnlink = async () => {
     if (!linkDetail) return;
     setUnlinking(true);
@@ -182,7 +182,6 @@ export function EnvVarsEditor({
       showToast(t.projects.connections.removed, "success");
       setLinkDetail(null);
       await load();
-      if (hasActiveDeployment) setPendingApply(true);
     } catch (err) {
       showToast(getApiErrorMessage(err, t.projects.connections.failed), "error");
     } finally {

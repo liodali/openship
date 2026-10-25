@@ -32,7 +32,7 @@
  * proves the gate can still go red, since a container test that quietly stopped exercising
  * anything looks identical to a passing one.
  *
- * Config text travels in the container's own command as quoted heredocs rather than a bind
+ * Config text travels in a Docker archive as quoted heredocs rather than a bind
  * mount, for the reason the sibling edge test documents: a mount only works when the daemon
  * can see the host path, which is false for a macOS temp dir (and, measured here, for
  * `/private/tmp` under Docker Desktop) and true in CI — the one setup where a gate must not
@@ -47,7 +47,10 @@
  */
 
 import { it, expect, beforeAll, afterAll } from "vitest";
-import { readFile, readdir } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { tmpdir } from "node:os";
 import { request as httpRequest } from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -464,8 +467,9 @@ http {
 
     const container = await runtime.docker.createContainer({
       Image: image,
-      Entrypoint: ["sh", "-c"],
-      Cmd: [script],
+      // Embedded Lua can exceed Linux's per-argument limit. Upload a file via
+      // the Docker API, which also works when the daemon cannot see host paths.
+      Entrypoint: ["sh", "/tmp/openship-routing-bootstrap.sh"],
       Tty: true,
       ExposedPorts: { "80/tcp": {} },
       HostConfig: {
@@ -474,6 +478,15 @@ http {
       },
     });
     started.push(container);
+    const bootstrap = await mkdtemp(join(tmpdir(), "openship-routing-bootstrap-"));
+    try {
+      await writeFile(join(bootstrap, "openship-routing-bootstrap.sh"), script);
+      const { stdout } = await promisify(execFile)("tar", ["--format=ustar", "--no-xattrs", "-cf", "-", "-C", bootstrap, "openship-routing-bootstrap.sh"],
+        { encoding: "buffer", maxBuffer: 4 * 1024 * 1024, env: { ...process.env, COPYFILE_DISABLE: "1" } });
+      await container.putArchive(stdout, { path: "/tmp" });
+    } finally {
+      await rm(bootstrap, { recursive: true, force: true });
+    }
     await container.start();
 
     const info = await container.inspect();

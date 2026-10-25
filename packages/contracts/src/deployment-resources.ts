@@ -23,7 +23,10 @@ export const ListDeploymentsSchema = Type.Object({
   perPage: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })),
 });
 export const DeploymentLogsSchema = Type.Object({ tail: Type.Optional(Type.Integer({ minimum: 1, maximum: 100_000 })) });
-export const RedeploySchema = Type.Object({ useExistingCommit: Type.Optional(Type.Boolean()) });
+export const RedeploySchema = Type.Object({
+  useExistingCommit: Type.Optional(Type.Boolean({ description: "Rebuild the selected deployment's commit instead of the latest commit." })),
+  reuseBuild: Type.Optional(Type.Boolean({ description: "Retry a failed deployment with its retained completed Docker images. Never rebuilds or pulls substitutes; mutually exclusive with useExistingCommit." })),
+});
 export const RespondSchema = Type.Object({ action: Type.String({ minLength: 1, maxLength: 256 }) });
 export const PinSchema = Type.Object({ pinned: Type.Optional(Type.Boolean()) });
 export const SkipPortCheckSchema = Type.Object({ target: Type.Union([Type.String({ minLength: 1 }), Type.Integer({ minimum: 1, maximum: 65535 })]) });
@@ -54,6 +57,8 @@ export interface DeploymentBuildStatus {
   is_active: boolean;
   /** Terminal worker cleanup still holds the execution lease; absent on older servers. */
   completionPending?: boolean;
+  /** A completed Docker image receipt is retained for this failed attempt. */
+  canRetryDeployment?: boolean;
   cancellationPending: boolean;
   decisionPending: boolean;
   pendingPrompt: PromptPayload | null;
@@ -128,6 +133,7 @@ const BuildStatusSchema = Type.Object({
   success: Type.Boolean(), deployment_id: ResourceIdSchema, project_id: ResourceIdSchema,
   status: Type.String(), deploymentStatus: Type.String(), is_active: Type.Boolean(),
   completionPending: Type.Optional(Type.Boolean()),
+  canRetryDeployment: Type.Optional(Type.Boolean()),
   cancellationPending: Type.Boolean(), decisionPending: Type.Boolean(),
   pendingPrompt: Type.Union([Type.Null(), Type.Object({
     promptId: Type.String(), title: Type.String(), message: Type.String(),

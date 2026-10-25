@@ -9,6 +9,7 @@ import { findCategory } from "./notification-categories";
 const rooted = new Set(["project", "deployment", "service", "domain", "server", "mail_server", "backup_destination", "backup_policy", "backup_run", "backup_restore"]);
 const singleton = new Set(["billing", "audit", "analytics", "github", "permissions", "settings", "cloud", "notifications", "updates"]);
 const categoryResource: Record<string, ResourceType> = {
+  security: "updates",
   deployment: "project", app_health: "project", backups: "backup_destination", jobs: "job", actions: "job", domains: "project", members: "permissions", mail: "mail_server", billing: "billing",
 };
 

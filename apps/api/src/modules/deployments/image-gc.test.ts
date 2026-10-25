@@ -9,6 +9,40 @@ const asDeps = (projectId: string, rows: Array<Partial<Deployment>>) =>
   rows.map(row => ({ projectId, organizationId: "org1", status: "ready", ...row })) as Deployment[];
 
 describe("computeKeepSet", () => {
+  it("protects only the newest retryable completed build without spending rollback history", async () => {
+    const project = { id: "retry-project", organizationId: "org1", activeDeploymentId: "active", rollbackWindow: 1 };
+    const receipt = (digit: string) => ({ completedBuildArtifacts: { version: 1, images: [
+      { imageRef: `openship/app:bld_${digit}`, imageId: `sha256:${digit.repeat(64)}` },
+    ] } });
+    const rows = asDeps(project.id, [
+      { id: "new-failed", status: "failed", artifactRetainedAt: new Date(), meta: receipt("a") },
+      { id: "cancelled", status: "cancelled", artifactRetainedAt: new Date(), meta: receipt("b") },
+      { id: "old-failed", status: "failed", artifactRetainedAt: new Date(), meta: receipt("c") },
+      { id: "active", imageRef: "active-image" },
+      { id: "history", imageRef: "history-image" },
+    ]);
+    const loaders = { listForRetention: async () => rows, listByDeployment: async () => [] };
+    const keep = await computeKeepSet(project, loaders);
+    expect(keep.has("openship/app:bld_a")).toBe(true);
+    expect(keep.has(`sha256:${"a".repeat(64)}`)).toBe(true);
+    expect(keep.has("openship/app:bld_b")).toBe(false);
+    expect(keep.has("openship/app:bld_c")).toBe(false);
+    expect(keep.has("history-image")).toBe(true);
+    rows.unshift(...asDeps(project.id, [{ id: "new-success", imageRef: "new-success" }]));
+    expect((await computeKeepSet(project, loaders)).has("openship/app:bld_a")).toBe(false);
+  });
+
+  it("keeps a completed image while its worker is deploying, but not after cancellation", async () => {
+    const project = { id: "p", organizationId: "org1", activeDeploymentId: null, rollbackWindow: 0 };
+    const [dep] = asDeps(project.id, [{ id: "worker", status: "deploying", artifactRetainedAt: new Date(), meta: {
+      completedBuildArtifacts: { version: 1, images: [{ imageRef: "openship/app:bld_work", imageId: `sha256:${"a".repeat(64)}` }] },
+    } }]);
+    const loaders = { listForRetention: async () => [dep!], listByDeployment: async () => [] };
+    expect((await computeKeepSet(project, loaders)).has("openship/app:bld_work")).toBe(true);
+    dep!.status = "cancelled";
+    expect((await computeKeepSet(project, loaders)).has("openship/app:bld_work")).toBe(false);
+  });
+
   it("keeps active + newest rollbackWindow unpinned + all pinned; prunes older; unions dep + service imageRefs", async () => {
     const project = { id: "p1", organizationId: "org1", activeDeploymentId: "d5", rollbackWindow: 2 };
     // ready, newest first: d5 (active), d4, d3, d2 (pinned), d1 (oldest, unpinned)

@@ -143,6 +143,15 @@ async function remote(
   return data;
 }
 
+/** Epoch ms for a run's `createdAt`, which is a `Date` for local rows (Drizzle
+ * `timestamp`) and an ISO string for Cloud rows. Absent or unparseable → 0, i.e.
+ * ordered after any real (post-epoch) run timestamp in the newest-first sort. */
+function runCreatedAtMillis(value: Date | string | number | null | undefined): number {
+  if (value == null) return 0;
+  const ms = value instanceof Date ? value.getTime() : new Date(value).getTime();
+  return Number.isFinite(ms) ? ms : 0;
+}
+
 /** Runs after the shared validation and job permission gate. Cloud remains the
  * authority for its repositories, destinations, policies, approval and audit.
  * No worker endpoints, credentials or local records are copied to Cloud. */
@@ -172,7 +181,7 @@ export function withCloudActions(local: ActionDependencies): ActionDependencies 
           // Cloud being offline must not hide this instance's own Actions.
           const cloud = await (
             remote(ctx, ActionCollectionRoutes[name], spec, input) as Promise<
-              { id: string; createdAt?: string }[]
+              { id: string; createdAt?: Date | string }[]
             >
           ).catch((error) => {
             errorDiagnostics.warn(
@@ -184,13 +193,24 @@ export function withCloudActions(local: ActionDependencies): ActionDependencies 
             return null;
           });
           if (!cloud) return data;
-          const merged = [
-            ...new Map([...cloud, ...(data as typeof cloud)].map((row) => [row.id, row])).values(),
-          ];
-          if (name !== "listRuns") return merged;
-          return merged
-            .sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""))
-            .slice(0, isRecord(input) && typeof input.limit === "number" ? input.limit : 30);
+          // Merging/sorting the Cloud result must likewise never hide local Actions.
+          try {
+            const merged = [
+              ...new Map([...cloud, ...(data as typeof cloud)].map((row) => [row.id, row])).values(),
+            ];
+            if (name !== "listRuns") return merged;
+            return merged
+              .sort((a, b) => runCreatedAtMillis(b.createdAt) - runCreatedAtMillis(a.createdAt))
+              .slice(0, isRecord(input) && typeof input.limit === "number" ? input.limit : 30);
+          } catch (error) {
+            errorDiagnostics.warn(
+              "platform/engine/modules/actions/cloud-operations",
+              `[cloud-actions] Could not merge Cloud ${name}; returning local results only:`,
+              safeErrorMessage(error),
+              error,
+            );
+            return data;
+          }
         },
       ];
     }),

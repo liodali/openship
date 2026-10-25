@@ -1,4 +1,5 @@
-import type { Metadata } from "next";
+import type { Metadata, ResolvingMetadata } from "next";
+import { inheritSocialImages } from "@/lib/social-metadata";
 import Link from "next/link";
 import { ArrowRight } from "lucide-react";
 import { Navbar, Footer } from "@/components/landing";
@@ -9,7 +10,7 @@ const PAGE_TITLE = "Features";
 const PAGE_DESCRIPTION =
   "Explore Openship's deployment, CI, runners, apps, backups, migration, networking, monitoring, and team access features, with detailed guides and availability.";
 
-export const metadata: Metadata = {
+const metadata: Metadata = {
   title: PAGE_TITLE,
   description: PAGE_DESCRIPTION,
   alternates: { canonical: "/features" },
@@ -25,6 +26,13 @@ export const metadata: Metadata = {
     description: PAGE_DESCRIPTION,
   },
 };
+
+export async function generateMetadata(
+  _props: unknown,
+  parent: ResolvingMetadata,
+): Promise<Metadata> {
+  return inheritSocialImages(metadata, parent);
+}
 
 export default function FeaturesPage() {
   return (

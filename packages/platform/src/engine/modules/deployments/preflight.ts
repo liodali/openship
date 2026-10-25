@@ -13,6 +13,7 @@
 
 import { reportCaughtError as observeCaughtError } from "@repo/core/diagnostics";
 import type { DeploymentConfigSnapshot } from "./build.service";
+import { env } from "../../config/env";
 import { platform } from "../../lib/platform-config";
 import {
   resolveEffectiveTarget,
@@ -1468,8 +1469,8 @@ export async function runPreflightChecks(
     const { requireClusterDeploymentTarget, assertClusterWorkloadSupported } = await import("../../lib/cluster-deployment-target");
     if (!snapshot.organizationId || !snapshot.clusterId || !snapshot.clusterProjectId) throw new Error("Choose a project cluster before deploying.");
     if (opts?.projectId && opts.projectId !== snapshot.clusterProjectId) throw new AppError("Cluster workload does not belong to this project.", 404, "CLUSTER_WORKLOAD_NOT_FOUND");
-    await requireClusterDeploymentTarget(snapshot.organizationId, snapshot.clusterId, snapshot.clusterRuntimeId);
-    await assertClusterWorkloadSupported({ projectId: snapshot.clusterProjectId, workload: snapshotToClass(snapshot).workload, volumes: snapshot.volumes,
+    const {runtime} = await requireClusterDeploymentTarget(snapshot.organizationId, snapshot.clusterId, snapshot.clusterRuntimeId);
+    await assertClusterWorkloadSupported({ provider: runtime.provider, projectId: snapshot.clusterProjectId, workload: snapshotToClass(snapshot).workload, volumes: snapshot.volumes,
       services: opts?.multiService ? opts.composeServices?.length ? opts.composeServices : [{}] : [], framework: snapshot.framework,
       image: snapshot.releaseImageRef || snapshot.handoverAppImage, imageRepository: snapshot.clusterConfig?.imageRepository,
     });
@@ -1601,6 +1602,7 @@ export async function runPreflightChecks(
       )
     : null;
   const clonePlan = resolveClonePlan({
+    isHosted: env.CLOUD_MODE,
     effectiveTarget,
     serverId: plannedTarget?.serverId ?? snapshot.serverId,
     runtimeIsBare: runtimeMode === "bare",

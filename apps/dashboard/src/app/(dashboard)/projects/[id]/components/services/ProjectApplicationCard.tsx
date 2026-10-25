@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { ProjectStatusBadge } from "@/components/shared/ProjectStatusBadge";
 import { RuntimeRoleConfigurationControl } from "@/components/services/RuntimeRoleConfiguration";
 import { RuntimeRolesCard } from "@/components/services/RuntimeRoles";
+import { canConfigureRuntimeRoles } from "@/lib/runtime-roles";
 
 /** Uses the existing project deployment and controls, without a second service identity. */
 export function ProjectApplicationCard() {
@@ -38,7 +39,7 @@ export function ProjectApplicationCard() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <p className="text-sm text-muted-foreground">{t.projects.services.applicationHint}</p>
           <div className="flex flex-wrap gap-2">
-            {projectData.activeDeploymentId && projectData.runtimeMode === "docker" && projectData.deployTarget !== "cloud" && !projectData.clusterId && (
+            {projectData.activeDeploymentId && canConfigureRuntimeRoles(projectData) && (
               <RuntimeRoleConfigurationControl projectId={id} deploymentId={projectData.activeDeploymentId} />
             )}
             <Button asChild size="sm" variant="secondary">

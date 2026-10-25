@@ -19,7 +19,14 @@ const h = vi.hoisted(() => ({
   getConnection: vi.fn(),
   candidates: vi.fn(),
   bundle: vi.fn(),
+  scope: "account:org:instance",
+  cluster: vi.fn(),
+  clusters: vi.fn(),
 }));
+vi.mock("@/lib/api/compute-clusters", () => ({
+  computeClustersApi: { get: h.cluster, list: h.clusters },
+}));
+vi.mock("@/hooks/use-scoped-resource", () => ({ useResourceScope: () => h.scope }));
 vi.mock("@/lib/api/apps", () => ({ appsApi: { getConnection: h.getConnection } }));
 vi.mock("@/lib/api/connections", () => ({
   connectionsApi: { candidates: h.candidates, bundle: h.bundle },
@@ -76,6 +83,13 @@ beforeEach(() => {
   document.body.append(host);
   root = createRoot(host);
   h.create.mockResolvedValue(row({ status: "provisioning" }));
+  h.scope = "account:org:instance";
+  h.cluster.mockResolvedValue({
+    id: "cluster",
+    name: "Kubernetes",
+    scaling: { status: "ready", provider: "k3s" },
+  });
+  h.clusters.mockResolvedValue([]);
   h.remove.mockResolvedValue(row({ status: "deleting", intent: "remove" }));
   h.getConnection.mockResolvedValue({
     data: {
@@ -144,6 +158,119 @@ async function input(element: HTMLInputElement, value: string) {
 }
 
 describe("project database controls", () => {
+  it("refuses a fixed Swarm target before creating a misleading database operation", async () => {
+    h.cluster.mockResolvedValue({
+      id: "cluster",
+      name: "Swarm",
+      scaling: { status: "ready", provider: "swarm" },
+    });
+    await render();
+    expect(host.textContent).toContain("Managed database replication requires Kubernetes");
+    const postgres = [...host.querySelectorAll("button")].find((b) =>
+      b.textContent?.includes("PostgreSQL"),
+    )!;
+    await click(postgres);
+    expect(button("Create database").disabled).toBe(true);
+    expect(h.create).not.toHaveBeenCalled();
+  });
+  it("does not submit an old settings draft against a newer database sequence", async () => {
+    await render(row());
+    await click(button("Database settings"));
+    await render(row({ sequence: 5 }));
+    expect(host.textContent).toContain("Settings changed");
+    expect(button("Apply database settings").disabled).toBe(true);
+    await act(async () =>
+      host
+        .querySelector("form")!
+        .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
+    );
+    expect(h.update).not.toHaveBeenCalled();
+  });
+  it("opens reviewed replication scaling directly from the selected database", async () => {
+    const database = row();
+    h.update.mockResolvedValue(row({ status: "provisioning", sequence: 5 }));
+    await render(database);
+    await click(button("Scale"));
+    await input(host.querySelector<HTMLInputElement>('input[type="number"]')!, "2");
+    await click(button("Review scaling"));
+    expect(h.update).not.toHaveBeenCalled();
+    await click(button("Apply scaling"));
+    expect(h.update).toHaveBeenCalledWith("project", {
+      databaseId: "db",
+      expectedSequence: 4,
+      config: { ...database.config, mode: "cluster", instances: 3 },
+    });
+    expect(h.saved).toHaveBeenCalledWith(expect.objectContaining({ sequence: 5 }));
+    expect(h.deploy).not.toHaveBeenCalled();
+  });
+
+  it("adds a private PostgreSQL reader connection without changing its writer", async () => {
+    const database = row({
+      config: { ...row().config, mode: "cluster", instances: 3 },
+      envKey: "DATABASE_URL",
+      readOnlyHost: "database-ro.private",
+    });
+    h.connect.mockResolvedValue({ ...database, readEnvKey: "DATABASE_READ_URL" });
+    await render(database);
+    expect(host.textContent).toContain("Queries must use this variable explicitly");
+    expect(host.textContent).toContain("Replica data may lag");
+    await click(button("Connect reads"));
+    expect(h.connect).toHaveBeenCalledWith(
+      "project",
+      database,
+      "DATABASE_URL",
+      undefined,
+      "DATABASE_READ_URL",
+    );
+    expect(h.deploy).not.toHaveBeenCalled();
+    expect(host.textContent).toContain("Review application deployment");
+  });
+
+  it("clears a reader connection independently and keeps removal blocked while it remains", async () => {
+    const database = row({
+      config: { ...row().config, mode: "cluster", instances: 3 },
+      readEnvKey: "READ_URL",
+    });
+    h.connect.mockResolvedValue({ ...database, readEnvKey: null });
+    await render(database);
+    await click(button("Remove database"));
+    expect(host.textContent).toContain("Disconnect the application before removing");
+    expect(button("Stop and keep data")).toBeUndefined();
+    await click(host.querySelector<HTMLElement>('[aria-label="Disconnect reader connection"]')!);
+    expect(h.connect).toHaveBeenCalledWith("project", database, null, undefined, null);
+  });
+
+  it("does not save reader and writer credentials into the same environment variable", async () => {
+    const database = row({
+      config: { ...row().config, mode: "cluster", instances: 3 },
+      envKey: "DATABASE_URL",
+    });
+    await render(database);
+    const reader = [...host.querySelectorAll("label")]
+      .find((label) => label.textContent?.includes("Reader environment variable"))!
+      .querySelector("input")!;
+    await input(reader, "DATABASE_URL");
+    expect(button("Connect reads").disabled).toBe(true);
+    expect(host.textContent).toContain("Use different variables");
+  });
+
+  it("clears private draft and ignores an old operation response after account switching", async () => {
+    let finish!: (row: ClusterDatabase) => void;
+    h.connect.mockReturnValue(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const database = row();
+    await render(database);
+    await click(button("Connect application"));
+    h.scope = "other:org:instance";
+    await render(database);
+    await act(async () => finish({ ...database, envKey: "DATABASE_URL" }));
+    expect(h.saved).not.toHaveBeenCalled();
+    expect(host.textContent).not.toContain("Connection saved");
+  });
+
   it("shares the selected native database through the existing form with compatible projects only", async () => {
     await render(row());
     await click(button("Use in a project"));
@@ -310,7 +437,7 @@ describe("project database controls", () => {
     );
     await act(async () =>
       [...document.querySelectorAll<HTMLButtonElement>('[role="option"]')]
-        .find((option) => option.textContent?.startsWith("Cluster"))!
+        .find((option) => option.textContent?.startsWith("Sharding"))!
         .click(),
     );
     expect(host.textContent).toContain("6 separate servers required");
@@ -380,5 +507,81 @@ describe("project database controls", () => {
     );
     expect(h.connect).not.toHaveBeenCalled();
     expect(h.deploy).not.toHaveBeenCalled();
+  });
+
+  it("restores standalone Redis into a separate replicated database without a cutover", async () => {
+    const database = row({
+      config: {
+        ...row().config,
+        engine: "redis",
+        backup: { destinationId: "s3", schedule: "daily", retentionDays: 30 },
+      },
+      envKey: "REDIS_URL",
+    });
+    database.observation!.backups = [
+      {
+        name: "snapshot",
+        phase: "completed",
+        startedAt: null,
+        completedAt: null,
+        error: null,
+        backupId: "saved",
+      },
+    ];
+    await render(database);
+    await click(host.querySelector<HTMLElement>('[aria-label="Restore backup snapshot"]')!);
+    await click(host.querySelector<HTMLElement>('[aria-label="New database deployment"]')!);
+    await click(
+      [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((node) =>
+        node.textContent?.startsWith("Replication"),
+      )!,
+    );
+    expect(host.textContent).toContain(
+      "The original data and application connections stay unchanged",
+    );
+    await click(button("Restore database"));
+    expect(h.create).toHaveBeenCalledWith(
+      "project",
+      expect.objectContaining({
+        name: "postgres-restored",
+        config: expect.objectContaining({ mode: "replication", instances: 3 }),
+        restoreFrom: { databaseId: "db", backupName: "snapshot" },
+      }),
+    );
+    expect(h.connect).not.toHaveBeenCalled();
+    expect(h.deploy).not.toHaveBeenCalled();
+  });
+
+  it("keeps sharded Redis backups in their existing partition layout", async () => {
+    const database = row({
+      config: {
+        ...row().config,
+        engine: "redis",
+        mode: "cluster",
+        instances: 3,
+        backup: { destinationId: "s3", schedule: "daily", retentionDays: 30 },
+      },
+    });
+    database.observation!.backups = [
+      {
+        name: "shards",
+        phase: "completed",
+        startedAt: null,
+        completedAt: null,
+        error: null,
+        backupId: "saved",
+      },
+    ];
+    await render(database);
+    await click(host.querySelector<HTMLElement>('[aria-label="Restore backup shards"]')!);
+    expect(host.querySelector('[aria-label="New database deployment"]')).toBeNull();
+    await click(button("Restore database"));
+    expect(h.create).toHaveBeenCalledWith(
+      "project",
+      expect.objectContaining({
+        config: expect.objectContaining({ mode: "cluster", instances: 3 }),
+        clusterAwareClient: true,
+      }),
+    );
   });
 });

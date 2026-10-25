@@ -127,8 +127,10 @@ async function reapProjectImagesUnlocked(project: Project): Promise<ReapResult> 
         }
       }
     }
-    // Reclaim this project's untagged (superseded final) layers too.
-    await runtime.pruneProjectDanglingImages(project.id);
+    // The inventory above already includes untagged finals, subject to the same
+    // keep-set and in-use checks. Do not follow it with Docker's /images/prune:
+    // on the containerd image store even a label-filtered prune deletes active
+    // build/pull leases across projects before applying image filters (#1369).
 
     if (!meta.clusterId) await refreshRollbackCapacity({
       projectId: project.id,

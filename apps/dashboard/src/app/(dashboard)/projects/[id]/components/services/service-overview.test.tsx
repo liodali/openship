@@ -12,12 +12,14 @@ const mocks = vi.hoisted(() => ({
   createPolicy: vi.fn(), destinations: vi.fn(),
   refresh: vi.fn(), push: vi.fn(), toast: vi.fn(), domainProps: vi.fn(),
   deployMode: "local", saveTunnel: vi.fn(), startTunnel: vi.fn(),
+  runtimeUpdate: vi.fn(), runtimeCheck: vi.fn(),
 }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: mocks.push }) }));
 vi.mock("@/context/ToastContext", () => ({ useToast: () => ({ showToast: mocks.toast }) }));
 vi.mock("@/context/PlatformContext", () => ({ usePlatform: () => ({ baseDomain: "opsh.test", deployMode: mocks.deployMode }) }));
 vi.mock("@/components/theme-provider", () => ({ useTheme: () => ({ resolvedTheme: "light" }) }));
 vi.mock("@/hooks/useCloudDeployPricing", () => ({ useCloudDeployPricing: () => () => false }));
+vi.mock("@/lib/api/updates", () => ({ updatesApi: { updateRuntime: mocks.runtimeUpdate, checkRuntime: mocks.runtimeCheck } }));
 vi.mock("./ServiceDomainsPanel", () => ({ ServiceDomainsPanel: (props: unknown) => { mocks.domainProps(props); return <div>Service domains</div>; } }));
 vi.mock("../UseInProjectModal", () => ({ UseInProjectModal: () => null }));
 vi.mock("../UsedByCard", () => ({ UsedByCard: () => null }));
@@ -70,6 +72,8 @@ beforeEach(() => {
   mocks.getEnv.mockResolvedValue({ success: true, vars: [] });
   mocks.volumes.mockResolvedValue(measured);
   mocks.update.mockResolvedValue({ success: true });
+  mocks.runtimeUpdate.mockResolvedValue({ data: { deployment_id: "dep-image-refresh", project_id: "project-stack" } });
+  mocks.runtimeCheck.mockResolvedValue({ data: { checkedAt: new Date().toISOString(), images: [], verification: {} } });
   mocks.policies.mockResolvedValue({ data: [] });
   mocks.backup.mockResolvedValue({ data: { runId: "run-selected-service" } });
   mocks.createPolicy.mockResolvedValue({ data: policy });
@@ -90,6 +94,27 @@ async function render(tab = "overview", props: Partial<Props> = {}) {
       projectType="services" deployTarget="server" initialTab={tab} onRefresh={mocks.refresh} deepLink={false} {...props} />
   </ModalProvider></I18nProvider>));
 }
+
+it("offers image apps the same scoped redeploy and image-check controls", async () => {
+  await render("overview", { projectType: "app", activeDeploymentId: "active" });
+  expect([...host.querySelectorAll("button")].some((element) => element.textContent === copy.redeploy)).toBe(false);
+  await act(async () => button(baseDictionary.projects.card.more).click());
+  await act(async () => button(baseDictionary.projectSettings.runtimeUpdates.check).click());
+  expect(mocks.runtimeCheck).toHaveBeenCalledExactlyOnceWith("project-stack", { serviceIds: [service.id] });
+  expect(mocks.runtimeUpdate).not.toHaveBeenCalled();
+  await act(async () => button(baseDictionary.projects.card.more).click());
+  await act(async () => button(copy.redeploy).click());
+  expect(mocks.runtimeUpdate).toHaveBeenCalledExactlyOnceWith("project-stack", { serviceIds: [service.id] });
+  expect(mocks.push).toHaveBeenCalledWith("/build/dep-image-refresh");
+});
+
+it("refreshes source service base images from the shared More menu", async () => {
+  await render("overview", { activeDeploymentId: "active", service: { ...service, image: null, build: "." } });
+  await act(async () => button(baseDictionary.projects.card.more).click());
+  await act(async () => button(baseDictionary.projectSettings.runtimeUpdates.refresh).click());
+  expect(mocks.runtimeUpdate).toHaveBeenCalledExactlyOnceWith("project-stack", { serviceIds: [service.id] });
+  expect(mocks.push).toHaveBeenCalledWith("/build/dep-image-refresh");
+});
 function button(label: string) {
   const buttons = [...document.querySelectorAll("button")];
   const found = buttons.find((element) => element.getAttribute("aria-label") === label || element.textContent?.trim() === label)

@@ -212,18 +212,45 @@ async function inspectServiceEnvironment(saved: SavedEnvironment) {
         "SERVICE_ENVIRONMENT_UNAVAILABLE",
       );
     const imageEnv = await runtime.inspectImageEnv(detail.imageId, { required: true });
+    const current = envEntries(detail.env);
+    const image = envEntries(imageEnv);
     return {
       containerId: detail.id,
-      current: envEntries(detail.env),
-      image: envEntries(imageEnv),
-      // Use migration's provenance rules; image defaults are not recovered as overrides.
-      recoverable: toDiscoveredService(detail, undefined, imageEnv).env,
+      current,
+      image,
+      // A value supplied by the immutable image survives replacement without an
+      // override, even if an older deploy explicitly repeated it in Config.Env.
+      recoverable: Object.fromEntries(
+        Object.entries(toDiscoveredService(detail, undefined, imageEnv).env ?? {}).filter(
+          ([key, value]) => value !== image[key],
+        ),
+      ),
       serverId,
       cloudRuntime: !!saved.project.workspaceId,
     };
   } finally {
     disposeRuntime(runtime);
   }
+}
+
+async function compareServiceEnvironment(ctx: ExecutionContext, saved: SavedEnvironment) {
+  const live = await inspectServiceEnvironment(saved);
+  const desired = await resolveServiceRuntimeEnvironment(ctx, saved, {
+    serverId: live.serverId,
+    cloudRuntime: live.cloudRuntime,
+  });
+  const expected = { ...live.image, ...desired };
+  const changedKeys = [...new Set([...Object.keys(expected), ...Object.keys(live.current)])]
+    .filter((key) => expected[key] !== live.current[key]).sort();
+  return { live, desired, changedKeys };
+}
+
+/** Confirm saved configuration matches the running service before unattended changes. */
+export async function assertSyncedServiceEnvironment(ctx: ExecutionContext, projectId: string, serviceId: string) {
+  const saved = await loadServiceEnvironment(ctx, projectId, serviceId);
+  const { desired, changedKeys } = await compareServiceEnvironment(ctx, saved);
+  if (changedKeys.length) throw new AppError("The saved and running environments differ. Review and apply those changes before automatic security updates.", 409, "SECURITY_ENVIRONMENT_PENDING");
+  return desired;
 }
 
 export async function getServiceEnvironment(
@@ -236,19 +263,12 @@ export async function getServiceEnvironment(
   const view = savedView(saved);
   if (!input.inspectRuntime) return view;
   try {
-    const live = await inspectServiceEnvironment(saved);
+    const { live, changedKeys } = await compareServiceEnvironment(ctx, saved);
     view.containerId = live.containerId;
     view.recoverableKeys = Object.keys(live.recoverable ?? {})
       .filter((key) => !Object.hasOwn(saved.merged.env, key))
       .sort();
-    const desired = await resolveServiceRuntimeEnvironment(ctx, saved, {
-      serverId: live.serverId,
-      cloudRuntime: live.cloudRuntime,
-    });
-    const expected = { ...live.image, ...desired };
-    view.changedKeys = [...new Set([...Object.keys(expected), ...Object.keys(live.current)])]
-      .filter((key) => expected[key] !== live.current[key])
-      .sort();
+    view.changedKeys = changedKeys;
     view.status = view.changedKeys.length ? "pending" : "synced";
   } catch (error) {
     observeCaughtError(error, "platform/engine/modules/services/service-environment-state");

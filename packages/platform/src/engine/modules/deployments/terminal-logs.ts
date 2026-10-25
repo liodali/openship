@@ -21,6 +21,7 @@ export function collapseTerminalLogs(entries: LogEntry[]): LogEntry[] {
     if (message) result.push({
       timestamp: state.entry.timestamp, message, level: state.entry.level,
       serviceName: state.entry.serviceName, serviceId: state.entry.serviceId,
+      ...(state.entry.resourceIssue ? { resourceIssue: state.entry.resourceIssue } : {}),
     });
     state.line = "";
     state.carriageReturn = false;

@@ -1,7 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { db, repos, schema } from "@repo/db";
-import { DockerRuntime } from "@repo/adapters";
+import { DockerRuntime, initPlatform, resetPlatform } from "@repo/adapters";
 import { ProjectControlSchemas } from "@repo/contracts";
 import { createResourceOperations } from "../../../../../packages/platform/src/resource-operations";
 import { createProjectControls } from "@repo/platform/engine/modules/projects/project-controls.operations";
@@ -28,6 +28,8 @@ const { configureRuntimeRoles, getRoleConfiguration } =
   await import("@repo/platform/engine/modules/projects/role-configuration.service");
 const imageId = `sha256:${"a".repeat(64)}`;
 const owned: string[] = [];
+beforeAll(() => initPlatform({ target: "selfhosted", runtime: "docker" }));
+afterAll(() => resetPlatform());
 beforeEach(() => {
   h.start.mockClear();
   h.access.mockClear();
@@ -119,6 +121,89 @@ describe("runtime role configuration admission", () => {
     expect((await getRoleConfiguration(f.project.id, f.org.organizationId)).supported).toBe(true);
     expect((await configureRuntimeRoles(f.ctx, f.project.id, f.input)).deploymentId).toBeTruthy();
   });
+  it("resolves a release recorded before runtimeMode existed the same way its runtime does", async () => {
+    const f = await fixture();
+    const { runtimeMode: _recorded, ...legacy } = f.active.meta as Record<string, unknown>;
+    await repos.deployment.updateStatus(f.active.id, "ready", { meta: legacy });
+    expect((await getRoleConfiguration(f.project.id, f.org.organizationId)).supported).toBe(true);
+    expect((await configureRuntimeRoles(f.ctx, f.project.id, f.input)).deploymentId).toBeTruthy();
+    await initPlatform({ target: "selfhosted", runtime: "bare" });
+    try {
+      expect((await getRoleConfiguration(f.project.id, f.org.organizationId)).supported).toBe(
+        false,
+      );
+    } finally {
+      await initPlatform({ target: "selfhosted", runtime: "docker" });
+    }
+  });
+  it.each([
+    { managedWorkspaceId: "workspace" },
+    {
+      managedServer: {
+        projectId: "cloud-project",
+        workspaceId: "workspace",
+        ownerWorkspaceId: "owner",
+      },
+    },
+  ])("rejects legacy managed Cloud releases without an explicit target: %j", async (binding) => {
+    const f = await fixture();
+    const {
+      runtimeMode: _runtime,
+      deployTarget: _target,
+      ...legacy
+    } = f.active.meta as Record<string, unknown>;
+    await repos.deployment.updateStatus(f.active.id, "ready", {
+      meta: { ...legacy, ...binding },
+    });
+    expect(await getRoleConfiguration(f.project.id, f.org.organizationId)).toMatchObject({
+      supported: false,
+      reason: expect.stringContaining("single-app Docker"),
+    });
+    await expect(configureRuntimeRoles(f.ctx, f.project.id, f.input)).rejects.toThrow(
+      "single-app Docker",
+    );
+    expect(await repos.deployment.listInFlightByProject(f.project.id)).toEqual([]);
+    expect(h.start).not.toHaveBeenCalled();
+  });
+  it("rejects a legacy release using Desktop's default Cloud target", async () => {
+    const f = await fixture();
+    const {
+      runtimeMode: _runtime,
+      deployTarget: _target,
+      ...legacy
+    } = f.active.meta as Record<string, unknown>;
+    await repos.deployment.updateStatus(f.active.id, "ready", { meta: legacy });
+    await initPlatform({ target: "desktop" });
+    try {
+      expect((await getRoleConfiguration(f.project.id, f.org.organizationId)).supported).toBe(
+        false,
+      );
+      await expect(configureRuntimeRoles(f.ctx, f.project.id, f.input)).rejects.toThrow(
+        "single-app Docker",
+      );
+      expect(await repos.deployment.listInFlightByProject(f.project.id)).toEqual([]);
+      expect(h.start).not.toHaveBeenCalled();
+    } finally {
+      await initPlatform({ target: "selfhosted", runtime: "docker" });
+    }
+  });
+  it.each([
+    { deployTarget: "cluster" },
+    { deployTarget: "server", clusterId: "cluster" },
+    { deployTarget: "server", runtimeMode: "bare" },
+  ])("rejects unsupported active release metadata before queueing work: %j", async (target) => {
+    const f = await fixture();
+    const { runtimeMode: _runtime, ...legacy } = f.active.meta as Record<string, unknown>;
+    await repos.deployment.updateStatus(f.active.id, "ready", {
+      meta: { ...legacy, ...target },
+    });
+    expect((await getRoleConfiguration(f.project.id, f.org.organizationId)).supported).toBe(false);
+    await expect(configureRuntimeRoles(f.ctx, f.project.id, f.input)).rejects.toThrow(
+      "single-app Docker",
+    );
+    expect(await repos.deployment.listInFlightByProject(f.project.id)).toEqual([]);
+    expect(h.start).not.toHaveBeenCalled();
+  });
   it("uses the deployment topology rules for primary records and disabled sidecars", async () => {
     const f = await fixture();
     await seedService(f.project.id, { name: "primary", kind: "app", enabled: true });
@@ -158,4 +243,28 @@ describe("runtime role configuration admission", () => {
     );
     expect(h.start).not.toHaveBeenCalled();
   });
+});
+
+it("configures roles for one inherited source app with a private image service and drops a prior service scope", async () => {
+  const f = await fixture();
+  await db.update(schema.project).set({ framework: "node", startCommand: "exec app", rootDirectory: "." })
+    .where(eq(schema.project.id, f.project.id));
+  const database = await repos.service.create({ projectId: f.project.id, name: "database", kind: "compose",
+    image: "postgres:16-alpine", enabled: true, exposed: false });
+  await repos.service.create({ projectId: f.project.id, name: f.project.slug, kind: "monorepo",
+    rootDirectory: ".", sortOrder: -1, enabled: true });
+  await repos.deployment.updateStatus(f.active.id, "ready", { meta: {
+    ...(f.active.meta as Record<string, unknown>), targetServiceIds: [database.id],
+    refreshServiceIds: [database.id], strictServiceScope: true,
+  } });
+  const config = await getRoleConfiguration(f.project.id, f.org.organizationId);
+  expect(config.supported).toBe(true);
+  const queued = await configureRuntimeRoles(f.ctx, f.project.id, {
+    ...f.input, expectedUpdatedAt: config.updatedAt,
+  });
+  const snapshot = (await repos.deployment.findById(queued.deploymentId))!.meta as Record<string, unknown>;
+  expect(snapshot.targetServiceIds).toBeUndefined();
+  expect(snapshot.refreshServiceIds).toBeUndefined();
+  expect(snapshot.strictServiceScope).toBeUndefined();
+  expect(snapshot.roles).toEqual(f.input.roles);
 });

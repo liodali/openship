@@ -16,7 +16,7 @@ export function faq(pricing: CloudPricing): FaqItem[] {
         ladder
           ? `Plans are ${ladder}, ${UI.billedMonthly}.`
           : "See your dashboard for current Cloud plans and availability.",
-        "Each subscription includes one managed server for your projects, with no per-seat fees. Choose a plan and deploy; Openship handles server setup.",
+        "Each subscription includes one Cloud Space for your projects, with no per-seat fees. Choose a plan and deploy; Openship handles server setup.",
         pricing.customTiers.length > 0
           ? "Enterprise limits and pricing are agreed with sales."
           : null,
@@ -25,16 +25,20 @@ export function faq(pricing: CloudPricing): FaqItem[] {
         .join(" "),
     },
     {
-      q: "What does a monthly server include?",
-      a: "A monthly server covers its purchased CPU, RAM and disk for the entire paid period. Your apps and builds share those resources, with no second compute-credit allowance. Managed proxy transfer and backups are separate. Existing subscriptions keep their saved terms, shown in Billing.",
+      q: "What does a monthly Cloud Space include?",
+      a: "A monthly Cloud Space covers its purchased CPU, RAM and disk for the entire paid period. Your apps and builds share those resources, with no second compute-credit allowance. Managed proxy transfer and backups are separate. Existing subscriptions keep their saved terms, shown in Billing.",
     },
     {
       q: "How is capacity shared?",
-      a: "Your projects and builds share the managed server’s CPU, RAM and disk. Container limits do not allocate another machine or disk. Your dashboard shows actual usage separately from purchased capacity; add another subscribed server when you need a separate pool.",
+      a: "Your projects and builds share the Cloud Space’s CPU, RAM and disk. Container limits do not allocate another machine or disk. Your dashboard shows actual usage separately from purchased capacity; add another subscribed server when you need a separate pool.",
     },
     {
       q: "Can I change or cancel my plan?",
       a: "Cancel renewal from Billing and keep access until the end of your paid period. Upgrades use the provider’s prorated price and apply after payment. Resource reductions and billing-mode changes start at renewal. Review the amount due, effective date and any server restarts before confirming. Retained disks can incur storage charges after coverage ends until they are deleted.",
+    },
+    {
+      q: "What happens if I cancel Manage?",
+      a: "Management remains available through your paid period. Your apps, databases and files keep running on your servers. Once the allowance ends, Openship Cloud stops managing those servers; it does not delete or stop them. You can manage them directly or subscribe again.",
     },
     {
       q: "Is self-hosting really free?",

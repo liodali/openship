@@ -1,6 +1,6 @@
 {
   "name": "@repo/web",
-  "version": "0.9.3-fork.9",
+  "version": "0.9.5-fork.1",
   "license": "Apache-2.0",
   "private": true,
   "scripts": {
@@ -8,6 +8,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "tsc --noEmit",
+    "test:metadata": "node ../../scripts/check-web-social-metadata.mjs",
     "clean": "rm -rf .next .turbo node_modules"
   },
   "dependencies": {

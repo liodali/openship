@@ -1,7 +1,7 @@
 /** HTTP adapters over shared server diagnostics, installers, prompts and streams. */
 import { reportCaughtError as observeCaughtError } from "@repo/core/diagnostics";
 import type { Context } from "hono";
-import { CreateServerInputSchema, parseInput } from "@repo/contracts";
+import { CreateServerInputSchema, OperationError, parseInput } from "@repo/contracts";
 import { env } from "@repo/platform/engine/config/index";
 import { repos } from "@repo/db";
 import { getPlatformKernel } from "@repo/platform/engine/lib/platform";
@@ -37,14 +37,22 @@ export async function installRespond(c: Context) {
   return c.json(await operationData(c, operations().respondToInstall(operationContext(c), await c.req.json())));
 }
 export async function getInstallSession(c: Context) {
-  return c.json(await operationData(c, operations().getInstallSession(operationContext(c), { sessionId: c.req.query("id") })));
+  return c.json(await operationData(c, operations().getInstallSession(operationContext(c), installSessionInput(c))));
+}
+function installSessionInput(c: Context) {
+  const sessionId = c.req.query("sessionId");
+  const legacyId = c.req.query("id");
+  if (sessionId && legacyId && sessionId !== legacyId)
+    throw new OperationError("Conflicting installation session IDs", 400, "INVALID_INPUT");
+  return { sessionId: sessionId ?? legacyId, serverId: c.req.query("serverId") };
 }
 export async function installStream(c: Context) {
   const { serverId, ...input } = (await c.req.json()) ?? {};
   return operationEvents(c, signal => operations().openInstallStream(operationContext(c), serverId, input, { signal }));
 }
 export async function attachInstallStream(c: Context) {
-  return operationEvents(c, signal => operations().openInstallEvents(operationContext(c), { sessionId: c.req.query("id") }, { signal }));
+  const input = installSessionInput(c);
+  return operationEvents(c, signal => operations().openInstallEvents(operationContext(c), input, { signal }));
 }
 export async function monitorStream(c: Context) {
   return operationEvents(c, signal => operations().openMonitor(operationContext(c), c.req.query("serverId")!, { signal, format: c.req.query("format") as "stats" | "usage" | undefined }));
@@ -76,7 +84,7 @@ export async function onboardingTestConnection(c: Context) {
     return c.json({ ok: false, message: "This host is not allowed.", code: "blocked_host" }, 400);
   }
 
-  return connectionResponse(c, await runEphemeralConnectionTest(parseInput(CreateServerInputSchema, body)));
+  return connectionResponse(c, await runEphemeralConnectionTest(parseInput(CreateServerInputSchema, body), { localBootstrap: true }));
 }
 
 /** Literal loopback / link-local / cloud-metadata / wildcard SSH targets. */

@@ -54,7 +54,7 @@
     "selfHostedServices": "全部托管服务:Postgres、Redis、邮件服务",
     "selfHostedClients": "CLI、网页端和桌面端,共用一个后端",
     "selfHostedFreeSubdomains": "连接 Cloud 后可获得 {freeSubdomains} 个免费 {freeDomainSuffix} 子域名",
-    "monthlyCoverage": "已付费月份包含 CPU、内存和存储",
+    "monthlyCoverage": "已付费期间包含 CPU、内存和存储",
     "namespaceCapacity": "总计：{namespaceCpu} vCPU、{namespaceRamGb} GB 内存、{namespaceDiskGb} GB 磁盘"
   },
   "selfHosted": {

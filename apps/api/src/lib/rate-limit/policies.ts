@@ -34,6 +34,7 @@ export type PolicyId =
   | "read-authed"
   | "write-authed"
   | "webhook-ingress"
+  | "webhook-flood"
   | "billing-portal"
   | "support-contact"
   | "support-reply";
@@ -163,15 +164,22 @@ export const POLICIES: Record<PolicyId, RateLimitPolicy> = {
     description: "Write API — per-user.",
   },
 
-  /** Webhook ingress (GitHub, Stripe, etc.). Per-IP — sources hit us
-   *  from a fixed set of IPs and shouldn't burst beyond their published
-   *  delivery rate. */
+  /** Independent hook quotas preserve deliveries behind shared provider IPs. */
   "webhook-ingress": {
     id: "webhook-ingress",
     limit: 120,
     windowMs: MINUTE_MS,
+    subject: "webhook",
+    description: "Inbound webhook deliveries — per-endpoint and source IP.",
+  },
+  // Endpoint hints are untrusted before signature/token verification. Rotating
+  // IDs must not provide an unlimited bypass of the ingress rate limit.
+  "webhook-flood": {
+    id: "webhook-flood",
+    limit: 6000,
+    windowMs: MINUTE_MS,
     subject: "ip",
-    description: "Inbound webhook deliveries — per-source-IP.",
+    description: "Coarse inbound webhook ceiling per source IP, across endpoints.",
   },
 
   /** Billing portal — expensive Stripe round-trip. Per-org, tight. */

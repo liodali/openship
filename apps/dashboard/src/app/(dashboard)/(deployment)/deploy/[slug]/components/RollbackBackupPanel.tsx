@@ -90,9 +90,9 @@ export function RollbackBackupPanel({
     await settings.toggleStrategy();
   };
 
-  const changeWindow = async (next: number) => {
-    const clamped = Math.max(0, Math.min(effective?.maxWindow ?? MAX_ROLLBACK_WINDOW, next));
-    if (clamped === (effective?.window ?? DEFAULT_ROLLBACK_WINDOW)) return;
+  const changeWindow = async (next: number | null) => {
+    const clamped = next === null ? null : Math.max(0, Math.min(effective?.maxWindow ?? MAX_ROLLBACK_WINDOW, next));
+    if (clamped === null ? effective?.explicit === null : clamped === effective?.explicit) return;
     if (!projectId) {
       updateConfig({ rollbackWindow: clamped });
       return;
