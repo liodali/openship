@@ -269,6 +269,11 @@ Public. Nothing in this repo changes — the same refs work anonymous.
   list; the VPS `authorized_keys` also carries it by hand until the next
   re-provision. The `api.<box-domain>` 502 after 0.9.5 is patch 8 (upstream
   guards reserved loopback ports; we exempt the self-app's admin API).
+  (4) Full recreates RACE the api's boot route-reapply against the edge
+  container's creation ("the edge container is not running", reconcile
+  aborts after resolving) — if a domain 502s right after `up --compose`,
+  `podman restart openship-api` (once the edge is up) re-runs the reconcile
+  and writes the vhosts; confirm with the `[project-route]` api log lines.
 - Images are `linux/amd64` only (the VPS is x86_64). Add a platform axis to
   `fork-images.yml` (and native arm runners, like upstream's workflow does)
   before pointing an arm box at the registry.
