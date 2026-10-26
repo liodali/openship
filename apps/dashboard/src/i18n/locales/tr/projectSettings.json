@@ -1262,15 +1262,20 @@
     "checking": "Kontrol ediliyor…",
     "title": "Güvenlik bildirimleri",
     "unavailable": "Güvenlik kontrolleri kullanılamıyor veya güncel değil. Önceki bildirimler görünür kalır.",
-    "affected": "Güncellemeden önce etkilenen çalışma ortamını ve yayımlanan önerileri inceleyin.",
+    "affected": "Geçerli kuruluşta erişebildiğiniz uygulamalara ait bulgular.",
     "noMatches": "Kontrol edilen verilerle eşleşen bildirim yok. Bu, tam bir güvenlik açığı taraması değildir.",
-    "partial": "Bazı çalışma ortamları belirlenemedi. Ana makine süreçleri, durdurulmuş konteynerler ve desteklenmeyen imajlar elle kontrol gerektirebilir.",
+    "partial": "Bazı çalışma ortamları kontrol edilemedi.",
     "guidance": "Bildirimi oku",
     "automatic": "Doğrulanmış güvenlik yamalarını otomatik güncelle",
     "automaticDescription": "Varsayılan olarak kapalıdır. Yalnızca mevcut etiketinde imzalı düzeltme bulunan imaj servisleri otomatik güncellenir. Kaynak derlemeleri, sabitlenmiş imajlar ve sürüm değişiklikleri inceleme gerektirir. Normal dağıtım ve sağlık kontrolleri geçerlidir.",
     "notifications": "Güvenlik bildirimleri kanallarda varsayılan olarak açıktır. Her kanalı Ayarlar → Bildirimler bölümünden yönetebilirsiniz.",
     "publicFeed": "Herkese açık akışı gör",
     "checked": "Kanıtlar kontrol edildi",
-    "possible": "İmaj etiketi eşleşiyor; dağıtılan sürüm doğrulanmalı."
+    "possible": "İmaj etiketi eşleşiyor; dağıtılan sürüm doğrulanmalı.",
+    "tab": "Güvenlik",
+    "monitoring": "İzlemede görüntüle",
+    "persistent": "Etkin bulgular, bildirim kapatıldıktan sonra da burada kalır.",
+    "otherApps": "Diğer uygulamalar ({count})",
+    "details": "Ayrıntılar ve öneriler"
   }
 }

@@ -92,7 +92,9 @@ export function SecurityProjectReview({
     [identity, projectId, showToast, onChecked],
   );
   useEffect(() => {
-    if (!initialResult) void check();
+    // The shared overview already polls. Do not add one request per app in Monitoring.
+    if (initialResult) return;
+    void check();
     const timer = setInterval(() => void check(), 5 * 60_000);
     return () => {
       requestGeneration.current++;
@@ -169,7 +171,6 @@ export function SecurityProjectReview({
             {finding.confidence === "possible" && (
               <p className="text-xs text-warning">{copy.possible}</p>
             )}
-            <p className="text-sm text-muted-foreground">{finding.message}</p>
             {finding.evidence.map((evidence) => (
               <p key={evidence} className="break-all font-mono text-xs text-muted-foreground">
                 {evidence}
@@ -182,6 +183,10 @@ export function SecurityProjectReview({
                   : finding.refreshBlockedReason}
               </p>
             )}
+            <details className="text-sm text-muted-foreground">
+              <summary className="cursor-pointer">{copy.details}</summary>
+              <p className="mt-2 leading-relaxed">{finding.message}</p>
+            </details>
             <div className="flex flex-wrap items-center gap-3">
               <a
                 className="text-sm underline underline-offset-4"
@@ -223,18 +228,24 @@ export function SecurityProjectReview({
           </div>
         ))}
         {!serviceId && (
-          <div className="flex items-start justify-between gap-4">
-            <div className="space-y-1">
-              <p className="text-sm font-medium">{copy.automatic}</p>
-              <p className="max-w-2xl text-xs text-muted-foreground">{copy.automaticDescription}</p>
+          <details>
+            <summary className="cursor-pointer text-sm text-muted-foreground">
+              {copy.automatic}
+            </summary>
+            <div className="mt-3 flex items-start justify-between gap-4">
+              <div className="space-y-1">
+                <p className="max-w-2xl text-xs text-muted-foreground">
+                  {copy.automaticDescription}
+                </p>
+              </div>
+              <Switch
+                checked={data?.autoRefresh ?? false}
+                disabled={!data || policyBusy}
+                ariaLabel={copy.automatic}
+                onChange={(value) => void changePolicy(value)}
+              />
             </div>
-            <Switch
-              checked={data?.autoRefresh ?? false}
-              disabled={!data || policyBusy}
-              ariaLabel={copy.automatic}
-              onChange={(value) => void changePolicy(value)}
-            />
-          </div>
+          </details>
         )}
       </div>
     </details>

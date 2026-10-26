@@ -4,6 +4,48 @@ All notable changes to Openship. Versions follow [semver](https://semver.org);
 the in-app updater surfaces critical advisories from `release-advisories.json`.
 Runtime security notices use the signed feed published from `security-advisories.json`.
 
+## Unreleased
+
+- **OpenShip Earn** — explain the Cloud affiliate program at `/affiliates`, with
+  an interactive commission split, monthly and annual reward timing, payout
+  guidance, and a dedicated social preview. Label the dashboard affiliate entry
+  Earn with a gift-box icon in the left sidebar.
+- **Start CockroachDB services correctly** — pass the required single-node
+  command to the official image, generate an application password, and persist
+  TLS certificates alongside the existing data volume. New services keep TLS and
+  password authentication enabled; container replacement preserves both data and
+  certificates. Include recovery steps for saved services missing the command
+  (#1484).
+- **Recover storage from slow build-cache scans** — when free disk space or inodes
+  already block deployment, allow up to two minutes to measure unused, owned build
+  caches before reclaiming them. Healthy hosts retain the short best-effort scan;
+  active builders and application volumes remain protected.
+- **Reclaim images from interrupted first deployments** — include projects that
+  have never reached a running release in managed image collection. Resolve the
+  last attempt through the existing tenant checks and retain the same rollback,
+  retry, pin and in-use protections, so failed builds cannot fill the server with
+  orphaned images.
+- **Cloud affiliate program** — create and revoke referral links with optional
+  customer discounts, follow verified payments, renewals and expiry, and request
+  reviewed cash payouts. Staff can review pending requests in a private operator
+  queue and reconcile transfers, including after an account is deleted.
+  Oblien owns the ledger and atomically reserves payout
+  funds. The default minimum is $50, with trusted per-user overrides. Eligible
+  monthly and annual Cloud compute starts at $10 per month equivalent; Manage,
+  PAYG and top-ups are excluded. Program guidance lives beside the referral lists,
+  with illustrated empty states, a two-step discount and plan picker, monthly/yearly
+  eligibility enforced at checkout, encrypted manual payout accounts with immutable
+  request destinations, payment-method guidance and a screenshot
+  walkthrough in the docs. The program remains off until the provider and
+  its explicit policy grant are configured.
+- **Review shared environment edits** — preview which services inherit an edited
+  project variable, then save shared values and service overrides together. Stale
+  reviews are rejected inside the write transaction; project write access is
+  required, and saving alone does not restart applications.
+- **Clarify referral checkout and earnings** — retain unavailable referral codes
+  through sign-in until the customer removes them, and show commission per
+  confirmed payment with renewals limited to the program's reward period.
+
 ## 0.9.5
 
 This hotfix restores self-hosted Compose startup after the 0.9.4 update.
