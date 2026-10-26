@@ -21,6 +21,10 @@
  *   7. podman actions runner  — daemon probe fallback + runner container flags
  *                              + failed-session retry + bot rerun admission +
  *                              heartbeat sweep (openship-actions-runner-podman-fixes.md)
+ *   8. self-app api domain    — api.<box-domain> may route the admin API port
+ *                              (0.9.5 guard exempts the dashboard only)
+ *   9. host-key from= own IP  — provisioner allowlists the box's own IPv4
+ *                              (pasta-forwarded channel source, podman VPS)
  *
  * WHEN UPSTREAM ADOPTS THE SAME FIX: resolve the merge by taking THEIR version
  * and delete that check here. Every merged upstream PR shrinks the fork back
@@ -215,6 +219,33 @@ check(
   "reserveDemand lost noteDispatchSkip — jobs sit undispatched silently again (the frozen-dispatch incident shape).",
 );
 
+// ── Patch 8: self-app may route its own admin API port ──────────────────────
+// 0.9.5 refuses public routes at reserved loopback ports (admin API, dashboard,
+// OpenResty mgmt) with a self-app exemption for the dashboard ONLY. Our box also
+// fronts the admin API on api.<domain> through the edge (operator's choice on a
+// single-tenant self-hosted install; what 0.9.3 did before the guard existed).
+const projectRouteTs = read("packages/platform/src/engine/modules/domains/project-route.service.ts") ?? "";
+check(
+  "patch 8 (self-app api domain exempt)",
+  projectRouteTs.includes("const ownApi = opts.isSelfApp && port === env.PORT;") &&
+    projectRouteTs.includes("!ownDashboard && !ownApi"),
+  "shouldRefuseLoopbackRoute lost the self-app env.PORT exemption — api.<box-domain> 502s again ('refusing reserved loopback upstream port' for a public route).",
+);
+
+// ── Patch 9: host-executor key from= includes the box's own IP ───────────────
+// Rootless podman's pasta gateway forwards the container→host channel through
+// the host stack, so sshd attributes the connection to the box's own primary
+// IPv4 — outside the RFC1918-only from= list the provisioner writes. Without
+// this, every (re)provision silently breaks the channel again.
+const composeCliTs = read("apps/cli/src/lib/compose.ts") ?? "";
+check(
+  "patch 9 (host key from= includes own IP)",
+  composeCliTs.includes("function ownPrimaryIpv4()") &&
+    composeCliTs.includes("function hostKeyFromList()") &&
+    composeCliTs.includes("from=\"${hostKeyFromList()}\""),
+  "hostKeyAuthLine lost the own-IP from= extension — a re-provision on the podman VPS re-breaks the container→host SSH channel (correct key, 'not from a permitted host').",
+);
+
 if (failures.length > 0) {
   console.error("\n✖ fork patch guard: a patch no longer looks intact after the merge.\n");
   for (const f of failures) console.error(`  - ${f}`);
@@ -226,5 +257,5 @@ if (failures.length > 0) {
   process.exit(1);
 }
 console.log(
-  "✔ fork patch guard: all seven patches intact (extrahosts JSON, builder fallback, nginx Connection map, fork badge, folder-deploy endpoints, hosted-only own domain, podman actions runner).",
+  "✔ fork patch guard: all nine patches intact (extrahosts JSON, builder fallback, nginx Connection map, fork badge, folder-deploy endpoints, hosted-only own domain, podman actions runner, self-app api domain, host-key from= own IP).",
 );

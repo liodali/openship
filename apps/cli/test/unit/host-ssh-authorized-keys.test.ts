@@ -42,8 +42,12 @@ describe("rewriteHostAuthorizedKeys", () => {
   it("restricts the grant to the docker bridge, keeping only the two capabilities we use", () => {
     const out = rewriteHostAuthorizedKeys("", PUB);
     // Source-restricted: an unrestricted key is a login from anywhere sshd
-    // accepts, which on a VPS is the internet.
-    expect(out).toContain('from="172.16.0.0/12,192.168.0.0/16,10.0.0.0/8,127.0.0.1"');
+    // accepts, which on a VPS is the internet. FORK: the box's own primary
+    // IPv4 may follow the RFC1918 list (pasta-forwarded channel source on
+    // rootless podman), so assert the prefix, not the whole from= value.
+    const fromMatch = out.match(/from="([^"]+)"/);
+    expect(fromMatch).not.toBeNull();
+    expect(fromMatch![1].startsWith("172.16.0.0/12,192.168.0.0/16,10.0.0.0/8,127.0.0.1")).toBe(true);
     // Fail-closed baseline: agent forwarding, X11 and ~/.ssh/rc stay off, and so
     // does anything OpenSSH adds later.
     expect(out).toContain("restrict");

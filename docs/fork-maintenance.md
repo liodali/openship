@@ -27,7 +27,7 @@ Files that make this up:
 | `.github/workflows/fork-sync.yml`   | the worker: daily merge, guards, push, chain images + CLI                              |
 | `.github/workflows/fork-images.yml` | build `openship-api/dashboard/edge` → our registry (also on manual push to main) |
 | `.github/workflows/fork-cli.yml`    | build the `openship` CLI → GitHub release assets (also on manual push to main)   |
-| `scripts/fork/patch-guard.mjs`      | structural check that the seven patches survived the merge (3 Podman + fork badge + folder-deploy endpoints + hosted-only own domain + podman actions runner) |
+| `scripts/fork/patch-guard.mjs`      | structural check that the nine patches survived the merge (3 Podman + fork badge + folder-deploy endpoints + hosted-only own domain + podman actions runner + self-app api domain + host-key from= own IP) |
 
 ## Where the pipeline runs
 
@@ -256,6 +256,19 @@ Public. Nothing in this repo changes — the same refs work anonymous.
 
 ## Known limits
 
+- **0.9.5 sync learnings (2026-10-26)**: three regressions surfaced when the
+  0.9.5 reconcile recreated the whole stack. (1) Edge preflight's new Swarm
+  probe breaks on the docker→podman shim — the shim now answers `null` for any
+  `.Swarm` format (podman has no swarm); keep that when regenerating the shim.
+  (2) Latent `.env` port drift (DASHBOARD_PORT/API_PORT +1 from an old
+  auto-shift) applied on recreate while stored edge routes still named the old
+  ports — if a domain 502s after an update, compare the edge route's upstream
+  port with `podman port <svc>` before anything else. (3) 0.9.5's
+  `host-gateway` alias makes pasta forward the container→host channel so sshd
+  sees the box's OWN public IP — patch 9 appends it to the provisioned `from=`
+  list; the VPS `authorized_keys` also carries it by hand until the next
+  re-provision. The `api.<box-domain>` 502 after 0.9.5 is patch 8 (upstream
+  guards reserved loopback ports; we exempt the self-app's admin API).
 - Images are `linux/amd64` only (the VPS is x86_64). Add a platform axis to
   `fork-images.yml` (and native arm runners, like upstream's workflow does)
   before pointing an arm box at the registry.

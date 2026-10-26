@@ -342,6 +342,13 @@ export interface ReapplyProjectLiveRoutesOptions {
  * API, the dashboard, or the unauthenticated OpenResty mgmt port) would
  * expose an internal service to the internet. `isSelfApp` is the one
  * exception — the control-plane project's own route to itself.
+ *
+ * FORK: the exemption covers BOTH self-app surfaces, not just the dashboard.
+ * Upstream exempts only the dashboard port; our self-hosted box also fronts
+ * the admin API on its own domain (api.<box-domain> → 127.0.0.1:API_PORT)
+ * behind the edge's TLS — the operator's explicit choice on a single-tenant
+ * install, and what 0.9.3 did before the guard existed. API auth is still
+ * required; only the loopback-refusal is waived for the self-app.
  */
 export function shouldRefuseLoopbackRoute(
   host: string,
@@ -349,7 +356,9 @@ export function shouldRefuseLoopbackRoute(
   opts: ReapplyProjectLiveRoutesOptions = {},
 ): boolean {
   const ownDashboard = opts.isSelfApp && port === (env.OPENSHIP_DASHBOARD_PORT || 3001);
-  return isLoopbackHost(host) && isReservedLoopbackPort(port) && !ownDashboard;
+  // FORK: self-app may route its own admin API port (env.PORT) publicly.
+  const ownApi = opts.isSelfApp && port === env.PORT;
+  return isLoopbackHost(host) && isReservedLoopbackPort(port) && !ownDashboard && !ownApi;
 }
 
 export async function reapplyProjectLiveRoutes(

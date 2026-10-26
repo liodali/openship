@@ -39,6 +39,9 @@ export function createRemoteDomainOperations(http: HttpClient): DomainOperations
       uploadCert: { method: "POST", path: id => `${domain(id)}/certificate`, envelope: "data" },
     }),
     ...createRemoteScopedOperations(http, DomainScopedSchemas, {
+      // Upstream's client omits listAll although DomainScopedSchemas requires it
+      // (tsc fails apps/cli) and the API serves it — GET /domains/inventory.
+      listAll: { method: "GET", path: () => "/domains/inventory", envelope: "data" },
       preview: { method: "POST", path: () => "/domains/preview", envelope: "data" },
       renewAllSsl: { method: "POST", path: () => "/domains/renew-all", envelope: "data" },
       verifyPending: { method: "POST", path: () => "/domains/verify-pending", envelope: "data" },

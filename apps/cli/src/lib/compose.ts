@@ -26,7 +26,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { homedir, userInfo } from "node:os";
+import { homedir, networkInterfaces, userInfo } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 
 import {
@@ -854,8 +854,35 @@ const HOST_KEY_COMMENT = "openship-host-executor";
  * That is a materially bigger blast radius than the docker socket this channel is
  * justified against: the socket is only reachable from inside the container, while
  * an unrestricted key works from anywhere the private half turns up.
+ *
+ * FORK (podman/pasta): under rootless podman the `host-gateway` alias resolves via
+ * pasta, which forwards the connection THROUGH the host stack — sshd then sees the
+ * source as the host's OWN primary IPv4 (the box's public/LAN address), not an
+ * RFC1918 bridge address. Observed on the fork's VPS (0.9.5): "correct key but not
+ * from a permitted host" with ip=<the box itself>. The host's own address is
+ * therefore appended to the allowlist at provision time — it is as local as
+ * loopback for this purpose (the packet originated on this machine).
  */
 const HOST_KEY_FROM = "172.16.0.0/12,192.168.0.0/16,10.0.0.0/8,127.0.0.1";
+
+/**
+ * FORK: the box's own primary IPv4 (first non-internal address), or null. Under
+ * rootless podman the container→host channel dials out through pasta and sshd
+ * attributes it to this address, so the provisioned `from=` list must include it.
+ */
+function ownPrimaryIpv4(): string | null {
+  for (const ifaces of Object.values(networkInterfaces())) {
+    for (const iface of ifaces ?? []) {
+      if (iface.family === "IPv4" && !iface.internal) return iface.address;
+    }
+  }
+  return null;
+}
+
+function hostKeyFromList(): string {
+  const own = ownPrimaryIpv4();
+  return own && !HOST_KEY_FROM.split(",").includes(own) ? `${HOST_KEY_FROM},${own}` : HOST_KEY_FROM;
+}
 
 /**
  * The authorized_keys line for our public key.
@@ -884,7 +911,7 @@ const HOST_KEY_FROM = "172.16.0.0/12,192.168.0.0/16,10.0.0.0/8,127.0.0.1";
  * target is a Docker bridge IP from a range that is only known at deploy time.
  */
 function hostKeyAuthLine(pub: string): string {
-  return `from="${HOST_KEY_FROM}",restrict,pty,port-forwarding ${pub}`;
+  return `from="${hostKeyFromList()}",restrict,pty,port-forwarding ${pub}`;
 }
 
 /**
