@@ -1,3 +1,4 @@
+import { composeSourceRevision } from "@repo/platform/engine/modules/deployments/compose-review";
 import { createConfigurationSecrets } from "@repo/db/configuration-secrets";
 import { createEncryption } from "@repo/db/encryption";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -33,6 +34,7 @@ const {
   kickoffBuild: vi.fn(),
   queueActionDeployment: vi.fn(),
   repos: {
+    domain: { listByProject: vi.fn(async (): Promise<unknown[]> => []) },
     routeProtection: { list: vi.fn(async () => []) },
     actions: { deploymentForActionRequest: vi.fn() },
     projectConnection: { listByTarget: vi.fn(async () => []) },
@@ -702,6 +704,19 @@ describe("triggerDeployment", () => {
     kickoffBuild.mockResolvedValue("session-1");
   });
 
+  it("rejects a stale wizard revision even after another review advanced the saved baseline", async () => {
+    const original = criticalApiService();
+    const current = { ...original, image: "example/api:2" };
+    const state = installStatefulComposeRepo({ ...current, importedSpec: toComposeSpec(current) });
+    resolveProjectInfo.mockResolvedValue({ services: [current] });
+    await expect(requestBuildAccess(ctx, {
+      projectId: "project-1", composeRevision: composeSourceRevision("project-1", [original]),
+    })).rejects.toMatchObject({ statusCode: 409, code: "COMPOSE_REVIEW_REQUIRED" });
+    expect(state.writes).toEqual([]);
+    expect(repos.deployment.create).not.toHaveBeenCalled();
+    expect(kickoffBuild).not.toHaveBeenCalled();
+  });
+
   it.each(
     ["manual", "retry", "latest retry"].flatMap((entry) =>
       ["compose", "single"].map((mode) => ({ entry, mode })),
@@ -722,8 +737,10 @@ describe("triggerDeployment", () => {
       repos.project.findById.mockResolvedValue(project);
       const currentEnv = { MANUAL_ENV: encrypt("current-setting") };
       repos.project.getEnvMap.mockResolvedValue(currentEnv);
-      const state =
-        mode === "compose" ? installStatefulComposeRepo(criticalApiService()) : undefined;
+      const selected = { ...criticalApiService(), image: "example/api:selected-commit" };
+      const state = mode === "compose" ? installStatefulComposeRepo({
+        ...selected, importedSpec: toComposeSpec(selected),
+      }) : undefined;
       resolveProjectInfo.mockImplementation(async ({ branch }) => {
         // HEAD has since removed the deployment's Compose file. Reading it
         // must not block rebuilding the selected commit where it still exists.
@@ -1078,7 +1095,14 @@ describe("triggerDeployment", () => {
           actualPipeline.resolveServicePipelineMode,
         );
 
-        await triggerDeployment(ctx, { projectId: "project-1" });
+        const project = await repos.project.findById("project-1");
+        const preview = await actualPrepare.resolveProjectInfo({
+          source: "local", path: localPath, rootDirectory: project.rootDirectory ?? undefined,
+          composePath: project.composePath?.trim() || undefined, expectCompose: true,
+        });
+        await requestBuildAccess(ctx, {
+          projectId: "project-1", composeRevision: composeSourceRevision("project-1", preview.services!),
+        });
 
         expect(state.stored().environment).toEqual({
           SOURCE_VALUE: "refreshed",
@@ -1170,7 +1194,14 @@ describe("triggerDeployment", () => {
           actualPipeline.resolveServicePipelineMode,
         );
 
-        await triggerDeployment(ctx, { projectId: "project-1" });
+        const project = await repos.project.findById("project-1");
+        const preview = await actualPrepare.resolveProjectInfo({
+          source: "local", path: localPath, rootDirectory: project.rootDirectory ?? undefined,
+          composePath: project.composePath?.trim() || undefined, expectCompose: true,
+        });
+        await requestBuildAccess(ctx, {
+          projectId: "project-1", composeRevision: composeSourceRevision("project-1", preview.services!),
+        });
 
         expect(state.stored().environment).toEqual({
           SOURCE_VALUE: "refreshed",
@@ -1222,6 +1253,11 @@ describe("triggerDeployment", () => {
       },
     ]);
 
+    const [saved] = await repos.service.listByProject("project-1");
+    const source = { ...saved, importedSpec: undefined };
+    saved.importedSpec = toComposeSpec(source);
+    resolveProjectInfo.mockResolvedValue({ services: [source] });
+
     await triggerDeployment(ctx, {
       projectId: "project-1",
       trigger: "webhook",
@@ -1254,6 +1290,11 @@ describe("triggerDeployment", () => {
         importedSpec: { image: "ghcr.io/acme/api:", buildArgs: {} },
       },
     ]);
+
+    const [saved] = await repos.service.listByProject("project-1");
+    const source = { ...saved, importedSpec: undefined };
+    saved.importedSpec = toComposeSpec(source);
+    resolveProjectInfo.mockResolvedValue({ services: [source] });
 
     await triggerDeployment(ctx, {
       projectId: "project-1",
@@ -1585,7 +1626,7 @@ describe("triggerDeployment", () => {
         ...composeServices[0],
         projectId: "project-1",
         // A real baseline written before #689 has no `buildArgs` key at all.
-        importedSpec: { image: null, build: ".", dockerfile: "Dockerfile" },
+        importedSpec: (() => { const base = toComposeSpec(composeServices[0]); delete base.buildArgs; return base; })(),
       },
     ]);
 
@@ -1616,7 +1657,7 @@ describe("triggerDeployment", () => {
       {
         ...composeServices[0],
         projectId: "project-1",
-        importedSpec: { buildArgs: { APP_PACKAGE: "@myorg/web" } },
+        importedSpec: toComposeSpec(composeServices[0]),
       },
     ]);
 
@@ -1649,7 +1690,7 @@ describe("triggerDeployment", () => {
         {
           ...composeServices[0],
           projectId: "project-1",
-          importedSpec: { buildArgs: { APP_PACKAGE: "@myorg/web" } },
+          importedSpec: toComposeSpec(composeServices[0]),
         },
       ]);
 
@@ -1686,7 +1727,7 @@ describe("triggerDeployment", () => {
       {
         ...composeServices[0],
         projectId: "project-1",
-        importedSpec: { buildArgs: { APP_PACKAGE: "@myorg/web" } },
+        importedSpec: toComposeSpec(composeServices[0]),
       },
     ]);
     resolveProjectInfo.mockRejectedValueOnce(
@@ -1727,6 +1768,33 @@ describe("triggerDeployment", () => {
       expect(kickoffBuild).not.toHaveBeenCalled();
     },
   );
+
+  it("falls back to stored image-only Compose services when localPath is unreadable with ENOENT (#1583)", async () => {
+    const enoent = Object.assign(new Error("ENOENT: no such file or directory, stat '/home/ubuntu/calrs'"), {
+      code: "ENOENT",
+    });
+    repos.project.findById.mockResolvedValue(baseProject({
+      composePath: "docker-compose.yml",
+      localPath: "/home/ubuntu/calrs",
+      gitOwner: null,
+      gitRepo: null,
+      gitProvider: "local",
+      gitUrl: null,
+    }));
+    repos.service.listByProject.mockResolvedValue([
+      {
+        ...composeServices[0],
+        build: undefined,
+        dockerfile: undefined,
+        image: "ghcr.io/olivierlambert/calrs:latest",
+      },
+    ]);
+    resolveProjectInfo.mockRejectedValueOnce(enoent);
+    await expect(triggerDeployment(ctx, { projectId: "project-1", branch: "main" }))
+      .resolves.toBeDefined();
+    expect(repos.deployment.create).toHaveBeenCalled();
+    expect(kickoffBuild).toHaveBeenCalled();
+  });
 
   it.each([null, "poisoned"])(
     "preserves a %s legacy Compose value without blocking code-only webhooks (#893)",
@@ -1770,7 +1838,7 @@ describe("triggerDeployment", () => {
     },
   );
 
-  it("keeps critical env through trigger reconciliation when a later preflight blocks deploy", async () => {
+  it("keeps configuration and credentials untouched until changed source is reviewed", async () => {
     const state = installStatefulComposeRepo(criticalApiService());
     repos.project.findById.mockResolvedValue(
       baseProject({
@@ -1796,7 +1864,6 @@ describe("triggerDeployment", () => {
       typeof import("@repo/platform/engine/modules/deployments/build-pipeline")
     >("@repo/platform/engine/modules/deployments/build-pipeline");
     resolveServicePipelineMode.mockImplementationOnce(actualPipeline.resolveServicePipelineMode);
-    runPreflightChecks.mockRejectedValueOnce(new Error("blocked after compose reconciliation"));
 
     await expect(
       triggerDeployment(ctx, {
@@ -1805,22 +1872,13 @@ describe("triggerDeployment", () => {
         commitSha: "1eeaf7692a19ee6e7ecb64b9d1a5c3ee7c0ac2f5",
         changedPaths: ["compose.yml"],
       }),
-    ).rejects.toThrow("blocked after compose reconciliation");
+    ).rejects.toMatchObject({ statusCode: 409, code: "COMPOSE_REVIEW_REQUIRED" });
 
-    // Source changes apply before preflight, but a failed deployment cannot
-    // erase the configuration needed by the next attempt.
     expect(state.stored().environment).toEqual(criticalApiEnvironment);
-    expect(state.stored().image).toBe("example/api:2");
-    expect(state.stored().importedSpec).toEqual(toComposeSpec(proposed));
-    expect(state.stored().driftSpec).toBeNull();
-    expect(runPreflightChecks).toHaveBeenCalledWith(
-      expect.any(Object),
-      expect.objectContaining({
-        composeServices: [
-          expect.objectContaining({ name: "api", environment: criticalApiEnvironment }),
-        ],
-      }),
-    );
+    expect(state.stored().image).toBe("example/api:1");
+    expect(state.stored().importedSpec).toEqual(criticalApiService().importedSpec);
+    expect(state.writes).toEqual([]);
+    expect(runPreflightChecks).not.toHaveBeenCalled();
     expect(repos.deployment.create).not.toHaveBeenCalled();
     expect(kickoffBuild).not.toHaveBeenCalled();
   });
@@ -2391,7 +2449,7 @@ describe("redeployBuildSession environment snapshot", () => {
     );
   });
 
-  it("queues a redeploy with preserved env when the new Compose file deletes critical keys", async () => {
+  it("requires review without changing saved env when the new Compose file deletes critical keys", async () => {
     const project = baseProject({
       activeDeploymentId: "dep-old",
       composePath: "compose.yml",
@@ -2413,25 +2471,14 @@ describe("redeployBuildSession environment snapshot", () => {
     resolveProjectInfo.mockResolvedValue({ services: [proposed] });
     getLatestCommit.mockResolvedValue({ sha: "new-sha", message: "remove legacy inline env" });
 
-    await redeployBuildSession(ctx, "dep-old");
-
+    await expect(redeployBuildSession(ctx, "dep-old")).rejects.toMatchObject({
+      statusCode: 409, code: "COMPOSE_REVIEW_REQUIRED",
+    });
     expect(state.stored().environment).toEqual(criticalApiEnvironment);
-    expect(state.stored().driftSpec).toBeNull();
-    expect(state.stored().image).toBe("example/api:2");
-    expect(repos.deployment.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        commitSha: "new-sha",
-        meta: expect.objectContaining({
-          composeServices: [
-            expect.objectContaining({ name: "api", environment: criticalApiEnvironment }),
-          ],
-        }),
-      }),
-    );
-    expect(kickoffBuild).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "project-1" }),
-      expect.objectContaining({ id: "dep-new" }),
-    );
+    expect(state.stored().image).toBe("example/api:1");
+    expect(state.writes).toEqual([]);
+    expect(repos.deployment.create).not.toHaveBeenCalled();
+    expect(kickoffBuild).not.toHaveBeenCalled();
   });
 });
 
@@ -2535,6 +2582,41 @@ describe("requestBuildAccess — folder-upload compose services", () => {
     ).rejects.toMatchObject({ statusCode: 404, code: "SERVER_TARGET_UNAVAILABLE" });
 
     expect(repos.service.reconcileFromCompose).not.toHaveBeenCalled();
+    expect(repos.service.syncFromCompose).not.toHaveBeenCalled();
+    expect(repos.deployment.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects removing another service's redirect target before deployment writes", async () => {
+    const uploadSessionId = seedSession();
+    repos.service.listByProject.mockResolvedValue([
+      {
+        ...scannedServices[0],
+        id: "svc-api",
+        exposed: true,
+        customDomain: "old.example.com",
+        domainType: "custom",
+      },
+    ]);
+    repos.domain.listByProject.mockResolvedValueOnce([
+      { hostname: "old.example.com", serviceId: "svc-api", redirectTo: null },
+      { hostname: "www.old.example.com", serviceId: "svc-alias", redirectTo: "old.example.com" },
+    ]);
+
+    await expect(
+      requestBuildAccess(ctx, {
+        projectId: "project-1",
+        uploadSessionId,
+        services: [
+          {
+            ...scannedServices[0],
+            exposed: true,
+            publicEndpoints: [
+              { port: "8080", domainType: "custom", customDomain: "new.example.com" },
+            ],
+          },
+        ],
+      }),
+    ).rejects.toThrow("can only redirect to another domain");
     expect(repos.service.syncFromCompose).not.toHaveBeenCalled();
     expect(repos.deployment.create).not.toHaveBeenCalled();
   });
@@ -2870,6 +2952,7 @@ describe("requestBuildAccess — folder-upload compose services", () => {
 
     await requestBuildAccess(ctx, {
       projectId: "project-1",
+      composeRevision: composeSourceRevision("project-1", [refreshed]),
       envVars: { MY_VERSION: "1.2.3" },
       services: [initial] as any,
       serviceDeploymentMode: "services",

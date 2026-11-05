@@ -16,6 +16,7 @@ import { repos, type Deployment, type Domain, type Project, type Service } from 
 import { deploymentForcesImagePull, deploymentImagePullPolicy, isMutableImageRef } from "../image-pull-policy";
 import type { DeploymentConfigSnapshot } from "../build.service";
 import { assertSecurityUpdateEnvironment } from "../../updates/security-refresh-guard";
+import { assertDeployVolumePolicy } from "../host-mount-policy";
 import { assertCloudDeploymentLimits } from "../../../lib/plan-guard";
 import { resolveInheritedResources, resolveRuntimeResources } from "../../../lib/resources";
 import { posix as pathPosix } from "node:path";
@@ -30,7 +31,9 @@ import {
   resolveProjectVolumes,
   sanitizeProxySettings,
   composeNamespaceDependencies,
+  parseComposeNamespace,
   composeNamespaceRef,
+  validateComposeNamespaces,
   ownsNetworkEndpoint,
   parseContainerHosts,
   UNLIMITED_RESOURCES,
@@ -362,14 +365,12 @@ export function resolveServiceNamespaces(
     ["network", advanced?.networkMode, "network_mode"],
     ["pid", advanced?.pidMode, "pid"],
   ] as const) {
-    const ref = composeNamespaceRef(value, field);
+    const parsed = parseComposeNamespace(value, field);
+    if (parsed && !parsed.ok) return { error: parsed.reason };
+    const ref = parsed?.ref;
     if (!ref) continue;
     if (ref.kind === "none") {
       namespaces[key] = "none";
-      continue;
-    }
-    if (ref.kind === "container") {
-      namespaces[key] = `container:${ref.container}`;
       continue;
     }
     if (ref.service === svc.name) {
@@ -379,7 +380,7 @@ export function resolveServiceNamespaces(
       return {
         error:
           `${field}: service:${ref.service} is not a service in this stack. ` +
-          `Reference one of its own services, or use container:<id>.`,
+          `Reference one of its own services.`,
       };
     }
     const containerId = containerIdByServiceName.get(ref.service);
@@ -701,6 +702,7 @@ export function createServiceRuntimeConfig(opts: {
   service: Service;
   image: string;
   environment: Record<string, string>;
+  runtime?: MultiServiceRuntimeAdapter;
   resources?: ResourceConfig;
   /** Docker-ready shared namespaces (`container:<id>` / `none`), pre-resolved. */
   namespaces?: { network?: string; pid?: string };
@@ -711,8 +713,11 @@ export function createServiceRuntimeConfig(opts: {
    * cutover, so activation must not contact the registry a second time. */
   imageAlreadyPrepared?: boolean;
 }): MultiServiceDeployConfig {
+  validateComposeNamespaces(opts.service.advanced);
   const { project, dep, service, image, environment, resources, namespaces } =
     opts;
+  const volumes = appRowVolumes(project, service);
+  assertDeployVolumePolicy(volumes, opts.runtime);
   // Monorepo sub-apps store their long-running process in `startCommand`;
   // compose services in `command`. The DB invariant is that compose rows
   // never have `startCommand` set, so a single `??` chain covers both:
@@ -733,7 +738,7 @@ export function createServiceRuntimeConfig(opts: {
     image,
     ports: (service.ports as string[]) ?? [],
     environment,
-    volumes: appRowVolumes(project, service),
+    volumes,
     namespaceVolumes: service.namespaceVolumes,
     command: runtimeCommand,
     commandArgv,
@@ -1143,7 +1148,10 @@ async function deployComposeServicesCore(
   // Validate the cohort before pulling images or replacing any service. Stored
   // aliases also arrive through retained snapshots, not only validated writes.
   for (const service of enabled) {
+    // A selected dependent may share a carried provider, so validate every provider too.
+    validateComposeNamespaces(service.advanced);
     if (!opts?.strictScope || !opts.targetServiceIds || opts.targetServiceIds.has(service.id)) {
+      assertDeployVolumePolicy(appRowVolumes(project, service), runtime);
       parseContainerHosts(service.advanced?.extraHosts);
       validateComposeGpuConfig(service.advanced);
       parseComposeShmSize(service.advanced?.shmSize);
@@ -2537,6 +2545,7 @@ async function deployComposeServicesCore(
               : carried.allocatedResources,
             status: "success",
             imageRef: carried.imageRef ?? null,
+            imageDigest: carried.imageDigest ?? null,
             hostPort: carriedHostPort,
             hostPorts: carriedHostPorts,
             ip: carriedIp,
@@ -3192,6 +3201,7 @@ async function deployComposeServicesCore(
       const serviceRuntimeConfig = createServiceRuntimeConfig({
         project,
         dep,
+        runtime,
         service: svc,
         image: preparedImages.get(svc.id)?.deploymentRef ?? image,
         environment: mergedEnv,

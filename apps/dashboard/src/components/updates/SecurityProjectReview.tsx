@@ -11,6 +11,8 @@ import { getApiErrorMessage, getApiRequestScopeVersion } from "@/lib/api/client"
 import { updatesApi } from "@/lib/api/updates";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/Switch";
+import Link from "next/link";
+import { encodeProjectSlug } from "@/utils/repoSlug";
 
 /** One affected app inside the global advisory review; actions stay resource-scoped. */
 export function SecurityProjectReview({
@@ -176,6 +178,29 @@ export function SecurityProjectReview({
                 {evidence}
               </p>
             ))}
+            {finding.refresh && (
+              <div role="status" className="space-y-1 text-sm">
+                <p
+                  className={
+                    finding.refresh.status === "failed" ? "text-warning" : "text-muted-foreground"
+                  }
+                >
+                  {finding.refresh.status === "failed"
+                    ? (finding.refresh.error ?? copy.refreshFailed)
+                    : finding.refresh.status === "awaiting_actions"
+                      ? copy.refreshAwaitingActions
+                      : copy.refreshInProgress}
+                </p>
+                {finding.refresh.deploymentId && (
+                  <Link
+                    className="underline underline-offset-4"
+                    href={`/build/${finding.refresh.deploymentId}`}
+                  >
+                    {copy.viewRefresh}
+                  </Link>
+                )}
+              </div>
+            )}
             {finding.refreshBlockedReason && (
               <p className="text-sm text-warning">
                 {finding.sourceRedeployRequired
@@ -183,7 +208,10 @@ export function SecurityProjectReview({
                   : finding.refreshBlockedReason}
               </p>
             )}
-            <details className="text-sm text-muted-foreground">
+            <details
+              className="text-sm text-muted-foreground"
+              open={finding.runtimeUpgradeRequired}
+            >
               <summary className="cursor-pointer">{copy.details}</summary>
               <p className="mt-2 leading-relaxed">{finding.message}</p>
             </details>
@@ -222,6 +250,19 @@ export function SecurityProjectReview({
                   }
                 >
                   {copy.openSourceRedeploy}
+                </Button>
+              )}
+              {(finding.runtimeUpgradeRequired || finding.imageChangeRequired) && (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() =>
+                    router.push(
+                      `/deploy/${encodeProjectSlug(projectId)}?${new URLSearchParams({ projectId, mode: "config" })}`,
+                    )
+                  }
+                >
+                  {copy.openRuntimeConfiguration}
                 </Button>
               )}
             </div>

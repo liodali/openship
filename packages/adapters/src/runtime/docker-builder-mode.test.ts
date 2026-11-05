@@ -16,6 +16,20 @@ import {
   resolveDockerodeBuilderMode,
 } from "./docker-builder-mode";
 
+// buildViaDockerode builds through buildDockerImage (upstream #1488's explicit
+// BuildKit session with gRPC health). These tests drive the path with a fake
+// dockerode client, so route the helper straight to the fake's buildImage:
+// a /session 404 in production rejects with exactly the error shapes the
+// fixtures below simulate, and the classic branch is a plain buildImage call.
+vi.mock("./docker-buildkit-session", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./docker-buildkit-session")>();
+  return {
+    ...actual,
+    buildDockerImage: (docker: { buildImage: unknown }, context: unknown, options: unknown) =>
+      (docker.buildImage as CallableFunction)(context, options),
+  };
+});
+
 // The module under test is deliberately tiny; these tests pin the two contracts
 // the build path leans on: which mode an env var resolves to (everything else
 // is "auto"), and exactly which failure shapes authorize a BuildKit→classic

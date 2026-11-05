@@ -1,14 +1,8 @@
-import { and, asc, desc, eq, exists, gt, inArray, isNull, lt, or, sql } from "drizzle-orm";
+import { and, asc, eq, exists, gt, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { actionRunnerAdmitted } from "./action-run-admission";
-import {
-  AppError,
-  actionRunnerMismatch,
-  ACTIONS_MAX_LOG_BYTES,
-  ACTIONS_RUNNER_SESSION_ATTEMPTS,
-  ACTIONS_RUNNER_SESSION_RETRY_MS,
-} from "@repo/core";
+import { AppError, actionRunnerMismatch } from "@repo/core";
 import type { Database } from "../client";
 import {
   actionWorkflow,
@@ -17,7 +11,6 @@ import {
   actionRunner,
   actionRunnerSession,
   actionCommand,
-  actionEvent,
 } from "../schema/actions";
 import { organization } from "../schema/organization";
 import { actionRunnerAllocationCount } from "./action-runner-allocation";
@@ -553,32 +546,71 @@ export function createActionGitHubRepo(db: Database) {
             runner.config.maxParallel
         )
           return;
-        // A provisioning failure retries with a bounded backoff instead of
-        // parking the job until someone re-pushes the tag: the demand stays
-        // queued on GitHub's side, so it becomes eligible again once the
-        // previous session has fully cleaned and the backoff window has
-        // passed. Still never a paid-VM loop — attempts are capped, and an
-        // uncleaned session (running or cleaning) always blocks.
-        const previous = await tx
-          .select({
-            cleanedAt: actionRunnerSession.cleanedAt,
-            error: actionRunnerSession.error,
-            updatedAt: actionRunnerSession.updatedAt,
-          })
+        // A provisioning failure needs explicit retry/rerun, never a paid VM loop.
+        // Registrations match by label, so GitHub may hand a session another
+        // queued job. That session no longer serves this demand, nor do its errors.
+        const [previous] = await tx
+          .select()
           .from(actionRunnerSession)
           .where(
             and(
               eq(actionRunnerSession.organizationId, value.organizationId),
               eq(actionRunnerSession.demandJobId, value.demandJobId),
+              or(
+                isNull(actionRunnerSession.admittedJobId),
+                eq(actionRunnerSession.admittedJobId, value.demandJobId),
+              ),
+              or(
+                isNull(actionRunnerSession.cleanedAt),
+                sql`${actionRunnerSession.error} IS NOT NULL`,
+              ),
             ),
           )
-          .orderBy(desc(actionRunnerSession.createdAt));
-        if (previous.some((row) => !row.cleanedAt)) return;
-        if (previous.length >= ACTIONS_RUNNER_SESSION_ATTEMPTS) return;
+          .limit(1);
+        if (previous) return;
+        // A registration whose own demand was taken elsewhere can serve this
+        // job only if its runner passes this workflow's current admission checks.
+        const spares = await tx
+          .select({ spec: actionRunnerSession.spec, runner: actionRunner })
+          .from(actionRunnerSession)
+          .innerJoin(
+            actionJob,
+            and(
+              eq(actionJob.id, actionRunnerSession.demandJobId),
+              eq(actionJob.organizationId, actionRunnerSession.organizationId),
+            ),
+          )
+          .innerJoin(
+            actionRunner,
+            and(
+              eq(actionRunner.id, actionRunnerSession.runnerId),
+              eq(actionRunner.organizationId, actionRunnerSession.organizationId),
+            ),
+          )
+          .where(
+            and(
+              eq(actionRunnerSession.organizationId, value.organizationId),
+              eq(actionRunnerSession.repoOwner, value.repoOwner),
+              eq(actionRunnerSession.repoName, value.repoName),
+              inArray(actionRunnerSession.state, ["preparing", "listening"]),
+              isNull(actionRunnerSession.admittedJobId),
+              isNull(actionRunnerSession.cancelRequestedAt),
+              isNull(actionRunnerSession.cleanedAt),
+              or(sql`${actionJob.status} <> 'queued'`, sql`${actionJob.finishedAt} IS NOT NULL`),
+            ),
+          );
+        const wantedSpec = job.spec;
+        const wanted = wantedSpec.labels.map((label) => label.toLowerCase());
         if (
-          previous.length > 0 &&
-          previous[0]!.error !== null &&
-          Date.now() - previous[0]!.updatedAt.getTime() < ACTIONS_RUNNER_SESSION_RETRY_MS
+          spares.some(({ spec, runner: spare }) => {
+            if (
+              !actionRunnerAdmitted(workflow, run, spare) ||
+              actionRunnerMismatch(spare.capabilities, spare.config, wantedSpec)
+            )
+              return false;
+            const offered = spec.labels.map((label) => label.toLowerCase());
+            return wanted.every((label) => offered.includes(label));
+          })
         )
           return;
         return (await tx.insert(actionRunnerSession).values(value).returning())[0];
@@ -596,90 +628,6 @@ export function createActionGitHubRepo(db: Database) {
         )
         .orderBy(asc(actionRunnerSession.updatedAt))
         .limit(100);
-    },
-    /** The GitHub supervisor journals its runner's stdout — the LIVE job log.
-     * reconcileSession appends it under the session's lease (the openship
-     * controller's appendEvents proves ownership with a run lease the GitHub
-     * path never holds). Same byte cap and dedupe rules as that path. */
-    async appendRunnerSessionEvents(
-      org: string,
-      jobId: string,
-      leaseOwner: string,
-      incoming: Array<typeof actionEvent.$inferSelect["event"]>,
-    ) {
-      if (!incoming.length) return;
-      await db.transaction(async (tx) => {
-        const [job] = await tx
-          .select()
-          .from(actionJob)
-          .where(and(eq(actionJob.organizationId, org), eq(actionJob.id, jobId)))
-          .for("update");
-        if (!job) return;
-        const [session] = await tx
-          .select({ id: actionRunnerSession.id })
-          .from(actionRunnerSession)
-          .where(
-            and(
-              eq(actionRunnerSession.organizationId, org),
-              eq(actionRunnerSession.leaseOwner, leaseOwner),
-              gt(actionRunnerSession.leaseUntil, new Date()),
-              or(
-                eq(actionRunnerSession.demandJobId, jobId),
-                eq(actionRunnerSession.admittedJobId, jobId),
-              ),
-            ),
-          )
-          .limit(1);
-        if (!session) return;
-        let bytes = job.logBytes;
-        let sequence = job.lastEventSequence;
-        const values = [];
-        for (const event of incoming) {
-          if (event.sequence <= sequence) continue;
-          sequence = event.sequence;
-          const size = Buffer.byteLength(JSON.stringify(event));
-          if (event.type === "log" && bytes + size > ACTIONS_MAX_LOG_BYTES) continue;
-          bytes += size;
-          values.push({
-            id: createHash("sha256")
-              .update(`${jobId}:${event.sequence}`)
-              .digest("hex")
-              .slice(0, 24),
-            organizationId: org,
-            runId: job.runId,
-            jobId,
-            sequence,
-            event,
-          });
-        }
-        if (values.length)
-          await tx
-            .insert(actionEvent)
-            .values(values)
-            .onConflictDoNothing({ target: [actionEvent.jobId, actionEvent.sequence] });
-        await tx
-          .update(actionJob)
-          .set({ lastEventSequence: sequence, logBytes: bytes })
-          .where(and(eq(actionJob.organizationId, org), eq(actionJob.id, jobId)));
-      });
-    },
-    /** Dispatch attempts per demand job — the retry budget a run view exposes. */
-    async runnerSessionCounts(org: string, jobIds: string[]) {
-      if (!jobIds.length) return new Map<string, number>();
-      const rows = await db
-        .select({
-          demandJobId: actionRunnerSession.demandJobId,
-          attempts: sql<number>`count(*)::int`,
-        })
-        .from(actionRunnerSession)
-        .where(
-          and(
-            eq(actionRunnerSession.organizationId, org),
-            inArray(actionRunnerSession.demandJobId, jobIds),
-          ),
-        )
-        .groupBy(actionRunnerSession.demandJobId);
-      return new Map(rows.map((row) => [row.demandJobId, row.attempts]));
     },
     async admitRunnerSession(
       org: string,
