@@ -160,8 +160,16 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           export ISSUE_TITLE="[smoke] fork-drift notify channel test"
-          existing="$(gh api "repos/$REPO/issues?state=open&per_page=100" \
-            --jq '[.[] | select(.title == env.ISSUE_TITLE) | .number][0]')"
+          # The create ran one step ago; the list endpoint reads from a
+          # replica that can lag by a second or two. Poll briefly instead of
+          # failing on a stale empty page.
+          existing=""
+          for _ in 1 2 3 4 5; do
+            existing="$(gh api "repos/$REPO/issues?state=open&per_page=100" \
+              --jq '[.[] | select(.title == env.ISSUE_TITLE) | .number][0]')"
+            [ -n "$existing" ] && break
+            sleep 3
+          done
           if [ -n "$existing" ]; then
             gh api --method POST "repos/$REPO/issues/$existing/comments" \
               -F body="Notify channel verified — closing. _(fork-drift.yml smoke test)_" >/dev/null
