@@ -186,13 +186,22 @@ jobs:
         if: failure() && steps.merge.outcome == 'failure'
         env:
           GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
         run: |
-          title="upstream sync needs manual conflict resolution"
-          existing="$(gh issue list --state open --search "in:title $title" --json number --jq '.[0].number' || true)"
+          # REST, not `gh issue create/comment`: the GraphQL mutations those
+          # wrap are refused for the Actions installation token ("Resource not
+          # accessible by integration", createIssue) — the failure that turned
+          # the Oct/Nov 2026 conflicts into three silent weeks.
+          export ISSUE_TITLE="upstream sync needs manual conflict resolution"
+          existing="$(gh api "repos/$REPO/issues?state=open&per_page=100" \
+            --jq '[.[] | select(.title == env.ISSUE_TITLE) | .number][0]')"
           if [ -n "$existing" ]; then
-            gh issue comment "$existing" --body-file /tmp/issue-body.md
+            gh api --method POST "repos/$REPO/issues/$existing/comments" \
+              -F body="$(cat /tmp/issue-body.md)" >/dev/null
           else
-            gh issue create --title "$title" --body-file /tmp/issue-body.md
+            gh api --method POST "repos/$REPO/issues" \
+              -f title="upstream sync needs manual conflict resolution" \
+              -F body="$(cat /tmp/issue-body.md)" >/dev/null
           fi
 
       # A guard failure means the merge LANDED but our patches broke — different
@@ -201,6 +210,7 @@ jobs:
         if: failure() && steps.merge.outcome != 'failure' && steps.decide.outputs.merged == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
         run: |
           cat > /tmp/guard-issue.md <<'EOF'
           ## Upstream merge broke a fork patch (or its tests)
@@ -214,12 +224,17 @@ jobs:
 
           Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           EOF
-          title="upstream merge broke a fork patch"
-          existing="$(gh issue list --state open --search "in:title $title" --json number --jq '.[0].number' || true)"
+          # REST for the same installation-token reason as the conflict issue.
+          export ISSUE_TITLE="upstream merge broke a fork patch"
+          existing="$(gh api "repos/$REPO/issues?state=open&per_page=100" \
+            --jq '[.[] | select(.title == env.ISSUE_TITLE) | .number][0]')"
           if [ -n "$existing" ]; then
-            gh issue comment "$existing" --body-file /tmp/guard-issue.md
+            gh api --method POST "repos/$REPO/issues/$existing/comments" \
+              -F body="$(cat /tmp/guard-issue.md)" >/dev/null
           else
-            gh issue create --title "$title" --body-file /tmp/guard-issue.md
+            gh api --method POST "repos/$REPO/issues" \
+              -f title="upstream merge broke a fork patch" \
+              -F body="$(cat /tmp/guard-issue.md)" >/dev/null
           fi
 
       # ── Guards: OUR patches + the code they live in still work ────────────

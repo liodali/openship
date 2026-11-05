@@ -1,0 +1,172 @@
+name: Fork upstream drift watch
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The fork's tripwire: SAY IT when upstream is ahead — before the weekly
+# fork-sync.yml merges it (Sundays) or fails to (self-hosted runner offline,
+# conflicts, the conflict-issue step itself erroring — all three happened at
+# once in Oct/Nov 2026 and nobody heard anything for three weeks).
+#
+#   daily (or manual): fetch upstream/main on a GITHUB-HOSTED runner →
+#                      count commits main is behind →
+#                      behind > 0: open/comment ONE tracked issue
+#                      ("upstream drift: N commits, latest vX.Y.Z — sync and
+#                      cut a fork release") with the dispatch link;
+#                      behind = 0: close the stale issue, if any.
+#
+# Deliberately read-only: this workflow never merges, pushes or builds —
+# acting on drift stays with fork-sync.yml (or a local merge, per
+# docs/fork-maintenance.md). It only guarantees the signal cannot be lost
+# just because a self-hosted box is down or another workflow's failure path
+# broke: ubuntu-latest always runs, and the issue persists until answered.
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  schedule:
+    # Daily, offset from fork-sync's Sunday 04:23 slot so a weekend merge is
+    # confirmed caught-up (or re-flagged) the next morning.
+    - cron: "11 6 * * *"
+  workflow_dispatch:
+    inputs:
+      smoke-test:
+        description: "Exercise the notify channel (create+comment+close a [smoke] issue), regardless of drift"
+        type: boolean
+        default: false
+
+concurrency:
+  group: fork-drift
+  cancel-in-progress: false
+
+permissions:
+  contents: read # read fork main + upstream refs
+  issues: write # open/comment/close the drift issue
+
+jobs:
+  drift:
+    name: Report upstream drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout fork main (full history — merge-base needs it)
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Measure drift against upstream/main
+        id: drift
+        run: |
+          set -eu
+          git remote add upstream https://github.com/oblien/openship.git
+          git fetch upstream main
+          behind="$(git rev-list --count HEAD..upstream/main)"
+          upstream_sha="$(git rev-parse --short upstream/main)"
+          # Latest upstream release tag. ls-remote only — tag objects are not
+          # fetched, just the names, sorted by version.
+          latest="$(git ls-remote --tags upstream 'v*' \
+            | awk -F/ '{print $NF}' | sed 's/\^{}$//' | sort -Vu | tail -1)"
+          fork_version="$(jq -r .version package.json)"
+          {
+            echo "behind=$behind"
+            echo "upstream_sha=$upstream_sha"
+            echo "latest=$latest"
+            echo "fork_version=$fork_version"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Write run summary
+        run: |
+          {
+            echo "## Fork drift report"
+            echo ""
+            echo "- Fork main: **$FORK_VERSION**"
+            echo "- Upstream: **$UPSTREAM_SHA** (latest release: **$LATEST**)"
+            echo "- Commits behind: **$BEHIND**"
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          BEHIND: ${{ steps.drift.outputs.behind }}
+          UPSTREAM_SHA: ${{ steps.drift.outputs.upstream_sha }}
+          LATEST: ${{ steps.drift.outputs.latest }}
+          FORK_VERSION: ${{ steps.drift.outputs.fork_version }}
+
+      # All issue writes go through the REST API (`gh api`), never `gh issue
+      # create/comment/close`: those use GraphQL mutations, which the Actions
+      # installation token is refused for ("Resource not accessible by
+      # integration", createIssue — the exact failure that silenced fork-sync
+      # for three weeks in Oct/Nov 2026). REST honors `issues: write`.
+      - name: Open or update the drift issue
+        if: steps.drift.outputs.behind != '0' || inputs.smoke-test
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BEHIND: ${{ steps.drift.outputs.behind }}
+          UPSTREAM_SHA: ${{ steps.drift.outputs.upstream_sha }}
+          LATEST: ${{ steps.drift.outputs.latest }}
+          FORK_VERSION: ${{ steps.drift.outputs.fork_version }}
+          SMOKE: ${{ inputs.smoke-test }}
+        run: |
+          if [ "$SMOKE" = "true" ]; then
+            title="[smoke] fork-drift notify channel test"
+          else
+            title="upstream drift: fork main is behind oblien/openship"
+          fi
+          export ISSUE_TITLE="$title"
+          {
+            echo "## Upstream is ahead — sync and cut a fork release"
+            echo ""
+            echo "- Fork main: \`$FORK_VERSION\`"
+            echo "- Upstream head: \`$UPSTREAM_SHA\`, latest release **$LATEST**"
+            echo "- Commits behind: **$BEHIND**"
+            echo ""
+            echo "**To sync:** dispatch [Fork upstream sync](${{ github.server_url }}/${{ github.repository }}/actions/workflows/fork-sync.yml)"
+            echo "(needs the self-hosted runner online) or merge locally per"
+            echo "[docs/fork-maintenance.md](docs/fork-maintenance.md), then bump to the next"
+            echo "\`*-fork.*\` version and release. This issue closes itself once main"
+            echo "contains upstream."
+            echo ""
+            echo "_Detected by fork-drift.yml, ${{ github.run_id }}._"
+          } > /tmp/drift-issue.md
+          existing="$(gh api "repos/$REPO/issues?state=open&per_page=100" \
+            --jq '[.[] | select(.title == env.ISSUE_TITLE) | .number][0]')"
+          if [ -n "$existing" ]; then
+            gh api --method POST "repos/$REPO/issues/$existing/comments" \
+              -F body="$(cat /tmp/drift-issue.md)" >/dev/null
+            echo "Commented on #$existing"
+          else
+            number="$(gh api --method POST "repos/$REPO/issues" \
+              -f title="$title" -F body="$(cat /tmp/drift-issue.md)" --jq .number)"
+            echo "Opened #$number"
+          fi
+
+      - name: Close the stale drift issue when caught up
+        if: steps.drift.outputs.behind == '0' && inputs.smoke-test != true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          export ISSUE_TITLE="upstream drift: fork main is behind oblien/openship"
+          existing="$(gh api "repos/$REPO/issues?state=open&per_page=100" \
+            --jq '[.[] | select(.title == env.ISSUE_TITLE) | .number][0]')"
+          if [ -n "$existing" ]; then
+            gh api --method POST "repos/$REPO/issues/$existing/comments" \
+              -F body="Fork main now contains upstream/main — caught up. _(fork-drift.yml, ${{ github.run_id }})_" >/dev/null
+            gh api --method PATCH "repos/$REPO/issues/$existing" -F state=closed >/dev/null
+            echo "Closed #$existing"
+          else
+            echo "Caught up; no open drift issue."
+          fi
+
+      - name: Close the smoke-test issue
+        if: inputs.smoke-test
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          export ISSUE_TITLE="[smoke] fork-drift notify channel test"
+          existing="$(gh api "repos/$REPO/issues?state=open&per_page=100" \
+            --jq '[.[] | select(.title == env.ISSUE_TITLE) | .number][0]')"
+          if [ -n "$existing" ]; then
+            gh api --method POST "repos/$REPO/issues/$existing/comments" \
+              -F body="Notify channel verified — closing. _(fork-drift.yml smoke test)_" >/dev/null
+            gh api --method PATCH "repos/$REPO/issues/$existing" -F state=closed >/dev/null
+            echo "Smoke issue closed"
+          else
+            echo "No smoke issue found (creation step failed?)" && exit 1
+          fi
