@@ -76,6 +76,11 @@ export default defineConfig({
   },
   test: {
     ...sharedTestOptions,
+    // Same JUnit opt-in as vitest.config.ts (CI sets VITEST_JUNIT=1) — covers
+    // the e2e legs of the ci.yml matrix, whose only vitest phase is this config.
+    reporters: process.env.VITEST_JUNIT === "1"
+      ? ["default", ["junit", { outputFile: "test-results/junit.xml" }]]
+      : "default",
     include,
     env: {
       ...sharedTestOptions.env,

@@ -86,22 +86,36 @@ jobs:
     name: Tests (${{ matrix.suite }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      # Vitest configs (apps/api, packages/db, packages/adapters) add a JUnit
+      # reporter under this flag, writing test-results/junit.xml per package.
+      # Turbo forwards job env to task children, so the adapters suite picks it
+      # up through `turbo run test` too; bun:test and non-vitest legs ignore it.
+      VITEST_JUNIT: "1"
     strategy:
       fail-fast: false
       matrix:
         include:
+          # `artifact` slugs the per-suite report artifact. Matrix legs run as
+          # one job name, and same-named artifacts across legs 409-clash — so
+          # each leg needs its own.
           - suite: API 1/2
+            artifact: api-1
             command: bun run --cwd apps/api test --shard=1/2
           - suite: API 2/2
+            artifact: api-2
             command: bun run --cwd apps/api test --shard=2/2
           - suite: Deployment automation
+            artifact: deployment-automation
             command: >-
               RUN_DOCKER_E2E=1 bun run --cwd apps/api test:e2e
               test/e2e/deployment-automation.e2e.test.ts
               test/e2e/monorepo-runtime-images.e2e.test.ts
           - suite: Database
+            artifact: database
             command: bun run --cwd packages/db test
           - suite: Mail database actions
+            artifact: mail-db
             command: >-
               RUN_DOCKER_E2E=1 bun run --cwd apps/api test:e2e
               test/e2e/mail-fail2ban-db.e2e.test.ts
@@ -109,6 +123,7 @@ jobs:
           # recovery, authentication and Desktop relays on every PR. No live
           # server, provider account or outbound email is used.
           - suite: Instance control plane
+            artifact: instance
             command: >-
               bun run --cwd apps/api test:e2e
               test/e2e/instance-handoff.e2e.test.ts
@@ -117,6 +132,7 @@ jobs:
               test/e2e/instance-invitation.e2e.test.ts
               test/e2e/error-reporting.e2e.test.ts
           - suite: Cloud Docker workspaces
+            artifact: cloud-docker
             command: >-
               RUN_DOCKER_E2E=1 bun run --cwd apps/api test:e2e
               test/e2e/cloud-build-capacity.e2e.test.ts
@@ -130,6 +146,7 @@ jobs:
               test/e2e/docker-exec-watchdog.e2e.test.ts
           # Inventory identity, atomic cutover and role handover use real Docker.
           - suite: Compose cutover and rollback
+            artifact: compose-cutover
             command: >-
               RUN_DOCKER_E2E=1 bun run --cwd apps/api test:e2e
               test/e2e/deployment-artifact-retry.e2e.test.ts
@@ -146,33 +163,39 @@ jobs:
               test/e2e/compose-engine-overlap.e2e.test.ts
               test/e2e/compose-unchanged-services.e2e.test.ts
           - suite: Security advisories
+            artifact: security-advisories
             command: >-
               RUN_DOCKER_E2E=1 bun run --cwd apps/api test:e2e
               test/e2e/security-advisories.e2e.test.ts
           # Run routing, certificate selection and the rule guard with real HTTP on
           # every PR. A missing daemon must fail, not silently skip this gate.
           - suite: Edge routing
+            artifact: edge-routing
             command: >-
               RUN_DOCKER_E2E=1 bun run --cwd apps/api test:e2e
               test/e2e/routing-rules.e2e.test.ts
               test/e2e/route-protection.e2e.test.ts
               test/e2e/edge-not-found-page.e2e.test.ts
           - suite: Kubernetes manifests
+            artifact: kubernetes
             command: >-
               RUN_KUBERNETES_E2E=1 bun run --cwd packages/adapters test
               test/project-manifests.e2e.test.ts
           - suite: Swarm inspection and deployment
+            artifact: swarm
             command: >-
               RUN_DOCKER_E2E=1 bun run --cwd apps/api test:e2e
               test/e2e/swarm-inspection.e2e.test.ts
           # Both suites rebuild the same native bundle. Keep them sequential on
           # their own runner; the other packages do not share that filesystem.
           - suite: SDK and CLI
+            artifact: sdk-cli
             command: bunx turbo run test --filter=@repo/sdk --filter=@repo/cli --concurrency=1 --log-order=stream
           # Exclusions keep new workspace test scripts included automatically.
           # Keep filters on the workspace runner. Script tests run once below,
           # independently of the root command's argument-forwarding behavior.
           - suite: Other packages
+            artifact: other-packages
             command: |
               bunx turbo run test --filter=!@repo/api --filter=!@repo/db --filter=!@repo/sdk --filter=!@repo/cli --filter=!@repo/email --concurrency=1 --log-order=stream
               bun run test:scripts
@@ -223,6 +246,23 @@ jobs:
         run: |
           OPENSHIP_TEST_PG_BIN="$(pg_config --bindir)" bun run --cwd packages/db test src/repos/cloud-build-postgres.integration.test.ts
 
+      # Machine-readable results outlive the log: a failed run's report is
+      # inspectable from the run's Artifacts page without re-running anything.
+      # Upload on failure too — a report you only get when green is useless.
+      # Legs without a vitest phase (bun:test, scripts) upload nothing, hence
+      # if-no-files-found: ignore.
+      - name: Upload test reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-report-${{ matrix.artifact }}
+          path: |
+            apps/api/test-results/*.xml
+            packages/db/test-results/*.xml
+            packages/adapters/test-results/*.xml
+          if-no-files-found: ignore
+          retention-days: 7
+
   # Preserve the existing required "Test" check. A failed, skipped, or canceled
   # matrix must fail this check; no individual shard can make the PR green.
   test:
@@ -240,6 +280,34 @@ jobs:
             echo "::error::Test suites: $TEST_SUITES_RESULT"
             exit 1
           fi
+
+  # Human feedback on the PR: one check-run table built from the JUnit artifacts
+  # above — failed test names and durations at a glance instead of a log dive.
+  # Reporting ONLY: the required gates stay `Tests (*)` and `Test`, so a reporter
+  # glitch can never block a merge (fail-on-error/fail-on-empty are false).
+  test-report:
+    name: Test report
+    needs: [test_suites]
+    if: ${{ !cancelled() }}
+    permissions:
+      checks: write
+      contents: read
+      actions: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Publish test report from JUnit artifacts
+        uses: dorny/test-reporter@v3
+        with:
+          artifact: test-report-.*
+          name: Test results
+          reporter: java-junit
+          path: "**/junit.xml"
+          # ~2k adapters cases would blow the check-run body's 64k limit —
+          # list failures in full, summarize the rest per suite.
+          list-tests: failed
+          fail-on-error: "false"
+          fail-on-empty: "false"
 
   docs:
     name: Documentation

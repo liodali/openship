@@ -15,5 +15,12 @@ export default defineConfig({
   test: {
     hookTimeout: 60_000,
     testTimeout: 30_000,
+    // CI (ci.yml) sets VITEST_JUNIT=1: keep the default console reporter — the
+    // Actions log still streams — and add a JUnit XML beside it, which the
+    // workflow uploads as an artifact and renders as a PR check-run table via
+    // dorny/test-reporter. Local runs never set the flag and write nothing.
+    reporters: process.env.VITEST_JUNIT === "1"
+      ? ["default", ["junit", { outputFile: "test-results/junit.xml" }]]
+      : "default",
   },
 });
