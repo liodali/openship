@@ -574,6 +574,8 @@
       "applyFailedTitle": "Échec de l'application"
     },
     "close": "Fermer",
+    "rebuildTitle": "Reconstruire et redéployer",
+    "rebuildText": "Enregistré. Reconstruisez l’application pour appliquer ces variables d’environnement.",
     "applyTitle": "Appliquer sans recompilation",
     "applyText": "Enregistré. Redémarrez pour appliquer les changements d’exécution. Recompilez et redéployez pour appliquer les valeurs utilisées lors de la compilation d’une image.",
     "applyButton": "Appliquer (redémarrage, sans recompilation)",
@@ -1269,6 +1271,9 @@
     "hideBanners": "Masquer les bannières de sécurité",
     "showBanners": "Afficher les bannières de sécurité",
     "bannerDescription": "Afficher les avis de sécurité des applications et serveurs en haut du tableau de bord dans ce navigateur et cet espace. Les vérifications et canaux de notification sont gérés séparément.",
+    "manualReviewRequired": "Vérification requise",
+    "manualReviewDescription": "Lis les recommandations pour déterminer si cet avis s’applique. Ne modifie la configuration que si ses conditions sont réunies.",
+    "manualReviewUnverified": "L’applicabilité n’est pas vérifiée. La configuration ou l’application doit être examinée pour confirmer si elle est concernée.",
     "openRuntimeConfiguration": "Configurer l’environnement",
     "severity": {
       "critical": "Critique",

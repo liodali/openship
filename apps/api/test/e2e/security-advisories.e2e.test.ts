@@ -232,10 +232,14 @@ describeDockerE2E("signed security advisories through real Node.js and PHP deplo
       platform: () => located.platform,
     }));
     // The real edge is intentionally absent: no service has public routing.
+    const edgeInventory = () => ({
+      listLoopbackUpstreamPortsStrict: async () => new Set<number>(),
+    });
     vi.doMock("@repo/adapters", async (original) => ({
       ...(await original<object>()),
       getPlatform: () => located.platform,
-      edgeProxyFor: () => ({ listLoopbackUpstreamPortsStrict: async () => new Set<number>() }),
+      edgeProxyFor: edgeInventory,
+      loopbackPortInventoryFor: edgeInventory,
     }));
     h.key = keys.publicKey.export({ type: "spki", format: "pem" }).toString();
     proof = signed([]);
@@ -399,9 +403,12 @@ describeDockerE2E("signed security advisories through real Node.js and PHP deplo
     );
     const status = await updates.projectSecurityStatus(ctx, project.id, undefined, true);
     expect(status.findings.some((f) => f.id === CASES[1]!.advisory)).toBe(false);
-    expect(status.findings.find((f) => f.id === "CVE-2026-115560-php-review")?.canRefresh).toBe(
-      false,
-    );
+    expect(status.findings.find((f) => f.id === "CVE-2026-115560-php-review")).toMatchObject({
+      severity: "low",
+      confidence: "possible",
+      manualReviewRequired: true,
+      canRefresh: false,
+    });
     expect(status.findings.some((f) => f.id === CASES[0]!.advisory)).toBe(true);
     expect((await repos.service.findById(services[1]!.id))?.image).toBe(CASES[1]!.image);
   }, 300_000);

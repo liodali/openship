@@ -596,6 +596,8 @@
     "cancel": "İptal",
     "saveChanges": "Değişiklikleri kaydet",
     "close": "Kapat",
+    "rebuildTitle": "Yeniden derle ve dağıt",
+    "rebuildText": "Kaydedildi. Bu ortam değişkenlerini uygulamak için uygulamayı yeniden derleyin.",
     "applyTitle": "Yeniden derleme olmadan uygula",
     "applyText": "Kaydedildi. Çalışma zamanı değişikliklerini uygulamak için yeniden başlatın. İmaj derlenirken kullanılan değerler için yeniden derleyip dağıtın.",
     "applyButton": "Uygula (yeniden başlat, derleme yok)",
@@ -1269,6 +1271,9 @@
     "hideBanners": "Güvenlik bannerlarını gizle",
     "showBanners": "Güvenlik bannerlarını göster",
     "bannerDescription": "Bu tarayıcı ve çalışma alanında uygulama ve sunucu güvenlik bildirimlerini panonun üstünde göster. Kontroller ve bildirim kanalları ayrı yönetilir.",
+    "manualReviewRequired": "İnceleme gerekli",
+    "manualReviewDescription": "Bu uyarının geçerli olup olmadığını belirlemek için yönergeleri okuyun. Yalnızca koşulları mevcutsa değişiklik yapın.",
+    "manualReviewUnverified": "Geçerlilik doğrulanmadı. Uygulamanın etkilenip etkilenmediğini belirlemek için yapılandırma veya uygulama incelenmelidir.",
     "openRuntimeConfiguration": "Çalışma ortamı ayarlarını incele",
     "severity": {
       "critical": "Kritik",
