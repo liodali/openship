@@ -188,13 +188,11 @@ check(
     githubGo.includes("if isSELinuxEnforcing() {"),
   "githubContainerArgs lost keep-id / invariant-globalization / label=disable — Runner.Listener dies on Permission denied (subuid mapping), aborts 134 without libicu, or is denied connectto to the docker proxy on the podman VPS.",
 );
-const githubRepoTs = read("packages/db/src/repos/action-github.repo.ts") ?? "";
-check(
-  "patch 7 (failed sessions retry with backoff)",
-  githubRepoTs.includes("ACTIONS_RUNNER_SESSION_ATTEMPTS") &&
-    githubRepoTs.includes("ACTIONS_RUNNER_SESSION_RETRY_MS"),
-  "reserveRunnerSession lost the bounded retry — one failed worker session poisons its job again until someone re-pushes the tag.",
-);
+// Patch "failed sessions retry with backoff" (ACTIONS_RUNNER_SESSION_ATTEMPTS/
+// RETRY_MS) was RETIRED at v0.9.11: upstream #1509 + #1541 superseded it with a
+// poison-guard (`if (previous) return` in reserveRunnerSession — a failed
+// session blocks re-reservation until explicit retry/rerun) plus spare-session
+// reuse. Upstream's design replaces the fork's bounded retry; no check needed.
 const runAccessTs = read("packages/platform/src/engine/modules/actions/run-access.ts") ?? "";
 check(
   "patch 7 (bot actor admitted for API reruns)",
