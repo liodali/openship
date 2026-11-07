@@ -10,9 +10,14 @@ export const REPO = "oblien/openship";
 export const RELEASES = `https://github.com/${REPO}/releases`;
 const LATEST_API = `https://api.github.com/repos/${REPO}/releases/latest`;
 
-/** Resolve the newest published release tag (e.g. "v0.1.9"). */
-export async function resolveLatestTag(): Promise<string> {
-  const res = await fetch(LATEST_API, {
+/** Latest-release API for any owner/repo (defaults to upstream). */
+export function latestReleaseApiUrl(repo: string = REPO): string {
+  return `https://api.github.com/repos/${repo}/releases/latest`;
+}
+
+/** Resolve the newest published release tag (e.g. "v0.1.9") of a repo. */
+export async function resolveLatestTag(repo: string = REPO): Promise<string> {
+  const res = await fetch(latestReleaseApiUrl(repo), {
     headers: { Accept: "application/vnd.github+json", "User-Agent": "openship-cli" },
     signal: AbortSignal.timeout(10_000),
   });

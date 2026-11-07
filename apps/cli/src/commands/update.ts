@@ -31,8 +31,22 @@
 import { reportCaughtError as observeCaughtError } from "@repo/core/diagnostics";
 import { Command, Option } from "commander";
 import { spawnSync } from "node:child_process";
-import { resolveCliUpdatePlan, cliInstallCommand, type CliPackageManager } from "@repo/core";
+import {
+  resolveCliUpdatePlan,
+  cliInstallCommand,
+  isForkVersion,
+  resolveForkUpdatePlan,
+  DEFAULT_IMAGE_REGISTRY,
+  type CliPackageManager,
+} from "@repo/core";
 import { resolveLatestTag } from "../lib/github-releases";
+import {
+  resolveForkLatest,
+  forkStableInstallUrl,
+  checkUpstreamDrift,
+  FORK_REPO,
+} from "../lib/fork-channel";
+import { readComposeEnvFile } from "../lib/compose-env";
 import { restart as restartService, selfInvocation } from "../lib/service";
 import { readInstallMethod, composeUpdate } from "../lib/compose";
 import { err, info, isJsonMode, ok, printJson } from "../lib/output";
@@ -302,6 +316,142 @@ function detectPackageManager(override?: string): CliPackageManager {
   return hasBun ? "bun" : "npm";
 }
 
+/**
+ * The fork channel (`*-fork.N` builds): resolve + install from the fork's
+ * GitHub releases (liodali/openship), never from npm — `openship@latest` is
+ * upstream's package and would silently drop the fork SDK — and never from the
+ * upstream tarball payload. Upstream (oblien/openship) is still WATCHED: when
+ * its base version moves past this build's, say so — the in-CLI twin of the
+ * fork-drift workflow. Images keep coming from whatever OPENSHIP_IMAGE_REGISTRY
+ * pins in .env (the fork's Gitea registry on a fork install).
+ */
+async function runForkUpdate(opts: UpdateOpts): Promise<void> {
+  const current = __CLI_VERSION__;
+  const reinstallHint = `npm install -g ${forkStableInstallUrl()}`;
+
+  let latest: Awaited<ReturnType<typeof resolveForkLatest>>;
+  try {
+    latest = await resolveForkLatest();
+  } catch (e) {
+    err(`Could not reach GitHub to check the fork channel (${FORK_REPO}). Try again, or reinstall: ${reinstallHint}`);
+    process.exitCode = 1;
+    return;
+  }
+  if (!latest) {
+    err(`No fork CLI releases found on ${FORK_REPO}. Publish one (fork-cli.yml) or reinstall: ${reinstallHint}`);
+    process.exitCode = 1;
+    return;
+  }
+  const drift = await checkUpstreamDrift(current); // best-effort, never fatal
+  const plan = resolveForkUpdatePlan(current, latest.version);
+
+  if (opts.check) {
+    if (isJsonMode()) {
+      printJson({
+        current,
+        latest: latest.version,
+        updateAvailable: plan.action === "install",
+        channel: "fork",
+        upstream: drift ? { latest: drift.upstream, ahead: drift.ahead } : null,
+      });
+    } else if (plan.action === "install") {
+      info(`Fork update available: v${current} → v${latest.version}. Run \`openship update\`.`);
+    } else {
+      ok(`Up to date on the fork channel (v${current}).`);
+    }
+    printUpstreamDrift(drift);
+    return;
+  }
+
+  // A fork build reconciling from the upstream registry would pull upstream
+  // images — flag it BEFORE touching the box, with the fix.
+  if (readInstallMethod() === "compose") {
+    const { env } = readComposeEnvFile();
+    const registry = env["OPENSHIP_IMAGE_REGISTRY"] || DEFAULT_IMAGE_REGISTRY;
+    if (registry === DEFAULT_IMAGE_REGISTRY) {
+      info(
+        `! This is a fork build, but OPENSHIP_IMAGE_REGISTRY still points at ${registry} (upstream).` +
+          ` Set it to the fork's registry in the compose .env so the reconcile pulls fork images.`,
+      );
+    }
+  }
+
+  if (plan.action === "up-to-date") {
+    ok(`Already on the latest fork version (v${current}).`);
+    printUpstreamDrift(drift);
+    return;
+  }
+
+  const pm = detectPackageManager(opts.via);
+  // The immutable release asset when GitHub listed it; the stable cli-latest
+  // URL otherwise. Either is an npm-package tarball — installs as a URL ref.
+  const ref = latest.assetUrl ?? forkStableInstallUrl();
+  const argv = pm === "bun" ? ["add", "-g", ref] : ["install", "-g", ref];
+
+  info(`Updating v${current} → v${latest.version} from the fork release (${pm} ${ref})…`);
+  const res = spawnSync(pm, argv, { stdio: "inherit", shell: process.platform === "win32" });
+  if (res.status !== 0) {
+    err(`Update failed (${pm} exited ${res.status ?? "with a signal"}). Reinstall manually: ${reinstallHint}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  // Re-exec the just-installed binary so ITS code runs the reconcile — the
+  // compose regen repins OPENSHIP_VERSION to the new CLI version, which pulls
+  // the matching fork images from the pinned registry. Same contract as the
+  // npm path above.
+  const applyViaChild = reexecApply();
+  if (applyViaChild.spawned) {
+    process.exitCode = applyViaChild.status ?? 0;
+    return;
+  }
+
+  if (readInstallMethod() === "compose") {
+    const { applied, refused } = await composeUpdate(latest.version);
+    if (isJsonMode()) {
+      printJson({
+        updated: true,
+        from: current,
+        to: latest.version,
+        via: pm,
+        channel: "fork",
+        method: "compose",
+        applied,
+        refused,
+      });
+    } else if (applied) {
+      ok(`Updated to v${latest.version} — compose stack regenerated, images pulled, services recreated.`);
+    } else {
+      if (refused) err(`Updated the CLI to v${latest.version}, but the stack was left as it is — see above.`);
+      else
+        err(`Updated the CLI to v${latest.version}, but bringing the compose stack up failed. Re-run \`openship update\`, or \`openship up\` to retry.`);
+      process.exitCode = 1;
+    }
+    if (applied) await verifyHostChannelAfterUpdate();
+    return;
+  }
+
+  const { restarted } = restartService();
+  if (isJsonMode()) {
+    printJson({ updated: true, from: current, to: latest.version, via: pm, channel: "fork", restarted });
+  } else if (restarted) {
+    ok(`Updated to v${latest.version} and restarted the service — you're on the new version.`);
+  } else {
+    ok(`Updated to v${latest.version}. Restart the server to run the new version: openship up`);
+  }
+  printUpstreamDrift(drift);
+}
+
+/** Prose notice for an upstream release the fork hasn't synced yet. */
+function printUpstreamDrift(drift: Awaited<ReturnType<typeof checkUpstreamDrift>>): void {
+  if (drift?.ahead && !isJsonMode()) {
+    info(
+      `Upstream Openship v${drift.upstream} is out; the fork (${FORK_REPO}) is still behind it. ` +
+        `Sync the fork and update again — an upstream build would drop the fork changes.`,
+    );
+  }
+}
+
 export const updateCommand = new Command("update")
   .description("Update the Openship CLI + bundled server to the latest release")
   .option("--check", "Only report the current + latest version; don't install")
@@ -319,10 +469,14 @@ export const updateCommand = new Command("update")
     }
 
     // From-source installs rebuild from git in place; tarball installs (the
-    // default curl|sh distribution) re-download the verified payload. The pm
-    // path below is only for genuine npm/bun global installs.
+    // default curl|sh distribution) re-download the verified payload. Fork
+    // builds (`*-fork.N`) are routed BEFORE the tarball marker: their channel
+    // is the fork's GitHub releases, and both the npm and payload paths would
+    // install upstream code (docs/fork-maintenance.md).
     const source = readSourceInstall();
     if (source) return runSourceUpdate(source, opts);
+
+    if (isForkVersion(__CLI_VERSION__)) return runForkUpdate(opts);
 
     const cliInstall = readCliInstall();
     if (cliInstall?.method === "tarball") return runTarballUpdate(cliInstall, opts);

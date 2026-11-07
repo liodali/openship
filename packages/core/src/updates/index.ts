@@ -4,6 +4,7 @@ export * from "./semver";
 export * from "./identity";
 export * from "./advisories";
 export * from "./resolve";
+export * from "./fork";
 export * from "./security";
 export * from "./poll-policy";
 export * from "./release-documents";

@@ -159,9 +159,22 @@ strips prerelease suffixes, so `openship update` — which resolves UPSTREAM
 releases — sees the fork build as version-equal and never "updates" it back to
 the npm one. After an upstream merge bumps the version (and loses the suffix),
 `fork-cli.yml` re-appends `-fork.<run_number>` to both manifests before
-building. ⚠️ When upstream ships a genuinely NEW version (0.9.3 vs 0.9.2), a
-plain `openship update` on a machine WILL install the upstream npm build and
-silently drop the fork SDK — reinstall from `cli-latest` after syncing.
+building.
+
+**Fork channel (since 0.9.11-fork.1):** `openship update` is fork-aware. A
+`*-fork.N` build resolves the latest `cli-<version>-<sha>` release on
+`liodali/openship` (never npm, never the upstream tarball payload) and installs
+it from the release asset URL — `compareForkVersions` in `@repo/core`
+compares the base AND the `-fork.N` suffix, so new fork builds of the same
+base also update. The same check watches upstream: when `oblien/openship`
+ships a base version newer than the fork's, `openship update --check` prints
+a sync notice (the in-CLI twin of fork-drift.yml) instead of installing
+upstream. On a compose install whose `.env` still pins the upstream
+`OPENSHIP_IMAGE_REGISTRY`, it warns BEFORE reconciling — the fork's images
+live in the Gitea registry. ⚠️ Machines still on an OLD fork CLI (pre
+fork-channel) keep the old behavior: when upstream ships a genuinely NEW
+version, a plain `openship update` there installs the upstream npm build and
+silently drops the fork SDK — reinstall from `cli-latest` once.
 
 After any CLI (re)install on the VPS, re-apply the SELinux compose-template
 patch: `~/openship-repatch.sh`.
