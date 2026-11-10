@@ -36,12 +36,13 @@ Docker/Podman compatibility work below is required before declaring runtime supp
   `applyState='blocked'` never auto-retries (unblock is explicit/conflict
   resolved); inspect failures leave bindings unclassified; INVALID
   declarations preserve the binding but INVALIDATE the stale observation
-  (new 'invalid' observation state; container id/IP/running cleared, metadata
-  retained) and queue upstream withdrawal; the parser resolves identity first
+    (new 'invalid' observation state; container id/IP/running cleared, metadata
+    retained) and queue upstream withdrawal; the parser resolves identity first
   and carries the serviceKey, so a recreated container with a new id and bad
-  config is linked back to its binding — only explicit opt-out withdraws);
-  confirmed removals go missing AND queue route withdrawal (crash-safe;
-  idempotent across sweeps); retirement is scheduled independently of
+  config is linked back to its binding and STAYS linked after the container
+  id is cleared (identity match, id-independent — no missing-flip churn on
+  later sweeps; only explicit opt-out withdraws); confirmed removals go
+  missing AND queue route withdrawal (crash-safe; idempotent across sweeps); retirement is scheduled independently of
   blocking via `withdrawalPending` + `dueForWithdrawal()`/`markWithdrawn()`
   (applied → blocked → missing still retires the live route; blocked
   suppresses only forward applies); runtime-target changes (replacement, IP,
