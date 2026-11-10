@@ -116,6 +116,15 @@ export type RuntimeCapability =
    */
   | "hostContainerQuery"
   /**
+   * Runtime can produce a discovery scanner view for ANY container on its host
+   * (not just Openship-managed ones): one inspect returning opt-in env vars,
+   * openship/compose labels, running state, and per-network id/name/IPv4 —
+   * the network-aware read the first-address IP shortcut cannot give. Powers
+   * Docker service discovery (docs/docker-service-discovery-plan.md). Docker
+   * implements this; Bare/Cloud don't (no arbitrary-container inspect set).
+   */
+  | "discoveryInspection"
+  /**
    * Runtime can hand back a command runner that executes INSIDE a running
    * deployment (not on the build/daemon host). Powers the advisory post-deploy
    * port probe (`cat /proc/net/tcp*`). Docker exec (Tty:false), Oblien workspace
@@ -332,6 +341,21 @@ export interface RuntimeAdapter {
    * `supports("hostContainerQuery")`.
    */
   listAllContainers?(): Promise<DockerContainerSummary[]>;
+
+  /**
+   * Discovery scanner view of ONE container on this host, from a single inspect
+   * (docs/docker-service-discovery-plan.md, step 2). Unlike `getContainerInfo`:
+   *  - network-aware — returns every attached network as {name, id, driver?, ip}
+   *    so the caller resolves the declared route IP ON the selected network
+   *    instead of "first address wins";
+   *  - narrow — env is filtered to OPENSHIP_* and labels to openship/compose
+   *    namespaces, so app secrets never leave the inspect response;
+   *  - eligibility-ready — carries the fresh `State.Running` flag the certificate
+   *    lifecycle gates on.
+   * Null when the container is gone (same "missing is a verdict" convention as
+   * `inspectContainer`). Only present when `supports("discoveryInspection")`.
+   */
+  getDiscoveryContainerView?(containerId: string): Promise<import("@repo/core").DiscoveryContainerView | null>;
 
   // ── Observability ────────────────────────────────────────────────────
 

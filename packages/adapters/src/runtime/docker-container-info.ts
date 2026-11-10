@@ -2,6 +2,7 @@ import type { ContainerInfo } from "../types";
 import type { DockerContainerSummary, DockerPortBinding } from "./types";
 import type Dockerode from "dockerode";
 import type { ContainerStabilitySample } from "./stability";
+import type { DiscoveryContainerView, DiscoveryNetworkFact } from "@repo/core";
 
 /** Shared inspect normalization for deployment stability and environment Apply. */
 export function stabilitySampleFromDockerInspect(data: Dockerode.ContainerInspectInfo): ContainerStabilitySample {
@@ -106,5 +107,68 @@ export function containerInfoFromDockerSummary(container: DockerContainerSummary
     status: dockerContainerStatus(container.state, { statusLine: container.status }),
     ...(container.ip ? { ip: container.ip } : {}),
     ...dockerPublishedPortInfo(container.ports),
+  };
+}
+
+/**
+ * Discovery scanner view of one container, from a single inspect
+ * (docs/docker-service-discovery-plan.md, step 2).
+ *
+ * Three jobs the generic reads don't do:
+ *  1. Keep the PER-NETWORK map (name → id + IPv4), so the reconciler routes to
+ *     the address ON the selected network; "first IP across networks" is exactly
+ *     the guessing discovery must not do on multi-network hosts.
+ *  2. Filter env to OPENSHIP_* and labels to openship/compose/io.openship
+ *     namespaces — the caller's memory and logs hold only discovery fields,
+ *     never the app's DATABASE_URL.
+ *  3. Report the fresh `State.Running` flag — the certificate lifecycle's
+ *     eligibility gate reads THIS, not a cached status.
+ *
+ * Network drivers are NOT in the per-container inspect payload; callers enrich
+ * them from the host network list before handing the view to the parser, whose
+ * usability rule fails closed on an unknown driver.
+ */
+export function discoveryContainerViewFromDockerInspect(
+  data: Dockerode.ContainerInspectInfo,
+  containerId: string,
+): DiscoveryContainerView {
+  const labels = data.Config?.Labels ?? {};
+  const env: string[] = [];
+  for (const entry of data.Config?.Env ?? []) {
+    if (entry.startsWith("OPENSHIP_")) env.push(entry);
+  }
+  const discoveryLabels: Record<string, string> = {};
+  for (const [key, value] of Object.entries(labels)) {
+    if (
+      key.startsWith("openship.") ||
+      key.startsWith("io.openship.") ||
+      key.startsWith("com.docker.compose.")
+    ) {
+      discoveryLabels[key] = value;
+    }
+  }
+  const networks: DiscoveryNetworkFact[] = Object.entries(
+    data.NetworkSettings?.Networks ?? {},
+  ).map(([name, endpoint]) => ({
+    name,
+    id: endpoint?.NetworkID || undefined,
+    // IPv4 only in the first release; IPv6 addressing is follow-up work.
+    ipAddress: endpoint?.IPAddress || undefined,
+  }));
+
+  return {
+    containerId,
+    name: (data.Name ?? "").replace(/^\//, "") || undefined,
+    image: data.Config?.Image ?? undefined,
+    status: dockerContainerStatus(data.State?.Status ?? "", {
+      running: data.State?.Running,
+      paused: data.State?.Paused,
+      restarting: data.State?.Restarting,
+      health: data.State?.Health?.Status,
+    }),
+    running: data.State?.Running === true,
+    env,
+    labels: discoveryLabels,
+    networks,
   };
 }

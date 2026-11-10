@@ -10,6 +10,7 @@ export * from "./volumes";
 export * from "./compose-namespace";
 export * from "./compose-spec";
 export * from "./container-hosts";
+export * from "./discovery-config";
 export * from "./env-file";
 export * from "./object-storage";
 export * from "./constants";

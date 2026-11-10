@@ -80,7 +80,7 @@ import { PassThrough, Writable, type Readable } from "node:stream";
 import { relative, sep } from "node:path";
 import { resolveDockerBuildArgs } from "./docker-build-args";
 import { imageStartCommand, nodeOutputOptions } from "./node-output";
-import { dockerContainerStatus, dockerPublishedPortInfo, stabilitySampleFromDockerInspect } from "./docker-container-info";
+import { dockerContainerStatus, dockerPublishedPortInfo, discoveryContainerViewFromDockerInspect, stabilitySampleFromDockerInspect } from "./docker-container-info";
 import { applyDockerEnvironment, type DockerEnvironmentOptions } from "./docker-environment";
 import { DEFAULT_CONTAINER_LOG_CONFIG } from "../container-logging";
 import { demuxDockerStream } from "./docker-demux";
@@ -218,6 +218,7 @@ import {
   type ComposeGpuConfig,
   type ComposeHealthcheck,
   type StackRole,
+  type DiscoveryContainerView,
 } from "@repo/core";
 import {
   dockerResourceLimits,
@@ -1267,6 +1268,7 @@ export class DockerRuntime implements RuntimeAdapter {
     "projectContainerSweep",
     "deploymentContainerQuery",
     "hostContainerQuery",
+    "discoveryInspection",
     "stabilityProbe",
     "containerEvents",
     // Docker implements `inContainerExecutor` but had never DECLARED the capability.
@@ -5238,6 +5240,24 @@ OPENSHIP_BASES_PY`, { timeout: 5_000 });
         : undefined,
       composeWorkingDir: labels["com.docker.compose.project.working_dir"] || undefined,
     };
+  }
+
+  /**
+   * Discovery scanner view of one container — the network-aware read the
+   * migration/live-state paths lack (docs/docker-service-discovery-plan.md).
+   * See `discoveryContainerViewFromDockerInspect` for what the view guarantees.
+   * Null when the container is gone — "removed" is a verdict the scanner
+   * consumes, not a transport error.
+   */
+  async getDiscoveryContainerView(containerId: string): Promise<DiscoveryContainerView | null> {
+    await this.assertContainerAccess(containerId);
+    try {
+      const data = await this.docker.getContainer(containerId).inspect();
+      return discoveryContainerViewFromDockerInspect(data, containerId);
+    } catch (err) {
+      if (isDockerNotFoundError(err)) return null;
+      throw err;
+    }
   }
 
   /** The image's baked-in default env (Config.Env). Discovery subtracts these
