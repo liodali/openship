@@ -23,6 +23,7 @@ CREATE TABLE "discovery_binding" (
   "container_id" text,
   "container_name" text,
   "ip_address" text,
+  "container_running" boolean DEFAULT false NOT NULL,
   "observation_status" text DEFAULT 'observed' NOT NULL,
   "last_observed_at" timestamp with time zone,
   "apply_state" text DEFAULT 'pending' NOT NULL,
@@ -36,7 +37,7 @@ CREATE TABLE "discovery_binding" (
   "created_at" timestamp with time zone DEFAULT now() NOT NULL,
   "updated_at" timestamp with time zone DEFAULT now() NOT NULL,
   CONSTRAINT "discovery_binding_observation_status_check" CHECK ("observation_status" IN ('observed', 'missing', 'error')),
-  CONSTRAINT "discovery_binding_apply_state_check" CHECK ("apply_state" IN ('pending', 'applied', 'error'))
+  CONSTRAINT "discovery_binding_apply_state_check" CHECK ("apply_state" IN ('pending', 'applied', 'error', 'blocked'))
 );
 --> statement-breakpoint
 CREATE UNIQUE INDEX "uq_discovery_binding_identity" ON "discovery_binding" ("server_id","service_key");

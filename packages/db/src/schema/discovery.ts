@@ -107,6 +107,12 @@ export const discoveryBinding = pgTable(
     containerName: text("container_name"),
     /** Container IPv4 address on the selected network at last observation. */
     ipAddress: text("ip_address"),
+    /**
+     * Cached `State.Running` from the last successful observation. FILTERS the
+     * certificate queue only — a fresh re-inspection still gates every ACME
+     * order (docs: "a cached running flag alone is insufficient").
+     */
+    containerRunning: boolean("container_running").notNull().default(false),
     /** observed | missing (confirmed gone) | error (inspection failed; state kept) */
     observationStatus: text("observation_status").$type<"observed" | "missing" | "error">().notNull().default("observed"),
     lastObservedAt: timestamp("last_observed_at"),
@@ -115,10 +121,13 @@ export const discoveryBinding = pgTable(
     /**
      * Route/config application to the server's Edge: pending (desired changed),
      * applied (route confirmed written), error (last apply failed; retry with
-     * backoff). Success is NEVER assumed from the DB write alone — `applied`
-     * means the reconciler verified the write through the shared primitives.
+     * backoff), blocked (identity/hostname conflict — NEVER retried; the
+     * operator must resolve the conflict, so retrying would either pick a
+     * replica arbitrarily or fight another owner's route). Success is NEVER
+     * assumed from the DB write alone — `applied` means the reconciler verified
+     * the write through the shared primitives.
      */
-    applyState: text("apply_state").$type<"pending" | "applied" | "error">().notNull().default("pending"),
+    applyState: text("apply_state").$type<"pending" | "applied" | "error" | "blocked">().notNull().default("pending"),
     /** Bumped on every config change; `appliedGeneration` catching up proves convergence. */
     desiredGeneration: integer("desired_generation").notNull().default(0),
     appliedGeneration: integer("applied_generation").notNull().default(0),

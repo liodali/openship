@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { Database } from "../client";
 import { discoveryBinding as binding, discoverySettings as settings, domain } from "../schema";
 import type { DiscoveryDeclaration } from "@repo/core";
@@ -11,6 +11,8 @@ export interface DiscoveryObservation {
   serviceKey: string;
   containerId: string;
   containerName?: string | null;
+  /** Fresh `State.Running` from the scan — the certificate queue filter. */
+  running: boolean;
   hostname: string;
   port: number;
   networkName: string;
@@ -135,6 +137,7 @@ export function createDiscoveryRepo(db: Database) {
               containerId: observation.containerId,
               containerName: observation.containerName ?? null,
               ipAddress: observation.ipAddress ?? null,
+              containerRunning: observation.running,
               observationStatus: "observed",
               lastObservedAt: now,
               applyState: "pending",
@@ -151,11 +154,15 @@ export function createDiscoveryRepo(db: Database) {
             containerId: observation.containerId,
             containerName: observation.containerName ?? null,
             ipAddress: observation.ipAddress ?? null,
+            containerRunning: observation.running,
             observationStatus: "observed",
             lastObservedAt: now,
             composeProject: observation.composeProject ?? existing.composeProject,
             composeService: observation.composeService ?? existing.composeService,
-            ...(desiredChanged
+            // A blocked binding (identity conflict, other owner's hostname)
+            // stays blocked through observation updates — only the reconciler's
+            // explicit unblock (conflict resolved) returns it to pending.
+            ...(desiredChanged && existing.applyState !== "blocked"
               ? {
                   ...desired,
                   desiredGeneration: existing.desiredGeneration + 1,
@@ -164,7 +171,9 @@ export function createDiscoveryRepo(db: Database) {
                   applyAttempts: 0,
                   nextApplyAt: null,
                 }
-              : {}),
+              : desiredChanged
+                ? desired
+                : {}),
             updatedAt: now,
           })
           .where(eq(binding.id, existing.id))
@@ -186,6 +195,7 @@ export function createDiscoveryRepo(db: Database) {
           containerId: null,
           containerName: null,
           ipAddress: null,
+          containerRunning: false,
           updatedAt: new Date(),
         })
         .where(and(eq(binding.serverId, serverId), eq(binding.serviceKey, serviceKey)))
@@ -265,9 +275,65 @@ export function createDiscoveryRepo(db: Database) {
           nextApplyAt: retryAt,
           updatedAt: new Date(),
         })
+        .where(
+          // A blocked binding is not retryable, backoff or not.
+          and(eq(binding.serverId, serverId), eq(binding.serviceKey, serviceKey), ne(binding.applyState, "blocked")),
+        )
+        .returning();
+      return row;
+    },
+
+    /**
+     * BLOCK a binding from reconciliation: duplicate live identity (two running
+     * containers claim one serviceKey — never pick a replica) or a hostname an
+     * existing non-discovery owner already serves (never repoint it). Stays
+     * blocked across scans until the operator resolves it; re-observation
+     * never clears it (see observe), only `unblock` does.
+     */
+    async block(serverId: string, serviceKey: string, reason: string) {
+      const [row] = await db
+        .update(binding)
+        .set({
+          applyState: "blocked",
+          applyError: reason.slice(0, 500),
+          nextApplyAt: null,
+          updatedAt: new Date(),
+        })
         .where(and(eq(binding.serverId, serverId), eq(binding.serviceKey, serviceKey)))
         .returning();
       return row;
+    },
+
+    /** Resolve a conflict; the next reconciliation pass re-applies desired state. */
+    async unblock(serverId: string, serviceKey: string) {
+      const [row] = await db
+        .update(binding)
+        .set({
+          applyState: "pending",
+          applyError: null,
+          applyAttempts: 0,
+          nextApplyAt: null,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(eq(binding.serverId, serverId), eq(binding.serviceKey, serviceKey), eq(binding.applyState, "blocked")),
+        )
+        .returning();
+      return row;
+    },
+
+    /**
+     * The OTHER-owner check for a candidate hostname: an existing domain row
+     * served by a project/webhook/mail owner (not this server's discovery).
+     * Discovery never repoints such a row — the scanner blocks instead.
+     */
+    findConflictingDomainOwner(serverId: string, hostname: string) {
+      return db.query.domain.findFirst({
+        where: and(
+          eq(domain.hostname, hostname.toLowerCase()),
+          or(isNull(domain.serverId), ne(domain.serverId, serverId)),
+        ),
+      });
     },
 
     /** The operator declined this declaration; the scanner keeps observing it. */

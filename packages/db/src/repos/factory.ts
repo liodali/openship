@@ -92,6 +92,7 @@ export {
 } from "./deployment.repo";
 export { createDomainRepo, type Domain, type NewDomain } from "./domain.repo";
 export { createDomainDnsChallengeRepo, type DomainDnsChallenge } from "./domain-dns-challenge.repo";
+export { createDiscoveryRepo, type DiscoverySettings, type DiscoveryBinding, type DiscoveryObservation } from "./discovery.repo";
 export {
   createDnsCredentialRepo,
   type DnsCredential,
@@ -344,6 +345,7 @@ import { createDeploymentCheckRepo } from "./deployment-check.repo";
 export { createDeploymentCheckRepo, type DeploymentCheck } from "./deployment-check.repo";
 import { createDomainRepo } from "./domain.repo";
 import { createDomainDnsChallengeRepo } from "./domain-dns-challenge.repo";
+import { createDiscoveryRepo } from "./discovery.repo";
 import { createDnsCredentialRepo } from "./dns-credential.repo";
 import { createCredentialRepo } from "./credential.repo";
 import { createRouteProtectionRepo } from "./route-protection.repo";
@@ -435,6 +437,7 @@ export function createRepositories(db: Database, encryption: ConfigurationEncryp
     pullRequestPreview: createPullRequestPreviewRepo(db, encryption),
     domain: createDomainRepo(db),
     domainDnsChallenge: createDomainDnsChallengeRepo(db),
+    discovery: createDiscoveryRepo(db),
     dnsCredential: createDnsCredentialRepo(db),
     credential: createCredentialRepo(db),
     ingress: createIngressRepo(db),

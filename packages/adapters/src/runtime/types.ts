@@ -357,6 +357,14 @@ export interface RuntimeAdapter {
    */
   getDiscoveryContainerView?(containerId: string): Promise<import("@repo/core").DiscoveryContainerView | null>;
 
+  /**
+   * Every network on this runtime's host, with drivers — the enrichment source
+   * for `getDiscoveryContainerView` (the per-container inspect does not carry
+   * network drivers, and discovery must prove a network usable before routing
+   * over it). Only present when `supports("discoveryInspection")`.
+   */
+  listAllNetworks?(): Promise<DockerNetworkInfo[]>;
+
   // ── Observability ────────────────────────────────────────────────────
 
   /** Get the current status and metadata */

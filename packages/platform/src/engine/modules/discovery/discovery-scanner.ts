@@ -1,0 +1,291 @@
+/**
+ * Discovery scanner (docs/docker-service-discovery-plan.md, steps 4–5).
+ *
+ * One pass over an enabled server's Docker host: list containers, inspect each
+ * with bounded concurrency, parse opt-in declarations with the core parser, and
+ * persist observations through the discovery repo. This is INVENTORY — the
+ * authoritative desired-state read. Docker lifecycle events are only hints that
+ * trigger a rescan; every state change flows through here so daemon restarts,
+ * dropped event streams, and missed events all converge to the same truth.
+ *
+ * Guarantees (each maps to a plan requirement):
+ *  - Duplicate LIVE identity (two running containers, one serviceKey) blocks
+ *    every candidate — a replica is never picked arbitrarily (plan: "Reject
+ *    duplicate live candidates for one identity").
+ *  - A hostname an existing non-discovery owner serves blocks the binding —
+ *    discovery never repoints another owner's route.
+ *  - Confirmed removals are distinct from inspection failures: a failed
+ *    inspection retains bindings and reports an error; a container absent from
+ *    the inventory is `missing`. An opted-out but still-present container is
+ *    `withdrawn` (binding forgotten; domain/certificate metadata retained).
+ *  - Openship-owned containers never become candidates (parser exclusion).
+ *  - Nothing here mutates routes — the reconciler consumes the summary.
+ */
+import {
+  discoveryConfigHash,
+  parseDiscoveryDeclaration,
+  type DiscoveryContainerView,
+} from "@repo/core";
+import { repos } from "@repo/db";
+import { safeErrorMessage } from "@repo/core";
+import { reportCaughtError } from "@repo/core/diagnostics";
+import type { RuntimeAdapter } from "@repo/adapters";
+import { mapWithLimit } from "../../lib/map-with-limit";
+import { createServerDockerRuntime } from "../../lib/deployment-runtime";
+
+export interface DiscoveryScanSummary {
+  /** Containers inspected this pass. */
+  scanned: number;
+  /** Containers that parsed into eligible declarations. */
+  eligible: number;
+  /** Bindings written (created or observation-updated). */
+  observed: string[];
+  /** Bindings whose desired config changed (reconciler must apply). */
+  desiredChanged: string[];
+  /** Bindings whose container is confirmed gone from the host. */
+  missing: string[];
+  /** Bindings withdrawn because the container no longer opts in. */
+  withdrawn: string[];
+  /** Blocked from reconciliation, with the sanitized reason. */
+  blocked: Array<{ serviceKey: string; reason: string }>;
+  /** Per-container or whole-scan failures that did NOT mutate state. */
+  errors: Array<{ containerId?: string; message: string }>;
+  /** False when the scan could not read the host at all (state retained). */
+  ok: boolean;
+}
+
+const INSPECT_CONCURRENCY = 5;
+
+/** Driver enrichment result: per-container networks get drivers from the host network list. */
+function enrichDrivers(view: DiscoveryContainerView, driverById: Map<string, string>, driverByName: Map<string, string>): DiscoveryContainerView {
+  return {
+    ...view,
+    networks: view.networks.map((net) => ({
+      ...net,
+      driver: (net.id && driverById.get(net.id)) || driverByName.get(net.name) || null,
+    })),
+  };
+}
+
+export async function scanServerDiscovery(
+  serverId: string,
+  organizationId: string,
+  options?: {
+    /** Overrides the settings check (startup proof / tests). Default: read settings. */
+    runtime?: RuntimeAdapter;
+  },
+): Promise<DiscoveryScanSummary> {
+  const summary: DiscoveryScanSummary = {
+    scanned: 0,
+    eligible: 0,
+    observed: [],
+    desiredChanged: [],
+    missing: [],
+    withdrawn: [],
+    blocked: [],
+    errors: [],
+    ok: false,
+  };
+
+  const settings = await repos.discovery.getSettings(serverId);
+  if (!settings?.enabled) return summary; // never configured or disabled: nothing runs
+
+  const server = await repos.server.get(serverId);
+  if (!server) {
+    summary.errors.push({ message: "server row missing; discovery settings are orphaned" });
+    return summary;
+  }
+
+  let rt: RuntimeAdapter | undefined = options?.runtime;
+  let ownedRuntime = false;
+  try {
+    if (!rt) {
+      rt = await createServerDockerRuntime(serverId, organizationId);
+      ownedRuntime = true;
+    }
+
+    // One host-level read for network drivers: the per-container inspect does
+    // not carry drivers, and usability must be proven, not assumed.
+    const hostNetworks = await rt.listAllNetworks?.().catch((error: unknown) => {
+      summary.errors.push({ message: `network list failed: ${safeErrorMessage(error)}` });
+      return undefined as Awaited<ReturnType<NonNullable<RuntimeAdapter["listAllNetworks"]>> | undefined>;
+    });
+    if (!hostNetworks) {
+      await repos.discovery
+        .recordScan(serverId, { ok: false, error: `network list failed: ${summary.errors.at(-1)?.message ?? "unknown"}` })
+        .catch(() => {});
+      return summary;
+    }
+    const driverById = new Map(hostNetworks.map((n) => [n.id, n.driver]));
+    const driverByName = new Map(hostNetworks.map((n) => [n.name, n.driver]));
+
+    const containers = await rt.listAllContainers?.().catch((error: unknown) => {
+      summary.errors.push({ message: `container list failed: ${safeErrorMessage(error)}` });
+      return undefined as Awaited<ReturnType<NonNullable<RuntimeAdapter["listAllContainers"]>> | undefined>;
+    });
+    if (!containers) {
+      await repos.discovery
+        .recordScan(serverId, { ok: false, error: `container list failed: ${summary.errors.at(-1)?.message ?? "unknown"}` })
+        .catch(() => {});
+      return summary;
+    }
+    summary.scanned = containers.length;
+
+    // Bounded inspect fan-out (same limiter as migration discovery).
+    const inspectView = rt.getDiscoveryContainerView?.bind(rt);
+    if (!inspectView) {
+      await repos.discovery.recordScan(serverId, { ok: false, error: "runtime lacks discovery inspection" });
+      return summary;
+    }
+    const failedContainerIds = new Set<string>();
+    const views = await mapWithLimit(containers, INSPECT_CONCURRENCY, async (container) => {
+      try {
+        const view = await inspectView(container.id);
+        if (!view) return { containerId: container.id, view: null };
+        return { containerId: container.id, view: enrichDrivers(view, driverById, driverByName) };
+      } catch (error) {
+        // One container's inspect failure retains everything and reports — it
+        // must not classify that service as removed.
+        failedContainerIds.add(container.id);
+        summary.errors.push({ containerId: container.id, message: safeErrorMessage(error) });
+        return { containerId: container.id, view: null };
+      }
+    });
+
+    // Parse every inspectable container; group eligible declarations by key.
+    type Candidate = {
+      view: DiscoveryContainerView;
+      hostname: string;
+      port: number;
+      network: string;
+      networkId?: string;
+      ipAddress?: string;
+      configHash: string;
+    };
+    const candidatesByKey = new Map<string, Candidate[]>();
+    const presentContainerIds = new Set<string>();
+    for (const { containerId, view } of views) {
+      if (!view) continue;
+      presentContainerIds.add(containerId);
+      const result = parseDiscoveryDeclaration(view);
+      if (!result.eligible) continue;
+      summary.eligible += 1;
+      const { declaration } = result;
+      const ip = view.networks.find((n) => n.name === declaration.network)?.ipAddress ?? null;
+      const candidate: Candidate = {
+        view,
+        hostname: declaration.hostname,
+        port: declaration.port,
+        network: declaration.network,
+        networkId: declaration.networkId,
+        ipAddress: ip ?? undefined,
+        configHash: discoveryConfigHash(declaration),
+      };
+      const group = candidatesByKey.get(declaration.serviceKey);
+      if (group) group.push(candidate);
+      else candidatesByKey.set(declaration.serviceKey, [candidate]);
+    }
+
+    /** Persist one candidate's observation. */
+    const observeCandidate = (serviceKey: string, d: Candidate) => ({
+      serviceKey,
+      containerId: d.view.containerId,
+      containerName: d.view.name ?? null,
+      running: d.view.running,
+      hostname: d.hostname,
+      port: d.port,
+      networkName: d.network,
+      networkId: d.networkId ?? null,
+      ipAddress: d.ipAddress ?? null,
+      configHash: d.configHash,
+      composeProject: d.view.labels["com.docker.compose.project"] ?? null,
+      composeService: d.view.labels["com.docker.compose.service"] ?? null,
+    });
+
+    // Duplicate live identity: observe every candidate, then block ALL of them —
+    // a replica is never picked, and none of the group reconciles until the
+    // operator resolves the duplicate.
+    for (const [serviceKey, group] of candidatesByKey) {
+      if (group.length < 2) continue;
+      const containers = group.map((d) => `${d.view.name ?? d.view.containerId}`).join(", ");
+      const reason = `${group.length} running containers claim identity ${serviceKey} (${containers}); resolve the duplicate before any route is written`;
+      for (const d of group) {
+        try {
+          await repos.discovery.observe(serverId, observeCandidate(serviceKey, d));
+        } catch (error) {
+          summary.errors.push({ message: `observe(${serviceKey}) failed: ${safeErrorMessage(error)}` });
+        }
+        await repos.discovery.block(serverId, serviceKey, reason);
+      }
+      summary.observed.push(serviceKey);
+      summary.blocked.push({ serviceKey, reason });
+    }
+
+    // Observe unique identities; hostname ownership conflicts block instead of routing.
+    for (const [serviceKey, group] of candidatesByKey) {
+      if (group.length !== 1) continue;
+      const d = group[0];
+      try {
+        const { binding, desiredChanged } = await repos.discovery.observe(serverId, observeCandidate(serviceKey, d));
+        summary.observed.push(binding.serviceKey);
+        if (desiredChanged) summary.desiredChanged.push(binding.serviceKey);
+
+        const other = await repos.discovery.findConflictingDomainOwner(serverId, d.hostname);
+        if (other) {
+          const reason = `hostname ${d.hostname} is already owned by a ${other.ownerType} domain (${other.id}); discovery never repoints it`;
+          await repos.discovery.block(serverId, serviceKey, reason);
+          summary.blocked.push({ serviceKey, reason });
+        } else if (binding.applyState === "blocked") {
+          // The conflict that blocked this binding is gone — return it to the
+          // reconciler's queue instead of leaving it blocked forever.
+          await repos.discovery.unblock(serverId, serviceKey);
+        }
+      } catch (error) {
+        summary.errors.push({ message: `observe(${serviceKey}) failed: ${safeErrorMessage(error)}` });
+      }
+    }
+
+    // Classify bindings not seen this scan. The distinction matters:
+    //  - container still present but no longer opts in → WITHDRAWN (forget; the
+    //    reconciler retires discovery-owned routes; domain metadata retained);
+    //  - container absent from the host → MISSING (confirmed removal).
+    const existing = await repos.discovery.listByServer(serverId);
+    const seenKeys = new Set(candidatesByKey.keys());
+    for (const bindingRow of existing) {
+      if (seenKeys.has(bindingRow.serviceKey)) continue;
+      // An inspect failure leaves the binding UNCLASSIFIED — the plan requires
+      // "failed/incomplete inventory retains bindings and reports an error";
+      // only a confirmed absence (or a readable opt-out) changes state.
+      if (bindingRow.containerId != null && failedContainerIds.has(bindingRow.containerId)) continue;
+      // A container that scanned but did not produce THIS binding's key has
+      // either opted out or gone unparseable; its containerId tells us which.
+      const containerStillPresent =
+        bindingRow.containerId != null && presentContainerIds.has(bindingRow.containerId);
+      try {
+        if (containerStillPresent) {
+          await repos.discovery.forget(serverId, bindingRow.serviceKey);
+          summary.withdrawn.push(bindingRow.serviceKey);
+        } else {
+          await repos.discovery.markMissing(serverId, bindingRow.serviceKey);
+          summary.missing.push(bindingRow.serviceKey);
+        }
+      } catch (error) {
+        summary.errors.push({
+          message: `classify(${bindingRow.serviceKey}) failed: ${safeErrorMessage(error)}`,
+        });
+      }
+    }
+
+    summary.ok = true;
+    await repos.discovery.recordScan(serverId, { ok: true });
+    return summary;
+  } catch (error) {
+    reportCaughtError(error, "platform/engine/modules/discovery/discovery-scanner");
+    summary.errors.push({ message: safeErrorMessage(error) });
+    // A failed scan retains every binding and reports; it never mass-deletes.
+    await repos.discovery.recordScan(serverId, { ok: false, error: safeErrorMessage(error) }).catch(() => {});
+    return summary;
+  } finally {
+    if (ownedRuntime) await rt?.dispose?.().catch(() => {});
+  }
+}
