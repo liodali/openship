@@ -457,6 +457,25 @@ const TABLES: ReadonlyArray<TableSpec> = [
     scopes: [{ in: "instance", via: "all-rows" }],
     hasOrganizationId: false,
   },
+  // Docker service discovery state (docs/docker-service-discovery-plan.md).
+  // Instance-scope: both hang off `servers` (settings are the enable switch,
+  // bindings are the durable desired-state memory the certificate lifecycle
+  // reads back). Discovered service declarations are operator-approved server
+  // configuration — they travel with whole-instance migrations like the
+  // servers themselves, never in a project promotion. Domain rows for
+  // server-scoped owners already travel with `domain`.
+  {
+    sqlName: "discovery_settings",
+    table: schema.discoverySettings,
+    scopes: [{ in: "instance", via: "all-rows" }],
+    hasOrganizationId: false,
+  },
+  {
+    sqlName: "discovery_binding",
+    table: schema.discoveryBinding,
+    scopes: [{ in: "instance", via: "all-rows" }],
+    hasOrganizationId: false,
+  },
   {
     sqlName: "mail_servers",
     table: schema.mailServers,

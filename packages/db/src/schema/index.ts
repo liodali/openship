@@ -131,6 +131,8 @@ export * from "./management-billing";
 
 export { assistantConnection, assistantConversation, assistantRequest, assistantAuthorization } from "./assistant";
 
+export { discoverySettings, discoveryBinding } from "./discovery";
+
 export * from "./chat-apps";
 export * from "./assistant-automations";
 

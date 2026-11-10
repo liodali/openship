@@ -11,6 +11,7 @@ import { sql } from "drizzle-orm";
 import { project } from "./project";
 import { service } from "./service";
 import { webhookSource } from "./webhook-source";
+import { servers } from "./servers";
 
 // ─── Domains ─────────────────────────────────────────────────────────────────
 
@@ -36,6 +37,16 @@ export const domain = pgTable(
     webhookSourceId: text("webhook_source_id").references(() => webhookSource.id, {
       onDelete: "cascade",
     }),
+    /**
+     * Owning server — set when ownerType='server' (Docker service discovery).
+     * Server-scoped domains need neither a project nor a deployment: the
+     * serving Edge and management access derive from this server row, and the
+     * certificate lifecycle gates on a running discovered container (tracked by
+     * the matching `discovery_binding` row, linked by serverId + hostname — not
+     * by FK, so forgetting a binding can retain the domain's certificate
+     * material). Cascade: a removed server takes its domains with it.
+     */
+    serverId: text("server_id").references(() => servers.id, { onDelete: "cascade" }),
     //
     // NOTE: a mail-owned row (ownerType='mail') carries NO owner FK. Its server is
     // derived from the hostname instead — `mail.<domain>` → `mail_servers.domain` →
@@ -147,5 +158,9 @@ export const domain = pgTable(
     index("idx_domain_project").on(t.projectId),
     index("idx_domain_project_hostname").on(t.projectId, t.hostname),
     index("idx_domain_webhook_source").on(t.webhookSourceId),
+    // Server-scoped domains: certificate sweep + server status reads by server.
+    index("idx_domain_server").on(t.serverId),
+    // The binding↔domain join (see schema/discovery.ts): one row per (server, hostname).
+    index("idx_domain_server_hostname").on(t.serverId, t.hostname),
   ],
 );

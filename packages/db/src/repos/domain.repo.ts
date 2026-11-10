@@ -2,6 +2,7 @@ import { reportCaughtError as observeCaughtError } from "@repo/core/diagnostics"
 import {
   eq,
   and,
+  exists,
   or,
   ne,
   lt,
@@ -23,7 +24,17 @@ import {
   resolveRedirectStatus,
 } from "@repo/core";
 import type { Database } from "../client";
-import { domain, orphanedResource, project, service, ingressConnection, ingressHostname, servers } from "../schema";
+import {
+  discoveryBinding,
+  discoverySettings,
+  domain,
+  orphanedResource,
+  project,
+  service,
+  ingressConnection,
+  ingressHostname,
+  servers,
+} from "../schema";
 import { assertProjectConfigurationWritable, withProjectConfigurationWrite } from "./project-work-admission";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -90,8 +101,54 @@ export function createDomainRepo(db: Database) {
     );
   }
 
-  function liveVerificationOwner(organizationId?: string) {
+  /**
+   * Server-scoped discovery domains (ownerType='server') are eligible for
+   * issuance/verification WITHOUT a project or deployment when:
+   *  - the owning server still has discovery ENABLED (a disabled server pauses
+   *    its services' TLS work; docs "stop pauses them"),
+   *  - the discovery binding for (serverId, hostname) exists, is not operator-
+   *    suppressed, and its container was last OBSERVED running (not missing).
+   *
+   * The `observed` status is a CACHED read — the certificate JOB must still
+   * re-confirm a running container over Docker right before opening any ACME
+   * order (docs: "a cached running flag alone is insufficient"). This predicate
+   * only decides which rows stay in the queue, not whether an order opens.
+   */
+  function serverVerificationOwner(organizationId?: string) {
+    const serverInScope = db
+      .select({ id: servers.id })
+      .from(servers)
+      .innerJoin(discoverySettings, eq(discoverySettings.serverId, servers.id))
+      .where(
+        and(
+          eq(discoverySettings.enabled, true),
+          organizationId ? eq(servers.organizationId, organizationId) : undefined,
+        ),
+      );
     return and(
+      eq(domain.ownerType, "server"),
+      isNotNull(domain.serverId),
+      inArray(domain.serverId, serverInScope),
+      exists(
+        db
+          .select({ one: sql`1` })
+          .from(discoveryBinding)
+          .where(
+            and(
+              eq(discoveryBinding.serverId, domain.serverId),
+              eq(discoveryBinding.hostname, domain.hostname),
+              eq(discoveryBinding.suppressed, false),
+              eq(discoveryBinding.observationStatus, "observed"),
+            ),
+          ),
+      ),
+    );
+  }
+
+  function liveVerificationOwner(organizationId?: string) {
+    return or(
+      serverVerificationOwner(organizationId),
+      and(
       inArray(
         domain.projectId,
         db
@@ -116,6 +173,7 @@ export function createDomainRepo(db: Database) {
             .from(service)
             .where(and(eq(service.enabled, true), eq(service.exposed, true))),
         ),
+      ),
       ),
     );
   }
