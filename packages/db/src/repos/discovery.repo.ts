@@ -15,9 +15,14 @@ export interface DiscoveryObservation {
   running: boolean;
   hostname: string;
   port: number;
-  networkName: string;
+  /** Selected bridge network, when the declaration has one (null = published-only). */
+  networkName?: string | null;
   networkId?: string | null;
   ipAddress?: string | null;
+  /** Resolved upstream strategy for this observation (see binding column docs). */
+  upstreamStrategy?: "network-ip" | "published-port" | null;
+  hostPort?: number | null;
+  hostIp?: string | null;
   configHash: string;
   composeProject?: string | null;
   composeService?: string | null;
@@ -149,6 +154,9 @@ export function createDiscoveryRepo(db: Database) {
               lastObservedAt: now,
               applyState: "pending",
               desiredGeneration: 1,
+              upstreamStrategy: observation.upstreamStrategy ?? null,
+              hostPort: observation.hostPort ?? null,
+              hostIp: observation.hostIp ?? null,
               ...desired,
             })
             .returning();
@@ -160,7 +168,12 @@ export function createDiscoveryRepo(db: Database) {
           existing.applyState !== "blocked" &&
           (existing.containerId !== observation.containerId ||
             existing.ipAddress !== (observation.ipAddress ?? null) ||
-            existing.containerRunning !== observation.running);
+            existing.containerRunning !== observation.running ||
+            // Resolved upstream target changes (strategy flip, published host
+            // port moved) requeue exactly like an IP change: routes target it.
+            (existing.upstreamStrategy ?? null) !== (observation.upstreamStrategy ?? null) ||
+            (existing.hostPort ?? null) !== (observation.hostPort ?? null) ||
+            (existing.hostIp ?? null) !== (observation.hostIp ?? null));
         const [row] = await tx
           .update(binding)
           .set({
@@ -172,6 +185,11 @@ export function createDiscoveryRepo(db: Database) {
             lastObservedAt: now,
             composeProject: observation.composeProject ?? existing.composeProject,
             composeService: observation.composeService ?? existing.composeService,
+            networkName: observation.networkName ?? null,
+            networkId: observation.networkId ?? null,
+            upstreamStrategy: observation.upstreamStrategy ?? null,
+            hostPort: observation.hostPort ?? null,
+            hostIp: observation.hostIp ?? null,
             // A blocked binding (identity conflict, other owner's hostname)
             // stays blocked through observation updates — only the reconciler's
             // explicit unblock (conflict resolved) returns it to pending.

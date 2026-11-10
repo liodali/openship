@@ -182,9 +182,12 @@ export async function scanServerDiscovery(
       view: DiscoveryContainerView;
       hostname: string;
       port: number;
-      network: string;
+      network?: string;
       networkId?: string;
       ipAddress?: string;
+      upstreamStrategy: "network-ip" | "published-port";
+      hostPort?: number;
+      hostIp?: string | null;
       configHash: string;
       running: boolean;
     };
@@ -212,14 +215,29 @@ export async function scanServerDiscovery(
       }
       summary.eligible += 1;
       const { declaration } = result;
-      const ip = view.networks.find((n) => n.name === declaration.network)?.ipAddress ?? null;
+      // Deterministic interim upstream selection (docs: "Persist the resolved
+      // strategy and observed target separately from authored config"). The
+      // parser orders candidates deterministically; the resolver's Edge-context
+      // REACHABILITY PROBE (reconciler, step 4) makes the final call before any
+      // route write — a strategy flip requeues via observe(). Until that lands,
+      // prefer the bridge IP when present, else the first published binding.
+      const bridge = declaration.upstreams.find((u) => u.kind === "bridge-ip");
+      const published = declaration.upstreams.find((u) => u.kind === "published-port");
+      const selected = bridge ?? published;
       const candidate: Candidate = {
         view,
         hostname: declaration.hostname,
         port: declaration.port,
         network: declaration.network,
         networkId: declaration.networkId,
-        ipAddress: ip ?? undefined,
+        ipAddress:
+          selected?.kind === "bridge-ip"
+            ? selected.ipAddress
+            : (view.networks.find((n) => n.name === declaration.network)?.ipAddress ?? undefined),
+        upstreamStrategy: selected?.kind === "published-port" ? "published-port" : "network-ip",
+        ...(selected?.kind === "published-port"
+          ? { hostPort: selected.hostPort, hostIp: selected.hostIp }
+          : {}),
         configHash: discoveryConfigHash(declaration),
         running: view.running,
       };
@@ -236,9 +254,12 @@ export async function scanServerDiscovery(
       running: d.running,
       hostname: d.hostname,
       port: d.port,
-      networkName: d.network,
+      networkName: d.network ?? null,
       networkId: d.networkId ?? null,
       ipAddress: d.ipAddress ?? null,
+      upstreamStrategy: d.upstreamStrategy,
+      hostPort: d.hostPort ?? null,
+      hostIp: d.hostIp ?? null,
       configHash: d.configHash,
       composeProject: d.view.labels["com.docker.compose.project"] ?? null,
       composeService: d.view.labels["com.docker.compose.service"] ?? null,

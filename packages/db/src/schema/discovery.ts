@@ -95,11 +95,22 @@ export const discoveryBinding = pgTable(
     hostname: text("hostname").notNull(),
     /** Declared container port, 1–65535. */
     port: integer("port").notNull(),
-    /** Selected network: actual Docker name (never a Compose alias). */
-    networkName: text("network_name").notNull(),
+    /**
+     * Selected bridge network (actual engine name, never a Compose alias).
+     * Null for published-port-only rootless services with no usable bridge.
+     */
+    networkName: text("network_name"),
     networkId: text("network_id"),
     /** Fingerprint of {hostname, port, network} — see `discoveryConfigHash`. */
     configHash: text("config_hash").notNull(),
+
+    // ── Resolved upstream (persisted separately from authored config) ────
+    /** network-ip (bridge direct IP) | published-port (observed host binding). */
+    upstreamStrategy: text("upstream_strategy").$type<"network-ip" | "published-port" | null>(),
+    /** Host port of the published binding, when the strategy is published-port. */
+    hostPort: integer("host_port"),
+    /** Host address of the published binding (loopback / all-interfaces), when known. */
+    hostIp: text("host_ip"),
 
     // ── Observation (last successful inspect) ────────────────────────────
     /** Observed container id; changes on replacement, null once removal is confirmed. */

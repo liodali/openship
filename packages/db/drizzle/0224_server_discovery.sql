@@ -17,9 +17,12 @@ CREATE TABLE "discovery_binding" (
   "compose_service" text,
   "hostname" text NOT NULL,
   "port" integer NOT NULL,
-  "network_name" text NOT NULL,
+  "network_name" text,
   "network_id" text,
   "config_hash" text NOT NULL,
+  "upstream_strategy" text,
+  "host_port" integer,
+  "host_ip" text,
   "container_id" text,
   "container_name" text,
   "ip_address" text,
@@ -38,6 +41,7 @@ CREATE TABLE "discovery_binding" (
   "created_at" timestamp with time zone DEFAULT now() NOT NULL,
   "updated_at" timestamp with time zone DEFAULT now() NOT NULL,
   CONSTRAINT "discovery_binding_observation_status_check" CHECK ("observation_status" IN ('observed', 'missing', 'error', 'invalid')),
+  CONSTRAINT "discovery_binding_upstream_strategy_check" CHECK ("upstream_strategy" IN ('network-ip', 'published-port')),
   CONSTRAINT "discovery_binding_apply_state_check" CHECK ("apply_state" IN ('pending', 'applied', 'error', 'blocked'))
 );
 --> statement-breakpoint

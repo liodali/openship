@@ -90,12 +90,22 @@ const DEFAULT_BRIDGE_NETWORK = "bridge";
 export interface DiscoveryNetworkFact {
   /** Actual Docker network name — NOT a Compose YAML alias. */
   name: string;
-  /** Network driver, e.g. "bridge", "host", "null", "overlay". */
+  /** Network driver, e.g. "bridge", "host", "null", "overlay", "pasta". */
   driver?: string | null;
   /** Docker network id when the caller has it; carried through, never required. */
   id?: string | null;
   /** Container IPv4 address ON this network, when reported (running containers). */
   ipAddress?: string | null;
+}
+
+/** One observed TCP published binding of the container (host → container port). */
+export interface DiscoveryPublishedPortFact {
+  /** Host address the engine bound; null/"0.0.0.0"/"::" = all interfaces. */
+  hostIp?: string | null;
+  /** Bound host port, 1–65535. */
+  hostPort: number;
+  /** The CONTAINER port this binding serves. */
+  containerPort: number;
 }
 
 /** Raw container facts the parser needs. All optional — inspect can omit anything.
@@ -107,9 +117,23 @@ export interface DiscoveryCandidateInput {
   labels?: Record<string, string> | null;
   /** Networks the container is ACTUALLY attached to (`NetworkSettings.Networks`). */
   networks?: DiscoveryNetworkFact[] | null;
+  /** Observed TCP published bindings (rootless/pasta path — exact ports only). */
+  publishedPorts?: DiscoveryPublishedPortFact[] | null;
 }
 
 // ─── Outputs ─────────────────────────────────────────────────────────────────
+
+/**
+ * One way Edge could reach the declared service. The parser emits candidates in
+ * a deterministic order; the platform resolver probes them from the Edge
+ * execution context and picks — a candidate is a possibility, never proof.
+ */
+export type DiscoveryUpstreamCandidate =
+  /** Direct IP on a usable user-defined bridge network (rootful normal path). */
+  | { kind: "bridge-ip"; network: string; networkId?: string | null; ipAddress: string }
+  /** The declared container port's observed TCP published binding
+   *  (rootless Podman / pasta / slirp4netns path). hostIp null = all interfaces. */
+  | { kind: "published-port"; hostIp: string | null; hostPort: number };
 
 /** A validated, normalized discovery declaration for one container. */
 export interface DiscoveryDeclaration {
@@ -129,8 +153,14 @@ export interface DiscoveryDeclaration {
   hostname: string;
   /** Declared container port, 1–65535. */
   port: number;
-  /** Selected network: actual Docker name. */
-  network: string;
+  /**
+   * Upstream candidates in deterministic order: bridge-ip candidates (attached
+   * network order, selector-constrained) then published-port bindings (sorted
+   * by host port). The resolver probes before any route write — never guess.
+   */
+  upstreams: DiscoveryUpstreamCandidate[];
+  /** Selected/declared bridge network for display, when one applies. */
+  network?: string;
   /** Docker network id, when known. */
   networkId?: string;
 }
@@ -195,6 +225,8 @@ export interface DiscoveryContainerView {
   labels: Record<string, string>;
   /** Networks actually attached, with id and IPv4 address per network. */
   networks: DiscoveryNetworkFact[];
+  /** Observed TCP published bindings (host → container port); UDP excluded. */
+  publishedPorts: DiscoveryPublishedPortFact[];
 }
 
 // ─── Network usability ───────────────────────────────────────────────────────
@@ -401,42 +433,60 @@ export function parseDiscoveryDeclaration(input: DiscoveryCandidateInput): Disco
 
   const declaration = { ...identity, hostname, port };
 
-  // Network: explicit selector resolved by ACTUAL name, else the single usable bridge.
+  // Upstream resolution (docs "Upstream resolution and rootless networking"):
+  // candidates are emitted, never picked — the platform resolver probes them
+  // from the Edge execution context before any route write. Two kinds:
+  //  1. bridge-ip — direct IP on a usable user-defined bridge (rootful normal);
+  //  2. published-port — the EXACT declared container port's observed TCP
+  //     host binding (rootless Podman / pasta / slirp4netns). A binding for a
+  //     sibling port or another container never qualifies.
+  const attached = input.networks ?? null;
+  const publishedAll = (input.publishedPorts ?? []).filter(
+    (b) => Number.isInteger(b.hostPort) && b.hostPort >= 1 && b.hostPort <= 65535 && b.containerPort === port,
+  );
+  const publishedCandidates: DiscoveryUpstreamCandidate[] = publishedAll
+    .map((b) => ({ kind: "published-port" as const, hostIp: b.hostIp ?? null, hostPort: b.hostPort }))
+    .sort((a, b) => a.hostPort - b.hostPort || String(a.hostIp ?? "").localeCompare(String(b.hostIp ?? "")));
+
   const networkField = mergeField(
     "network",
     envPairs.get(DISCOVERY_ENV.network),
     labels[DISCOVERY_LABEL.network],
   );
   if (networkField.error) return { eligible: false, rejection: { kind: "invalid", ...networkField.error, serviceKey } };
-  const attached = input.networks ?? null;
-  if (attached == null) {
-    return {
-      eligible: false,
-      rejection: {
-        kind: "invalid",
-        code: "networks-unknown",
-        message: "Container network membership could not be read; discovery cannot pick a route-safe network.",
-        serviceKey,
-      },
-    };
-  }
   const selector = networkField.value?.trim();
-  let selected: DiscoveryNetworkFact | undefined;
+
+  let networkName: string | undefined;
+  let networkId: string | undefined;
+  const bridgeCandidates: DiscoveryUpstreamCandidate[] = [];
+
   if (selector) {
-    // Exact name, never an alias — then the SAME usability rule as the
-    // auto-selected path. A selector is a choice, not an exemption: host,
-    // default bridge and overlay networks are exactly the ones an operator is
-    // most likely to name explicitly, and the Edge cannot reach them the way
-    // it reaches a user-defined bridge.
-    selected = attached.find((net) => net.name === selector); // exact name, never an alias
+    // A selector must be validated BEFORE any upstream is considered, and it
+    // must be attached to THIS container by its actual engine name — a Compose
+    // YAML alias never matches, and a missing network is an error, never a
+    // fallback. The usability rule is the same as the auto-selected path: a
+    // selector is a choice, not an exemption (host, default bridge and overlay
+    // cannot carry discovered traffic).
+    if (attached == null) {
+      return {
+        eligible: false,
+        rejection: {
+          kind: "invalid",
+          code: "networks-unknown",
+          serviceKey,
+          message: "Container network membership could not be read; the declared network cannot be validated.",
+        },
+      };
+    }
+    const selected = attached.find((net) => net.name === selector);
     if (!selected) {
       return {
         eligible: false,
         rejection: {
           kind: "invalid",
           code: "network-missing",
-          message: `Network "${selector}" is not attached to this container. Attached: ${attached.map((n) => n.name || "(unnamed)").join(", ") || "none"}.`,
           serviceKey,
+          message: `Network "${selector}" is not attached to this container. Attached: ${attached.map((n) => n.name || "(unnamed)").join(", ") || "none"}.`,
         },
       };
     }
@@ -451,19 +501,21 @@ export function parseDiscoveryDeclaration(input: DiscoveryCandidateInput): Disco
         },
       };
     }
-  } else {
-    const usable = attached.filter((net) => isUsableDiscoveryNetwork(net));
-    if (usable.length === 0) {
-      return {
-        eligible: false,
-        rejection: {
-          kind: "invalid",
-          code: "network-unusable",
-          serviceKey,
-          message: `No usable user-defined bridge network attached. Attached: ${attached.map((n) => `${n.name || "(unnamed)"}${n.driver && n.driver !== "bridge" ? ` (${n.driver})` : ""}`).join(", ") || "none"}. Attach one or set ${DISCOVERY_ENV.network}.`,
-        },
-      };
+    networkName = selected.name;
+    networkId = selected.id ?? undefined;
+    if (selected.ipAddress) {
+      bridgeCandidates.push({
+        kind: "bridge-ip",
+        network: selected.name,
+        networkId: selected.id ?? null,
+        ipAddress: selected.ipAddress,
+      });
     }
+  } else if (attached != null) {
+    // No selector: direct-IP routing requires exactly one usable bridge —
+    // several is an error (never pick one), and ZERO usable bridges is the
+    // rootless shape (pasta/slirp4netns): fall through to published ports.
+    const usable = attached.filter((net) => isUsableDiscoveryNetwork(net));
     if (usable.length > 1) {
       return {
         eligible: false,
@@ -475,7 +527,37 @@ export function parseDiscoveryDeclaration(input: DiscoveryCandidateInput): Disco
         },
       };
     }
-    selected = usable[0];
+    const single = usable[0];
+    if (single) {
+      networkName = single.name;
+      networkId = single.id ?? undefined;
+      if (single.ipAddress) {
+        bridgeCandidates.push({
+          kind: "bridge-ip",
+          network: single.name,
+          networkId: single.id ?? null,
+          ipAddress: single.ipAddress,
+        });
+      }
+    }
+  }
+  // attached == null without a selector is fine when published ports exist.
+
+  const upstreams = [...bridgeCandidates, ...publishedCandidates];
+  if (upstreams.length === 0 && attached == null) {
+    // Membership unreadable and no published bindings: cannot pick anything.
+    return invalid(
+      "networks-unknown",
+      "Container network membership could not be read and no published port binding was observed; discovery cannot resolve an upstream.",
+    );
+  }
+  if (upstreams.length === 0) {
+    const attachedList =
+      attached?.map((n) => `${n.name || "(unnamed)"}${n.driver && n.driver !== "bridge" ? ` (${n.driver})` : ""}`).join(", ") || "none";
+    return invalid(
+      "network-unusable",
+      `No reachable upstream for port ${port}: no usable bridge-network IP${networkName ? ` on "${networkName}"` : ""} and no observed TCP published binding for that port. Attach a user-defined bridge, publish the port, or set ${DISCOVERY_ENV.network}. Attached networks: ${attachedList}.`,
+    );
   }
 
   return {
@@ -483,12 +565,12 @@ export function parseDiscoveryDeclaration(input: DiscoveryCandidateInput): Disco
     declaration: {
       ...declaration,
       serviceKey,
-      network: selected.name,
-      ...(selected.id ? { networkId: selected.id } : {}),
+      upstreams,
+      ...(networkName ? { network: networkName } : {}),
+      ...(networkId ? { networkId } : {}),
     },
   };
 }
-
 // ─── Identity conflicts across containers ────────────────────────────────────
 
 /**

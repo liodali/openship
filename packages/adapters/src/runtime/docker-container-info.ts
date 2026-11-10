@@ -2,7 +2,7 @@ import type { ContainerInfo } from "../types";
 import type { DockerContainerSummary, DockerPortBinding } from "./types";
 import type Dockerode from "dockerode";
 import type { ContainerStabilitySample } from "./stability";
-import type { DiscoveryContainerView, DiscoveryNetworkFact } from "@repo/core";
+import type { DiscoveryContainerView, DiscoveryNetworkFact, DiscoveryPublishedPortFact } from "@repo/core";
 
 /** Shared inspect normalization for deployment stability and environment Apply. */
 export function stabilitySampleFromDockerInspect(data: Dockerode.ContainerInspectInfo): ContainerStabilitySample {
@@ -155,6 +155,31 @@ export function discoveryContainerViewFromDockerInspect(
     // IPv4 only in the first release; IPv6 addressing is follow-up work.
     ipAddress: endpoint?.IPAddress || undefined,
   }));
+  // Observed TCP published bindings (discovery plan, rootless path): only LIVE
+  // concrete bindings with a real host port count — exposed-but-unpublished
+  // ports and UDP are never upstream candidates. Both the live table (running
+  // containers) and the retained declaration (stopped) are read the same way
+  // `extractNetworkInfo` reads them for routes.
+  const nsPorts = (data.NetworkSettings?.Ports ?? {}) as Record<
+    string,
+    Array<{ HostIp?: string; HostPort?: string }> | null
+  >;
+  const publishedPorts: DiscoveryPublishedPortFact[] = [];
+  for (const [key, bindings] of Object.entries(nsPorts)) {
+    const [portStr, proto = "tcp"] = key.split("/");
+    if (proto !== "tcp") continue;
+    const containerPort = Number(portStr);
+    if (!Number.isInteger(containerPort) || containerPort < 1 || containerPort > 65535) continue;
+    for (const binding of bindings ?? []) {
+      const hostPort = Number(binding?.HostPort);
+      if (!Number.isInteger(hostPort) || hostPort < 1 || hostPort > 65535) continue;
+      publishedPorts.push({
+        ...(binding?.HostIp ? { hostIp: binding.HostIp } : {}),
+        hostPort,
+        containerPort,
+      });
+    }
+  }
 
   return {
     containerId,
@@ -170,5 +195,6 @@ export function discoveryContainerViewFromDockerInspect(
     env,
     labels: discoveryLabels,
     networks,
+    publishedPorts,
   };
 }
