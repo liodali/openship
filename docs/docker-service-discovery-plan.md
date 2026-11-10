@@ -2,6 +2,42 @@
 
 Status: implementation plan; no feature code or production changes yet.
 
+## Implementation status (updated as code lands)
+
+- **Step 2 — DONE.** Core parser: `packages/core/src/discovery-config.ts`
+  (+33 tests). Runtime view: `getDiscoveryContainerView` +
+  `discoveryContainerViewFromDockerInspect` in
+  `packages/adapters/src/runtime/` (+5 tests), `discoveryInspection`
+  capability, `listAllNetworks` on the adapter interface for driver
+  enrichment. View field names match the parser input so a view feeds
+  `parseDiscoveryDeclaration` directly.
+- **Step 3 — persistence DONE, API layer NOT started.** Schema:
+  `packages/db/src/schema/discovery.ts` (`discovery_settings`,
+  `discovery_binding`), `domain.serverId` for ownerType='server'; migration
+  `drizzle/0224_server_discovery.sql` (hand-written; snapshots end at 0060 —
+  follow that convention). Repo: `packages/db/src/repos/discovery.repo.ts`
+  (25 tests, PGlite, also validates the migration). Issuance eligibility:
+  `serverVerificationOwner` inside `liveVerificationOwner` in
+  `domain.repo.ts` (server domains queue with discovery enabled + an
+  observed, unsuppressed binding; project rules unchanged). Dump catalogue:
+  both tables instance-scoped in `dump.ts`. Not done: contracts schemas,
+  platform operations (configure/preview/status/suppress/forget with server
+  access policy), controller + routes.
+- **Step 4 — scanner DONE, reconciler NOT started.**
+  `packages/platform/src/engine/modules/discovery/discovery-scanner.ts`
+  (+13 tests): inventory → bounded inspect → parse → observe; duplicate live
+  identities block all candidates; other-owner hostnames block;
+  `applyState='blocked'` never auto-retries (unblock is explicit/conflict
+  resolved); inspect failures leave bindings unclassified; opt-out withdraws
+  (forget, domain retained); confirmed removals go missing; unchanged rescans
+  converge. NOT done: Edge route apply through the shared serving-target
+  primitives, server-domain target resolution, certificate scheduling
+  registration, watcher/sweep wiring (step 5).
+- Known pre-existing breakage at HEAD (unrelated): platform typecheck fails in
+  `modules/actions/` — `repos.actions.runnerSessionCounts` and
+  `appendRunnerSessionEvents` are referenced but do not exist in the actions
+  repo.
+
 Architecture correction: discovered domains are server-scoped Edge resources.
 They require neither an Openship project nor a deployment/adoption record, and
 do not require a manual Openship TXT ownership check. Issuance still requires
