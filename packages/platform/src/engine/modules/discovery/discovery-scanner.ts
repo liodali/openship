@@ -334,16 +334,28 @@ export async function scanServerDiscovery(
       // "failed/incomplete inventory retains bindings and reports an error";
       // only a confirmed absence (or a readable opt-out) changes state.
       if (bindingRow.containerId != null && failedContainerIds.has(bindingRow.containerId)) continue;
-      // Invalid/excluded declaration ON THIS container id: preserve the binding.
-      if (bindingRow.containerId != null && rejectionsByContainerId.has(bindingRow.containerId)) continue;
+      // Invalid/excluded declaration ON THIS container id: preserve the binding
+      // but INVALIDATE the old observation — the previous container is gone or
+      // unrouteable, so its IP/running flag must not survive, and a previously
+      // applied route must be queued for withdrawal (markInvalid does both).
+      if (bindingRow.containerId != null && rejectionsByContainerId.has(bindingRow.containerId)) {
+        await repos.discovery.markInvalid(serverId, bindingRow.serviceKey).catch((error) => {
+          summary.errors.push({ message: `markInvalid(${bindingRow.serviceKey}) failed: ${safeErrorMessage(error)}` });
+        });
+        continue;
+      }
       // Recreation with a NEW container id: the parser recovered the identity
       // (serviceKey) from the invalid declaration — link it back so a bad
-      // recreate preserves the binding instead of reading as a removal.
-      if (
+      // recreate preserves the binding, invalidates the stale observation, and
+      // queues withdrawal instead of reading as a removal.
+      const recreatedMatch =
         bindingRow.containerId != null &&
         !presentContainerIds.has(bindingRow.containerId) &&
-        [...rejectionsByContainerId.values()].some((r) => r.serviceKey === bindingRow.serviceKey)
-      ) {
+        [...rejectionsByContainerId.values()].some((r) => r.serviceKey === bindingRow.serviceKey);
+      if (recreatedMatch) {
+        await repos.discovery.markInvalid(serverId, bindingRow.serviceKey).catch((error) => {
+          summary.errors.push({ message: `markInvalid(${bindingRow.serviceKey}) failed: ${safeErrorMessage(error)}` });
+        });
         continue; // already reported in summary.invalid above
       }
       // A container that scanned but did not produce THIS binding's key has

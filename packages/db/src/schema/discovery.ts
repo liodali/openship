@@ -113,8 +113,8 @@ export const discoveryBinding = pgTable(
      * order (docs: "a cached running flag alone is insufficient").
      */
     containerRunning: boolean("container_running").notNull().default(false),
-    /** observed | missing (confirmed gone) | error (inspection failed; state kept) */
-    observationStatus: text("observation_status").$type<"observed" | "missing" | "error">().notNull().default("observed"),
+    /** observed | missing (confirmed gone) | error (inspection failed; state kept) | invalid (present but declaration rejected; observation invalidated) */
+    observationStatus: text("observation_status").$type<"observed" | "missing" | "error" | "invalid">().notNull().default("observed"),
     lastObservedAt: timestamp("last_observed_at"),
 
     // ── Edge apply state (independent of observation) ────────────────────
@@ -134,6 +134,16 @@ export const discoveryBinding = pgTable(
     applyError: text("apply_error"),
     applyAttempts: integer("apply_attempts").notNull().default(0),
     nextApplyAt: timestamp("next_apply_at"),
+    /**
+     * A confirmed route exists that must be RETIRED (container removed or its
+     * declaration invalidated). Retirement is scheduled INDEPENDENTLY of
+     * blocking: `blocked` stops forward applies (conflict — never create or
+     * update routes), but a route applied before the block is real and its
+     * upstream must still go away on removal. The reconciler consumes this via
+     * `dueForWithdrawal()` and clears it with `markWithdrawn()`; blocked/
+     * suppressed state stays untouched so forward-apply policy is unchanged.
+     */
+    withdrawalPending: boolean("withdrawal_pending").notNull().default(false),
 
     // ── Operator intent ──────────────────────────────────────────────────
     /**

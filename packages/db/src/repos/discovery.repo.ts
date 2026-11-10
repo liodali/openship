@@ -196,19 +196,29 @@ export function createDiscoveryRepo(db: Database) {
     },
 
     /**
-     * Mark a binding's container as CONFIRMED removed. The binding row and its
-     * certificate metadata are RETAINED — only the application upstream goes
-     * away. Removal is a reconcile TASK, not just an observation: a previously
-     * APPLIED binding returns to the pending queue (generation bumped) so the
-     * reconciler withdraws its route even if the process crashes between this
-     * write and reconciliation — a live route pointing at a dead container is
-     * exactly the stale-IP hazard the plan forbids. Idempotent: re-marking an
-     * already-missing binding does not re-bump (the scanner re-runs every
-     * sweep until the reconciler catches up). Blocked bindings are left alone
-     * (they never had routes); suppressed bindings are left to the suppress
-     * flow's own retirement policy.
+     * Shared removal semantics for markMissing (container gone) and
+     * markInvalid (container present, declaration rejected):
+     *  - observation invalidated: container id/name, IP and running flag are
+     *    cleared — the old observation describes a container that is either
+     *    gone or unrouteable, and keeping its IP alive in the row is exactly
+     *    the stale-upstream hazard;
+     *  - binding/certificate metadata RETAINED: hostname, port, network,
+     *    config hash and generations stay (the declaration may come back);
+     *  - retirement scheduled INDEPENDENTLY of blocking/suppression: any
+     *    binding with evidence of a previously applied route (applied state or
+     *    appliedGeneration > 0) gets `withdrawalPending = true`, so a blocked
+     *    or suppressed binding's live route is still withdrawn on removal —
+     *    `blocked` only forbids FORWARD applies, never retirement;
+     *  - non-blocked, non-suppressed bindings additionally requeue into the
+     *    normal apply queue (generation bump + pending) so the reconciler's
+     *    regular pass handles them; blocked/suppressed state stays untouched.
+     * Idempotent per target state: re-marking does not re-bump or re-flag.
      */
-    async markMissing(serverId: string, serviceKey: string) {
+    async invalidateObservation(
+      serverId: string,
+      serviceKey: string,
+      target: "missing" | "invalid",
+    ) {
       return db.transaction(async (tx) => {
         const [existing] = await tx
           .select()
@@ -216,20 +226,23 @@ export function createDiscoveryRepo(db: Database) {
           .where(and(eq(binding.serverId, serverId), eq(binding.serviceKey, serviceKey)))
           .for("update");
         if (!existing) return undefined;
-        const newlyMissing = existing.observationStatus !== "missing";
-        // Withdrawal is a reconcile task: applied/pending/error bindings requeue
-        // (crash-safe — the route must be retired); blocked bindings never had
-        // routes; suppressed bindings follow the suppress flow's own policy.
+        const newlyTarget = existing.observationStatus !== target;
+        const hasAppliedRoute =
+          existing.applyState === "applied" || existing.appliedGeneration > 0;
         const requeue =
-          newlyMissing && existing.applyState !== "blocked" && !existing.suppressed;
+          newlyTarget &&
+          existing.applyState !== "blocked" &&
+          !existing.suppressed;
         const [row] = await tx
           .update(binding)
           .set({
-            observationStatus: "missing",
+            observationStatus: target,
             containerId: null,
             containerName: null,
             ipAddress: null,
             containerRunning: false,
+            // Retirement of a real route, scheduled regardless of blocked/suppressed.
+            ...(newlyTarget && hasAppliedRoute ? { withdrawalPending: true } : {}),
             ...(requeue
               ? {
                   desiredGeneration: existing.desiredGeneration + 1,
@@ -245,6 +258,38 @@ export function createDiscoveryRepo(db: Database) {
           .returning();
         return row;
       });
+    },
+
+    /** The container is confirmed absent from the host. */
+    markMissing(serverId: string, serviceKey: string) {
+      return this.invalidateObservation(serverId, serviceKey, "missing");
+    },
+
+    /** The container is present but its declaration is invalid/excluded. */
+    markInvalid(serverId: string, serviceKey: string) {
+      return this.invalidateObservation(serverId, serviceKey, "invalid");
+    },
+
+    /**
+     * Bindings with a confirmed route whose upstream must be retired.
+     * Consumed by the reconciler's retirement path — independent of the
+     * forward-apply queue, so blocked and suppressed bindings are included.
+     */
+    dueForWithdrawal(serverId: string) {
+      return db
+        .select()
+        .from(binding)
+        .where(and(eq(binding.serverId, serverId), eq(binding.withdrawalPending, true)));
+    },
+
+    /** The reconciler retired the route; clear the retirement signal. */
+    async markWithdrawn(serverId: string, serviceKey: string) {
+      const [row] = await db
+        .update(binding)
+        .set({ withdrawalPending: false, updatedAt: new Date() })
+        .where(and(eq(binding.serverId, serverId), eq(binding.serviceKey, serviceKey)))
+        .returning();
+      return row;
     },
 
     /** Inspection failed for this binding: keep EVERYTHING, record the state. */

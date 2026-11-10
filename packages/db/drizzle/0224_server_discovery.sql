@@ -32,11 +32,12 @@ CREATE TABLE "discovery_binding" (
   "apply_error" text,
   "apply_attempts" integer DEFAULT 0 NOT NULL,
   "next_apply_at" timestamp with time zone,
+  "withdrawal_pending" boolean DEFAULT false NOT NULL,
   "suppressed" boolean DEFAULT false NOT NULL,
   "suppressed_at" timestamp with time zone,
   "created_at" timestamp with time zone DEFAULT now() NOT NULL,
   "updated_at" timestamp with time zone DEFAULT now() NOT NULL,
-  CONSTRAINT "discovery_binding_observation_status_check" CHECK ("observation_status" IN ('observed', 'missing', 'error')),
+  CONSTRAINT "discovery_binding_observation_status_check" CHECK ("observation_status" IN ('observed', 'missing', 'error', 'invalid')),
   CONSTRAINT "discovery_binding_apply_state_check" CHECK ("apply_state" IN ('pending', 'applied', 'error', 'blocked'))
 );
 --> statement-breakpoint
