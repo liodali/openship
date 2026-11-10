@@ -22,6 +22,7 @@ function observation(overrides: Partial<DiscoveryObservation> = {}): DiscoveryOb
     serviceKey: "id:my-app",
     containerId: "ctr_1",
     containerName: "my-app",
+    running: true,
     hostname: "app.example.com",
     port: 3000,
     networkName: "frontend",
@@ -168,6 +169,51 @@ describe("binding observations", () => {
 });
 
 describe("apply scheduling", () => {
+  it("blocks and unblocks a conflicting binding, and other-owner hostnames are found", async () => {
+    await repo.observe(SERVER, observation());
+
+    // A project-owned domain already serves the hostname → conflict found.
+    await db.insert(schema.domain).values({
+      id: "dom_project_owner",
+      projectId: "proj_other",
+      hostname: "app.example.com",
+    });
+    const conflict = await repo.findConflictingDomainOwner(SERVER, "app.example.com");
+    expect(conflict?.id).toBe("dom_project_owner");
+
+    await repo.block(SERVER, "id:my-app", "hostname owned elsewhere");
+    expect((await repo.getBinding(SERVER, "id:my-app"))?.applyState).toBe("blocked");
+    // Blocked rows never become due, no matter the backoff.
+    expect(await repo.dueForApply(SERVER)).toHaveLength(0);
+
+    // markApplyError must not overwrite a blocked row.
+    await repo.markApplyError(SERVER, "id:my-app", "should be ignored", new Date());
+    expect((await repo.getBinding(SERVER, "id:my-app"))?.applyError).toBe("hostname owned elsewhere");
+
+    // Resolution clears the block back to the pending queue.
+    await repo.unblock(SERVER, "id:my-app");
+    expect((await repo.getBinding(SERVER, "id:my-app"))?.applyState).toBe("pending");
+  });
+
+  it("keeps a blocked binding blocked through config changes, until unblocked", async () => {
+    await repo.observe(SERVER, observation());
+    await repo.block(SERVER, "id:my-app", "duplicate identity");
+    // Operator recreates the container with new config while still conflicted.
+    await repo.observe(
+      SERVER,
+      observation({
+        containerId: "ctr_2",
+        hostname: "moved.example.com",
+        configHash: discoveryConfigHash({ hostname: "moved.example.com", port: 3000, network: "frontend" }),
+      }),
+    );
+    const row = await repo.getBinding(SERVER, "id:my-app");
+    expect(row?.applyState).toBe("blocked"); // stays blocked across observation updates
+    expect(row?.hostname).toBe("moved.example.com"); // but desired config is current
+    await repo.unblock(SERVER, "id:my-app");
+    expect((await repo.getBinding(SERVER, "id:my-app"))?.applyState).toBe("pending");
+  });
+
   it("picks up due bindings and excludes suppressed ones", async () => {
     await repo.observe(SERVER, observation());
     await repo.observe(SERVER, observation({ serviceKey: "id:other", hostname: "b.example.com" }));
