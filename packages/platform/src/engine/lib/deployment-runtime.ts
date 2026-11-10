@@ -512,7 +512,7 @@ async function resolveCloudPlatformForOrg(
  * single-server snapshot must not perform a second mutable server selection for
  * its host-port identity.
  */
-function resolveServerHostPortTarget(
+export function resolveServerHostPortTarget(
   target: ResolvedServerTarget,
 ): Promise<HostPortTargetIdentity> {
   return resolveHostPortTargetIdentity({
@@ -652,7 +652,7 @@ async function createWithRetainedConnection<T extends Platform | RuntimeAdapter>
  * For server targets, the executor is acquired from `sshManager` (pooled,
  * idle-TTL, auto-retry) instead of creating a fresh SSH connection.
  */
-async function createPlatformForResolvedServer(
+export async function createPlatformForResolvedServer(
   resolved: ResolvedServerTarget,
   runtimeMode: RuntimeMode,
   organizationId?: string,
