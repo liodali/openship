@@ -201,6 +201,7 @@ function view(overrides: Partial<DiscoveryContainerView> = {}): DiscoveryContain
     ],
     labels: {},
     networks: [{ name: "frontend", id: "net_fe", ipAddress: "172.20.0.5" }],
+    publishedPorts: [],
     ...overrides,
   };
 }
@@ -210,9 +211,24 @@ function runtime(containers: DiscoveryContainerView[]): RuntimeAdapter {
     name: "docker-test",
     capabilities: new Set(["discoveryInspection"] as never),
     supports: (cap: string) => cap === "discoveryInspection",
-    listAllNetworks: vi.fn(async () => [
-      { id: "net_fe", name: "frontend", driver: "bridge", labels: {} },
-    ]),
+    listAllNetworks: vi.fn(async () => {
+      // Derive the host network list from the fixture views (the scanner
+      // enriches per-container drivers from exactly this list).
+      const seen = new Map<string, { id: string; name: string; driver: string; labels: Record<string, string> }>();
+      for (const c of containers) {
+        for (const n of c.networks) {
+          if (!seen.has(n.name)) {
+            seen.set(n.name, {
+              id: n.id ?? `net_${n.name}`,
+              name: n.name,
+              driver: n.driver ?? "bridge",
+              labels: {},
+            });
+          }
+        }
+      }
+      return [...seen.values()];
+    }),
     listAllContainers: vi.fn(async () =>
       containers.map((c) => ({
         id: c.containerId,
@@ -492,6 +508,49 @@ describe("discovery scanner", () => {
     expect((await discoveryRepo.dueForWithdrawal(SERVER)).map((r) => r.serviceKey)).toEqual(["id:my-app"]);
     await discoveryRepo.markWithdrawn(SERVER, "id:my-app");
     expect(await discoveryRepo.dueForWithdrawal(SERVER)).toHaveLength(0);
+  });
+
+  it("observes a published-port-only rootless container with the published strategy", async () => {
+    const rootless = view({
+      containerId: "ctr_rootless",
+      name: "rootless-app",
+      env: [
+        "OPENSHIP_DISCOVERY=true",
+        "OPENSHIP_SERVICE_ID=rootless",
+        "OPENSHIP_DOMAIN=r.example.com",
+        "OPENSHIP_PORT=8080",
+      ],
+      networks: [{ name: "pasta0", id: "net_pasta", driver: "bridge" }], // rootless bridge, no IP
+      publishedPorts: [{ hostIp: "127.0.0.1", hostPort: 18080, containerPort: 8080 }],
+    });
+    const summary = await scanServerDiscovery(SERVER, "org_1", { runtime: runtime([rootless]) });
+    expect(summary.eligible).toBe(1);
+    expect(summary.observed).toEqual(["id:rootless"]);
+    // The in-memory store records strategy/hostPort via the observation —
+    // assert through the repo mock call rather than the raw row shape.
+    const observeCall = discoveryRepo.observe.mock.calls.find(
+      (c) => (c[1] as { serviceKey: string }).serviceKey === "id:rootless",
+    );
+    expect(observeCall?.[1]).toMatchObject({
+      upstreamStrategy: "published-port",
+      hostPort: 18080,
+      hostIp: "127.0.0.1",
+      networkName: "pasta0",
+      ipAddress: null,
+    });
+  });
+
+  it("prefers the bridge IP when both direct-IP and published bindings exist", async () => {
+    const both = view({
+      publishedPorts: [{ hostIp: "127.0.0.1", hostPort: 18080, containerPort: 3000 }],
+    });
+    await scanServerDiscovery(SERVER, "org_1", { runtime: runtime([both]) });
+    const observeCall = discoveryRepo.observe.mock.calls[0];
+    expect(observeCall?.[1]).toMatchObject({
+      upstreamStrategy: "network-ip",
+      ipAddress: "172.20.0.5",
+      hostPort: null,
+    });
   });
 
   it("withdraws (forgets) an opted-out container that is still present", async () => {

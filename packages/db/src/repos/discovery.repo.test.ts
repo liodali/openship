@@ -159,6 +159,38 @@ describe("binding observations", () => {
     expect(await repo.dueForApply(SERVER)).toHaveLength(0);
   });
 
+  it("requeues when the resolved upstream target changes (published host port)", async () => {
+    await repo.observe(
+      SERVER,
+      observation({ upstreamStrategy: "published-port", hostPort: 18080, hostIp: "127.0.0.1", networkName: null }),
+    );
+    await repo.markApplied(SERVER, "id:my-app", 1);
+
+    // The operator re-published the port; same config hash, different target.
+    const { requeued } = await repo.observe(
+      SERVER,
+      observation({ running: true, upstreamStrategy: "published-port", hostPort: 18081, hostIp: "0.0.0.0", networkName: null }),
+    );
+    expect(requeued).toBe(true);
+    const row = await repo.getBinding(SERVER, "id:my-app");
+    expect(row?.applyState).toBe("pending");
+    expect(row?.hostPort).toBe(18081);
+    expect(row?.desiredGeneration).toBe(2);
+  });
+
+  it("stores upstream strategy and nulls network for published-only services", async () => {
+    const row = (
+      await repo.observe(
+        SERVER,
+        observation({ upstreamStrategy: "published-port", hostPort: 18080, hostIp: "127.0.0.1", networkName: null, networkId: null, ipAddress: null }),
+      )
+    ).binding;
+    expect(row.upstreamStrategy).toBe("published-port");
+    expect(row.hostPort).toBe(18080);
+    expect(row.hostIp).toBe("127.0.0.1");
+    expect(row.networkName).toBeNull();
+  });
+
   it("marks pending and resets retries when the operator changes config", async () => {
     await repo.observe(SERVER, observation());
     await repo.markApplied(SERVER, "id:my-app", 1);

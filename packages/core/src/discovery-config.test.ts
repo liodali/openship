@@ -21,7 +21,7 @@ function candidate(overrides: Partial<DiscoveryCandidateInput> = {}): DiscoveryC
       `${DISCOVERY_ENV.port}=3000`,
     ],
     labels: {},
-    networks: [{ name: "frontend", driver: "bridge", id: "net_frontend" }],
+    networks: [{ name: "frontend", driver: "bridge", id: "net_frontend", ipAddress: "172.20.0.5" }],
     ...overrides,
   };
 }
@@ -310,13 +310,16 @@ describe("network resolution", () => {
         candidate({
           env: [`${DISCOVERY_ENV.discovery}=true`, `${DISCOVERY_ENV.serviceId}=x`, `${DISCOVERY_ENV.domain}=app.example.com`, `${DISCOVERY_ENV.port}=80`],
           networks: [
-            { name: "shop_default", driver: "bridge", id: "net_1" },
+            { name: "shop_default", driver: "bridge", id: "net_1", ipAddress: "172.20.0.2" },
           ],
         }),
       ),
     );
     expect(declaration.network).toBe("shop_default");
     expect(declaration.networkId).toBe("net_1");
+    expect(declaration.upstreams).toEqual([
+      { kind: "bridge-ip", network: "shop_default", networkId: "net_1", ipAddress: "172.20.0.2" },
+    ]);
   });
 
   it("resolves an explicit selector by exact actual name", () => {
@@ -326,13 +329,16 @@ describe("network resolution", () => {
           labels: { [DISCOVERY_LABEL.network]: "frontend" },
           networks: [
             { name: "backend", driver: "bridge" },
-            { name: "frontend", driver: "bridge", id: "net_f" },
+            { name: "frontend", driver: "bridge", id: "net_f", ipAddress: "172.20.0.7" },
           ],
         }),
       ),
     );
     expect(declaration.network).toBe("frontend");
     expect(declaration.networkId).toBe("net_f");
+    expect(declaration.upstreams).toEqual([
+      { kind: "bridge-ip", network: "frontend", networkId: "net_f", ipAddress: "172.20.0.7" },
+    ]);
   });
 
   it("rejects a selector for a network the container is not attached to", () => {
@@ -416,6 +422,97 @@ describe("network resolution", () => {
     expect(isUsableDiscoveryNetwork({ name: "shop_default", driver: "bridge" })).toBe(true);
     expect(isUsableDiscoveryNetwork({ name: "mystery", driver: undefined })).toBe(false); // unproven driver → not usable
     expect(isUsableDiscoveryNetwork({ name: "", driver: "bridge" })).toBe(false);
+  });
+
+  it("accepts a published-port-only rootless container with no usable bridge", () => {
+    const declaration = declarationOf(
+      parseDiscoveryDeclaration(
+        candidate({
+          networks: [{ name: "host", driver: "host" }],
+          publishedPorts: [{ hostIp: "127.0.0.1", hostPort: 18080, containerPort: 3000 }],
+        }),
+      ),
+    );
+    expect(declaration.network).toBeUndefined();
+    expect(declaration.upstreams).toEqual([{ kind: "published-port", hostIp: "127.0.0.1", hostPort: 18080 }]);
+  });
+
+  it("falls back to published ports when the single bridge has no IP, keeping the network recorded", () => {
+    const declaration = declarationOf(
+      parseDiscoveryDeclaration(
+        candidate({
+          networks: [{ name: "pasta0", driver: "bridge", id: "net_p" }],
+          publishedPorts: [
+            { hostIp: "0.0.0.0", hostPort: 18081, containerPort: 3000 },
+            { hostIp: "127.0.0.1", hostPort: 18080, containerPort: 3000 },
+          ],
+        }),
+      ),
+    );
+    expect(declaration.network).toBe("pasta0");
+    expect(declaration.upstreams).toEqual([
+      { kind: "published-port", hostIp: "127.0.0.1", hostPort: 18080 },
+      { kind: "published-port", hostIp: "0.0.0.0", hostPort: 18081 },
+    ]);
+  });
+
+  it("offers both bridge and published candidates when both exist, bridge first", () => {
+    const declaration = declarationOf(
+      parseDiscoveryDeclaration(
+        candidate({
+          publishedPorts: [{ hostIp: "127.0.0.1", hostPort: 18080, containerPort: 3000 }],
+        }),
+      ),
+    );
+    expect(declaration.upstreams).toEqual([
+      { kind: "bridge-ip", network: "frontend", networkId: "net_frontend", ipAddress: "172.20.0.5" },
+      { kind: "published-port", hostIp: "127.0.0.1", hostPort: 18080 },
+    ]);
+  });
+
+  it("only accepts published bindings for the EXACT declared container port", () => {
+    const rejection = rejectionOf(
+      parseDiscoveryDeclaration(
+        candidate({
+          networks: [{ name: "host", driver: "host" }],
+          publishedPorts: [
+            { hostIp: "127.0.0.1", hostPort: 18080, containerPort: 3001 }, // sibling port
+            { hostIp: "127.0.0.1", hostPort: 18081, containerPort: 80 },
+          ],
+        }),
+      ),
+    );
+    expect(rejection).toMatchObject({ kind: "invalid", code: "network-unusable" });
+    expect((rejection as { message: string }).message).toContain("published binding");
+  });
+
+  it("still requires a selector when several bridges exist, published ports notwithstanding", () => {
+    const rejection = rejectionOf(
+      parseDiscoveryDeclaration(
+        candidate({
+          networks: [
+            { name: "frontend", driver: "bridge", ipAddress: "172.20.0.5" },
+            { name: "backend", driver: "bridge", ipAddress: "172.21.0.2" },
+          ],
+          publishedPorts: [{ hostIp: "127.0.0.1", hostPort: 18080, containerPort: 3000 }],
+        }),
+      ),
+    );
+    expect(rejection).toMatchObject({ kind: "invalid", code: "network-ambiguous" });
+  });
+
+  it("selector on a valid bridge without IP falls back to published ports", () => {
+    const declaration = declarationOf(
+      parseDiscoveryDeclaration(
+        candidate({
+          labels: { [DISCOVERY_LABEL.network]: "frontend" },
+          networks: [{ name: "frontend", driver: "bridge", id: "net_f" }],
+          publishedPorts: [{ hostIp: "127.0.0.1", hostPort: 18080, containerPort: 3000 }],
+        }),
+      ),
+    );
+    expect(declaration.network).toBe("frontend");
+    expect(declaration.upstreams).toEqual([{ kind: "published-port", hostIp: "127.0.0.1", hostPort: 18080 }]);
   });
 });
 

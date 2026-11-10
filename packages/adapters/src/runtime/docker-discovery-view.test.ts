@@ -46,6 +46,56 @@ describe("discovery container view", () => {
     ]);
   });
 
+  it("extracts live TCP published bindings and drops exposed/UDP rows", () => {
+    const view = discoveryContainerViewFromDockerInspect(
+      inspect({
+        NetworkSettings: {
+          Networks: { frontend: { NetworkID: "net_fe", IPAddress: "172.20.0.5" } },
+          Ports: {
+            "3000/tcp": [
+              { HostIp: "127.0.0.1", HostPort: "18080" },
+              { HostIp: "0.0.0.0", HostPort: "18081" },
+            ],
+            "5432/tcp": null, // exposed but not published — never an upstream
+            "53/udp": [{ HostIp: "0.0.0.0", HostPort: "1053" }], // UDP excluded
+            "9999/tcp": [{ HostPort: "0" }], // invalid host port dropped
+          },
+        },
+      }),
+      "abc123",
+    );
+    expect(view.publishedPorts).toEqual([
+      { hostIp: "127.0.0.1", hostPort: 18080, containerPort: 3000 },
+      { hostIp: "0.0.0.0", hostPort: 18081, containerPort: 3000 },
+    ]);
+  });
+
+  it("normalizes a Podman-style inspect payload (pasta network, no health, empty ports)", () => {
+    // Rootless Podman compatibility API: NetworkSettings.Networks entries may
+    // carry pasta/slirp4netns drivers elsewhere; inspect shape is the same.
+    const view = discoveryContainerViewFromDockerInspect(
+      {
+        Id: "podman-ctr",
+        Name: "/rootless-app",
+        Config: {
+          Image: "quay.io/example/app:latest",
+          Env: ["OPENSHIP_DISCOVERY=true", "OPENSHIP_SERVICE_ID=rootless", "OPENSHIP_DOMAIN=r.example.com", "OPENSHIP_PORT=8080"],
+          Labels: { "io.containers.autoupdate": "registry" }, // non-openship namespace → dropped
+        },
+        State: { Status: "running", Running: true },
+        NetworkSettings: {
+          Networks: { pasta0: { NetworkID: "net_pasta" } }, // no IPAddress: rootless
+          Ports: { "8080/tcp": [{ HostIp: "127.0.0.1", HostPort: "18080" }] },
+        },
+      } as unknown as Dockerode.ContainerInspectInfo,
+      "podman-ctr",
+    );
+    expect(view.networks).toEqual([{ name: "pasta0", id: "net_pasta", ipAddress: undefined }]);
+    expect(view.publishedPorts).toEqual([{ hostIp: "127.0.0.1", hostPort: 18080, containerPort: 8080 }]);
+    expect(view.labels).toEqual({});
+    expect(view.running).toBe(true);
+  });
+
   it("filters env to OPENSHIP_* and labels to openship/compose namespaces", () => {
     const view = discoveryContainerViewFromDockerInspect(inspect(), "abc123");
     expect(view.env).toEqual([
@@ -132,6 +182,9 @@ describe("discovery container view", () => {
         composeService: "web",
         hostname: "app.example.com",
         port: 3000,
+        upstreams: [
+          { kind: "bridge-ip", network: "frontend", networkId: "net_fe", ipAddress: "172.20.0.5" },
+        ],
         network: "frontend",
         networkId: "net_fe",
       },
