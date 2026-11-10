@@ -7,26 +7,34 @@ Docker/Podman compatibility work below is required before declaring runtime supp
 ## Implementation status (updated as code lands)
 
 - **Step 2 — base implementation landed; runtime compatibility expansion pending.**
-  Core parser: `packages/core/src/discovery-config.ts`
-  (covered by focused parser tests). Runtime view: `getDiscoveryContainerView` +
-  `discoveryContainerViewFromDockerInspect` in
-  `packages/adapters/src/runtime/` (+5 tests), `discoveryInspection`
-  capability, `listAllNetworks` on the adapter interface for driver
-  enrichment. View field names match the parser input so a view feeds
-  `parseDiscoveryDeclaration` directly. Still required: published-port facts,
-  rootful/rootless upstream selection, and Docker/Podman compatibility fixtures.
+  Core parser: `packages/core/src/discovery-config.ts` (41 tests) — upstream
+  candidates model landed: bridge-ip and published-port (exact declared TCP
+  port) candidates in deterministic order; selectors fully validated
+  (missing/unusable/ambiguous); zero-bridge + published binding is the
+  rootless path. Runtime view: `getDiscoveryContainerView` +
+  `discoveryContainerViewFromDockerInspect` in `packages/adapters/src/runtime/`
+  (+7 tests incl. a Podman-style inspect fixture) with publishedPorts
+  extraction, `discoveryInspection` capability, `listAllNetworks` on the
+  adapter interface. View feeds the parser directly. Still required: more
+  Docker/Podman payload fixtures, and the Edge-context reachability probe.
 - **Step 3 — persistence DONE, API layer NOT started.** Schema:
   `packages/db/src/schema/discovery.ts` (`discovery_settings`,
-  `discovery_binding`), `domain.serverId` for ownerType='server'; migration
-  `drizzle/0224_server_discovery.sql` (hand-written; snapshots end at 0060 —
-  follow that convention). Repo: `packages/db/src/repos/discovery.repo.ts`
-  (PGlite tests also validate the migration). Issuance eligibility:
-  `serverVerificationOwner` inside `liveVerificationOwner` in
-  `domain.repo.ts` (server domains queue with discovery enabled + an
-  observed, unsuppressed binding; project rules unchanged). Dump catalogue:
-  both tables instance-scoped in `dump.ts`. Not done: contracts schemas,
-  platform operations (configure/preview/status/suppress/forget with server
-  access policy), controller + routes.
+  `discovery_binding` incl. upstreamStrategy/hostPort/hostIp, withdrawalPending,
+  containerRunning, blocked apply state), `domain.serverId` for
+  ownerType='server'; migration `drizzle/0224_server_discovery.sql`
+  (hand-written; still undeployed anywhere, so in-place amendment remains
+  valid — if any instance applies it, switch to append-only). Repo:
+  `packages/db/src/repos/discovery.repo.ts` (34 PGlite tests; also validates
+  the migration): observation upsert requeues on config OR runtime-target
+  changes (container id/IP/running/strategy/host port), invalidation via
+  markInvalid, removal queues withdrawal, apply backoff, block/unblock,
+  dueForWithdrawal/markWithdrawn. Issuance eligibility:
+  `serverVerificationOwner` inside `liveVerificationOwner` in `domain.repo.ts`
+  (requires discovery enabled + an observed, RUNNING, unsuppressed binding;
+  fresh re-inspection still gates every ACME order). Dump catalogue: both
+  tables instance-scoped. Not done: contracts schemas, platform operations
+  (configure/preview/status/suppress/forget with server access policy),
+  controller + routes.
 - **Step 4 — base scanner landed; reconciler NOT started.**
   `packages/platform/src/engine/modules/discovery/discovery-scanner.ts`
   (covered by scanner tests): inventory → bounded inspect → parse → observe; duplicate LIVE
@@ -47,10 +55,25 @@ Docker/Podman compatibility work below is required before declaring runtime supp
   (applied → blocked → missing still retires the live route; blocked
   suppresses only forward applies); runtime-target changes (replacement, IP,
   stop/start) requeue an applied binding so routes never keep a stale
-  upstream; unchanged rescans converge. NOT done: Edge route
-  apply through the shared serving-target primitives, server-domain target
-  resolution, certificate scheduling registration, watcher/sweep wiring
-  (step 5).
+  upstream; unchanged rescans converge.
+- **Step 4 — scanner + route reconciler core landed; TLS integration pending.**
+  `packages/platform/src/engine/modules/discovery/discovery-reconciler.ts`
+  (+7 tests): withdrawals first (blocked/suppressed owners included), then
+  due applies — bridge-ip registers `http://<ip>:<port>`; published-port
+  routes through the loopback ownership guard (ObservedLoopbackPublish from
+  the inspect, stable FK-free claim owner `discovery:<bindingId>`, target
+  lock + strict edge inventory, no allocator); missing/invalid/stopped
+  bindings get removeRoute with domain/cert metadata retained;
+  markApplied(generation) only after the edge write; failures persist
+  markApplyError backoff (30s→30m). Server-scoped Edge resolution via
+  `resolveDiscoveryEdgeTarget` (resolveServerExecutor → platform →
+  hostPortTarget, held + disposed per pass). STILL NOT DONE: Edge-context
+  reachability probe before activation; server-domain target resolution in
+  the TLS machinery (domain row creation per binding, verification/issuance
+  flow for ownerType='server', renewal scheduling, unavailable-vhost
+  retention with TLS); route-file repair from server-domain records;
+  watcher/sweep wiring (step 5); API/UI (steps 3/6); live Podman canary
+  (step 7/8).
 - **Review acceptance check.** After `markInvalid()` clears `containerId`, a
   repeated scan must continue matching the rejected declaration by stable identity
   and retain `observationStatus='invalid'`. Add a regression that repeats the scan;
