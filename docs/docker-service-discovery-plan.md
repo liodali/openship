@@ -25,14 +25,17 @@ Status: implementation plan; no feature code or production changes yet.
   access policy), controller + routes.
 - **Step 4 — scanner DONE, reconciler NOT started.**
   `packages/platform/src/engine/modules/discovery/discovery-scanner.ts`
-  (+17 tests): inventory → bounded inspect → parse → observe; duplicate LIVE
+  (+21 tests): inventory → bounded inspect → parse → observe; duplicate LIVE
   (running) identities block all candidates — a retained stopped container
   never blocks its running replacement, and stopped-only duplicates are
   visible without route risk; other-owner hostnames block;
   `applyState='blocked'` never auto-retries (unblock is explicit/conflict
   resolved); inspect failures leave bindings unclassified; INVALID
-  declarations preserve the binding and surface the error (only explicit
-  opt-out withdraws); confirmed removals go missing; runtime-target changes
+  declarations preserve the binding and are ALWAYS reported (parser resolves
+  identity first and carries the serviceKey, so a recreated container with a
+  new id and bad config is linked back to its binding — only explicit opt-out
+  withdraws); confirmed removals go missing AND requeue route withdrawal
+  (crash-safe; idempotent across sweeps); runtime-target changes
   (replacement, IP, stop/start) requeue an applied binding so routes never
   keep a stale upstream; unchanged rescans converge. NOT done: Edge route
   apply through the shared serving-target primitives, server-domain target
