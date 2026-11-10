@@ -113,6 +113,7 @@ describe("discovery container view", () => {
       rejection: {
         kind: "invalid",
         code: "network-ambiguous",
+        serviceKey: "id:my-app", // identity resolves before network checks
         message: expect.stringContaining("OPENSHIP_NETWORK"),
       },
     });

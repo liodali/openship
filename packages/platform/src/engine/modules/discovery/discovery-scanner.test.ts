@@ -21,6 +21,7 @@ type BindingRow = {
   applyError: string | null;
   desiredGeneration: number;
   appliedGeneration: number;
+  suppressed: boolean;
 };
 
 const SERVER = "srv_scan";
@@ -74,6 +75,7 @@ const discoveryRepo = {
           applyError: null,
           desiredGeneration: 1,
           appliedGeneration: 0,
+          suppressed: false,
         };
         state.bindings.set(obs.serviceKey, row);
         return { binding: row, desiredChanged: true, requeued: false };
@@ -121,9 +123,22 @@ const discoveryRepo = {
   listByServer: vi.fn(async () => [...state.bindings.values()]),
   markMissing: vi.fn(async (_serverId: string, serviceKey: string) => {
     const row = state.bindings.get(serviceKey);
-    if (row) {
-      state.bindings.set(serviceKey, { ...row, observationStatus: "missing", containerId: null, running: false });
-    }
+    if (!row) return undefined;
+    // Mirror the repo: removal is a reconcile task — a previously applied
+    // binding requeues for route withdrawal; idempotent once already missing.
+    const newlyMissing = row.observationStatus !== "missing";
+    const requeue = newlyMissing && row.applyState !== "blocked" && !row.suppressed;
+    state.bindings.set(serviceKey, {
+      ...row,
+      observationStatus: "missing",
+      containerId: null,
+      containerName: null,
+      running: false,
+      ...(requeue
+        ? { desiredGeneration: row.desiredGeneration + 1, applyState: "pending" as const, applyError: null }
+        : {}),
+    });
+    return row;
   }),
   forget: vi.fn(async (_serverId: string, serviceKey: string) => {
     state.bindings.delete(serviceKey);
@@ -299,6 +314,97 @@ describe("discovery scanner", () => {
     expect(binding.observationStatus).toBe("missing");
     expect(binding.containerId).toBeNull();
     expect(binding.hostname).toBe("app.example.com"); // desired state retained
+  });
+
+  it("queues route withdrawal when an applied binding's container goes missing (crash-safe)", async () => {
+    await scanServerDiscovery(SERVER, "org_1", { runtime: runtime([view()]) });
+    const applied = state.bindings.get("id:my-app")!;
+    state.bindings.set("id:my-app", { ...applied, applyState: "applied", appliedGeneration: 1 });
+
+    const summary = await scanServerDiscovery(SERVER, "org_1", { runtime: runtime([]) });
+    expect(summary.missing).toEqual(["id:my-app"]);
+    const binding = state.bindings.get("id:my-app")!;
+    // Applied + not-due after removal would be exactly the crash window where
+    // a live route points at a dead container. Removal must queue withdrawal.
+    expect(binding.applyState).toBe("pending");
+    expect(binding.desiredGeneration).toBe(2);
+  });
+
+  it("does not re-bump an already-missing binding on repeated sweeps", async () => {
+    await scanServerDiscovery(SERVER, "org_1", { runtime: runtime([view()]) });
+    await scanServerDiscovery(SERVER, "org_1", { runtime: runtime([]) });
+    const generation = state.bindings.get("id:my-app")!.desiredGeneration;
+    // The scanner re-runs every sweep until reconciliation catches up.
+    await scanServerDiscovery(SERVER, "org_1", { runtime: runtime([]) });
+    await scanServerDiscovery(SERVER, "org_1", { runtime: runtime([]) });
+    expect(state.bindings.get("id:my-app")!.desiredGeneration).toBe(generation);
+  });
+
+  it("reports an invalid RECREATED container under its new id and preserves the binding", async () => {
+    await scanServerDiscovery(SERVER, "org_1", { runtime: runtime([view()]) });
+    const applied = state.bindings.get("id:my-app")!;
+    state.bindings.set("id:my-app", { ...applied, applyState: "applied", appliedGeneration: 1 });
+
+    // Compose recreation: same identity (OPENSHIP_SERVICE_ID=my-app), NEW
+    // container id, broken config (selector names a network it is not on).
+    const recreatedBad = view({
+      containerId: "ctr_NEW",
+      name: "my-app-recreated",
+      env: [
+        "OPENSHIP_DISCOVERY=true",
+        "OPENSHIP_SERVICE_ID=my-app",
+        "OPENSHIP_DOMAIN=app.example.com",
+        "OPENSHIP_PORT=3000",
+        "OPENSHIP_NETWORK=missing-net",
+      ],
+    });
+    const summary = await scanServerDiscovery(SERVER, "org_1", { runtime: runtime([recreatedBad]) });
+    // NOT classified as removal — the identity links the new container back.
+    expect(summary.missing).toEqual([]);
+    expect(summary.withdrawn).toEqual([]);
+    expect(summary.invalid).toHaveLength(1);
+    expect(summary.invalid[0]).toMatchObject({
+      serviceKey: "id:my-app",
+      containerId: "ctr_NEW",
+      containerName: "my-app-recreated",
+      code: "network-missing",
+    });
+    const binding = state.bindings.get("id:my-app");
+    expect(binding).toBeDefined();
+    expect(binding?.hostname).toBe("app.example.com"); // state intact
+
+    // Fixing the config resumes normal observation under the new id.
+    const fixed = view({ containerId: "ctr_NEW", name: "my-app-recreated" });
+    const after = await scanServerDiscovery(SERVER, "org_1", { runtime: runtime([fixed]) });
+    expect(after.invalid).toEqual([]);
+    expect(after.observed).toEqual(["id:my-app"]);
+    expect(state.bindings.get("id:my-app")?.containerId).toBe("ctr_NEW");
+  });
+
+  it("reports invalid containers even when no binding exists", async () => {
+    // Never scanned before: a standalone opted-in container with a bad port.
+    const bad = view({
+      containerId: "ctr_lone",
+      name: "lone",
+      env: [
+        "OPENSHIP_DISCOVERY=true",
+        "OPENSHIP_SERVICE_ID=lone",
+        "OPENSHIP_DOMAIN=app.example.com",
+        "OPENSHIP_PORT=not-a-port",
+      ],
+    });
+    const summary = await scanServerDiscovery(SERVER, "org_1", { runtime: runtime([bad]) });
+    expect(summary.invalid).toHaveLength(1);
+    expect(summary.invalid[0]).toMatchObject({
+      serviceKey: "id:lone",
+      containerId: "ctr_lone",
+      code: "invalid-port",
+    });
+    // An invalid identity cannot name a key.
+    const noIdentity = view({ containerId: "ctr_none", name: "anon", env: ["OPENSHIP_DISCOVERY=true", "OPENSHIP_DOMAIN=app.example.com", "OPENSHIP_PORT=80"] });
+    const second = await scanServerDiscovery(SERVER, "org_1", { runtime: runtime([noIdentity]) });
+    expect(second.invalid).toHaveLength(1);
+    expect(second.invalid[0]).toMatchObject({ serviceKey: null, containerId: "ctr_none", code: "identity-required" });
   });
 
   it("withdraws (forgets) an opted-out container that is still present", async () => {

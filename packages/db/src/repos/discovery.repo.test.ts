@@ -202,6 +202,33 @@ describe("binding observations", () => {
     expect(row?.hostname).toBe("app.example.com"); // desired state retained
     expect(row?.configHash).toBeTruthy();
   });
+
+  it("queues route withdrawal when an applied binding goes missing (crash-safe)", async () => {
+    await repo.observe(SERVER, observation());
+    await repo.markApplied(SERVER, "id:my-app", 1);
+    expect(await repo.dueForApply(SERVER)).toHaveLength(0);
+
+    await repo.markMissing(SERVER, "id:my-app");
+    const row = await repo.getBinding(SERVER, "id:my-app");
+    // The reconciler must withdraw the live route even if the process dies
+    // right here — applied + not-due would be exactly that crash window.
+    expect(row?.applyState).toBe("pending");
+    expect(row?.desiredGeneration).toBe(2);
+    expect((await repo.dueForApply(SERVER)).map((r) => r.serviceKey)).toEqual(["id:my-app"]);
+  });
+
+  it("does not re-bump an already-missing binding on repeated removals", async () => {
+    await repo.observe(SERVER, observation());
+    await repo.markMissing(SERVER, "id:my-app");
+    const first = await repo.getBinding(SERVER, "id:my-app");
+    const generation = first?.desiredGeneration;
+    // The scanner re-runs every sweep until reconciliation catches up.
+    await repo.markMissing(SERVER, "id:my-app");
+    await repo.markMissing(SERVER, "id:my-app");
+    const stable = await repo.getBinding(SERVER, "id:my-app");
+    expect(stable?.desiredGeneration).toBe(generation);
+    expect(stable?.observationStatus).toBe("missing");
+  });
 });
 
 describe("apply scheduling", () => {

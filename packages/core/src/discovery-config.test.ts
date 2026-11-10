@@ -188,6 +188,32 @@ describe("hostname and port validation", () => {
     expect(rejection).toMatchObject({ kind: "invalid", code: "missing-port" });
   });
 
+  it("carries the service key on rejections raised after identity resolution", () => {
+    // Missing domain with a valid explicit id → the scanner can link this
+    // invalid container back to its binding even after recreation.
+    const missingDomain = rejectionOf(
+      parseDiscoveryDeclaration(candidate({ env: [`${DISCOVERY_ENV.discovery}=true`, `${DISCOVERY_ENV.serviceId}=my-app`, `${DISCOVERY_ENV.port}=3000`] })),
+    );
+    expect(missingDomain).toMatchObject({ kind: "invalid", code: "missing-domain", serviceKey: "id:my-app" });
+
+    const badPort = rejectionOf(
+      parseDiscoveryDeclaration(candidate({ env: [`${DISCOVERY_ENV.discovery}=true`, `${DISCOVERY_ENV.serviceId}=my-app`, `${DISCOVERY_ENV.domain}=app.example.com`, `${DISCOVERY_ENV.port}=70000`] })),
+    );
+    expect(badPort).toMatchObject({ kind: "invalid", code: "invalid-port", serviceKey: "id:my-app" });
+
+    const badNetwork = rejectionOf(
+      parseDiscoveryDeclaration(candidate({ labels: { [DISCOVERY_LABEL.network]: "missing-net" } })),
+    );
+    expect(badNetwork).toMatchObject({ kind: "invalid", code: "network-missing", serviceKey: "id:my-app" });
+
+    // Identity failures cannot name a key.
+    const noIdentity = rejectionOf(
+      parseDiscoveryDeclaration(candidate({ env: [`${DISCOVERY_ENV.discovery}=true`, `${DISCOVERY_ENV.domain}=app.example.com`, `${DISCOVERY_ENV.port}=80`] })),
+    );
+    expect(noIdentity).toMatchObject({ kind: "invalid", code: "identity-required" });
+    expect("serviceKey" in noIdentity).toBe(false);
+  });
+
   it("rejects non-integer and out-of-range ports", () => {
     for (const port of ["abc", "3.5", "0", "-1", "65536", "99999", "http"]) {
       const rejection = rejectionOf(
@@ -347,7 +373,7 @@ describe("network resolution", () => {
           }),
         ),
       );
-      expect(rejection).toMatchObject({ kind: "invalid", code: "network-unusable" }, net.name);
+      expect(rejection).toMatchObject({ kind: "invalid", code: "network-unusable" });
       expect((rejection as { message: string }).message).toContain(net.name);
     }
   });
