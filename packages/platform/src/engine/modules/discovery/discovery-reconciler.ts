@@ -31,6 +31,7 @@ import { reportCaughtError } from "@repo/core/diagnostics";
 import { repos, type DiscoveryBinding } from "@repo/db";
 import { edgeProxyFor, type RoutingProvider, type Platform, type RuntimeAdapter } from "@repo/adapters";
 import type { HostPortTargetIdentity } from "../../lib/host-port-target";
+import { manageDomainSsl } from "../../lib/domain-ssl";
 import {
   reserveObservedLoopbackPublishes,
   type ObservedLoopbackPublish,
@@ -102,6 +103,35 @@ function discoveryClaimOwner(binding: DiscoveryBinding): string {
   return `discovery:${binding.id}`;
 }
 
+/**
+ * Fire-and-forget certificate reconciliation for a just-applied discovered
+ * service (docs: "A start/replacement event triggers immediate certificate
+ * reconciliation"). Provision reads before issuing, so a comfortably valid
+ * certificate is reused without an order; a missing/due/expired one is issued
+ * through the server-domain flow — whose fresh-inspection ACME gate refuses
+ * (as a defer, not a failure) if the container stopped in between. ACME success
+ * also establishes hostname verification for the server-scoped domain.
+ */
+async function scheduleServerDomainCert(
+  serverId: string,
+  organizationId: string,
+  binding: DiscoveryBinding,
+): Promise<void> {
+  try {
+    await manageDomainSsl(binding.hostname, {
+      action: "provision",
+      allowUnverified: true,
+      serverId,
+    });
+  } catch (error) {
+    // DiscoveryBackendUnavailableError = deferred (stop/gate), already recorded
+    // by manageDomainSsl's failure path only when it is a real SSL failure.
+    // Everything else is surfaced for diagnostics; the sweep and the next
+    // start/replacement re-trigger this.
+    reportCaughtError(error, "platform/engine/modules/discovery/discovery-reconciler");
+  }
+}
+
 export interface DiscoveryReconcileSummary {
   withdrawals: string[];
   applied: string[];
@@ -166,6 +196,15 @@ export async function reconcileServerDiscovery(
           continue;
         }
 
+        // The server-scoped domain row backs the TLS lifecycle (verification
+        // flows, the renewal sweep, the cert scheduling below). Created here,
+        // on apply — never by container configuration alone.
+        await repos.domain.ensureServerDomain({
+          serverId,
+          hostname: binding.hostname,
+          targetPort: binding.port,
+        });
+
         if (binding.upstreamStrategy === "published-port") {
           // Loopback published route: prove workload ownership through the
           // host-port claim subsystem BEFORE dialing it (docs: "Use existing
@@ -220,6 +259,10 @@ export async function reconcileServerDiscovery(
 
         await repos.discovery.markApplied(serverId, binding.serviceKey, binding.desiredGeneration);
         summary.applied.push(binding.serviceKey);
+        // Immediate certificate reconciliation for the freshly (re-)applied
+        // upstream. Deferred inside: the ACME gate re-inspects the container
+        // fresh and defers (never fails the route) when it stopped meanwhile.
+        void scheduleServerDomainCert(serverId, organizationId, binding)
       } catch (error) {
         reportCaughtError(error, "platform/engine/modules/discovery/discovery-reconciler");
         const reason = safeErrorMessage(error);

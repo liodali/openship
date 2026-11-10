@@ -4,6 +4,7 @@ import type { Domain, Project } from "@repo/db";
 import type { ManualCert, Platform, SslProvider, SslResult, ProvisionCertOptions, DnsCertificateProvider } from "@repo/adapters";
 import {
   AppError,
+  ConflictError,
   ForbiddenError,
   ValidationError,
   NotFoundError,
@@ -17,6 +18,7 @@ import { platform } from "./platform-config";
 import { createProvisionLock } from "./provision-lock";
 import { withLiveProjectRuntimeMutation } from "./project-runtime-lock";
 import {
+  createServerDockerRuntime,
   disposePlatform,
   resolveDeploymentPlatform,
   type DeploymentMeta,
@@ -142,6 +144,8 @@ export interface DomainSslOptions {
   /** Restrict to a specific project (defense-in-depth; route layer
    *  already verified access). */
   projectId?: string;
+  /** Restrict to a specific discovery server (server-scoped domains). */
+  serverId?: string;
   /** Mail admin operations must resolve back to the server authorized at the boundary. */
   mailServerId?: string;
   /** Skip the "must be verified first" guard. Only the ACME-as-verification
@@ -182,7 +186,29 @@ export const MAIL_DOMAIN_OWNER = "mail";
  */
 type SslOwner =
   | { kind: "project"; project: Project }
-  | { kind: "mail"; serverId: string; organizationId: string };
+  | { kind: "mail"; serverId: string; organizationId: string }
+  | {
+      kind: "server";
+      serverId: string;
+      organizationId: string;
+      isLocal: boolean;
+      workspaceId: string | null;
+    };
+
+/**
+ * Thrown by the server-domain TLS gate when the discovered backend cannot
+ * support a new ACME order right now: binding missing/suppressed, or the
+ * container is stopped/unobservable on a FRESH inspection. Callers treat this
+ * as "defer", never "failed": a deliberate stop retains certificate material,
+ * expiry and retry state (docs: "without treating a deliberate stop as a
+ * renewal failure").
+ */
+export class DiscoveryBackendUnavailableError extends AppError {
+  constructor(message: string) {
+    super(message, 409, "DISCOVERY_BACKEND_UNAVAILABLE");
+    this.name = "DiscoveryBackendUnavailableError";
+  }
+}
 
 /**
  * The mail server behind a `mail.<base>` hostname, or null when there isn't one.
@@ -238,6 +264,29 @@ async function resolveAuthorizedDomain(hostname: string, opts: DomainSslOptions)
 
   if (opts.mailServerId) throw new NotFoundError("Domain", hostname);
 
+  // Server-scoped discovery domains: the owner is the SERVER row. They never
+  // have a project (a projectId opt-in can never match, mirroring mail) and
+  // their verification is the first successful ACME issuance.
+  if (domainRecord.ownerType === "server") {
+    if (opts.projectId) throw new NotFoundError("Domain", hostname);
+    if (opts.serverId && domainRecord.serverId !== opts.serverId) throw new NotFoundError("Domain", hostname);
+    assertVerified(domainRecord, opts);
+    const server = domainRecord.serverId
+      ? await repos.server.get(domainRecord.serverId).catch((diagnosticFailure) => { observeCaughtError(diagnosticFailure, "platform/engine/lib/domain-ssl"); return undefined; })
+      : undefined;
+    if (!server?.organizationId) throw new NotFoundError("Domain", hostname);
+    return {
+      domainRecord,
+      owner: {
+        kind: "server",
+        serverId: server.id,
+        organizationId: server.organizationId,
+        isLocal: server.isLocal,
+        workspaceId: server.workspaceId,
+      } as SslOwner,
+    };
+  }
+
   const project = await repos.project.findById(domainRecord.projectId);
   if (!project) throw new NotFoundError("Domain", hostname);
 
@@ -269,7 +318,10 @@ async function withAuthorizedDomainRuntime<T>(
   mutate: (authorized: AuthorizedDomain) => Promise<T>,
 ): Promise<T> {
   const authorized = await resolveAuthorizedDomain(hostname, opts);
-  if (authorized.owner.kind === "mail") return mutate(authorized);
+  // Server-scoped discovery domains have no project lifecycle to race (the
+  // binding and domain outlive container churn; retirement is the reconciler's
+  // explicit job), so like mail they run directly.
+  if (authorized.owner.kind !== "project") return mutate(authorized);
 
   const result = await withLiveProjectRuntimeMutation(authorized.owner.project.id, async () =>
     mutate(await resolveAuthorizedDomain(hostname, opts)),
@@ -430,6 +482,51 @@ async function resolveSslOnly(
   return { ssl: platform.ssl, ownedPlatform: platform };
 }
 
+/**
+ * The server-domain ACME gate: a NEW certificate order may open only when the
+ * discovered backend is confirmed running on a FRESH inspection of the target
+ * engine — a cached running flag alone is insufficient (docs), and an order
+ * queued before a container stopped must not open (docs). Called INSIDE the
+ * per-hostname issue lock, right before certbot runs, so a stop racing the
+ * queue is still caught. Transport failures also defer: unknown inspection
+ * state waits for a successful inventory instead of burning an order.
+ */
+async function assertDiscoveryBackendFresh(
+  owner: Extract<SslOwner, { kind: "server" }>,
+  hostname: string,
+): Promise<void> {
+  const binding = await repos.discovery.getBindingForDomain(owner.serverId, hostname);
+  if (
+    !binding ||
+    binding.observationStatus !== "observed" ||
+    !binding.containerRunning ||
+    !binding.containerId
+  ) {
+    throw new DiscoveryBackendUnavailableError(
+      `The discovered backend for ${hostname} is not running (state: ${binding?.observationStatus ?? "no binding"}); new certificate orders are paused until it starts.`,
+    );
+  }
+  let rt: Awaited<ReturnType<typeof createServerDockerRuntime>> | null = null;
+  try {
+    rt = await createServerDockerRuntime(owner.serverId, owner.organizationId);
+    const view = await rt.getDiscoveryContainerView(binding.containerId);
+    if (!view || !view.running) {
+      throw new DiscoveryBackendUnavailableError(
+        `The discovered container behind ${hostname} is not running right now; certificate issuance is deferred until it starts.`,
+      );
+    }
+  } catch (error) {
+    if (error instanceof DiscoveryBackendUnavailableError) throw error;
+    // Unreachable engine = unknown state: defer without failing the certificate.
+    observeCaughtError(error, "platform/engine/lib/domain-ssl");
+    throw new DiscoveryBackendUnavailableError(
+      `The discovery engine for ${hostname} could not be inspected (${safeErrorMessage(error)}); certificate issuance is deferred until the next successful inventory.`,
+    );
+  } finally {
+    await rt?.dispose().catch(() => {});
+  }
+}
+
 /** Release transports and the SSH hold after success, recovery, or failure. */
 async function withSslProvider<T>(
   owner: SslOwner,
@@ -463,6 +560,18 @@ async function resolveSslProvider(owner: SslOwner): Promise<ResolvedSslProvider>
   // `lockScope` is the server id so mail issuance takes the same per-box ACME lock
   // as the apps sharing that edge (they contend for one standalone challenge port).
   if (owner.kind === "mail") {
+    const provider = await resolveSslOnly(
+      { serverId: owner.serverId } as DeploymentMeta,
+      owner.organizationId,
+    );
+    return { ...provider, lockScope: owner.serverId };
+  }
+
+  // Server-scoped discovery domains issue on their serving server's edge —
+  // the exact box the reconciler wrote the route to. Same per-box ACME lock
+  // scope as mail; no local fallback, or a remote domain's order would run
+  // against an edge that does not serve it.
+  if (owner.kind === "server") {
     const provider = await resolveSslOnly(
       { serverId: owner.serverId } as DeploymentMeta,
       owner.organizationId,
@@ -723,6 +832,10 @@ export async function manageDomainSsl(
         await applyMailCertificate(authorized.owner.serverId, authorized.domainRecord.hostname);
       }
     } catch (error) {
+      // The server-domain ACME gate DEFERS (deliberate stop, unreadable engine):
+      // certificate material, expiry and retry state are retained untouched —
+      // never recorded as a failure (docs). Rethrow for the caller to skip.
+      if (error instanceof DiscoveryBackendUnavailableError) throw error;
       await repos.domain.recordSslFailure(
         authorized.domainRecord.id, safeErrorMessage(error), opts.action === "verify" ? "unknown" : "operation",
       );
@@ -917,6 +1030,10 @@ async function provisionAuthorizedDomainCert(
                 opts,
               )
             : {};
+          // Server-domain ACME gate: fresh running inspection before the order.
+          if (owner.kind === "server") {
+            await assertDiscoveryBackendFresh(owner, domainRecord.hostname);
+          }
           // Decided to issue (missing / near-expiry / forced): pass `force` so the
           // adapter runs certbot even when a stale cert file is present on disk —
           // otherwise its file-exists short-circuit would return the old cert and a
@@ -933,6 +1050,15 @@ async function provisionAuthorizedDomainCert(
       );
 
       await persistSslResult(domainRecord.id, domainRecord.sslStatus, result);
+      // ACME-as-verification for server-scoped domains: a successful issuance
+      // proves control of the hostname (HTTP-01 reached THIS server's edge), so
+      // it flips the row verified without any TXT check (docs: "ACME success
+      // establishes certificate validation").
+      if (owner.kind === "server" && result.verified) {
+        await repos.domain.markServerDomainVerified(domainRecord.id).catch((diagnosticFailure) => {
+          observeCaughtError(diagnosticFailure, "platform/engine/lib/domain-ssl");
+        });
+      }
       return result;
     } catch (err) {
       observeCaughtError(err, "platform/engine/lib/domain-ssl");
@@ -941,6 +1067,9 @@ async function provisionAuthorizedDomainCert(
       // {@link recoverIssuedCert}. Rethrows when issuance really failed, so the caller
       // still surfaces the summarized certbot cause.
       const recovered = await recoverIssuedCert(ssl, domainRecord, err);
+      if (owner.kind === "server" && recovered.verified) {
+        await repos.domain.markServerDomainVerified(domainRecord.id).catch(() => {});
+      }
       opts.onLog?.(
         `A valid certificate for ${domainRecord.hostname} is present on the edge (expires ` +
           `${recovered.expiresAt.slice(0, 10)}) — recorded it, renewal is scheduled.`,

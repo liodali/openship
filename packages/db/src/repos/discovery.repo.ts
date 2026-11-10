@@ -480,6 +480,17 @@ export function createDiscoveryRepo(db: Database) {
         where: and(eq(domain.serverId, serverId), eq(domain.hostname, hostname.toLowerCase())),
       });
     },
+
+    /** The live discovery binding behind a server-scoped domain (TLS gate). */
+    getBindingForDomain(serverId: string, hostname: string) {
+      return db.query.discoveryBinding.findFirst({
+        where: and(
+          eq(binding.serverId, serverId),
+          eq(binding.hostname, hostname.toLowerCase()),
+          eq(binding.suppressed, false),
+        ),
+      });
+    },
   };
 }
 

@@ -359,6 +359,89 @@ export function createDomainRepo(db: Database) {
     },
 
     /**
+     * Server-scoped discovery domains (ownerType='server'): ensure the row that
+     * backs a discovered service's TLS lifecycle. No TXT token, no project —
+     * verification IS the first successful ACME issuance, so the row starts
+     * `pending`/unverified and the SSL flow flips it via markServerDomainVerified.
+     * An existing row owned by ANOTHER owner type is a hard conflict (the scanner
+     * blocks those earlier; this is the last line of defense). Returns the row
+     * and whether it was created.
+     */
+    async ensureServerDomain(input: {
+      serverId: string;
+      hostname: string;
+      targetPort: number;
+    }): Promise<{ domain: Domain; created: boolean }> {
+      const hostname = input.hostname.toLowerCase();
+      return db.transaction(async (tx) => {
+        const [existing] = await tx
+          .select()
+          .from(domain)
+          .where(eq(domain.hostname, hostname))
+          .for("update");
+        if (existing) {
+          if (existing.ownerType !== "server" || existing.serverId !== input.serverId) {
+            throw new ConflictError(
+              `Hostname ${hostname} is owned by a ${existing.ownerType} domain; discovery cannot claim it`,
+            );
+          }
+          if (existing.targetPort !== input.targetPort) {
+            const [updated] = await tx
+              .update(domain)
+              .set({ targetPort: input.targetPort, updatedAt: new Date() })
+              .where(eq(domain.id, existing.id))
+              .returning();
+            return { domain: updated!, created: false };
+          }
+          return { domain: existing, created: false };
+        }
+        const [created] = await tx
+          .insert(domain)
+          .values({
+            id: generateId("dom"),
+            ownerType: "server",
+            serverId: input.serverId,
+            hostname,
+            domainType: "custom",
+            targetPort: input.targetPort,
+            status: "pending",
+            verified: false,
+          })
+          .onConflictDoNothing({ target: domain.hostname })
+          .returning();
+        if (created) return { domain: created, created: true };
+        // Lost a create race to another owner: re-read and re-check.
+        const [raced] = await tx.select().from(domain).where(eq(domain.hostname, hostname)).for("update");
+        if (!raced || raced.ownerType !== "server" || raced.serverId !== input.serverId) {
+          throw new ConflictError(`Hostname ${hostname} is owned by another domain; discovery cannot claim it`);
+        }
+        return { domain: raced, created: false };
+      });
+    },
+
+    /**
+     * ACME-as-verification for server-scoped domains: the first successful
+     * issuance IS the proof of control (HTTP-01 reached this server's edge), so
+     * success flips the row verified + active without any TXT check. No project
+     * admission locks — server domains have no project lifecycle.
+     */
+    async markServerDomainVerified(id: string) {
+      const now = new Date();
+      await db
+        .update(domain)
+        .set({
+          verified: true,
+          verifiedAt: now,
+          status: "active",
+          verifyAttempts: 0,
+          lastVerifyError: null,
+          lastCheckedAt: now,
+          updatedAt: now,
+        })
+        .where(and(eq(domain.id, id), eq(domain.ownerType, "server")));
+    },
+
+    /**
      * Every hostname Openship tracks, instance-wide.
      *
      * Deliberately NOT org-scoped: the only caller is the edge-orphan sweep,
@@ -992,6 +1075,10 @@ export function createDomainRepo(db: Database) {
         eq(domain.verified, false),
         inArray(domain.status, ["pending", "failed"]),
         eq(domain.domainType, "custom"),
+        // Server-scoped discovery domains verify THROUGH their first successful
+        // ACME issuance (ACME-as-verification) — a DNS TXT check would fail by
+        // design, so they never enter this queue.
+        ne(domain.ownerType, "server"),
         ne(domain.sslDnsMode, "manual"),
         lte(domain.createdAt, beforeDate),
         retryDue(),

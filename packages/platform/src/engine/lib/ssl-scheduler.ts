@@ -19,6 +19,7 @@ import { env } from "../config/env";
 import { renewMailCertificate } from "../modules/mail/mail-certificate.service";
 import {
   MAIL_DOMAIN_OWNER,
+  DiscoveryBackendUnavailableError,
   manageDomainSsl,
   resolveMailOwner,
   tlsIssuedElsewhere,
@@ -65,6 +66,22 @@ export async function renewExpiringCerts(): Promise<RenewalResult> {
     const { assertManagementAccess } = await import("../modules/billing/management.service");
     const customerDomains = [];
     for (const domain of allDomains) {
+      // Server-scoped discovery domains: management access resolves through the
+      // SERVER row (no project exists); workspace-managed hosts bill on the
+      // workspace like project-managed ones and are skipped here.
+      if (domain.ownerType === "server" && domain.serverId) {
+        const server = await repos.server.get(domain.serverId);
+        if (!server?.organizationId || server.workspaceId) continue;
+        try {
+          await assertManagementAccess(server.organizationId, server.id);
+        } catch (error) {
+          // diagnostics-ignore: An expired allowance is not a certificate failure.
+          if (managementAccessEnded(error)) continue;
+          throw error;
+        }
+        customerDomains.push(domain);
+        continue;
+      }
       const project = domain.projectId ? await repos.project.findById(domain.projectId) : null;
       if (!project?.serverId || project.workspaceId) continue;
       try {
@@ -99,7 +116,8 @@ export async function renewExpiringCerts(): Promise<RenewalResult> {
 
   // Pre-fetch project → (org, project name) so the dispatcher knows
   // which org to fan out the notification to. Each org's members each
-  // receive notifications via their configured channels.
+  // receive notifications via their configured channels. Server-scoped
+  // domains resolve the same context through their server row.
   const projectIds = [
     ...new Set(batch.map((d) => d.projectId).filter((p): p is string => p !== null)),
   ];
@@ -112,13 +130,28 @@ export async function renewExpiringCerts(): Promise<RenewalResult> {
       projectName: project.name,
     });
   }
+  const serverDomainCache = new Map<string, { organizationId: string; projectName: string }>();
+  for (const d of batch) {
+    if (d.ownerType !== "server" || !d.serverId || serverDomainCache.has(d.serverId + d.hostname)) continue;
+    const server = await repos.server.get(d.serverId);
+    if (!server?.organizationId) continue;
+    const binding = await repos.discovery.getBindingForDomain(d.serverId, d.hostname);
+    serverDomainCache.set(d.serverId + d.hostname, {
+      organizationId: server.organizationId,
+      projectName: binding ? `Discovered service (${binding.serviceKey})` : `Discovered service (${d.hostname})`,
+    });
+  }
 
   const details: RenewalResult["details"] = [];
   let renewed = 0;
   let failed = 0;
 
   for (const domain of batch) {
-    const ctx = domain.projectId ? projectCache.get(domain.projectId) : undefined;
+    const ctx = domain.projectId
+      ? projectCache.get(domain.projectId)
+      : domain.ownerType === "server" && domain.serverId
+        ? serverDomainCache.get(domain.serverId + domain.hostname)
+        : undefined;
 
     try {
       // manageDomainSsl resolves the provider on the serving host and persists
@@ -128,6 +161,7 @@ export async function renewExpiringCerts(): Promise<RenewalResult> {
       const result = await manageDomainSsl(domain.hostname, {
         action: "provision",
         projectId: domain.projectId ?? undefined,
+        serverId: domain.ownerType === "server" ? (domain.serverId ?? undefined) : undefined,
       });
       if (!result.verified) {
         throw new Error(
@@ -143,6 +177,10 @@ export async function renewExpiringCerts(): Promise<RenewalResult> {
       // ssl_renewed isn't a notification category (renewal success is
       // expected — only failures are noteworthy). Skip dispatch.
     } catch (err) {
+      // A deliberate stop defers the order — it is not a renewal failure: the
+      // certificate, its expiry and the retry state are retained untouched, and
+      // the next successful inventory + start resumes (docs).
+      if (err instanceof DiscoveryBackendUnavailableError) continue;
       // The allowance can end after selection but before the host operation.
       if (managementAccessEnded(err)) continue;
       observeCaughtError(err, "platform/engine/lib/ssl-scheduler");
