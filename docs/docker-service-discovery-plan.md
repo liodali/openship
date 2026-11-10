@@ -1,46 +1,60 @@
-# Docker service discovery through Openship Edge
+# Container discovery through Openship Edge (Docker and Podman)
 
-Status: implementation plan; no feature code or production changes yet.
+Status: parser, inspection, persistence, and scanner code has landed. Edge/TLS
+integration, continuous discovery, API/UI, and rollout remain pending. The expanded
+Docker/Podman compatibility work below is required before declaring runtime support.
 
 ## Implementation status (updated as code lands)
 
-- **Step 2 — DONE.** Core parser: `packages/core/src/discovery-config.ts`
-  (+33 tests). Runtime view: `getDiscoveryContainerView` +
+- **Step 2 — base implementation landed; runtime compatibility expansion pending.**
+  Core parser: `packages/core/src/discovery-config.ts`
+  (covered by focused parser tests). Runtime view: `getDiscoveryContainerView` +
   `discoveryContainerViewFromDockerInspect` in
   `packages/adapters/src/runtime/` (+5 tests), `discoveryInspection`
   capability, `listAllNetworks` on the adapter interface for driver
   enrichment. View field names match the parser input so a view feeds
-  `parseDiscoveryDeclaration` directly.
+  `parseDiscoveryDeclaration` directly. Still required: published-port facts,
+  rootful/rootless upstream selection, and Docker/Podman compatibility fixtures.
 - **Step 3 — persistence DONE, API layer NOT started.** Schema:
   `packages/db/src/schema/discovery.ts` (`discovery_settings`,
   `discovery_binding`), `domain.serverId` for ownerType='server'; migration
   `drizzle/0224_server_discovery.sql` (hand-written; snapshots end at 0060 —
   follow that convention). Repo: `packages/db/src/repos/discovery.repo.ts`
-  (25 tests, PGlite, also validates the migration). Issuance eligibility:
+  (PGlite tests also validate the migration). Issuance eligibility:
   `serverVerificationOwner` inside `liveVerificationOwner` in
   `domain.repo.ts` (server domains queue with discovery enabled + an
   observed, unsuppressed binding; project rules unchanged). Dump catalogue:
   both tables instance-scoped in `dump.ts`. Not done: contracts schemas,
   platform operations (configure/preview/status/suppress/forget with server
   access policy), controller + routes.
-- **Step 4 — scanner DONE, reconciler NOT started.**
+- **Step 4 — base scanner landed; reconciler NOT started.**
   `packages/platform/src/engine/modules/discovery/discovery-scanner.ts`
-  (+21 tests): inventory → bounded inspect → parse → observe; duplicate LIVE
+  (covered by scanner tests): inventory → bounded inspect → parse → observe; duplicate LIVE
   (running) identities block all candidates — a retained stopped container
   never blocks its running replacement, and stopped-only duplicates are
   visible without route risk; other-owner hostnames block;
   `applyState='blocked'` never auto-retries (unblock is explicit/conflict
   resolved); inspect failures leave bindings unclassified; INVALID
-  declarations preserve the binding and are ALWAYS reported (parser resolves
-  identity first and carries the serviceKey, so a recreated container with a
-  new id and bad config is linked back to its binding — only explicit opt-out
-  withdraws); confirmed removals go missing AND requeue route withdrawal
-  (crash-safe; idempotent across sweeps); runtime-target changes
-  (replacement, IP, stop/start) requeue an applied binding so routes never
-  keep a stale upstream; unchanged rescans converge. NOT done: Edge route
+  declarations preserve the binding but INVALIDATE the stale observation
+  (new 'invalid' observation state; container id/IP/running cleared, metadata
+  retained) and queue upstream withdrawal; the parser resolves identity first
+  and carries the serviceKey, so a recreated container with a new id and bad
+  config is linked back to its binding — only explicit opt-out withdraws);
+  confirmed removals go missing AND queue route withdrawal (crash-safe;
+  idempotent across sweeps); retirement is scheduled independently of
+  blocking via `withdrawalPending` + `dueForWithdrawal()`/`markWithdrawn()`
+  (applied → blocked → missing still retires the live route; blocked
+  suppresses only forward applies); runtime-target changes (replacement, IP,
+  stop/start) requeue an applied binding so routes never keep a stale
+  upstream; unchanged rescans converge. NOT done: Edge route
   apply through the shared serving-target primitives, server-domain target
   resolution, certificate scheduling registration, watcher/sweep wiring
   (step 5).
+- **Review acceptance check.** After `markInvalid()` clears `containerId`, a
+  repeated scan must continue matching the rejected declaration by stable identity
+  and retain `observationStatus='invalid'`. Add a regression that repeats the scan;
+  do not reclassify the still-present invalid container as missing or bump its
+  generation again. Retirement must remain independent of forward-apply blocking.
 - Known pre-existing breakage at HEAD (unrelated): platform typecheck fails in
   `modules/actions/` — `repos.actions.runnerSessionCounts` and
   `appendRunnerSessionEvents` are referenced but do not exist in the actions
@@ -55,25 +69,59 @@ stop pauses them, and start triggers an immediate certificate check/reconciliati
 
 ## Objective and first release
 
-Discover explicitly opted-in containers on an enabled standalone Docker server,
+Discover explicitly opted-in containers on an enabled Docker or Podman server,
 register their hostname and container port with that server's Openship Edge,
 and extend Openship's certificate lifecycle to support these server-scoped domains.
-Docker Compose or the operator continues to own container lifecycle.
+Compose, Podman tooling, or the operator continues to own container lifecycle.
 
 Tonight's deployable slice includes:
 
-- Local Linux Docker and existing SSH-connected standalone Docker servers.
+- Local Linux and existing SSH-connected standalone Docker and Podman servers,
+  including rootful and rootless deployments validated against Openship Edge.
 - One HTTP backend port and one custom hostname per discovered service.
-- Equivalent environment-variable and Docker-label configuration.
-- An optional existing Docker network selector.
+- Equivalent environment-variable and container-label configuration.
+- An optional existing container network selector and observed published-port routing.
 - Startup inventory, lifecycle-event reconciliation, and a 60-second repair sweep.
 - Persistent discovery identity, status, domain ownership, and route errors.
 - Server enable/disable, list/status, and manual rescan operations.
 - A small server UI for the switch, discovered services, domain/TLS status, and rescan.
 
 Follow-up work: multiple endpoints, HTTPS backends, wildcard domains, Traefik label
-compatibility, middleware, TCP/UDP, Swarm, Kubernetes, and Docker Desktop bridge routing.
+compatibility, middleware, TCP/UDP, Swarm, Kubernetes, and host-to-VM bridge routing
+on Docker Desktop or Podman Machine. Do not claim support for additional engines
+until their adapter capabilities and live Edge integration have been validated.
 No automatic network attachment or proxy takeover is part of discovery.
+
+## Docker and Podman integration contract
+
+Use the fork's existing `DockerRuntime` and connection machinery for both engines:
+Podman exposes the Docker-compatible API used by this adapter. A separate Podman
+discovery implementation is unnecessary. Gate inventory, inspection, and event
+features by runtime capabilities and normalized results rather than engine names.
+
+- Resolve the same engine endpoint and execution user as the server's existing
+  runtime connection. Honor its configured/mounted socket, `DOCKER_HOST`, local
+  context, and SSH forwarding where supported. Do not silently switch endpoints.
+- Validate rootful Podman (`/run/podman/podman.sock`) and rootless Podman
+  (`/run/user/<uid>/podman/podman.sock`) connections. Extend remote socket plumbing
+  if needed; an SSH login alone must not imply `/var/run/docker.sock`.
+- Scope discovery to one configured engine endpoint/user per server record in the
+  first release. Docker, rootful Podman, and each rootless user's Podman inventory
+  are separate scopes. Do not enumerate other users or merge their identities.
+  Reject an endpoint change while bindings remain active unless an explicit
+  retirement/rebinding operation completes first.
+- Normalize list/inspect/network/published-port responses at the adapter boundary.
+  Test Docker and Podman compatibility payloads, absent fields, network drivers,
+  and container-state differences; return actionable unsupported-topology errors.
+- Normalize Compose identity labels from the supported Compose providers. Confirm
+  the actual labels emitted by Docker Compose, `podman compose`, and the installed
+  `podman-compose` provider; use `OPENSHIP_SERVICE_ID` where reliable labels are
+  absent. If aliases are needed, normalize them before parsing and reject conflicts.
+- Reuse lifecycle events when available. An unsupported/interrupted stream must
+  leave periodic inventory operational, with reconnect/backoff and visible status.
+
+Reference behavior: [Podman service API and sockets](https://docs.podman.io/en/latest/markdown/podman-system-service.1.html),
+[Podman networking](https://docs.podman.io/en/latest/markdown/podman-network.1.html).
 
 ## Configuration contract
 
@@ -111,7 +159,7 @@ labels:
 Rules:
 
 - Explicit opt-in is required; absent/false means undiscovered.
-- Read effective container configuration from Docker inspect. Compose performs
+- Read effective container configuration through the engine's inspect API. Compose performs
   any `${VARIABLE}` interpolation before Openship reads the container.
 - Labels and env may coexist only when overlapping values agree; reject conflicts.
 - Domain and numeric container port (1–65535) are required. No port guessing.
@@ -119,11 +167,14 @@ Rules:
   without Compose identity. Otherwise use Compose project + Compose service labels.
 - Identity is scoped to the server's configured organization/workspace. Containers
   cannot choose an organization, workspace, or project ID through configuration.
-- Resolve an explicit network by its actual Docker name, not a Compose YAML alias.
+- Resolve an explicit network by its actual engine name, not a Compose YAML alias.
   Missing membership is an error, never a fallback to another network.
-- Without a network selector, accept one usable user-defined bridge network;
-  require a selector when several are available. Reject host/none/unsupported
-  topology in the first release.
+- Without a network selector, direct-IP routing requires one usable bridge network;
+  require a selector when several are available. Rootless networking without an
+  Edge-reachable bridge can instead use the exact observed published TCP port.
+  `host`/`none` modes remain unsupported in this release; `pasta`/`slirp4netns`
+  must not be rejected solely for lacking a user-defined bridge when an observed,
+  reachable published-port route exists. Never guess an address or a port.
 - Reject duplicate live candidates for one identity; do not arbitrarily pick a
   replica. Confirm identity conflicts before mutating routes.
 - Container config changes require the operator to recreate the container.
@@ -133,8 +184,16 @@ Rules:
 ## Existing integration points
 
 - `packages/adapters/src/runtime/docker.ts`: inventory, inspect, Docker transport,
-  lifecycle event stream. Current IP selection returns the first address and
-  needs an explicit network-aware read API for discovery.
+  lifecycle event stream shared with Podman's compatibility API. Discovery has a
+  per-network view; add published-port normalization and topology facts to it.
+- `packages/adapters/src/runtime/docker-transport.ts`: existing local socket and
+  context resolution; preserve it when creating discovery runtimes and events.
+- `packages/platform/src/engine/lib/deployment-runtime.ts`: server runtime creation
+  and SSH transport; confirm explicit rootless socket forwarding on remote targets.
+- `packages/adapters/src/runtime/docker-container-info.ts` and
+  `packages/platform/src/engine/lib/upstream-url.ts`: existing per-container-port
+  published bindings and upstream strategies; extract/reuse these for server
+  domains without introducing a project/deployment requirement.
 - `packages/platform/src/engine/modules/migration/docker-inspect.service.ts`:
   existing label-agnostic server discovery. Reuse transport/inspection primitives;
   do not invoke full migration or read Compose source files for every scan.
@@ -165,9 +224,11 @@ Rules:
 ```text
 Server discovery enabled + assigned workspace
         |
-Docker inventory / lifecycle event / scheduled rescan
+Docker or Podman inventory / lifecycle event / scheduled rescan
         |
 Inspect -> parse opt-in -> validate identity + hostname + port + network
+        |
+Resolve and probe upstream from Edge: selected network IP or live published port
         |
 Desired discovered-service state compared with persisted observation
         |
@@ -210,6 +271,58 @@ and domains must remain valid with discovery disabled and after application roll
 Discovery owns only bindings it created. An existing manual or other project's
 hostname is a conflict. Never repoint it based on an observed container declaration.
 Do not persist complete inspected env, secrets, or raw inspection responses.
+
+### Upstream resolution and rootless networking
+
+The configured port always means CONTAINER port. Discovery observes existing
+network attachments and host port bindings; it never publishes ports or attaches
+networks on behalf of an externally managed container.
+
+1. Inspect the selected container on the configured endpoint and require a fresh
+   running observation. Validate any explicit network selector before considering
+   an upstream; a nonexistent or unsupported declared network is an error.
+2. Resolve the container address on the selected usable bridge. A bridge driver
+   and an IP are candidates, not proof that Edge can reach that namespace. Probe
+   connectivity from the actual Edge execution/network context before activation.
+3. If direct-IP routing is unavailable, resolve a live TCP published binding for
+   the exact declared container port. This supports rootless Podman, including
+   `pasta`/`slirp4netns`, when its published endpoint is reachable from Edge.
+   A valid explicit network still constrains the attachment being selected; it
+   cannot authorize a different container or a sibling port's binding.
+4. Prefer an unambiguous reachable loopback binding when Edge shares the host
+   namespace. A loopback endpoint on a remote server is that server's loopback,
+   never the API host's. Do not emit `0.0.0.0`/`::` as destinations; resolve a
+   concrete reachable address according to the serving topology. Multiple
+   bindings require deterministic validated selection, never first-entry guessing.
+5. If neither path is reachable, preserve the binding with an actionable error
+   explaining the required existing network or port publication. A stopped or
+   unresolved backend receives the existing unavailable-vhost behavior.
+
+Published-port example for a rootless service (no network selector is required):
+
+```yaml
+services:
+  app:
+    image: your-app:version
+    ports:
+      - "127.0.0.1:18080:3000"
+    environment:
+      OPENSHIP_DISCOVERY: "true"
+      OPENSHIP_SERVICE_ID: "my-app"
+      OPENSHIP_DOMAIN: "app.example.com"
+      OPENSHIP_PORT: "3000"
+```
+
+The example uses `18080` only as an operator-chosen host port. Discovery reads the
+actual binding from the engine. Host loopback must be reachable from that Edge
+installation; a port published on the API host or another engine is not a substitute.
+
+Persist the resolved strategy and observed target separately from authored config.
+Container, IP, host port, strategy, or running-state changes must queue reconciliation.
+Re-check identity/target under the existing route/host-port locks before writing.
+Use existing observed-port ownership rules for these externally published bindings;
+do not invoke an allocator that reserves a new host bind. A repair must never revive
+a cached target without confirming the current container and publication.
 
 ### Verification and TLS behavior
 
@@ -258,7 +371,9 @@ Do not persist complete inspected env, secrets, or raw inspection responses.
 
 - Trace domain authorization, issuance eligibility, provider resolution, scheduled
   renewal, route repair, and cleanup for every existing domain owner type.
-- Confirm Edge on the target Linux host can reach the chosen bridge IP and port.
+- Record the target engine, rootful/rootless mode, endpoint/user, network mode,
+  and Edge network context. Prove direct-IP and published-port reachability on
+  Docker and Podman, including the fork's rootless Podman deployment topology.
 - Prove a server-scoped record can issue/renew with no project/deployment while
   its container is running, pause ACME work while stopped, and resume on start.
 - Prove Edge repair can restore an unavailable vhost without triggering an ACME order.
@@ -275,16 +390,26 @@ integration before building watcher/UI code.
 
 - Add a pure typed parser in core for env/label normalization and validation.
 - Extend adapter read types to expose selected network ID/name/IP and running state.
-- Resolve exactly the declared container port on the selected network.
+- Add observed TCP published-port mappings, host addresses, and network-mode facts;
+  normalize Docker/Podman inspection results without retaining unrelated secrets.
+- Extend declaration validation to separate explicit network validation from
+  upstream selection so a published-port-only rootless container can opt in.
+- Resolve exactly the declared container port through the selected network or its
+  confirmed published mapping; do not require network-driver enrichment for a
+  published-only topology unless an explicit selector needs validation.
 - Read only required fields; redact diagnostics and bound inspection concurrency.
 - Test booleans, invalid hostnames/ports, conflicting sources, missing/ambiguous
   networks, stable identity, helper exclusions, and duplicate identity.
 
-Done: deterministic normalized declarations without Docker or database mutations.
+Done: deterministic normalized declarations for Docker and Podman, including
+rootless published-port cases, without runtime or database mutations.
 
 ### 3. Add server-scoped persistence and preview/status API
 
 - Add additive schema changes and repositories for settings and binding state.
+- Include observed target/strategy state needed for published-port routing. If a
+  prior migration has been applied anywhere, append an upgrade migration instead
+  of relying on an edited historical migration; test fresh install and upgrade.
 - Implement server-domain target resolution and discovery observation persistence;
   no adoption, deployment creation, or project lifecycle APIs.
 - Add organization-scoped server operations for configure, preview/rescan, status,
@@ -310,6 +435,8 @@ and no project or active deployment is required by any discovery operation.
 - Store pending/applied/error states independently; retry partial applies.
 - Do not mark a route active merely because its database write succeeded.
 - Verify upstream reachability from the serving host/Edge execution context.
+- Cover rootless namespaces explicitly: an API-host probe cannot establish that
+  the Edge container can reach an IP or host-loopback published port.
 - Keep HTTP challenge handling available while a certificate is pending.
 - An unchanged rescan performs no route reload or new certificate order.
 
@@ -323,13 +450,15 @@ and unrelated vhosts remain unchanged.
 - Subscribe then inventory (or otherwise close the startup scan/event race).
 - Debounce events into serialized server rescans; events are hints, inventory
   is authoritative. Run a repair sweep every 60 seconds.
+- Confirm Docker/Podman event payload normalization and socket-activation reconnects;
+  keep the sweep running if event subscription is unsupported or disconnected.
 - Replacement with the same stable identity updates its observed container/IP.
 - Start/replacement immediately schedules the certificate check; stop/removal
   pauses pending issuance/renewal work. Re-check eligibility under the certificate
   lock before a queued job opens an order.
 - Confirmed stop/removal immediately withdraws the application upstream; retain
   an owned unavailable vhost and its domain/certificate rather than serving a
-  cached IP that Docker may assign to another workload.
+  cached IP or published port that the engine may assign to another workload.
 - A short replacement grace window may delay metadata cleanup, never permit
   routing to an unconfirmed stale IP.
 - Failed/incomplete inventory retains bindings and reports an error; it must not
@@ -349,7 +478,8 @@ Done: replacement, daemon/API restart, and a missed event converge without manua
 - Show discovered services under the server; no project/deployment creation is
   needed to display or manage their domain/TLS state.
 - Follow `apps/dashboard/AGENTS.md` and the shared dashboard design guide.
-- Document env and label examples, actual Docker network names, required DNS,
+- Document Docker/Podman env and label examples, actual engine network names,
+  rootful/rootless socket selection, direct-IP/published-port requirements, DNS,
   replacing containers to change config, conflicts, and disable/forget behavior.
 
 Done: the operator can enable and diagnose discovery without inspecting logs.
@@ -357,7 +487,8 @@ Done: the operator can enable and diagnose discovery without inspecting logs.
 ### 7. Validate the complete feature
 
 Run focused parser/reconciler/ownership tests, affected-package typechecks, and
-the repository's required release gates. Use real Docker and Openship Edge for:
+the repository's required release gates. Run the following against real Openship
+Edge with Docker, rootful Podman, and rootless Podman before claiming each mode:
 
 1. Compose service using env and standalone service using labels.
 2. Domain with no Openship TXT verification/project/deployment -> HTTP challenge
@@ -368,7 +499,8 @@ the repository's required release gates. Use real Docker and Openship Edge for:
 6. Network selector change/missing network -> visible error and no guessed IP.
 7. Domain/port change and opt-out -> correct owned-route update/withdrawal.
 8. Duplicate hostname/identity -> conflict with existing route preserved.
-9. Docker/API restart and dropped event stream -> automatic convergence.
+9. Engine/API restart, Podman socket activation, and dropped/unsupported event
+   stream -> automatic convergence through reconnect or periodic inventory.
 10. Server inspection failure -> retained records, no mass route deletion.
 11. Discovery disabled or discovered binding forgotten -> external container still running.
 12. Due certificate with no project/deployment: stopped backend -> zero new ACME
@@ -380,8 +512,26 @@ the repository's required release gates. Use real Docker and Openship Edge for:
     from server-domain records without deployment or operator intervention.
 16. New certificate attempt while DNS/ACME is invalid -> pending/error with retries;
     existing project ownership checks and cross-server hostname conflicts remain intact.
-17. Queued renewal followed by stop, or Docker inspection failure -> deferred order;
+17. Queued renewal followed by stop, or engine inspection failure -> deferred order;
     successful inventory after start resumes it. Repair while stopped performs no ACME work.
+18. Invalid replacement scanned repeatedly -> retained binding and invalid state,
+    no stale upstream, no repeated generation bumps or duplicate withdrawal work.
+19. Applied -> blocked/suppressed -> removed -> retirement still queued and retried;
+    retirement followed by replacement cannot delete a newer valid route.
+
+Required compatibility matrix (record engine/version and actual observations):
+
+| Mode | Connection and topology | Required evidence |
+| --- | --- | --- |
+| Docker rootful | Local mounted/configured socket and SSH; user-defined bridge | Per-network direct IP and live published-port routes reach Edge |
+| Docker rootless | Configured user socket; rootless network namespace | Published-port routing works; direct-IP mode is used only when reachable |
+| Podman rootful | Configured compatibility socket, local and SSH | Inventory/inspect/network/events normalize; bridge and published ports work |
+| Podman rootless | Correct user's compatibility socket, local and SSH; custom bridge and `pasta`/`slirp4netns` where available | Reachable published endpoint, no assumed host access to private IPs, stop/start TLS and recovery work |
+
+For each supported Compose provider, verify stable labels or document the explicit
+service ID fallback. Add sanitized fixture tests for inspection/network/port/event
+payloads from both engines. Test two API users/endpoints with similar identities
+without mixing inventories. Unit fixtures do not replace the live Podman canary.
 
 Use staging ACME for repeated issuance tests when supported by the existing flow;
 make one real production issuance on the final test domain before declaring rollout complete.
@@ -389,11 +539,29 @@ make one real production issuance on the final test domain before declaring roll
 ### 8. Build, canary, and deploy tonight
 
 - Finish implementation and gates before changing the target instance.
-- Prefer a commit-specific/manual test image tag through the existing Docker image
-  workflow rather than moving `latest` or creating a broad public release.
-- The existing `.github/workflows/docker-images.yml` supports manual tagged
-  publication and runs the release gate. Build queue/runtime is external to the
-  implementation estimate. Use the target's established deployment mechanism.
+- Use this fork's publication paths: `.github/workflows/fork-images.yml` and
+  `scripts/fork/build-images.sh`, documented in `docs/fork-maintenance.md`.
+  Do not base the rollout on the upstream `docker-images.yml`/`release.yml` jobs.
+- Run the required tests/typechecks/release checks against the exact source being
+  built. The fork image workflow's `gate` checks VERSION CHANGES, not test success;
+  successful publication alone is not validation evidence.
+- For an isolated canary, use the local builder with an explicit unique `--tag`
+  and only the changed images (normally api/dashboard). An explicit tag replaces
+  its default version/version-SHA/latest tag set. Build from the tested checkout;
+  record its commit and any intentionally included local changes. Prefer a clean,
+  reviewed commit for the deployment artifact.
+- For the normal fork CI path, note that manual dispatch checks out `main` and
+  publishes version, version-SHA, AND `latest` tags. A push with unchanged version
+  does not publish automatically. Verify the built SHA matches the tested commit;
+  use the uniquely tagged local canary path when moving shared tags is undesired.
+- Resolve and record registry digests; pin the canary and rollback images by digest
+  in the existing instance update/Compose configuration. Avoid a generic
+  `openship update` during the canary if it would repin to the CLI's version tag.
+- Confirm target architecture. Fork CI currently builds `linux/amd64`; the local
+  builder accepts `--platform` when another architecture is required. Preserve
+  `OPENSHIP_IMAGE_REGISTRY` and the target's Docker/Podman Compose/provider settings.
+- Build queue/runtime is external to the implementation estimate. Use the target's
+  established deployment mechanism; inspect the resolved image pins before restart.
 - Save database backup and current image digests/configuration; verify restoration
   access. Apply only the additive migrations and release artifacts required.
 - Deploy the control-plane changes with discovery disabled. Update dashboard when
@@ -404,6 +572,9 @@ make one real production issuance on the final test domain before declaring roll
   ACME validation, issuance, Edge route application, and HTTPS response without
   creating an Openship project/deployment or requesting a TXT ownership token.
 - Recreate that service once and verify automatic upstream replacement.
+- On the fork's Podman target, also stop/start it and verify no certificate order
+  while stopped, correct certificate reuse/renewal on start, and recovery after
+  an event reconnect. Confirm the actual upstream from Edge's namespace.
 - Enable the intended opted-in services on that server, verify every endpoint,
   and observe at least two repair sweeps without unintended writes/errors.
 - Record deployed commit/digests, migration state, discovered identities/domains,
@@ -429,6 +600,11 @@ reconciler/TLS -> watchers -> minimal UI -> integration gates -> canary -> rollo
 
 Planning allowance: approximately 8–12 hours for this bounded first release if
 the shared Edge/TLS paths can be extracted cleanly, plus CI/publication and DNS/ACME delays.
+Re-estimate after the Docker/Podman topology proof: the full rootful/rootless
+compatibility matrix and any missing socket/upstream plumbing may require more
+time than the original Docker-only allowance. Tonight's first rollout should be
+the validated Podman canary on the fork's actual target; record other modes as
+unverified until their live checks pass rather than claiming broad support early.
 This is a working estimate, not a deployment guarantee. A shorter window should
 prioritize a single-server canary; do not omit ownership/lifecycle validation to
 meet the clock. Broader server rollout can follow the validated canary.
