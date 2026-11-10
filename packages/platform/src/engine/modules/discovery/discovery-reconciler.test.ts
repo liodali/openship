@@ -40,7 +40,18 @@ const discoveryRepo = {
   recordScan: vi.fn(async () => {}),
 };
 
-vi.mock("@repo/db", () => ({ repos: { discovery: discoveryRepo } }));
+vi.mock("@repo/db", () => ({
+  repos: {
+    discovery: discoveryRepo,
+    domain: { ensureServerDomain: vi.fn(async () => ({ domain: { id: "dom_x" }, created: true })) },
+  },
+}));
+
+vi.mock("../../lib/domain-ssl", () => ({
+  manageDomainSsl: vi.fn(async () => ({ verified: true, expiresAt: "2027-01-01T00:00:00Z" })),
+}));
+
+import { manageDomainSsl } from "../../lib/domain-ssl";
 
 // The injected edge target bypasses server resolution entirely; keep the
 // real module (and its env bootstrapping) out of the test.
@@ -108,7 +119,10 @@ describe("upstreamUrlFor", () => {
 });
 
 describe("reconcileServerDiscovery", () => {
-  beforeEach(reset);
+  beforeEach(() => {
+    vi.clearAllMocks();
+    reset();
+  });
 
   it("does nothing when discovery is disabled", async () => {
     state.settings = { enabled: false };
@@ -131,6 +145,11 @@ describe("reconcileServerDiscovery", () => {
     );
     expect(summary.applied).toEqual(["id:my-app"]);
     expect(state.applied).toEqual([{ serviceKey: "id:my-app", generation: 1 }]);
+    // Immediate certificate reconciliation for the freshly applied upstream.
+    expect(manageDomainSsl).toHaveBeenCalledWith(
+      "app.example.com",
+      expect.objectContaining({ action: "provision", allowUnverified: true, serverId: SERVER() }),
+    );
   });
 
   it("withdraws the upstream for missing/invalid/stopped bindings while keeping the domain", async () => {
@@ -143,6 +162,8 @@ describe("reconcileServerDiscovery", () => {
     expect(target.routing.registerRoute).not.toHaveBeenCalled();
     expect(summary.removed).toEqual(["id:my-app"]);
     expect(state.applied).toEqual([{ serviceKey: "id:my-app", generation: 1 }]);
+    // No certificate order for a withdrawn upstream.
+    expect(manageDomainSsl).not.toHaveBeenCalled();
   });
 
   it("processes withdrawals first and clears the retirement flag", async () => {

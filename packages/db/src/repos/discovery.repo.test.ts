@@ -517,12 +517,14 @@ describe("server-scoped issuance eligibility (liveVerificationOwner extension)",
     await db.delete(schema.project);
   });
 
-  it("queues a server domain for verification with NO project or deployment", async () => {
+  it("queues a server domain for issuance with NO project or deployment, and never through TXT verification", async () => {
     await seedServerDomain();
+    // TXT verification does not apply to this owner type — verification IS the
+    // first successful ACME issuance, driven by the reconciler after apply.
     const pending = await domainRepo.findPendingVerification(new Date(Date.now() + 1000));
-    expect(pending.map((r) => r.hostname)).toContain("app.example.com");
+    expect(pending.map((r) => r.hostname)).not.toContain("app.example.com");
     // A DNS-verified server domain with no certificate is issuance-eligible
-    // (the TXT ownership gate does not apply to this owner type).
+    // through the pending-SSL queue (findPendingSsl).
     await db
       .update(schema.domain)
       .set({ verified: true, verifiedAt: new Date(), sslStatus: "none" })
@@ -560,10 +562,16 @@ describe("server-scoped issuance eligibility (liveVerificationOwner extension)",
 
   it("scopes server domains by organization through the server row", async () => {
     await seedServerDomain({ organizationId: "org_1" });
-    const now = new Date(Date.now() + 1000);
-    expect((await domainRepo.findPendingVerification(now, 100, "org_1")).map((r) => r.hostname)).toContain("app.example.com");
-    expect((await domainRepo.findPendingVerification(now)).map((r) => r.hostname)).toContain("app.example.com");
-    expect((await domainRepo.findPendingVerification(now, 100, "org_other")).map((r) => r.hostname)).not.toContain("app.example.com");
+    // Org scoping matters on the issuance queue (findPendingSsl, verified rows);
+    // the TXT verification queue never contains server domains at all.
+    await db
+      .update(schema.domain)
+      .set({ verified: true, verifiedAt: new Date(), sslStatus: "none" })
+      .where(eq(schema.domain.id, "dom_server_scope"));
+    const now = new Date();
+    expect((await domainRepo.findPendingSsl(50, "org_1")).map((r) => r.hostname)).toContain("app.example.com");
+    expect((await domainRepo.findPendingSsl()).map((r) => r.hostname)).toContain("app.example.com");
+    expect((await domainRepo.findPendingSsl(50, "org_other")).map((r) => r.hostname)).not.toContain("app.example.com");
   });
 
   it("keeps project-domain eligibility rules exactly as they were", async () => {
