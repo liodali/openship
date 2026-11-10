@@ -44,9 +44,19 @@ export interface DiscoveryScanSummary {
    *  requeues from runtime-target changes (replacement, IP, stop/start). */
   desiredChanged: string[];
   /** Containers whose declaration is INVALID or now excluded: binding
-   *  preserved, error surfaced — never silently withdrawn (an operator typo in
-   *  OPENSHIP_NETWORK must not erase discovery state). */
-  invalid: Array<{ serviceKey: string; containerId: string; code: string; message: string }>;
+   *  preserved when one matches, error surfaced — never silently withdrawn
+   *  (an operator typo in OPENSHIP_NETWORK must not erase discovery state).
+   *  Every invalid OPTED-IN container is reported, whether or not a binding
+   *  matches: recreation changes the container id, so id-matching alone would
+   *  hide the error. serviceKey is the recoverable identity (null when the
+   *  identity fields themselves failed to parse). */
+  invalid: Array<{
+    serviceKey: string | null;
+    containerId: string;
+    containerName?: string | null;
+    code: string;
+    message: string;
+  }>;
   /** Bindings whose container is confirmed gone from the host. */
   missing: string[];
   /** Bindings withdrawn because the container no longer opts in. */
@@ -144,6 +154,11 @@ export async function scanServerDiscovery(
       return summary;
     }
     const failedContainerIds = new Set<string>();
+    /** Every invalid/excluded opted-in container, keyed by container id. */
+    const rejectionsByContainerId = new Map<
+      string,
+      { code: string; message: string; serviceKey?: string; containerName?: string | null }
+    >();
     const views = await mapWithLimit(containers, INSPECT_CONCURRENCY, async (container) => {
       try {
         const view = await inspectView(container.id);
@@ -175,7 +190,6 @@ export async function scanServerDiscovery(
     };
     const candidatesByKey = new Map<string, { running: Candidate[]; stopped: Candidate[] }>();
     const presentContainerIds = new Set<string>();
-    const rejectionsByContainerId = new Map<string, { code: string; message: string }>();
     for (const { containerId, view } of views) {
       if (!view) continue;
       presentContainerIds.add(containerId);
@@ -188,6 +202,10 @@ export async function scanServerDiscovery(
               result.rejection.kind === "excluded"
                 ? `container is Openship-owned (${result.rejection.label})`
                 : result.rejection.message,
+            ...(result.rejection.kind === "invalid" && result.rejection.serviceKey
+              ? { serviceKey: result.rejection.serviceKey }
+              : {}),
+            containerName: view.name ?? null,
           });
         }
         continue;
@@ -293,23 +311,40 @@ export async function scanServerDiscovery(
     //  - container unreadable this scan → UNCLASSIFIED (state kept).
     const existing = await repos.discovery.listByServer(serverId);
     const seenKeys = new Set(candidatesByKey.keys());
+
+    // Report EVERY invalid opted-in container — not only ones matching a
+    // binding's recorded container id: Compose recreation changes that id, and
+    // an id-only lookup would hide exactly the typo the operator needs to see.
+    // serviceKey is the parser's recovered identity when available, else the
+    // matching binding's key, else null (identity itself unparseable).
+    const bindingByKey = new Map(existing.map((b) => [b.serviceKey, b]));
+    for (const [containerId, rejection] of rejectionsByContainerId) {
+      summary.invalid.push({
+        serviceKey: rejection.serviceKey ?? bindingByKey.get(rejection.serviceKey ?? "")?.serviceKey ?? null,
+        containerId,
+        ...(rejection.containerName ? { containerName: rejection.containerName } : {}),
+        code: rejection.code,
+        message: rejection.message,
+      });
+    }
+
     for (const bindingRow of existing) {
       if (seenKeys.has(bindingRow.serviceKey)) continue;
       // An inspect failure leaves the binding UNCLASSIFIED — the plan requires
       // "failed/incomplete inventory retains bindings and reports an error";
       // only a confirmed absence (or a readable opt-out) changes state.
       if (bindingRow.containerId != null && failedContainerIds.has(bindingRow.containerId)) continue;
-      // Invalid/excluded declarations preserve the binding and surface why.
-      const rejection =
-        bindingRow.containerId != null ? rejectionsByContainerId.get(bindingRow.containerId) : undefined;
-      if (rejection) {
-        summary.invalid.push({
-          serviceKey: bindingRow.serviceKey,
-          containerId: bindingRow.containerId!,
-          code: rejection.code,
-          message: rejection.message,
-        });
-        continue;
+      // Invalid/excluded declaration ON THIS container id: preserve the binding.
+      if (bindingRow.containerId != null && rejectionsByContainerId.has(bindingRow.containerId)) continue;
+      // Recreation with a NEW container id: the parser recovered the identity
+      // (serviceKey) from the invalid declaration — link it back so a bad
+      // recreate preserves the binding instead of reading as a removal.
+      if (
+        bindingRow.containerId != null &&
+        !presentContainerIds.has(bindingRow.containerId) &&
+        [...rejectionsByContainerId.values()].some((r) => r.serviceKey === bindingRow.serviceKey)
+      ) {
+        continue; // already reported in summary.invalid above
       }
       // A container that scanned but did not produce THIS binding's key has
       // explicitly opted out; its containerId tells us it is still around.

@@ -198,22 +198,53 @@ export function createDiscoveryRepo(db: Database) {
     /**
      * Mark a binding's container as CONFIRMED removed. The binding row and its
      * certificate metadata are RETAINED — only the application upstream goes
-     * away (the reconciler withdraws the route; the domain keeps TLS state).
+     * away. Removal is a reconcile TASK, not just an observation: a previously
+     * APPLIED binding returns to the pending queue (generation bumped) so the
+     * reconciler withdraws its route even if the process crashes between this
+     * write and reconciliation — a live route pointing at a dead container is
+     * exactly the stale-IP hazard the plan forbids. Idempotent: re-marking an
+     * already-missing binding does not re-bump (the scanner re-runs every
+     * sweep until the reconciler catches up). Blocked bindings are left alone
+     * (they never had routes); suppressed bindings are left to the suppress
+     * flow's own retirement policy.
      */
     async markMissing(serverId: string, serviceKey: string) {
-      const [row] = await db
-        .update(binding)
-        .set({
-          observationStatus: "missing",
-          containerId: null,
-          containerName: null,
-          ipAddress: null,
-          containerRunning: false,
-          updatedAt: new Date(),
-        })
-        .where(and(eq(binding.serverId, serverId), eq(binding.serviceKey, serviceKey)))
-        .returning();
-      return row;
+      return db.transaction(async (tx) => {
+        const [existing] = await tx
+          .select()
+          .from(binding)
+          .where(and(eq(binding.serverId, serverId), eq(binding.serviceKey, serviceKey)))
+          .for("update");
+        if (!existing) return undefined;
+        const newlyMissing = existing.observationStatus !== "missing";
+        // Withdrawal is a reconcile task: applied/pending/error bindings requeue
+        // (crash-safe — the route must be retired); blocked bindings never had
+        // routes; suppressed bindings follow the suppress flow's own policy.
+        const requeue =
+          newlyMissing && existing.applyState !== "blocked" && !existing.suppressed;
+        const [row] = await tx
+          .update(binding)
+          .set({
+            observationStatus: "missing",
+            containerId: null,
+            containerName: null,
+            ipAddress: null,
+            containerRunning: false,
+            ...(requeue
+              ? {
+                  desiredGeneration: existing.desiredGeneration + 1,
+                  applyState: "pending" as const,
+                  applyError: null,
+                  applyAttempts: 0,
+                  nextApplyAt: null,
+                }
+              : {}),
+            updatedAt: new Date(),
+          })
+          .where(eq(binding.id, existing.id))
+          .returning();
+        return row;
+      });
     },
 
     /** Inspection failed for this binding: keep EVERYTHING, record the state. */

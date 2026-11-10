@@ -139,7 +139,20 @@ export interface DiscoveryDeclaration {
 export type DiscoveryRejection =
   | { kind: "not-opted-in" }
   | { kind: "excluded"; label: string }
-  | { kind: "invalid"; code: DiscoveryErrorCode; message: string };
+  | {
+      kind: "invalid";
+      code: DiscoveryErrorCode;
+      message: string;
+      /**
+       * The stable service key, when the identity fields parsed before the
+       * fault. Lets a scanner link a recreated container (new container id,
+       * bad config) back to its existing binding instead of misreading the
+       * replacement as a removal. Absent when the identity itself is the
+       * problem (identity-required, invalid-service-id, ...) or the fault
+       * precedes identity resolution (flag conflicts).
+       */
+      serviceKey?: string;
+    };
 
 export type DiscoveryErrorCode =
   | "invalid-discovery-flag"
@@ -291,53 +304,11 @@ export function parseDiscoveryDeclaration(input: DiscoveryCandidateInput): Disco
   }
   if (!optedIn) return { eligible: false, rejection: { kind: "not-opted-in" } };
 
-  // Hostname: required, normalized, same shape as custom-domain inputs.
-  const domain = mergeField("domain", envPairs.get(DISCOVERY_ENV.domain), labels[DISCOVERY_LABEL.domain]);
-  if (domain.error) return { eligible: false, rejection: { kind: "invalid", ...domain.error } };
-  if (domain.value == null) {
-    return {
-      eligible: false,
-      rejection: {
-        kind: "invalid",
-        code: "missing-domain",
-        message: `Set ${DISCOVERY_ENV.domain} (env) or ${DISCOVERY_LABEL.domain} (label) to the public hostname this service claims.`,
-      },
-    };
-  }
-  const hostname = domain.value.trim().toLowerCase();
-  if (!HOSTNAME_PATTERN.test(hostname) || hostname.length > HOSTNAME_MAX_LENGTH) {
-    return {
-      eligible: false,
-      rejection: {
-        kind: "invalid",
-        code: "invalid-domain",
-        message: `${JSON.stringify(domain.value)} is not a valid public hostname. Use a DNS name like app.example.com; wildcards are not supported yet.`,
-      },
-    };
-  }
-
-  // Port: required, strict integer 1–65535. No guessing.
-  const portField = mergeField("port", envPairs.get(DISCOVERY_ENV.port), labels[DISCOVERY_LABEL.port]);
-  if (portField.error) return { eligible: false, rejection: { kind: "invalid", ...portField.error } };
-  if (portField.value == null) {
-    return {
-      eligible: false,
-      rejection: {
-        kind: "invalid",
-        code: "missing-port",
-        message: `Set ${DISCOVERY_ENV.port} (env) or ${DISCOVERY_LABEL.port} (label) to the container port your app listens on.`,
-      },
-    };
-  }
-  const port = parsePort(portField.value);
-  if (typeof port === "string") {
-    return {
-      eligible: false,
-      rejection: { kind: "invalid", code: "invalid-port", message: `${DISCOVERY_ENV.port} ${port}.` },
-    };
-  }
-
-  // Stable identity: explicit id first, else Compose project+service.
+  // Stable identity FIRST: explicit id, else Compose project+service. Resolving
+  // it before the other fields means every later rejection can carry the
+  // serviceKey — a recreated container (new container id) whose only fault is a
+  // bad domain/port/network can still be linked back to its binding by the
+  // scanner instead of looking like a removal.
   const serviceIdField = mergeField(
     "serviceId",
     envPairs.get(DISCOVERY_ENV.serviceId),
@@ -347,10 +318,7 @@ export function parseDiscoveryDeclaration(input: DiscoveryCandidateInput): Disco
   const composeProject = labels[COMPOSE_PROJECT_LABEL]?.trim();
   const composeService = labels[COMPOSE_SERVICE_LABEL]?.trim();
   let serviceKey: string;
-  let declaration: Omit<DiscoveryDeclaration, "serviceKey" | "hostname" | "port" | "network" | "networkId"> & {
-    hostname: string;
-    port: number;
-  };
+  let identity: Pick<DiscoveryDeclaration, "serviceId" | "composeProject" | "composeService">;
   if (serviceIdField.value != null) {
     const serviceId = serviceIdField.value.trim().toLowerCase();
     if (!SERVICE_ID_PATTERN.test(serviceId)) {
@@ -366,16 +334,14 @@ export function parseDiscoveryDeclaration(input: DiscoveryCandidateInput): Disco
     serviceKey = `id:${serviceId}`;
     // Compose labels remain informational (UI grouping) even when an explicit
     // id owns the identity — the key is the id, the grouping is the stack.
-    declaration = {
+    identity = {
       serviceId,
       ...(composeProject ? { composeProject } : {}),
       ...(composeService ? { composeService } : {}),
-      hostname,
-      port,
     };
   } else if (composeProject && composeService) {
     serviceKey = `compose:${composeProject}/${composeService}`;
-    declaration = { composeProject, composeService, hostname, port };
+    identity = { composeProject, composeService };
   } else if (composeProject || composeService) {
     return {
       eligible: false,
@@ -396,13 +362,52 @@ export function parseDiscoveryDeclaration(input: DiscoveryCandidateInput): Disco
     };
   }
 
+  /** Rejections past this point know WHICH service failed — attach the key. */
+  const invalid = (code: DiscoveryErrorCode, message: string): DiscoveryParseResult => ({
+    eligible: false,
+    rejection: { kind: "invalid", code, message, serviceKey },
+  });
+
+  // Hostname: required, normalized, same shape as custom-domain inputs.
+  const domain = mergeField("domain", envPairs.get(DISCOVERY_ENV.domain), labels[DISCOVERY_LABEL.domain]);
+  if (domain.error) return { eligible: false, rejection: { kind: "invalid", ...domain.error, serviceKey } };
+  if (domain.value == null) {
+    return invalid(
+      "missing-domain",
+      `Set ${DISCOVERY_ENV.domain} (env) or ${DISCOVERY_LABEL.domain} (label) to the public hostname this service claims.`,
+    );
+  }
+  const hostname = domain.value.trim().toLowerCase();
+  if (!HOSTNAME_PATTERN.test(hostname) || hostname.length > HOSTNAME_MAX_LENGTH) {
+    return invalid(
+      "invalid-domain",
+      `${JSON.stringify(domain.value)} is not a valid public hostname. Use a DNS name like app.example.com; wildcards are not supported yet.`,
+    );
+  }
+
+  // Port: required, strict integer 1–65535. No guessing.
+  const portField = mergeField("port", envPairs.get(DISCOVERY_ENV.port), labels[DISCOVERY_LABEL.port]);
+  if (portField.error) return { eligible: false, rejection: { kind: "invalid", ...portField.error, serviceKey } };
+  if (portField.value == null) {
+    return invalid(
+      "missing-port",
+      `Set ${DISCOVERY_ENV.port} (env) or ${DISCOVERY_LABEL.port} (label) to the container port your app listens on.`,
+    );
+  }
+  const port = parsePort(portField.value);
+  if (typeof port === "string") {
+    return invalid("invalid-port", `${DISCOVERY_ENV.port} ${port}.`);
+  }
+
+  const declaration = { ...identity, hostname, port };
+
   // Network: explicit selector resolved by ACTUAL name, else the single usable bridge.
   const networkField = mergeField(
     "network",
     envPairs.get(DISCOVERY_ENV.network),
     labels[DISCOVERY_LABEL.network],
   );
-  if (networkField.error) return { eligible: false, rejection: { kind: "invalid", ...networkField.error } };
+  if (networkField.error) return { eligible: false, rejection: { kind: "invalid", ...networkField.error, serviceKey } };
   const attached = input.networks ?? null;
   if (attached == null) {
     return {
@@ -411,6 +416,7 @@ export function parseDiscoveryDeclaration(input: DiscoveryCandidateInput): Disco
         kind: "invalid",
         code: "networks-unknown",
         message: "Container network membership could not be read; discovery cannot pick a route-safe network.",
+        serviceKey,
       },
     };
   }
@@ -430,6 +436,7 @@ export function parseDiscoveryDeclaration(input: DiscoveryCandidateInput): Disco
           kind: "invalid",
           code: "network-missing",
           message: `Network "${selector}" is not attached to this container. Attached: ${attached.map((n) => n.name || "(unnamed)").join(", ") || "none"}.`,
+          serviceKey,
         },
       };
     }
@@ -439,6 +446,7 @@ export function parseDiscoveryDeclaration(input: DiscoveryCandidateInput): Disco
         rejection: {
           kind: "invalid",
           code: "network-unusable",
+          serviceKey,
           message: `Network "${selector}" is not a user-defined bridge network${selected.driver && selected.driver !== "bridge" ? ` (driver: ${selected.driver})` : selected.name === DEFAULT_BRIDGE_NETWORK ? " (Docker's default bridge)" : ""} and cannot carry discovered-service traffic. Attach a user-defined bridge or pick one with ${DISCOVERY_ENV.network}.`,
         },
       };
@@ -451,6 +459,7 @@ export function parseDiscoveryDeclaration(input: DiscoveryCandidateInput): Disco
         rejection: {
           kind: "invalid",
           code: "network-unusable",
+          serviceKey,
           message: `No usable user-defined bridge network attached. Attached: ${attached.map((n) => `${n.name || "(unnamed)"}${n.driver && n.driver !== "bridge" ? ` (${n.driver})` : ""}`).join(", ") || "none"}. Attach one or set ${DISCOVERY_ENV.network}.`,
         },
       };
@@ -461,6 +470,7 @@ export function parseDiscoveryDeclaration(input: DiscoveryCandidateInput): Disco
         rejection: {
           kind: "invalid",
           code: "network-ambiguous",
+          serviceKey,
           message: `Several usable networks attached (${usable.map((n) => n.name).join(", ")}). Set ${DISCOVERY_ENV.network} to pick one.`,
         },
       };
