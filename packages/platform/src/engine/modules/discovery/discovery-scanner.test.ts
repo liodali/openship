@@ -76,8 +76,12 @@ const discoveryRepo = {
           appliedGeneration: 0,
         };
         state.bindings.set(obs.serviceKey, row);
-        return { binding: row, desiredChanged: true };
+        return { binding: row, desiredChanged: true, requeued: false };
       }
+      const requeued =
+        !desiredChanged &&
+        existing.applyState !== "blocked" &&
+        (existing.containerId !== obs.containerId || existing.running !== obs.running);
       const updated: BindingRow = {
         ...existing,
         containerId: obs.containerId,
@@ -88,7 +92,7 @@ const discoveryRepo = {
         networkName: obs.networkName,
         configHash: obs.configHash,
         observationStatus: "observed",
-        ...(desiredChanged && existing.applyState !== "blocked"
+        ...(existing.applyState !== "blocked" && (desiredChanged || requeued)
           ? {
               desiredGeneration: existing.desiredGeneration + 1,
               applyState: "pending" as const,
@@ -99,7 +103,7 @@ const discoveryRepo = {
             : {}),
       };
       state.bindings.set(obs.serviceKey, updated);
-      return { binding: updated, desiredChanged };
+      return { binding: updated, desiredChanged, requeued };
     },
   ),
   block: vi.fn(async (_serverId: string, serviceKey: string, reason: string) => {
@@ -251,15 +255,39 @@ describe("discovery scanner", () => {
     expect(state.bindings.get("id:my-app")?.desiredGeneration).toBe(1);
   });
 
-  it("tracks container replacement without a config change", async () => {
+  it("requeues on container replacement even without a config change", async () => {
     await scanServerDiscovery(SERVER, "org_1", { runtime: runtime([view()]) });
+    // Mark "applied" the way the reconciler would after the first apply.
+    const applied = state.bindings.get("id:my-app")!;
+    state.bindings.set("id:my-app", { ...applied, applyState: "applied", appliedGeneration: 1 });
     const replacement = view({ containerId: "ctr_b", name: "my-app-2", networks: [{ name: "frontend", id: "net_fe", ipAddress: "172.20.0.9" }] });
     const summary = await scanServerDiscovery(SERVER, "org_1", { runtime: runtime([replacement]) });
-    expect(summary.desiredChanged).toEqual([]);
+    // The route's upstream changed — the binding MUST requeue or keep serving
+    // the old IP Docker may hand to another workload.
+    expect(summary.desiredChanged).toEqual(["id:my-app"]);
     expect(summary.missing).toEqual([]);
     const binding = state.bindings.get("id:my-app")!;
     expect(binding.containerId).toBe("ctr_b");
-    expect(binding.desiredGeneration).toBe(1);
+    expect(binding.applyState).toBe("pending");
+    expect(binding.desiredGeneration).toBe(2);
+  });
+
+  it("requeues on stop and start", async () => {
+    await scanServerDiscovery(SERVER, "org_1", { runtime: runtime([view()]) });
+    const applied = state.bindings.get("id:my-app")!;
+    state.bindings.set("id:my-app", { ...applied, applyState: "applied", appliedGeneration: 1 });
+
+    const stopped = await scanServerDiscovery(
+      SERVER,
+      "org_1",
+      { runtime: runtime([view({ running: false, status: "exited" })]) },
+    );
+    expect(stopped.desiredChanged).toEqual(["id:my-app"]); // withdraw upstream
+    expect(state.bindings.get("id:my-app")?.running).toBe(false);
+
+    const started = await scanServerDiscovery(SERVER, "org_1", { runtime: runtime([view()]) });
+    expect(started.desiredChanged).toEqual(["id:my-app"]); // restore + cert check
+    expect(state.bindings.get("id:my-app")?.running).toBe(true);
   });
 
   it("marks a confirmed removal missing and keeps the binding", async () => {
@@ -286,7 +314,60 @@ describe("discovery scanner", () => {
     expect(state.bindings.has("id:my-app")).toBe(false);
   });
 
-  it("blocks duplicate live identities instead of picking a replica", async () => {
+  it("preserves the binding when the declaration becomes INVALID, and reports it", async () => {
+    await scanServerDiscovery(SERVER, "org_1", { runtime: runtime([view()]) });
+    // Operator recreates with a typo: OPENSHIP_NETWORK names a missing network.
+    const broken = view({
+      containerId: "ctr_a",
+      env: [
+        "OPENSHIP_DISCOVERY=true",
+        "OPENSHIP_SERVICE_ID=my-app",
+        "OPENSHIP_DOMAIN=app.example.com",
+        "OPENSHIP_PORT=3000",
+        "OPENSHIP_NETWORK=missing-net",
+      ],
+    });
+    const summary = await scanServerDiscovery(SERVER, "org_1", { runtime: runtime([broken]) });
+    expect(summary.withdrawn).toEqual([]); // NEVER silently withdrawn
+    expect(summary.invalid).toHaveLength(1);
+    expect(summary.invalid[0]).toMatchObject({
+      serviceKey: "id:my-app",
+      containerId: "ctr_a",
+      code: "network-missing",
+    });
+    const binding = state.bindings.get("id:my-app");
+    expect(binding).toBeDefined();
+    expect(binding?.hostname).toBe("app.example.com"); // state intact
+
+    // Once fixed, the binding observes normally again.
+    const fixed = await scanServerDiscovery(SERVER, "org_1", { runtime: runtime([view({ containerId: "ctr_a", env: [...view().env, "OPENSHIP_NETWORK=frontend"] })]) });
+    expect(fixed.invalid).toEqual([]);
+    expect(fixed.observed).toEqual(["id:my-app"]);
+  });
+
+  it("withdraws only on explicit opt-out, not on invalid config", async () => {
+    await scanServerDiscovery(SERVER, "org_1", { runtime: runtime([view()]) });
+    const optedOut = view({ env: ["PATH=/usr/bin"], containerId: "ctr_a" });
+    const summary = await scanServerDiscovery(SERVER, "org_1", { runtime: runtime([optedOut]) });
+    expect(summary.withdrawn).toEqual(["id:my-app"]);
+    expect(summary.invalid).toEqual([]);
+    expect(state.bindings.has("id:my-app")).toBe(false);
+  });
+
+  it("does not let a retained stopped container block its running replacement", async () => {
+    // Old replica stopped (scale-down), new replica running — same identity.
+    const stoppedOld = view({ containerId: "ctr_old", name: "app-old", running: false, status: "exited" });
+    const runningNew = view({ containerId: "ctr_new", name: "app-new" });
+    const summary = await scanServerDiscovery(SERVER, "org_1", { runtime: runtime([stoppedOld, runningNew]) });
+    expect(summary.blocked).toEqual([]); // a live duplicate needs TWO RUNNING
+    expect(summary.observed).toEqual(["id:my-app"]);
+    const binding = state.bindings.get("id:my-app")!;
+    expect(binding.containerId).toBe("ctr_new"); // the RUNNING instance wins
+    expect(binding.applyState).toBe("pending");
+    expect(binding.running).toBe(true);
+  });
+
+  it("blocks two running replicas of one identity, and reports a stopped-only duplicate", async () => {
     const a = view({ containerId: "ctr_a", name: "app-1" });
     const b = view({ containerId: "ctr_b", name: "app-2" });
     const summary = await scanServerDiscovery(SERVER, "org_1", { runtime: runtime([a, b]) });
@@ -294,12 +375,17 @@ describe("discovery scanner", () => {
     expect(summary.blocked[0].serviceKey).toBe("id:my-app");
     expect(summary.blocked[0].reason).toContain("app-1");
     expect(summary.blocked[0].reason).toContain("app-2");
-    const binding = state.bindings.get("id:my-app")!;
-    expect(binding.applyState).toBe("blocked");
+    expect(state.bindings.get("id:my-app")?.applyState).toBe("blocked");
     // A duplicate stays blocked through rescans — never auto-retried.
     const second = await scanServerDiscovery(SERVER, "org_1", { runtime: runtime([a, b]) });
     expect(second.blocked).toHaveLength(1);
     expect(state.bindings.get("id:my-app")?.applyState).toBe("blocked");
+
+    // Two STOPPED containers of one identity: visible conflict, no route risk.
+    const bothStopped = [view({ containerId: "ctr_a", running: false, status: "exited" }), view({ containerId: "ctr_b", running: false, status: "exited" })];
+    const stoppedSummary = await scanServerDiscovery(SERVER, "org_1", { runtime: runtime(bothStopped) });
+    expect(stoppedSummary.blocked).toHaveLength(1);
+    expect(stoppedSummary.blocked[0].reason).toContain("stopped containers claim identity");
   });
 
   it("blocks a hostname another owner already serves, and unblocks when it frees", async () => {

@@ -333,6 +333,25 @@ describe("network resolution", () => {
     expect(rejection).toMatchObject({ kind: "invalid", code: "network-missing" });
   });
 
+  it("validates an EXPLICIT selector with the same usability rule — host, default bridge and overlays are rejected", () => {
+    for (const net of [
+      { name: "host", driver: "host" },
+      { name: "bridge", driver: "bridge" },
+      { name: "swarm-net", driver: "overlay" },
+    ]) {
+      const rejection = rejectionOf(
+        parseDiscoveryDeclaration(
+          candidate({
+            env: [`${DISCOVERY_ENV.discovery}=true`, `${DISCOVERY_ENV.serviceId}=x`, `${DISCOVERY_ENV.domain}=app.example.com`, `${DISCOVERY_ENV.port}=80`, `${DISCOVERY_ENV.network}=${net.name}`],
+            networks: [net],
+          }),
+        ),
+      );
+      expect(rejection).toMatchObject({ kind: "invalid", code: "network-unusable" }, net.name);
+      expect((rejection as { message: string }).message).toContain(net.name);
+    }
+  });
+
   it("requires a selector when several usable networks are attached", () => {
     const rejection = rejectionOf(
       parseDiscoveryDeclaration(

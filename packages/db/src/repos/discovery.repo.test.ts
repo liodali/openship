@@ -104,23 +104,59 @@ describe("binding observations", () => {
 
   it("is idempotent: an unchanged rescan changes nothing", async () => {
     await repo.observe(SERVER, observation());
-    const { desiredChanged } = await repo.observe(SERVER, observation({ ipAddress: "172.20.0.5" }));
+    const { desiredChanged, requeued } = await repo.observe(SERVER, observation({ ipAddress: "172.20.0.5" }));
     expect(desiredChanged).toBe(false);
+    expect(requeued).toBe(false);
     const row = await repo.getBinding(SERVER, "id:my-app");
     expect(row?.desiredGeneration).toBe(1);
   });
 
-  it("tracks container replacement without a config change", async () => {
+  it("requeues on container replacement even without a config change", async () => {
     await repo.observe(SERVER, observation());
-    const { desiredChanged } = await repo.observe(
+    await repo.markApplied(SERVER, "id:my-app", 1);
+    const { requeued } = await repo.observe(
       SERVER,
       observation({ containerId: "ctr_2", containerName: "my-app-2", ipAddress: "172.20.0.9" }),
     );
-    expect(desiredChanged).toBe(false);
+    // The route's upstream CHANGED — an applied binding must re-apply or it
+    // keeps serving the old IP Docker may hand to another workload.
+    expect(requeued).toBe(true);
     const row = await repo.getBinding(SERVER, "id:my-app");
     expect(row?.containerId).toBe("ctr_2");
     expect(row?.ipAddress).toBe("172.20.0.9");
+    expect(row?.applyState).toBe("pending");
+    expect(row?.desiredGeneration).toBe(2); // applied generation 1 < desired 2 → due
+    expect((await repo.dueForApply(SERVER)).map((r) => r.serviceKey)).toEqual(["id:my-app"]);
+  });
+
+  it("requeues on stop and on start", async () => {
+    await repo.observe(SERVER, observation());
+    await repo.markApplied(SERVER, "id:my-app", 1);
+
+    const stopped = await repo.observe(SERVER, observation({ running: false }));
+    expect(stopped.requeued).toBe(true);
+    let row = await repo.getBinding(SERVER, "id:my-app");
+    expect(row?.containerRunning).toBe(false);
+    expect(row?.applyState).toBe("pending");
+
+    await repo.markApplied(SERVER, "id:my-app", 2);
+    const started = await repo.observe(SERVER, observation({ running: true }));
+    expect(started.requeued).toBe(true);
+    row = await repo.getBinding(SERVER, "id:my-app");
+    expect(row?.containerRunning).toBe(true);
+    expect(row?.applyState).toBe("pending");
+  });
+
+  it("leaves an applied binding untouched when nothing about the target changed", async () => {
+    await repo.observe(SERVER, observation());
+    await repo.markApplied(SERVER, "id:my-app", 1);
+    const { requeued, desiredChanged } = await repo.observe(SERVER, observation({ ipAddress: "172.20.0.5" }));
+    expect(requeued).toBe(false);
+    expect(desiredChanged).toBe(false);
+    const row = await repo.getBinding(SERVER, "id:my-app");
+    expect(row?.applyState).toBe("applied");
     expect(row?.desiredGeneration).toBe(1);
+    expect(await repo.dueForApply(SERVER)).toHaveLength(0);
   });
 
   it("marks pending and resets retries when the operator changes config", async () => {
@@ -310,14 +346,21 @@ async function seedServerDomain(overrides: {
   enabled?: boolean;
   suppressed?: boolean;
   observationStatus?: "observed" | "missing" | "error";
+  containerRunning?: boolean;
   organizationId?: string | null;
 } = {}) {
-  const { enabled = true, suppressed = false, observationStatus = "observed", organizationId } = overrides;
+  const {
+    enabled = true,
+    suppressed = false,
+    observationStatus = "observed",
+    containerRunning = true,
+    organizationId,
+  } = overrides;
   if (organizationId !== undefined) {
     await db.update(schema.servers).set({ organizationId }).where(eq(schema.servers.id, SERVER));
   }
   await repo.configure(SERVER, { enabled });
-  await repo.observe(SERVER, observation());
+  await repo.observe(SERVER, observation({ running: containerRunning }));
   if (suppressed) await repo.suppress(SERVER, "id:my-app");
   if (observationStatus !== "observed") {
     await db
@@ -364,13 +407,20 @@ describe("server-scoped issuance eligibility (liveVerificationOwner extension)",
     expect(pending.map((r) => r.hostname)).not.toContain("app.example.com");
   });
 
-  it("excludes suppressed bindings and unobserved (stopped/missing) containers", async () => {
+  it("excludes suppressed bindings, stopped containers, and unobserved containers", async () => {
     await seedServerDomain({ suppressed: true });
     expect(
       (await domainRepo.findPendingVerification(new Date(Date.now() + 1000))).map((r) => r.hostname),
     ).not.toContain("app.example.com");
 
     // Second scenario needs its own domain row (hostname unique in `domain`).
+    await db.delete(schema.domain);
+    // Observed but STOPPED: ineligible even though the row is alive and fresh.
+    await seedServerDomain({ containerRunning: false });
+    expect(
+      (await domainRepo.findPendingVerification(new Date(Date.now() + 1000))).map((r) => r.hostname),
+    ).not.toContain("app.example.com");
+
     await db.delete(schema.domain);
     await seedServerDomain({ observationStatus: "missing" });
     expect(
