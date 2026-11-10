@@ -409,6 +409,44 @@ describe("discovery scanner", () => {
     expect(state.bindings.get("id:my-app")?.containerId).toBe("ctr_NEW");
   });
 
+  it("keeps an invalid binding stable across repeated sweeps after its container id was cleared", async () => {
+    await scanServerDiscovery(SERVER, "org_1", { runtime: runtime([view()]) });
+    const applied = state.bindings.get("id:my-app")!;
+    state.bindings.set("id:my-app", { ...applied, applyState: "applied", appliedGeneration: 1 });
+
+    // Recreate with bad config: markInvalid clears the stored container id.
+    const recreatedBad = view({
+      containerId: "ctr_NEW",
+      name: "my-app-recreated",
+      env: [
+        "OPENSHIP_DISCOVERY=true",
+        "OPENSHIP_SERVICE_ID=my-app",
+        "OPENSHIP_DOMAIN=app.example.com",
+        "OPENSHIP_PORT=3000",
+        "OPENSHIP_NETWORK=missing-net",
+      ],
+    });
+    await scanServerDiscovery(SERVER, "org_1", { runtime: runtime([recreatedBad]) });
+    const afterFirst = state.bindings.get("id:my-app")!;
+    expect(afterFirst.observationStatus).toBe("invalid");
+    expect(afterFirst.containerId).toBeNull();
+    const generation = afterFirst.desiredGeneration;
+
+    // The operator has NOT fixed it yet: later sweeps still see the invalid
+    // container claiming the same identity. Identity matching (not container
+    // id) must keep the binding invalid — reclassifying it missing would flip
+    // the status and re-bump the generation on every sweep.
+    for (let i = 0; i < 3; i++) {
+      const sweep = await scanServerDiscovery(SERVER, "org_1", { runtime: runtime([recreatedBad]) });
+      expect(sweep.missing).toEqual([]);
+      expect(sweep.withdrawn).toEqual([]);
+    }
+    const stable = state.bindings.get("id:my-app")!;
+    expect(stable.observationStatus).toBe("invalid");
+    expect(stable.desiredGeneration).toBe(generation);
+    expect(stable.hostname).toBe("app.example.com");
+  });
+
   it("reports invalid containers even when no binding exists", async () => {
     // Never scanned before: a standalone opted-in container with a bad port.
     const bad = view({
