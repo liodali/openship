@@ -56,7 +56,7 @@ Docker/Podman compatibility work below is required before declaring runtime supp
   suppresses only forward applies); runtime-target changes (replacement, IP,
   stop/start) requeue an applied binding so routes never keep a stale
   upstream; unchanged rescans converge.
-- **Step 4 — scanner + route reconciler core landed; TLS integration pending.**
+- **Step 4 — scanner + route reconciler + server-domain TLS landed; reachability probe and repair sweeps pending.**
   `packages/platform/src/engine/modules/discovery/discovery-reconciler.ts`
   (+7 tests): withdrawals first (blocked/suppressed owners included), then
   due applies — bridge-ip registers `http://<ip>:<port>`; published-port
@@ -67,13 +67,25 @@ Docker/Podman compatibility work below is required before declaring runtime supp
   markApplied(generation) only after the edge write; failures persist
   markApplyError backoff (30s→30m). Server-scoped Edge resolution via
   `resolveDiscoveryEdgeTarget` (resolveServerExecutor → platform →
-  hostPortTarget, held + disposed per pass). STILL NOT DONE: Edge-context
-  reachability probe before activation; server-domain target resolution in
-  the TLS machinery (domain row creation per binding, verification/issuance
-  flow for ownerType='server', renewal scheduling, unavailable-vhost
-  retention with TLS); route-file repair from server-domain records;
-  watcher/sweep wiring (step 5); API/UI (steps 3/6); live Podman canary
-  (step 7/8).
+  hostPortTarget, held + disposed per pass).
+- **Server-domain TLS LANDED.** domain-ssl.ts: new 'server' SSL owner —
+  authorization via the serving server row (projectId callers refused,
+  serverId scope enforced), issuance on that server's edge with the per-box
+  ACME lock scope, no project lifecycle locks. Every new ACME order gates on
+  a FRESH container inspection under the issue lock
+  (`DiscoveryBackendUnavailableError` defers stopped/unreadable backends —
+  retained certificate state, never a failure record); ACME success flips the
+  row verified (`markServerDomainVerified` — ACME-as-verification, no TXT).
+  ssl-scheduler: renewal sweeps include server domains (cloud management
+  access via the server row; gate defers skip cleanly; notifications carry
+  server/binding context). Reconciler: ensureServerDomain on apply + immediate
+  certificate reconciliation after start/replacement (reuse comfortably valid;
+  issue missing/due; defer on stop). findPendingVerification excludes server
+  domains (TXT would fail by design). STILL NOT DONE: Edge-context
+  reachability probe before activation; unavailable-vhost retention with TLS
+  detail (removed routes drop the vhost today); route-file repair from
+  server-domain records; watcher/sweep wiring (step 5); API/UI (steps 3/6);
+  live Podman canary (step 7/8).
 - **Review acceptance check.** After `markInvalid()` clears `containerId`, a
   repeated scan must continue matching the rejected declaration by stable identity
   and retain `observationStatus='invalid'`. Add a regression that repeats the scan;
