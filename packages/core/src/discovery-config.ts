@@ -417,6 +417,11 @@ export function parseDiscoveryDeclaration(input: DiscoveryCandidateInput): Disco
   const selector = networkField.value?.trim();
   let selected: DiscoveryNetworkFact | undefined;
   if (selector) {
+    // Exact name, never an alias — then the SAME usability rule as the
+    // auto-selected path. A selector is a choice, not an exemption: host,
+    // default bridge and overlay networks are exactly the ones an operator is
+    // most likely to name explicitly, and the Edge cannot reach them the way
+    // it reaches a user-defined bridge.
     selected = attached.find((net) => net.name === selector); // exact name, never an alias
     if (!selected) {
       return {
@@ -425,6 +430,16 @@ export function parseDiscoveryDeclaration(input: DiscoveryCandidateInput): Disco
           kind: "invalid",
           code: "network-missing",
           message: `Network "${selector}" is not attached to this container. Attached: ${attached.map((n) => n.name || "(unnamed)").join(", ") || "none"}.`,
+        },
+      };
+    }
+    if (!isUsableDiscoveryNetwork(selected)) {
+      return {
+        eligible: false,
+        rejection: {
+          kind: "invalid",
+          code: "network-unusable",
+          message: `Network "${selector}" is not a user-defined bridge network${selected.driver && selected.driver !== "bridge" ? ` (driver: ${selected.driver})` : selected.name === DEFAULT_BRIDGE_NETWORK ? " (Docker's default bridge)" : ""} and cannot carry discovered-service traffic. Attach a user-defined bridge or pick one with ${DISCOVERY_ENV.network}.`,
         },
       };
     }

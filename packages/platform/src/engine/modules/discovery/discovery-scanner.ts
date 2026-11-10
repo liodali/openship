@@ -40,8 +40,13 @@ export interface DiscoveryScanSummary {
   eligible: number;
   /** Bindings written (created or observation-updated). */
   observed: string[];
-  /** Bindings whose desired config changed (reconciler must apply). */
+  /** Bindings whose desired config changed (reconciler must apply). Includes
+   *  requeues from runtime-target changes (replacement, IP, stop/start). */
   desiredChanged: string[];
+  /** Containers whose declaration is INVALID or now excluded: binding
+   *  preserved, error surfaced — never silently withdrawn (an operator typo in
+   *  OPENSHIP_NETWORK must not erase discovery state). */
+  invalid: Array<{ serviceKey: string; containerId: string; code: string; message: string }>;
   /** Bindings whose container is confirmed gone from the host. */
   missing: string[];
   /** Bindings withdrawn because the container no longer opts in. */
@@ -80,6 +85,7 @@ export async function scanServerDiscovery(
     eligible: 0,
     observed: [],
     desiredChanged: [],
+    invalid: [],
     missing: [],
     withdrawn: [],
     blocked: [],
@@ -153,6 +159,10 @@ export async function scanServerDiscovery(
     });
 
     // Parse every inspectable container; group eligible declarations by key.
+    // Running and stopped candidates are tracked SEPARATELY: identity conflicts
+    // exist between LIVE candidates only — a retained stopped container must
+    // never block its running replacement (docs: "Reject duplicate LIVE
+    // candidates").
     type Candidate = {
       view: DiscoveryContainerView;
       hostname: string;
@@ -161,14 +171,27 @@ export async function scanServerDiscovery(
       networkId?: string;
       ipAddress?: string;
       configHash: string;
+      running: boolean;
     };
-    const candidatesByKey = new Map<string, Candidate[]>();
+    const candidatesByKey = new Map<string, { running: Candidate[]; stopped: Candidate[] }>();
     const presentContainerIds = new Set<string>();
+    const rejectionsByContainerId = new Map<string, { code: string; message: string }>();
     for (const { containerId, view } of views) {
       if (!view) continue;
       presentContainerIds.add(containerId);
       const result = parseDiscoveryDeclaration(view);
-      if (!result.eligible) continue;
+      if (!result.eligible) {
+        if (result.rejection.kind !== "not-opted-in") {
+          rejectionsByContainerId.set(containerId, {
+            code: result.rejection.kind === "excluded" ? "openship-owned" : result.rejection.code,
+            message:
+              result.rejection.kind === "excluded"
+                ? `container is Openship-owned (${result.rejection.label})`
+                : result.rejection.message,
+          });
+        }
+        continue;
+      }
       summary.eligible += 1;
       const { declaration } = result;
       const ip = view.networks.find((n) => n.name === declaration.network)?.ipAddress ?? null;
@@ -180,10 +203,11 @@ export async function scanServerDiscovery(
         networkId: declaration.networkId,
         ipAddress: ip ?? undefined,
         configHash: discoveryConfigHash(declaration),
+        running: view.running,
       };
-      const group = candidatesByKey.get(declaration.serviceKey);
-      if (group) group.push(candidate);
-      else candidatesByKey.set(declaration.serviceKey, [candidate]);
+      const group = candidatesByKey.get(declaration.serviceKey) ?? { running: [], stopped: [] };
+      (view.running ? group.running : group.stopped).push(candidate);
+      candidatesByKey.set(declaration.serviceKey, group);
     }
 
     /** Persist one candidate's observation. */
@@ -191,7 +215,7 @@ export async function scanServerDiscovery(
       serviceKey,
       containerId: d.view.containerId,
       containerName: d.view.name ?? null,
-      running: d.view.running,
+      running: d.running,
       hostname: d.hostname,
       port: d.port,
       networkName: d.network,
@@ -202,14 +226,20 @@ export async function scanServerDiscovery(
       composeService: d.view.labels["com.docker.compose.service"] ?? null,
     });
 
-    // Duplicate live identity: observe every candidate, then block ALL of them —
-    // a replica is never picked, and none of the group reconciles until the
-    // operator resolves the duplicate.
+    // Identity conflicts: only LIVE (running) candidates of one key block each
+    // other — observe every running candidate, then block ALL of them. A sole
+    // running candidate wins outright over same-key stopped containers, whose
+    // observation must never overwrite it (the running instance is the one the
+    // route targets). Stopped-only keys observe their single candidate.
     for (const [serviceKey, group] of candidatesByKey) {
-      if (group.length < 2) continue;
-      const containers = group.map((d) => `${d.view.name ?? d.view.containerId}`).join(", ");
-      const reason = `${group.length} running containers claim identity ${serviceKey} (${containers}); resolve the duplicate before any route is written`;
-      for (const d of group) {
+      const effective = group.running.length > 0 ? group.running : group.stopped;
+      if (effective.length < 2) continue;
+      const live = group.running.length > 1;
+      const containers = effective.map((d) => `${d.view.name ?? d.view.containerId}`).join(", ");
+      const reason = live
+        ? `${effective.length} running containers claim identity ${serviceKey} (${containers}); resolve the duplicate before any route is written`
+        : `${effective.length} stopped containers claim identity ${serviceKey} (${containers}); resolve the duplicate before either starts`;
+      for (const d of effective) {
         try {
           await repos.discovery.observe(serverId, observeCandidate(serviceKey, d));
         } catch (error) {
@@ -223,12 +253,19 @@ export async function scanServerDiscovery(
 
     // Observe unique identities; hostname ownership conflicts block instead of routing.
     for (const [serviceKey, group] of candidatesByKey) {
-      if (group.length !== 1) continue;
-      const d = group[0];
+      const effective = group.running.length > 0 ? group.running : group.stopped;
+      if (effective.length !== 1) continue;
+      const d = effective[0];
       try {
-        const { binding, desiredChanged } = await repos.discovery.observe(serverId, observeCandidate(serviceKey, d));
+        const { binding, desiredChanged, requeued } = await repos.discovery.observe(
+          serverId,
+          observeCandidate(serviceKey, d),
+        );
         summary.observed.push(binding.serviceKey);
-        if (desiredChanged) summary.desiredChanged.push(binding.serviceKey);
+        // Config changes AND runtime-target changes (replacement, IP, stop,
+        // start) both require an apply — an applied binding whose container IP
+        // changed must re-apply or it keeps routing to the old upstream.
+        if (desiredChanged || requeued) summary.desiredChanged.push(binding.serviceKey);
 
         const other = await repos.discovery.findConflictingDomainOwner(serverId, d.hostname);
         if (other) {
@@ -245,10 +282,15 @@ export async function scanServerDiscovery(
       }
     }
 
-    // Classify bindings not seen this scan. The distinction matters:
-    //  - container still present but no longer opts in → WITHDRAWN (forget; the
+    // Classify bindings not seen this scan. The distinctions matter:
+    //  - container present, declaration INVALID or now excluded → binding
+    //    PRESERVED and the validation error surfaced. An operator typo (say a
+    //    missing network) must never silently erase discovery state — only an
+    //    explicit opt-out withdraws;
+    //  - container present, cleanly not opted in → WITHDRAWN (forget; the
     //    reconciler retires discovery-owned routes; domain metadata retained);
-    //  - container absent from the host → MISSING (confirmed removal).
+    //  - container absent from the host → MISSING (confirmed removal);
+    //  - container unreadable this scan → UNCLASSIFIED (state kept).
     const existing = await repos.discovery.listByServer(serverId);
     const seenKeys = new Set(candidatesByKey.keys());
     for (const bindingRow of existing) {
@@ -257,8 +299,20 @@ export async function scanServerDiscovery(
       // "failed/incomplete inventory retains bindings and reports an error";
       // only a confirmed absence (or a readable opt-out) changes state.
       if (bindingRow.containerId != null && failedContainerIds.has(bindingRow.containerId)) continue;
+      // Invalid/excluded declarations preserve the binding and surface why.
+      const rejection =
+        bindingRow.containerId != null ? rejectionsByContainerId.get(bindingRow.containerId) : undefined;
+      if (rejection) {
+        summary.invalid.push({
+          serviceKey: bindingRow.serviceKey,
+          containerId: bindingRow.containerId!,
+          code: rejection.code,
+          message: rejection.message,
+        });
+        continue;
+      }
       // A container that scanned but did not produce THIS binding's key has
-      // either opted out or gone unparseable; its containerId tells us which.
+      // explicitly opted out; its containerId tells us it is still around.
       const containerStillPresent =
         bindingRow.containerId != null && presentContainerIds.has(bindingRow.containerId);
       try {

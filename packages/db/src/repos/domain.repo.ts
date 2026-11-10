@@ -139,6 +139,11 @@ export function createDomainRepo(db: Database) {
               eq(discoveryBinding.hostname, domain.hostname),
               eq(discoveryBinding.suppressed, false),
               eq(discoveryBinding.observationStatus, "observed"),
+              // STOPPED containers are ineligible for new orders even in the
+              // queue (docs: "Stopped... containers are ineligible for new
+              // ACME orders"). This is still the CACHED flag — the job's fresh
+              // re-inspection remains the final gate before any order opens.
+              eq(discoveryBinding.containerRunning, true),
             ),
           ),
       ),

@@ -107,9 +107,16 @@ export function createDiscoveryRepo(db: Database) {
     },
 
     /**
-     * Upsert one scanned container's observation. Returns the binding row and
-     * whether the desired state CHANGED (new binding or new config hash) — the
-     * reconciler reads that flag to decide between "nothing to do" and "apply".
+     * Upsert one scanned container's observation. Returns the binding row plus
+     * two flags the reconciler acts on:
+     *  - `desiredChanged`: the DECLARED config changed (hash differs) — bump
+     *    generation, reset retries, apply from scratch;
+     *  - `requeued`: the RUNTIME TARGET changed (container id, IP on the
+     *    selected network, or running→stopped/started→running) while config is
+     *    unchanged — the route must be re-applied (new upstream, or upstream
+     *    withdrawal on stop), so the binding returns to the pending queue.
+     * Both bump the desired generation: it versions "what an apply must
+     * converge to", and routes target the container/IP, not just the config.
      */
     async observe(serverId: string, observation: DiscoveryObservation) {
       return db.transaction(async (tx) => {
@@ -145,9 +152,15 @@ export function createDiscoveryRepo(db: Database) {
               ...desired,
             })
             .returning();
-          return { binding: row!, desiredChanged: true };
+          return { binding: row!, desiredChanged: true, requeued: false };
         }
         const desiredChanged = existing.configHash !== observation.configHash;
+        const requeued =
+          !desiredChanged &&
+          existing.applyState !== "blocked" &&
+          (existing.containerId !== observation.containerId ||
+            existing.ipAddress !== (observation.ipAddress ?? null) ||
+            existing.containerRunning !== observation.running);
         const [row] = await tx
           .update(binding)
           .set({
@@ -162,9 +175,9 @@ export function createDiscoveryRepo(db: Database) {
             // A blocked binding (identity conflict, other owner's hostname)
             // stays blocked through observation updates — only the reconciler's
             // explicit unblock (conflict resolved) returns it to pending.
-            ...(desiredChanged && existing.applyState !== "blocked"
+            ...(existing.applyState !== "blocked" && (desiredChanged || requeued)
               ? {
-                  ...desired,
+                  ...(desiredChanged ? desired : {}),
                   desiredGeneration: existing.desiredGeneration + 1,
                   applyState: "pending" as const,
                   applyError: null,
@@ -178,7 +191,7 @@ export function createDiscoveryRepo(db: Database) {
           })
           .where(eq(binding.id, existing.id))
           .returning();
-        return { binding: row!, desiredChanged };
+        return { binding: row!, desiredChanged, requeued };
       });
     },
 
