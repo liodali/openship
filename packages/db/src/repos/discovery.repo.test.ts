@@ -229,6 +229,77 @@ describe("binding observations", () => {
     expect(stable?.desiredGeneration).toBe(generation);
     expect(stable?.observationStatus).toBe("missing");
   });
+
+  it("schedules withdrawal for a BLOCKED binding with a previously applied route (P1: applied → blocked → missing)", async () => {
+    await repo.observe(SERVER, observation());
+    await repo.markApplied(SERVER, "id:my-app", 1); // route is live
+    await repo.block(SERVER, "id:my-app", "hostname owned elsewhere");
+    expect(await repo.dueForApply(SERVER)).toHaveLength(0); // forward applies blocked
+
+    // Container removed while blocked: the LIVE route must still be retired.
+    await repo.markMissing(SERVER, "id:my-app");
+    const row = await repo.getBinding(SERVER, "id:my-app");
+    expect(row?.applyState).toBe("blocked"); // block survives — no forward apply
+    expect(row?.withdrawalPending).toBe(true); // retirement scheduled
+    expect(row?.observationStatus).toBe("missing");
+
+    // Retirement is consumable independently of the apply queue...
+    expect((await repo.dueForWithdrawal(SERVER)).map((r) => r.serviceKey)).toEqual(["id:my-app"]);
+    await repo.markWithdrawn(SERVER, "id:my-app");
+    expect(await repo.dueForWithdrawal(SERVER)).toHaveLength(0);
+    expect((await repo.getBinding(SERVER, "id:my-app"))?.applyState).toBe("blocked");
+  });
+
+  it("schedules withdrawal for a SUPPRESSED binding with a previously applied route", async () => {
+    await repo.observe(SERVER, observation());
+    await repo.markApplied(SERVER, "id:my-app", 1);
+    await repo.suppress(SERVER, "id:my-app");
+    await repo.markMissing(SERVER, "id:my-app");
+    expect((await repo.dueForWithdrawal(SERVER)).map((r) => r.serviceKey)).toEqual(["id:my-app"]);
+  });
+
+  it("does not schedule withdrawal for bindings that never had a route", async () => {
+    await repo.observe(SERVER, observation()); // pending, appliedGeneration 0
+    await repo.markMissing(SERVER, "id:my-app");
+    const row = await repo.getBinding(SERVER, "id:my-app");
+    expect(row?.withdrawalPending).toBe(false); // nothing to retire
+    expect(row?.applyState).toBe("pending"); // normal requeue still applies
+  });
+
+  it("markInvalid invalidates the old observation, keeps metadata, and queues withdrawal (P1: invalid replacement)", async () => {
+    await repo.observe(SERVER, observation());
+    await repo.markApplied(SERVER, "id:my-app", 1);
+
+    await repo.markInvalid(SERVER, "id:my-app");
+    const row = await repo.getBinding(SERVER, "id:my-app");
+    // Old observation invalidated — no stale IP/running flag survives.
+    expect(row?.observationStatus).toBe("invalid");
+    expect(row?.containerId).toBeNull();
+    expect(row?.containerName).toBeNull();
+    expect(row?.ipAddress).toBeNull();
+    expect(row?.containerRunning).toBe(false);
+    // Binding/certificate metadata retained.
+    expect(row?.hostname).toBe("app.example.com");
+    expect(row?.port).toBe(3000);
+    expect(row?.configHash).toBeTruthy();
+    // Upstream withdrawal queued.
+    expect(row?.applyState).toBe("pending");
+    expect(row?.desiredGeneration).toBe(2);
+    expect((await repo.dueForApply(SERVER)).map((r) => r.serviceKey)).toEqual(["id:my-app"]);
+
+    // Idempotent: re-invalidating does not re-bump.
+    await repo.markInvalid(SERVER, "id:my-app");
+    expect((await repo.getBinding(SERVER, "id:my-app"))?.desiredGeneration).toBe(2);
+  });
+
+  it("markInvalid schedules withdrawal for a blocked binding with a prior route", async () => {
+    await repo.observe(SERVER, observation());
+    await repo.markApplied(SERVER, "id:my-app", 1);
+    await repo.block(SERVER, "id:my-app", "duplicate hostname");
+    await repo.markInvalid(SERVER, "id:my-app");
+    expect((await repo.getBinding(SERVER, "id:my-app"))?.applyState).toBe("blocked");
+    expect((await repo.dueForWithdrawal(SERVER)).map((r) => r.serviceKey)).toEqual(["id:my-app"]);
+  });
 });
 
 describe("apply scheduling", () => {

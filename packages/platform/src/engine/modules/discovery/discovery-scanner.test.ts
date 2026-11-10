@@ -16,12 +16,13 @@ type BindingRow = {
   port: number;
   networkName: string;
   configHash: string;
-  observationStatus: "observed" | "missing" | "error";
+  observationStatus: "observed" | "missing" | "error" | "invalid";
   applyState: "pending" | "applied" | "error" | "blocked";
   applyError: string | null;
   desiredGeneration: number;
   appliedGeneration: number;
   suppressed: boolean;
+  withdrawalPending: boolean;
 };
 
 const SERVER = "srv_scan";
@@ -37,6 +38,30 @@ function resetDb(enabled: boolean) {
   state.bindings.clear();
   state.domains = [];
   state.scans = [];
+}
+
+/** Mirror the repo's invalidateObservation: clear the stale observation,
+ *  retain metadata, schedule withdrawal independently of blocked/suppressed,
+ *  and requeue non-blocked bindings. Idempotent per target state. */
+async function invalidate(_serverId: string, serviceKey: string, target: "missing" | "invalid") {
+  const row = state.bindings.get(serviceKey);
+  if (!row) return undefined;
+  const newlyTarget = row.observationStatus !== target;
+  const hasAppliedRoute = row.applyState === "applied" || row.appliedGeneration > 0;
+  const requeue = newlyTarget && row.applyState !== "blocked" && !row.suppressed;
+  const updated: BindingRow = {
+    ...row,
+    observationStatus: target,
+    containerId: null,
+    containerName: null,
+    running: false,
+    ...(newlyTarget && hasAppliedRoute ? { withdrawalPending: true } : {}),
+    ...(requeue
+      ? { desiredGeneration: row.desiredGeneration + 1, applyState: "pending" as const, applyError: null }
+      : {}),
+  };
+  state.bindings.set(serviceKey, updated);
+  return updated;
 }
 
 const discoveryRepo = {
@@ -76,6 +101,7 @@ const discoveryRepo = {
           desiredGeneration: 1,
           appliedGeneration: 0,
           suppressed: false,
+          withdrawalPending: false,
         };
         state.bindings.set(obs.serviceKey, row);
         return { binding: row, desiredChanged: true, requeued: false };
@@ -121,23 +147,18 @@ const discoveryRepo = {
     }
   }),
   listByServer: vi.fn(async () => [...state.bindings.values()]),
-  markMissing: vi.fn(async (_serverId: string, serviceKey: string) => {
+  markMissing: vi.fn(async (_serverId: string, serviceKey: string) =>
+    invalidate(_serverId, serviceKey, "missing"),
+  ),
+  markInvalid: vi.fn(async (_serverId: string, serviceKey: string) =>
+    invalidate(_serverId, serviceKey, "invalid"),
+  ),
+  dueForWithdrawal: vi.fn(async (_serverId: string) =>
+    [...state.bindings.values()].filter((r) => r.withdrawalPending),
+  ),
+  markWithdrawn: vi.fn(async (_serverId: string, serviceKey: string) => {
     const row = state.bindings.get(serviceKey);
-    if (!row) return undefined;
-    // Mirror the repo: removal is a reconcile task — a previously applied
-    // binding requeues for route withdrawal; idempotent once already missing.
-    const newlyMissing = row.observationStatus !== "missing";
-    const requeue = newlyMissing && row.applyState !== "blocked" && !row.suppressed;
-    state.bindings.set(serviceKey, {
-      ...row,
-      observationStatus: "missing",
-      containerId: null,
-      containerName: null,
-      running: false,
-      ...(requeue
-        ? { desiredGeneration: row.desiredGeneration + 1, applyState: "pending" as const, applyError: null }
-        : {}),
-    });
+    if (row) state.bindings.set(serviceKey, { ...row, withdrawalPending: false });
     return row;
   }),
   forget: vi.fn(async (_serverId: string, serviceKey: string) => {
@@ -371,7 +392,14 @@ describe("discovery scanner", () => {
     });
     const binding = state.bindings.get("id:my-app");
     expect(binding).toBeDefined();
-    expect(binding?.hostname).toBe("app.example.com"); // state intact
+    expect(binding?.hostname).toBe("app.example.com"); // metadata intact
+    // The removed container's stale observation is INVALIDATED and the applied
+    // route queued for withdrawal — the old IP must not survive the rescan.
+    expect(binding?.observationStatus).toBe("invalid");
+    expect(binding?.containerId).toBeNull();
+    expect(binding?.running).toBe(false);
+    expect(binding?.applyState).toBe("pending");
+    expect(binding?.desiredGeneration).toBe(2);
 
     // Fixing the config resumes normal observation under the new id.
     const fixed = view({ containerId: "ctr_NEW", name: "my-app-recreated" });
@@ -405,6 +433,27 @@ describe("discovery scanner", () => {
     const second = await scanServerDiscovery(SERVER, "org_1", { runtime: runtime([noIdentity]) });
     expect(second.invalid).toHaveLength(1);
     expect(second.invalid[0]).toMatchObject({ serviceKey: null, containerId: "ctr_none", code: "identity-required" });
+  });
+
+  it("retires a blocked binding's live route when its container is removed", async () => {
+    // Route applied, then the hostname becomes conflicted (blocked), then the
+    // container is removed. Blocking forbids FORWARD applies — it must not
+    // strand the already-applied route.
+    await scanServerDiscovery(SERVER, "org_1", { runtime: runtime([view()]) });
+    const applied = state.bindings.get("id:my-app")!;
+    state.bindings.set("id:my-app", { ...applied, applyState: "applied", appliedGeneration: 1 });
+    state.domains = [{ id: "dom_manual", hostname: "app.example.com", ownerType: "project", serverId: null }];
+    await scanServerDiscovery(SERVER, "org_1", { runtime: runtime([view()]) });
+    expect(state.bindings.get("id:my-app")?.applyState).toBe("blocked");
+
+    await scanServerDiscovery(SERVER, "org_1", { runtime: runtime([]) });
+    const binding = state.bindings.get("id:my-app")!;
+    expect(binding.applyState).toBe("blocked"); // forward-apply policy intact
+    expect(binding.observationStatus).toBe("missing");
+    expect(binding.withdrawalPending).toBe(true); // retirement scheduled
+    expect((await discoveryRepo.dueForWithdrawal(SERVER)).map((r) => r.serviceKey)).toEqual(["id:my-app"]);
+    await discoveryRepo.markWithdrawn(SERVER, "id:my-app");
+    expect(await discoveryRepo.dueForWithdrawal(SERVER)).toHaveLength(0);
   });
 
   it("withdraws (forgets) an opted-out container that is still present", async () => {
@@ -443,7 +492,18 @@ describe("discovery scanner", () => {
     });
     const binding = state.bindings.get("id:my-app");
     expect(binding).toBeDefined();
-    expect(binding?.hostname).toBe("app.example.com"); // state intact
+    // Binding/certificate metadata intact...
+    expect(binding?.hostname).toBe("app.example.com");
+    expect(binding?.port).toBe(3000);
+    expect(binding?.configHash).toBeTruthy();
+    // ...but the OLD observation is invalidated and the upstream queued for
+    // withdrawal: the declared container no longer parses, so its recorded
+    // IP/running state is stale and must not survive the rescan.
+    expect(binding?.observationStatus).toBe("invalid");
+    expect(binding?.containerId).toBeNull();
+    expect(binding?.running).toBe(false);
+    expect(binding?.applyState).toBe("pending");
+    expect(binding?.desiredGeneration).toBe(2);
 
     // Once fixed, the binding observes normally again.
     const fixed = await scanServerDiscovery(SERVER, "org_1", { runtime: runtime([view({ containerId: "ctr_a", env: [...view().env, "OPENSHIP_NETWORK=frontend"] })]) });
