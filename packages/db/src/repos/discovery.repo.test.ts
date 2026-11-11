@@ -619,6 +619,34 @@ describe("server-scoped issuance eligibility (liveVerificationOwner extension)",
     expect((await repo.findDomainForBinding(SERVER, "app.example.com"))?.lastVerifyError).toBe("deferred: backend stopped");
   });
 
+  it("findExpiringSsl orders by least-recently-checked with a stable id tie-breaker", async () => {
+    // The rotation guarantee behind deferred defers: lastCheckedAt (creation
+    // fallback) ascending, id as the tie-breaker. Without the ORDER BY the
+    // planner's arbitrary order gets truncated into the renewal batch.
+    const base = {
+      sslStatus: "active",
+      sslExpiresAt: new Date(Date.now() + 86_400_000),
+      domainType: "custom",
+      verified: true,
+    };
+    await db.insert(schema.domain).values([
+      { id: "d_new", projectId: null, hostname: "new.test", lastCheckedAt: new Date(Date.now() - 86_400_000), ...base },
+      { id: "d_old", projectId: null, hostname: "old.test", lastCheckedAt: new Date(Date.now() - 10 * 86_400_000), ...base },
+      { id: "d_mid", projectId: null, hostname: "mid.test", lastCheckedAt: new Date(Date.now() - 5 * 86_400_000), ...base },
+      // Never checked: falls back to creation time — oldest of all.
+      { id: "d_never", projectId: null, hostname: "never.test", createdAt: new Date(Date.now() - 30 * 86_400_000), ...base },
+      { id: "d_tie_b", projectId: null, hostname: "tie-b.test", lastCheckedAt: new Date(Date.now() - 7 * 86_400_000), ...base },
+      { id: "d_tie_a", projectId: null, hostname: "tie-a.test", lastCheckedAt: new Date(Date.now() - 7 * 86_400_000), ...base },
+    ]);
+    const order = (await domainRepo.findExpiringSsl(new Date(Date.now() + 7 * 86_400_000))).map((r) => r.id);
+    expect(order).toEqual(["d_never", "d_old", "d_tie_a", "d_tie_b", "d_mid", "d_new"]);
+
+    // Deferring d_old rotates it BEHIND d_mid — the queue advances.
+    await domainRepo.recordSslDeferred("d_old", "backend stopped");
+    const rotated = (await domainRepo.findExpiringSsl(new Date(Date.now() + 7 * 86_400_000))).map((r) => r.id);
+    expect(rotated.indexOf("d_old")).toBeGreaterThan(rotated.indexOf("d_mid"));
+  });
+
   it("scopes server domains by organization through the server row", async () => {
     await seedServerDomain({ organizationId: "org_1" });
     // Org scoping matters on the issuance queue (findPendingSsl, verified rows);
