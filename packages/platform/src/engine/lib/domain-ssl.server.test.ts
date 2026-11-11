@@ -32,6 +32,7 @@ const state = {
   markedVerified: 0,
   sslPatches: [] as Array<Record<string, unknown>>,
   failures: [] as string[],
+  discoveryEnabled: true,
 };
 
 const provisionCert = vi.fn(async () => ({
@@ -65,6 +66,7 @@ vi.mock("@repo/db", () => ({
     },
     discovery: {
       getBindingForDomain: vi.fn(async () => state.binding),
+      getSettings: vi.fn(async () => state.discoveryEnabled ? { enabled: true } : { enabled: false }),
     },
   },
 }));
@@ -105,6 +107,7 @@ const { manageDomainSsl, DiscoveryBackendUnavailableError } = await import("./do
 
 beforeEach(() => {
   vi.clearAllMocks();
+  state.discoveryEnabled = true;
   provisionCert.mockClear();
   state.markedVerified = 0;
   state.sslPatches = [];
@@ -174,6 +177,24 @@ describe("server-scoped domain TLS (ownerType='server')", () => {
       manageDomainSsl("app.example.com", { action: "provision", allowUnverified: true, serverId: "srv_tls" }),
     ).rejects.toThrow(DiscoveryBackendUnavailableError);
     expect(provisionCert).not.toHaveBeenCalled();
+  });
+
+  it("defers when discovery is disabled on the server, even with a running container", async () => {
+    state.discoveryEnabled = false;
+    await expect(
+      manageDomainSsl("app.example.com", { action: "provision", allowUnverified: true, serverId: "srv_tls" }),
+    ).rejects.toThrow(DiscoveryBackendUnavailableError);
+    expect(provisionCert).not.toHaveBeenCalled();
+    expect(state.failures).toEqual([]);
+  });
+
+  it("gates the renew action too — a stopped container defers the order", async () => {
+    state.binding = { ...state.binding!, containerRunning: false };
+    await expect(
+      manageDomainSsl("app.example.com", { action: "renew", allowUnverified: true, serverId: "srv_tls" }),
+    ).rejects.toThrow(DiscoveryBackendUnavailableError);
+    expect(provisionCert).not.toHaveBeenCalled();
+    expect(state.failures).toEqual([]);
   });
 
   it("reuses a comfortably valid certificate without opening an order", async () => {

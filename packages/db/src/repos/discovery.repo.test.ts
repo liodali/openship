@@ -560,6 +560,33 @@ describe("server-scoped issuance eligibility (liveVerificationOwner extension)",
     ).not.toContain("app.example.com");
   });
 
+  it("retries a FAILED first issuance via findPendingServerIssuance (no stranding)", async () => {
+    await seedServerDomain();
+    // First issuance failed: row unverified, sslStatus error, verify attempts
+    // recorded. It sits in none of the project queues (by design) — this queue
+    // is what keeps it retrying.
+    await db
+      .update(schema.domain)
+      .set({ sslStatus: "error", verifyAttempts: 1, lastVerifyError: "DNS not pointed yet" })
+      .where(eq(schema.domain.id, "dom_server_scope"));
+    const retried = await domainRepo.findPendingServerIssuance();
+    expect(retried.map((r) => r.hostname)).toContain("app.example.com");
+
+    // A stopped container pauses the retry (eligibility predicate).
+    await db.update(schema.discoveryBinding).set({ containerRunning: false }).where(eq(schema.discoveryBinding.serverId, SERVER));
+    expect((await domainRepo.findPendingServerIssuance()).map((r) => r.hostname)).not.toContain("app.example.com");
+    await db.update(schema.discoveryBinding).set({ containerRunning: true }).where(eq(schema.discoveryBinding.serverId, SERVER));
+
+    // Disabled discovery pauses it too.
+    await repo.configure(SERVER, { enabled: false });
+    expect((await domainRepo.findPendingServerIssuance()).map((r) => r.hostname)).not.toContain("app.example.com");
+    await repo.configure(SERVER, { enabled: true });
+
+    // Suppressed bindings are out.
+    await repo.suppress(SERVER, "id:my-app");
+    expect((await domainRepo.findPendingServerIssuance()).map((r) => r.hostname)).not.toContain("app.example.com");
+  });
+
   it("scopes server domains by organization through the server row", async () => {
     await seedServerDomain({ organizationId: "org_1" });
     // Org scoping matters on the issuance queue (findPendingSsl, verified rows);
