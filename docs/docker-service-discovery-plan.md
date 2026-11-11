@@ -82,8 +82,10 @@ Docker/Podman compatibility work below is required before declaring runtime supp
   certificate reconciliation after start/replacement (reuse comfortably valid;
   issue missing/due; defer on stop). findPendingVerification excludes server
   domains (TXT would fail by design). Issuance retry: findPendingServerIssuance
-  picks up failed first issuances (unverified, no expiry — invisible to the
-  other queues) into the renewal batch with allowUnverified; every ACME order
+  finds up failed first issuances (unverified, no expiry — invisible to the
+  other queues) into the renewal batch with allowUnverified (round-robin
+  fair-merged with the expiring queue so a full expiring batch cannot starve
+  retries; cross-queue duplicates dedupe); every ACME order
   path (provision AND renew) runs the fresh-container + discovery-enabled gate
   INSIDE the per-box ACME lock, immediately before the order. STILL NOT DONE:
   Edge-context
