@@ -81,7 +81,12 @@ Docker/Podman compatibility work below is required before declaring runtime supp
   server/binding context). Reconciler: ensureServerDomain on apply + immediate
   certificate reconciliation after start/replacement (reuse comfortably valid;
   issue missing/due; defer on stop). findPendingVerification excludes server
-  domains (TXT would fail by design). STILL NOT DONE: Edge-context
+  domains (TXT would fail by design). Issuance retry: findPendingServerIssuance
+  picks up failed first issuances (unverified, no expiry — invisible to the
+  other queues) into the renewal batch with allowUnverified; every ACME order
+  path (provision AND renew) runs the fresh-container + discovery-enabled gate
+  INSIDE the per-box ACME lock, immediately before the order. STILL NOT DONE:
+  Edge-context
   reachability probe before activation; unavailable-vhost retention with TLS
   detail (removed routes drop the vhost today); route-file repair from
   server-domain records; watcher/sweep wiring (step 5); API/UI (steps 3/6);
