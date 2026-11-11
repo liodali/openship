@@ -4,6 +4,7 @@ import { AppError } from "@repo/core";
 const h = vi.hoisted(() => ({
   cloud: false,
   domains: vi.fn(),
+  serverIssuance: vi.fn(),
   list: vi.fn(),
   renewMail: vi.fn(),
   manage: vi.fn(),
@@ -13,9 +14,15 @@ const h = vi.hoisted(() => ({
 }));
 vi.mock("@repo/db", () => ({
   repos: {
-    domain: { findExpiringSsl: h.domains, findByHostname: async () => ({ id: "dom-mail" }) },
+    domain: {
+      findExpiringSsl: h.domains,
+      findPendingServerIssuance: h.serverIssuance,
+      findByHostname: async () => ({ id: "dom-mail" }),
+    },
     mailServer: { list: h.list },
     project: { findById: h.project },
+    server: { get: vi.fn(async () => null) },
+    discovery: { getBindingForDomain: vi.fn(async () => null) },
   },
 }));
 vi.mock("@repo/platform/engine/modules/billing/management.service", () => ({
@@ -33,6 +40,7 @@ vi.mock("@repo/platform/engine/lib/domain-ssl", () => ({
   manageDomainSsl: h.manage,
   tlsIssuedElsewhere: () => null,
   resolveMailOwner: async () => ({ organizationId: "org-1", serverId: "srv-mail" }),
+  DiscoveryBackendUnavailableError: AppError,
 }));
 vi.mock("@repo/platform/engine/modules/mail/mail-certificate.service", () => ({
   renewMailCertificate: h.renewMail,
@@ -53,6 +61,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   h.cloud = false;
   h.domains.mockResolvedValue([]);
+  h.serverIssuance.mockResolvedValue([]);
   h.list.mockResolvedValue([mail()]);
   h.renewMail.mockResolvedValue({});
   h.manage.mockResolvedValue({ verified: true });
@@ -61,6 +70,63 @@ beforeEach(() => {
 });
 
 describe("shared mail certificate scheduler", () => {
+  it("fair-merges server issuance retries into the batch — a full expiring queue cannot starve them", async () => {
+    const expiring = Array.from({ length: 50 }, (_, i) => ({
+      id: `dom_${i}`,
+      hostname: `d${i}.example.com`,
+      ownerType: "project",
+      projectId: "proj_1",
+      sslExpiresAt: new Date(Date.now() + 86_400_000),
+      sslDnsMode: "automatic",
+      verified: true,
+      status: "active",
+      serverId: "srv-1",
+    }));
+    h.list.mockResolvedValue([]); // isolate the domain queues from the mail candidate
+    h.domains.mockResolvedValue(expiring);
+    h.serverIssuance.mockResolvedValue([
+      {
+        id: "dom_srv_retry",
+        hostname: "svc.example.com",
+        ownerType: "server",
+        serverId: "srv-discovery",
+        projectId: null,
+        sslStatus: "error",
+        sslExpiresAt: null,
+        sslDnsMode: "automatic",
+        verified: false,
+        status: "failed",
+      },
+    ]);
+    const result = await renewExpiringCerts();
+    const manageHostnames = h.manage.mock.calls.map((c) => c[0]);
+    // Appending retries after a full 50-item expiring list and truncating would
+    // drop them entirely; round-robin interleaving puts them in the batch.
+    expect(manageHostnames).toContain("svc.example.com");
+    expect(manageHostnames.indexOf("svc.example.com")).toBeLessThan(50);
+    expect(result.total).toBe(51);
+  });
+
+  it("deduplicates a server domain that appears in both queues", async () => {
+    const row = {
+      id: "dom_srv",
+      hostname: "both.example.com",
+      ownerType: "server",
+      serverId: "srv-discovery",
+      projectId: null,
+      sslExpiresAt: new Date(Date.now() + 86_400_000),
+      sslDnsMode: "automatic",
+      verified: true,
+      status: "active",
+    };
+    h.list.mockResolvedValue([]); // isolate the domain queues from the mail candidate
+    h.domains.mockResolvedValue([row]);
+    h.serverIssuance.mockResolvedValue([row]);
+    const result = await renewExpiringCerts();
+    expect(result.total).toBe(1);
+    expect(h.manage.mock.calls.filter((c) => c[0] === "both.example.com")).toHaveLength(1);
+  });
+
   it("repairs legacy mail installs without a domain row", async () => {
     expect(await renewExpiringCerts()).toMatchObject({ renewed: 1 });
     expect(h.renewMail).toHaveBeenCalledWith("srv-mail", true);
