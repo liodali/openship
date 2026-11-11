@@ -176,6 +176,44 @@ describe("DockerEdgeExecutor — exec timeout enforcement", () => {
     await expect(ex.exec("echo done", { timeout: 2000 })).resolves.toBe("");
   });
 
+  it("bounds edge-down DIAGNOSTICS by the remaining deadline — a 409 followed by a stalled inspection falls back to the original error", async () => {
+    // The daemon refuses the exec with a 409 (edge-down signature), and the
+    // diagnostic inspection (explainDown → container.inspect) then HANGS.
+    // Without the bound the call stays pending far past the caller's timeout.
+    const hang = (): Promise<never> => new Promise(() => {});
+    const failingDocker = {
+      getContainer: () => ({
+        exec: async () => {
+          throw new Error("(HTTP code 409) unexpected — edge container missing");
+        },
+        inspect: hang, // explainDown's diagnostic hangs forever
+        logs: hang,
+      }),
+      modem: { demuxStream: (s: PassThrough) => s.resume() },
+    };
+    const ex = new DockerEdgeExecutor({ containerName: "openship-edge", docker: failingDocker as never });
+    const started = Date.now();
+    await expect(ex.exec("echo hi", { timeout: 50 })).rejects.toThrow(/409/);
+    expect(Date.now() - started).toBeLessThan(250); // the reviewer's repro bound
+  });
+
+  it("still delivers edge-down diagnostics when they complete within the deadline", async () => {
+    // Diagnostic inspection resolves in time: the enriched explanation wins,
+    // not the fallback.
+    const docker = {
+      getContainer: () => ({
+        exec: async () => {
+          throw new Error("(HTTP code 409) unexpected");
+        },
+        inspect: async () => ({ State: { Status: "restarting" } }),
+        logs: async () => Buffer.from("nginx: [emerg] host not found in upstream"),
+      }),
+      modem: { demuxStream: (s: PassThrough) => s.resume() },
+    };
+    const ex = new DockerEdgeExecutor({ containerName: "openship-edge", docker: docker as never });
+    await expect(ex.exec("echo hi", { timeout: 500 })).rejects.toThrow(/restarting/);
+  });
+
   it("stays unbounded without a timeout (certbot runs long)", async () => {
     // The output stream ends late; without a deadline the wait survives past
     // any implicit bound and completes through the exit poll.
