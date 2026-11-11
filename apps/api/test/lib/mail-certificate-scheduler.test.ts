@@ -1,6 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppError } from "@repo/core";
 
+/** The scheduler checks instanceof against the class exported by the (mocked)
+ *  domain-ssl module — which is this AppError alias. */
+class DiscoveryBackendUnavailableError extends AppError {
+  constructor(message: string) {
+    super(message, 409, "DISCOVERY_BACKEND_UNAVAILABLE");
+  }
+}
+
 const h = vi.hoisted(() => ({
   cloud: false,
   domains: vi.fn(),
@@ -11,6 +19,7 @@ const h = vi.hoisted(() => ({
   notify: vi.fn(),
   project: vi.fn(),
   access: vi.fn(),
+  defer: vi.fn(),
 }));
 vi.mock("@repo/db", () => ({
   repos: {
@@ -18,6 +27,7 @@ vi.mock("@repo/db", () => ({
       findExpiringSsl: h.domains,
       findPendingServerIssuance: h.serverIssuance,
       findByHostname: async () => ({ id: "dom-mail" }),
+      recordSslDeferred: h.defer,
     },
     mailServer: { list: h.list },
     project: { findById: h.project },
@@ -67,6 +77,7 @@ beforeEach(() => {
   h.manage.mockResolvedValue({ verified: true });
   h.project.mockResolvedValue({ organizationId: "org-1", name: "Project" });
   h.access.mockResolvedValue(undefined);
+  h.defer.mockResolvedValue(undefined);
 });
 
 describe("shared mail certificate scheduler", () => {
@@ -105,6 +116,75 @@ describe("shared mail certificate scheduler", () => {
     expect(manageHostnames).toContain("svc.example.com");
     expect(manageHostnames.indexOf("svc.example.com")).toBeLessThan(50);
     expect(result.total).toBe(51);
+  });
+
+  it("deferred entries rotate back — 50 stopped domains cannot starve the 51st running one", async () => {
+    // findExpiringSsl sorts by coalesce(lastCheckedAt, createdAt) ASC. The 50
+    // stopped domains carry OLD check times; the running one was checked
+    // recently — it sits AFTER them, outside a 50-item batch.
+    const now = Date.now();
+    const stopped = Array.from({ length: 50 }, (_, i) => ({
+      id: `dom_stopped_${i}`,
+      hostname: `stopped${i}.example.com`,
+      ownerType: "server",
+      serverId: "srv-discovery",
+      projectId: null,
+      sslExpiresAt: new Date(now + 86_400_000),
+      sslDnsMode: "automatic",
+      verified: true,
+      status: "active",
+      lastCheckedAt: new Date(now - 10 * 86_400_000),
+    }));
+    const running = {
+      id: "dom_running",
+      hostname: "running.example.com",
+      ownerType: "server",
+      serverId: "srv-discovery",
+      projectId: null,
+      sslExpiresAt: new Date(now + 86_400_000),
+      sslDnsMode: "automatic",
+      verified: true,
+      status: "active",
+      lastCheckedAt: new Date(now - 86_400_000),
+    };
+    h.list.mockResolvedValue([]);
+    h.domains.mockResolvedValue([...stopped, running]);
+    // Simulate the real gate: stopped backends defer (DiscoveryBackendUnavailableError),
+    // the running one renews.
+    h.manage.mockImplementation(async (hostname: string) => {
+      if (String(hostname).startsWith("stopped")) {
+        throw new DiscoveryBackendUnavailableError("backend stopped");
+      }
+      return { verified: true };
+    });
+
+    // Sweep 1: the batch is exactly the 50 stopped domains; the running domain
+    // is NOT attempted. Each defer ADVANCES the entry (recordSslDeferred).
+    await renewExpiringCerts();
+    let attempted = h.manage.mock.calls.map((c) => c[0]);
+    expect(attempted).toContain("stopped0.example.com");
+    expect(attempted).not.toContain("running.example.com");
+    expect(h.defer).toHaveBeenCalledTimes(50);
+
+    // Simulate the repo effect of those defers: lastCheckedAt = now, which
+    // moves the stopped entries BEHIND the running one in the sort order.
+    const deferredIds = new Set(h.defer.mock.calls.map((c) => c[0]));
+    h.domains.mockResolvedValue(
+      [...stopped, running].sort(
+        (a, b) =>
+          (deferredIds.has(a.id) ? now : (a.lastCheckedAt as Date).getTime()) -
+          (deferredIds.has(b.id) ? now : (b.lastCheckedAt as Date).getTime()),
+      ),
+    );
+
+    // Sweep 2: the running domain gets service FIRST — the deferred entries
+    // rotated behind it (their advanced lastCheckedAt sorts them last), and the
+    // remaining slot count no longer hides it.
+    h.manage.mockClear();
+    await renewExpiringCerts();
+    attempted = h.manage.mock.calls.map((c) => c[0]);
+    expect(attempted).toContain("running.example.com");
+    expect(attempted[0]).toBe("running.example.com");
   });
 
   it("deduplicates a server domain that appears in both queues", async () => {

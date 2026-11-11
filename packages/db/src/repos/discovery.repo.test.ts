@@ -587,6 +587,38 @@ describe("server-scoped issuance eligibility (liveVerificationOwner extension)",
     expect((await domainRepo.findPendingServerIssuance()).map((r) => r.hostname)).not.toContain("app.example.com");
   });
 
+  it("recordSslDeferred advances scheduling state without recording a failure", async () => {
+    await seedServerDomain();
+    // Simulate an issued certificate that now defers on a stopped backend:
+    // real material state must be retained, only scheduling state advances.
+    await db
+      .update(schema.domain)
+      .set({
+        verified: true,
+        status: "active",
+        sslStatus: "active",
+        sslExpiresAt: new Date(Date.now() + 30 * 86_400_000),
+        lastVerifyError: "real prior error kept",
+        verifyAttempts: 3,
+      })
+      .where(eq(schema.domain.id, "dom_server_scope"));
+
+    await domainRepo.recordSslDeferred("dom_server_scope", "backend stopped");
+    const row = await repo.findDomainForBinding(SERVER, "app.example.com");
+    expect(row?.verifyAttempts).toBe(4); // backoff state advanced
+    expect(row?.lastCheckedAt).toBeTruthy(); // sort key rotated
+    // Deliberate stop ≠ failure: cert state and the real error message kept.
+    expect(row?.sslStatus).toBe("active");
+    expect(row?.sslExpiresAt).toBeTruthy();
+    expect(row?.status).toBe("active");
+    expect(row?.lastVerifyError).toBe("real prior error kept");
+
+    // With no prior error, the defer reason becomes visible for the UI.
+    await db.update(schema.domain).set({ lastVerifyError: null }).where(eq(schema.domain.id, "dom_server_scope"));
+    await domainRepo.recordSslDeferred("dom_server_scope", "deferred: backend stopped");
+    expect((await repo.findDomainForBinding(SERVER, "app.example.com"))?.lastVerifyError).toBe("deferred: backend stopped");
+  });
+
   it("scopes server domains by organization through the server row", async () => {
     await seedServerDomain({ organizationId: "org_1" });
     // Org scoping matters on the issuance queue (findPendingSsl, verified rows);
