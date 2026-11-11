@@ -895,6 +895,28 @@ export function createDomainRepo(db: Database) {
     /** An unavailable observation preserves all certificate/DNS states. A failed
      * operation preserves a working certificate; a proven invalid/missing
      * certificate replaces it. All three share atomic retry bookkeeping. */
+    /**
+     * Advance a DEFERRED SSL check (discovery gate: backend stopped, discovery
+     * disabled, engine unreadable — never a failure). Touches only the
+     * scheduling state: `verifyAttempts`/`lastCheckedAt` feed the shared backoff
+     * and are the sort key of every pending/expiring queue, so a deferred entry
+     * rotates to the BACK instead of pinning the queue head and starving later
+     * renewals (two sweeps of 50 stopped domains must not hide the 51st running
+     * one). Certificate material, sslStatus, expiry and the real error message
+     * are retained untouched — a deliberate stop is not a failure.
+     */
+    async recordSslDeferred(id: string, reason: string) {
+      await db
+        .update(domain)
+        .set({
+          verifyAttempts: sql`${domain.verifyAttempts} + 1`,
+          lastCheckedAt: new Date(),
+          lastVerifyError: sql`coalesce(${domain.lastVerifyError}, ${reason})`,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(domain.id, id), ne(domain.status, "removing")));
+    },
+
     async recordSslFailure(id: string, error: string, kind: "operation" | "unknown" | "invalid" = "operation") {
       await withProjectConfigurationWrite(db, ownerPredicate(id), async (tx) => tx
         .update(domain)

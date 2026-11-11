@@ -218,8 +218,17 @@ export async function renewExpiringCerts(): Promise<RenewalResult> {
     } catch (err) {
       // A deliberate stop defers the order — it is not a renewal failure: the
       // certificate, its expiry and the retry state are retained untouched, and
-      // the next successful inventory + start resumes (docs).
-      if (err instanceof DiscoveryBackendUnavailableError) continue;
+      // the next successful inventory + start resumes (docs). The defer DOES
+      // advance the scheduling state (attempt count + check time), which is
+      // what rotates the entry to the back of the expiring queue — without it,
+      // a full batch of deferred entries would pin the queue head and starve
+      // every later renewal (they sort by lastCheckedAt ascending).
+      if (err instanceof DiscoveryBackendUnavailableError) {
+        await repos.domain.recordSslDeferred(domain.id, err.message).catch((diagnosticFailure) => {
+          observeCaughtError(diagnosticFailure, "platform/engine/lib/ssl-scheduler");
+        });
+        continue;
+      }
       // The allowance can end after selection but before the host operation.
       if (managementAccessEnded(err)) continue;
       observeCaughtError(err, "platform/engine/lib/ssl-scheduler");
