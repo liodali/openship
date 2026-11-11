@@ -191,6 +191,52 @@ describe("binding observations", () => {
     expect(row?.desiredGeneration).toBe(2);
   });
 
+  it("is generation-conditional: a stale failure cannot overwrite a newer pending state", async () => {
+    await repo.observe(SERVER, observation());
+    await repo.markApplied(SERVER, "id:my-app", 1);
+    // Scanner observes new config: generation 2, pending again.
+    await repo.observe(
+      SERVER,
+      observation({
+        containerId: "ctr_2",
+        ipAddress: "172.20.0.9",
+        configHash: discoveryConfigHash({ hostname: "app.example.com", port: 3000, network: "frontend" }) + "x",
+      }),
+    );
+    const row = await repo.getBinding(SERVER, "id:my-app");
+    expect(row?.desiredGeneration).toBe(2);
+    expect(row?.applyState).toBe("pending");
+
+    // The OLD pass (generation 1) fails AFTER the newer observation landed:
+    // its failure is obsolete and must not impose backoff on generation 2.
+    const stale = await repo.markApplyError(
+      SERVER,
+      "id:my-app",
+      "old pass edge write failed",
+      new Date(Date.now() + 60_000),
+      1,
+    );
+    expect(stale).toBeUndefined();
+    const untouched = await repo.getBinding(SERVER, "id:my-app");
+    expect(untouched?.applyState).toBe("pending");
+    expect(untouched?.applyError).toBeNull();
+    expect(untouched?.applyAttempts).toBe(0);
+    expect((await repo.dueForApply(SERVER)).map((r) => r.serviceKey)).toEqual(["id:my-app"]);
+
+    // A failure AT the current generation records normally.
+    const current = await repo.markApplyError(
+      SERVER,
+      "id:my-app",
+      "current pass failed",
+      new Date(Date.now() + 60_000),
+      2,
+    );
+    expect(current).toBeDefined();
+    const failed = await repo.getBinding(SERVER, "id:my-app");
+    expect(failed?.applyState).toBe("error");
+    expect(failed?.applyError).toBe("current pass failed");
+  });
+
   it("stores upstream strategy and nulls network for published-only services", async () => {
     const row = (
       await repo.observe(

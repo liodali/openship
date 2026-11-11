@@ -10,7 +10,7 @@ const state = {
   dueWithdrawal: [] as Array<Record<string, unknown>>,
   applied: [] as Array<{ serviceKey: string; generation: number }>,
   withdrawn: [] as string[],
-  applyErrors: [] as Array<{ serviceKey: string; error: string; retryAt: Date }>,
+  applyErrors: [] as Array<{ serviceKey: string; error: string; retryAt: Date; generation?: number }>,
 };
 
 function reset() {
@@ -44,10 +44,12 @@ const discoveryRepo = {
     state.withdrawn.push(serviceKey);
     return { serviceKey };
   }),
-  markApplyError: vi.fn(async (_serverId: string, serviceKey: string, error: string, retryAt: Date) => {
-    state.applyErrors.push({ serviceKey, error, retryAt });
-    return { serviceKey };
-  }),
+  markApplyError: vi.fn(
+    async (_serverId: string, serviceKey: string, error: string, retryAt: Date, generation?: number) => {
+      state.applyErrors.push({ serviceKey, error, retryAt, generation });
+      return { serviceKey };
+    },
+  ),
   recordScan: vi.fn(async () => {}),
 };
 
@@ -208,6 +210,11 @@ describe("reconcileServerDiscovery", () => {
     expect(target.routing.removeRoute).toHaveBeenCalledWith("app.example.com");
     expect(summary.withdrawals).toEqual(["id:my-app"]);
     expect(state.withdrawn).toEqual(["id:my-app"]);
+    // The withdrawal releases this owner's published-port claims so the port
+    // becomes legitimately reusable.
+    expect(convergeTargetHostPortClaimsUnlocked).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: "discovery:dsb_1", desiredPublishes: [] }),
+    );
   });
 
   it("routes published-port bindings through the loopback ownership guard", async () => {
@@ -237,6 +244,15 @@ describe("reconcileServerDiscovery", () => {
     expect(prepareTargetPinnedHostPorts).toHaveBeenCalledWith(
       expect.objectContaining({ target: expect.objectContaining({ targetKey: "server:test" }) }),
     );
+    // The published-port path converges claims to its OBSERVED publish (not empty).
+    expect(convergeTargetHostPortClaimsUnlocked).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: "discovery:dsb_1",
+        desiredPublishes: [
+          { serviceId: "id:my-app", containerId: "ctr_1", containerPort: 3000, hostPort: 18080 },
+        ],
+      }),
+    );
   });
 
   it("persists apply errors with backoff instead of losing the binding", async () => {
@@ -249,7 +265,35 @@ describe("reconcileServerDiscovery", () => {
     expect(state.applyErrors).toHaveLength(1);
     expect(state.applyErrors[0].error).toContain("edge write failed");
     expect(state.applyErrors[0].retryAt.getTime()).toBeGreaterThan(Date.now());
+    // GENERATION-CONDITIONAL: the failure names the generation it attempted.
+    expect(state.applyErrors[0].generation).toBe(1);
     expect(state.applied).toEqual([]);
+  });
+
+  it("a stale failed attempt does not overwrite a newer pending generation", async () => {
+    // The reconciler passes the generation it attempted; the repo's real
+    // generation-conditional WHERE is covered in the db tests — here we pin
+    // the reconciler's contract: it reports failure per attempt, and a
+    // stale markApplied is reported as skipped, never as applied.
+    state.dueApply = [binding({ desiredGeneration: 2 })];
+    const target = edge();
+    vi.mocked(discoveryRepo.markApplied).mockResolvedValueOnce(undefined as never);
+    const summary = await reconcileServerDiscovery(SERVER(), "org_1", { edge: target });
+    expect(target.routing.registerRoute).toHaveBeenCalled();
+    expect(summary.applied).toEqual([]); // NOT reported as success
+    expect(summary.skipped).toBe(1);
+    expect(state.applied).toEqual([]);
+  });
+
+  it("releasing claims: bridge-ip registration and withdrawal converge to an empty publish set", async () => {
+    // Bridge-ip register: a previous published-port generation's claim must be
+    // released when the route no longer dials a host port.
+    state.dueApply = [binding()];
+    const target = edge();
+    await reconcileServerDiscovery(SERVER(), "org_1", { edge: target });
+    expect(convergeTargetHostPortClaimsUnlocked).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: "discovery:dsb_1", desiredPublishes: [] }),
+    );
   });
 
   it("falls back from an unreachable rootless bridge to the live published port", async () => {
@@ -302,6 +346,7 @@ describe("reconcileServerDiscovery", () => {
 });
 
 import {
+  convergeTargetHostPortClaimsUnlocked,
   prepareTargetPinnedHostPorts,
   withHostPortTargetLock,
 } from "../deployments/pinned-host-ports";

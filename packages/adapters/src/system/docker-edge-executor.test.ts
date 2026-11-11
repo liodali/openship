@@ -106,6 +106,108 @@ function recordingDocker(exitFor: (cmd: string) => number = () => 0) {
   return { docker: docker as never, commands };
 }
 
+describe("DockerEdgeExecutor — exec timeout enforcement", () => {
+  /** A daemon whose exec stream NEVER ends: the stall the deadline exists for. */
+  function stalledDocker(overrides: { inspectRunning?: boolean } = {}) {
+    const stream = new PassThrough();
+    const inspect = vi.fn(async () => ({ Running: overrides.inspectRunning ?? true, ExitCode: null }));
+    const docker = {
+      getContainer: () => ({
+        exec: async () => ({
+          start: async () => stream,
+          inspect,
+        }),
+      }),
+      modem: {
+        demuxStream: (s: PassThrough, out: PassThrough, err: PassThrough) => {
+          s.resume(); // consume; never ends the stream
+          void out;
+          void err;
+        },
+      },
+    };
+    return { docker: docker as never, stream, inspect };
+  }
+
+  it("exec(command, { timeout }) rejects and destroys the stream when the exec stalls", async () => {
+    const { docker, stream } = stalledDocker();
+    const ex = new DockerEdgeExecutor({ containerName: "openship-edge", docker });
+    const started = Date.now();
+    await expect(
+      ex.exec("python3 -c probe", { timeout: 150 }),
+    ).rejects.toThrow(/command timed out after 150ms while waiting for output/);
+    expect(Date.now() - started).toBeLessThan(5000); // bounded, not hung
+    expect(stream.destroyed).toBe(true); // cancellation actually tore the pipe down
+  });
+
+  it("enforces the deadline during the exit poll when output ends but the exec hangs", async () => {
+    // Output ENDS promptly, but inspect keeps reporting Running: true — the
+    // deadline must also bound the exit poll.
+    const endStream = new PassThrough();
+    const docker = {
+      getContainer: () => ({
+        exec: async () => ({
+          start: async () => {
+            setImmediate(() => endStream.end());
+            return endStream;
+          },
+          inspect: vi.fn(async () => ({ Running: true, ExitCode: null })),
+        }),
+      }),
+      modem: {
+        demuxStream: (s: PassThrough) => {
+          s.resume();
+        },
+      },
+    };
+    const ex = new DockerEdgeExecutor({ containerName: "openship-edge", docker: docker as never });
+    await expect(
+      ex.exec("openresty -s reload", { timeout: 120 }),
+    ).rejects.toThrow(/while waiting for exit/);
+  });
+
+  it("resolves normally when the command completes within the timeout", async () => {
+    const { docker } = stalledDocker();
+    // Rebuild with a stream that ends promptly and a clean exit.
+    const okStream = new PassThrough();
+    const docker2 = {
+      getContainer: () => ({
+        exec: async () => ({
+          start: async () => {
+            setImmediate(() => okStream.end());
+            return okStream;
+          },
+          inspect: async () => ({ Running: false, ExitCode: 0 }),
+        }),
+      }),
+      modem: {
+        demuxStream: (s: PassThrough, out: PassThrough) => {
+          out.write("done");
+          s.resume();
+        },
+      },
+    };
+    const ex = new DockerEdgeExecutor({ containerName: "openship-edge", docker: docker2 as never });
+    await expect(ex.exec("echo done", { timeout: 2000 })).resolves.toBe("done");
+    void docker;
+  });
+
+  it("stays unbounded without a timeout (certbot runs long)", async () => {
+    const { docker, stream } = stalledDocker({ inspectRunning: false });
+    const ex = new DockerEdgeExecutor({ containerName: "openship-edge", docker });
+    // End the stream from OUTSIDE after 200ms: with no deadline the wait
+    // survives past any implicit timeout and completes via the inspect poll.
+    setTimeout(() => stream.end(), 200);
+    const promise = ex.exec("certbot renew");
+    const result = await Promise.race([
+      promise.then(() => "resolved"),
+      new Promise((r) => setTimeout(() => r("still-waiting"), 100)),
+    ]);
+    expect(result).toBe("still-waiting"); // not killed at some implicit bound
+    await expect(promise).resolves.toBeDefined();
+  });
+});
+
 describe("DockerEdgeExecutor — container file mode", () => {
   // A remote edge is reachable ONLY through the daemon: the routing volumes are
   // on that host, not in this process. So file ops must go over `docker exec`
