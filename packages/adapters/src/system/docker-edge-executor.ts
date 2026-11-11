@@ -102,9 +102,25 @@ export class DockerEdgeExecutor implements CommandExecutor {
   }
 
   /** Run one command inside the edge container, capturing stdout/stderr + exit. */
+  /**
+   * Run one command inside the edge container, capturing stdout/stderr + exit.
+   *
+   * `timeoutMs` (when provided) is ENFORCED here at the executor level: both
+   * the output-stream wait and the exit poll race the deadline, and the demux
+   * stream is destroyed on expiry so a stalled daemon/exec connection cannot
+   * hang the caller (e.g. reconciliation awaiting a TCP probe) indefinitely.
+   * Python's own socket timeout bounds the probe process; this bounds the
+   * transport around it. No timeout = unbounded, as before (certbot runs).
+   */
   private async run(
     command: string,
+    timeoutMs?: number,
   ): Promise<{ code: number; stdout: string; stderr: string }> {
+    const deadline = timeoutMs && timeoutMs > 0 ? Date.now() + timeoutMs : null;
+    const timeoutError = (phase: string) =>
+      new Error(
+        `command timed out after ${timeoutMs}ms while ${phase} in edge container ${this.containerName}: ${command.slice(0, 120)}`,
+      );
     const container = this.docker.getContainer(this.containerName);
     let exec: Dockerode.Exec;
     let stream: NodeJS.ReadWriteStream;
@@ -145,8 +161,24 @@ export class DockerEdgeExecutor implements CommandExecutor {
     this.docker.modem.demuxStream(stream, outStream, errStream);
 
     await new Promise<void>((resolve, reject) => {
-      stream.on("end", () => resolve());
-      stream.on("error", reject);
+      let timer: NodeJS.Timeout | null = null;
+      if (deadline !== null) {
+        timer = setTimeout(() => {
+          // Cancellation: tearing down the demux pipe drops the exec's output
+          // connection; the daemon reaps the process when the client goes away.
+          (stream as unknown as import("node:stream").Readable).destroy();
+          reject(timeoutError("waiting for output"));
+        }, Math.max(0, deadline - Date.now()));
+        timer.unref?.();
+      }
+      stream.on("end", () => {
+        if (timer) clearTimeout(timer);
+        resolve();
+      });
+      stream.on("error", (err) => {
+        if (timer) clearTimeout(timer);
+        reject(err);
+      });
     });
     outStream.end();
     errStream.end();
@@ -157,14 +189,15 @@ export class DockerEdgeExecutor implements CommandExecutor {
     // `openresty -t` / certbot). Bounded (~5s), then treat still-running as failure.
     let info = await exec.inspect();
     for (let i = 0; info.Running && i < 50; i++) {
+      if (deadline !== null && Date.now() > deadline) throw timeoutError("waiting for exit");
       await new Promise((r) => setTimeout(r, 100));
       info = await exec.inspect();
     }
     return { code: info.ExitCode ?? (info.Running ? 1 : 0), stdout, stderr };
   }
 
-  async exec(command: string): Promise<string> {
-    const { code, stdout, stderr } = await this.run(command);
+  async exec(command: string, opts?: { timeout?: number }): Promise<string> {
+    const { code, stdout, stderr } = await this.run(command, opts?.timeout);
     if (code !== 0) {
       // Fold both streams like LocalExecutor — certbot prints its real cause to
       // stdout while stderr carries boilerplate.
