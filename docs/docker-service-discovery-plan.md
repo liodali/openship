@@ -58,6 +58,13 @@ Docker/Podman compatibility work below is required before declaring full runtime
   suppresses only forward applies); runtime-target changes (replacement, IP,
   stop/start) requeue an applied binding so routes never keep a stale
   upstream; unchanged rescans converge.
+- **Upstream probe.** `packages/adapters/src/system/edge-upstream-probe.ts` +
+  the reconciler's `resolveReachableDiscoveryUpstream`/`resolveUpstream`
+  wiring landed (probing from the Edge execution context before activation;
+  strategy flips requeue via observe). DockerEdgeExecutor.exec now ENFORCES
+  the caller's timeout at the executor level (deadline races the output wait
+  and exit poll; demux stream destroyed on expiry) so a stalled exec cannot
+  hang reconciliation.
 - **Step 4 — scanner, route reconciler, server-domain TLS, and reachability landed; repair sweeps pending.**
   `packages/platform/src/engine/modules/discovery/discovery-reconciler.ts`
   (+7 tests): withdrawals first (blocked/suppressed owners included), then
