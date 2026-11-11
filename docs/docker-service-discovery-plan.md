@@ -1,8 +1,9 @@
 # Container discovery through Openship Edge (Docker and Podman)
 
-Status: parser, inspection, persistence, and scanner code has landed. Edge/TLS
-integration, continuous discovery, API/UI, and rollout remain pending. The expanded
-Docker/Podman compatibility work below is required before declaring runtime support.
+Status: parser, inspection, persistence, scanner, routing, server-domain TLS, and
+upstream reachability are implemented. Continuous discovery, unavailable-vhost
+retention, route repair, API/UI, and production rollout remain pending. The expanded
+Docker/Podman compatibility work below is required before declaring full runtime support.
 
 ## Implementation status (updated as code lands)
 
@@ -15,8 +16,9 @@ Docker/Podman compatibility work below is required before declaring runtime supp
   `discoveryContainerViewFromDockerInspect` in `packages/adapters/src/runtime/`
   (+7 tests incl. a Podman-style inspect fixture) with publishedPorts
   extraction, `discoveryInspection` capability, `listAllNetworks` on the
-  adapter interface. View feeds the parser directly. Still required: more
-  Docker/Podman payload fixtures, and the Edge-context reachability probe.
+  adapter interface. View feeds the parser directly. Edge-context reachability
+  now selects from fresh candidates before activation. More runtime payload
+  fixtures and the production canary remain required.
 - **Step 3 — persistence DONE, API layer NOT started.** Schema:
   `packages/db/src/schema/discovery.ts` (`discovery_settings`,
   `discovery_binding` incl. upstreamStrategy/hostPort/hostIp, withdrawalPending,
@@ -35,7 +37,7 @@ Docker/Podman compatibility work below is required before declaring runtime supp
   tables instance-scoped. Not done: contracts schemas, platform operations
   (configure/preview/status/suppress/forget with server access policy),
   controller + routes.
-- **Step 4 — base scanner landed; reconciler NOT started.**
+- **Step 4 — base scanner landed.**
   `packages/platform/src/engine/modules/discovery/discovery-scanner.ts`
   (covered by scanner tests): inventory → bounded inspect → parse → observe; duplicate LIVE
   (running) identities block all candidates — a retained stopped container
@@ -56,7 +58,7 @@ Docker/Podman compatibility work below is required before declaring runtime supp
   suppresses only forward applies); runtime-target changes (replacement, IP,
   stop/start) requeue an applied binding so routes never keep a stale
   upstream; unchanged rescans converge.
-- **Step 4 — scanner + route reconciler + server-domain TLS landed; reachability probe and repair sweeps pending.**
+- **Step 4 — scanner, route reconciler, server-domain TLS, and reachability landed; repair sweeps pending.**
   `packages/platform/src/engine/modules/discovery/discovery-reconciler.ts`
   (+7 tests): withdrawals first (blocked/suppressed owners included), then
   due applies — bridge-ip registers `http://<ip>:<port>`; published-port
@@ -68,6 +70,33 @@ Docker/Podman compatibility work below is required before declaring runtime supp
   markApplyError backoff (30s→30m). Server-scoped Edge resolution via
   `resolveDiscoveryEdgeTarget` (resolveServerExecutor → platform →
   hostPortTarget, held + disposed per pass).
+- **Upstream reachability implemented.** `NginxProvider.probeUpstream()` uses the
+  routing provider's existing Edge executor, so remote/containerized checks run
+  where OpenResty dials. A bounded Python TCP connect (Python is supplied by
+  certbot in the Edge image) sends no application HTTP request; bare-local Edge
+  uses the existing native TCP probe. Executor failure never falls back to the
+  control plane's namespace. Only concrete engine-observed IP/port candidates
+  are probed, with a six-candidate cap per apply.
+  `discovery-upstream.ts` re-inspects running state, stable identity, declaration,
+  and exact network/published-port candidates, then tries reachable targets.
+  Wildcard published binds resolve to a loopback candidate that must pass the
+  Edge probe; specific bind addresses are preserved. No reachable candidate
+  means an unapplied route with persisted retry/error state.
+  A generation-checked repo write persists the resolved target; final live
+  inspection runs before registration (inside the host-port lock for published
+  routes). The scanner retains a still-observed resolved fallback so subsequent
+  sweeps do not replace a working published port with an unreachable bridge IP.
+  Focused tests cover provider execution context, real TCP execution, rootless
+  published-only views, fallback, stale identity/bindings, and stable rescans.
+  Local live evidence: Podman 6.0.2, rootless Netavark, isolated backend on a
+  private bridge and a separate host-network probe container using the actual
+  provider implementation. Bridge TCP timed out, its observed loopback publish
+  connected, stopped backend was refused, and restart resolved the new bridge
+  observation back to the working published endpoint. An additional explicit
+  `pasta` run verified published-only discovery with no bridge candidate, stopped
+  refusal, and successful restart. Temporary containers/networks were removed.
+  This validates namespace
+  selection/probing, not a full production OpenResty/TLS deployment.
 - **Server-domain TLS LANDED.** domain-ssl.ts: new 'server' SSL owner —
   authorization via the serving server row (projectId callers refused,
   serverId scope enforced), issuance on that server's edge with the per-box
@@ -92,8 +121,8 @@ Docker/Podman compatibility work below is required before declaring runtime supp
   path (provision AND renew) runs the fresh-container + discovery-enabled gate
   INSIDE the per-box ACME lock, immediately before the order. STILL NOT DONE:
   Edge-context
-  reachability probe before activation; unavailable-vhost retention with TLS
-  detail (removed routes drop the vhost today); route-file repair from
+  unavailable-vhost retention with TLS detail (removed routes drop the vhost
+  today); route-file repair from
   server-domain records; watcher/sweep wiring (step 5); API/UI (steps 3/6);
   live Podman canary (step 7/8).
 - **Review acceptance check.** After `markInvalid()` clears `containerId`, a
