@@ -13,7 +13,7 @@
  */
 
 import { reportCaughtError as observeCaughtError } from "@repo/core/diagnostics";
-import { repos } from "@repo/db";
+import { repos, type Domain } from "@repo/db";
 import { AppError, SYSTEM, currentMailCertificateHealth, mailHostname } from "@repo/core";
 import { env } from "../config/env";
 import { renewMailCertificate } from "../modules/mail/mail-certificate.service";
@@ -68,48 +68,69 @@ export async function renewExpiringCerts(): Promise<RenewalResult> {
   // failed first issuance would strand the service certificate-less forever.
   // Eligibility (discovery enabled, binding observed, container running, not
   // suppressed) plus the shared verify backoff live in the query itself.
-  const pendingServerIssuance = await repos.domain.findPendingServerIssuance(
-    SYSTEM.DOMAINS.SSL_RENEW_BATCH_SIZE,
-  );
-  const seenIds = new Set(allDomains.map((d) => d.id));
-  for (const domain of pendingServerIssuance) {
-    if (seenIds.has(domain.id)) continue;
-    seenIds.add(domain.id);
-    allDomains.push(domain);
-  }
+  //
+  // The two queues are kept SEPARATE and fair-merged into the batch: appending
+  // retries after the expiring list and truncating would let a full batch of
+  // expiring domains (e.g. fifty that keep deferring on a stopped backend)
+  // starve first-issuance retries forever. Round-robin interleaving gives each
+  // queue ~half the batch whenever both are non-empty.
+  const pendingServerIssuance = (
+    await repos.domain.findPendingServerIssuance(SYSTEM.DOMAINS.SSL_RENEW_BATCH_SIZE)
+  ).filter((d) => !tlsIssuedElsewhere(d) && !allDomains.some((e) => e.id === d.id));
+  // Cloud mode filters each queue independently so the fair merge below keeps
+  // both queues' share of the batch.
   if (env.CLOUD_MODE) {
     const { assertManagementAccess } = await import("../modules/billing/management.service");
-    const customerDomains = [];
-    for (const domain of allDomains) {
+    const allowed = async (domain: Domain): Promise<boolean> => {
       // Server-scoped discovery domains: management access resolves through the
       // SERVER row (no project exists); workspace-managed hosts bill on the
       // workspace like project-managed ones and are skipped here.
       if (domain.ownerType === "server" && domain.serverId) {
         const server = await repos.server.get(domain.serverId);
-        if (!server?.organizationId || server.workspaceId) continue;
+        if (!server?.organizationId || server.workspaceId) return false;
         try {
           await assertManagementAccess(server.organizationId, server.id);
         } catch (error) {
           // diagnostics-ignore: An expired allowance is not a certificate failure.
-          if (managementAccessEnded(error)) continue;
+          if (managementAccessEnded(error)) return false;
           throw error;
         }
-        customerDomains.push(domain);
-        continue;
+        return true;
       }
       const project = domain.projectId ? await repos.project.findById(domain.projectId) : null;
-      if (!project?.serverId || project.workspaceId) continue;
+      if (!project?.serverId || project.workspaceId) return false;
       try {
         await assertManagementAccess(project.organizationId, project.serverId);
       } catch (error) {
         // diagnostics-ignore: An expired allowance is not a certificate failure. Other errors reach the job runner.
-        if (managementAccessEnded(error)) continue;
+        if (managementAccessEnded(error)) return false;
         throw error;
       }
-      customerDomains.push(domain);
-    }
-    allDomains = customerDomains;
+      return true;
+    };
+    const keep = async (domains: Domain[]) => {
+      const out: Domain[] = [];
+      for (const domain of domains) {
+        if (await allowed(domain)) out.push(domain);
+      }
+      return out;
+    };
+    allDomains = await keep(allDomains);
+    pendingServerIssuance.splice(0, pendingServerIssuance.length, ...(await keep(pendingServerIssuance)));
   }
+
+  /** Round-robin the two queues so both make progress inside the batch cap. */
+  const fairMerge = (expiring: Domain[], retries: Domain[]): Domain[] => {
+    const merged: Domain[] = [];
+    let i = 0;
+    let j = 0;
+    while (i < expiring.length || j < retries.length) {
+      if (i < expiring.length) merged.push(expiring[i++]);
+      if (j < retries.length) merged.push(retries[j++]);
+    }
+    return merged;
+  };
+  const allDomainsFair = fairMerge(allDomains, pendingServerIssuance);
 
   // Mail installs are canonical even when an older setup never registered a
   // domain row. Use their cached observations to find missing/stale certificates;
@@ -123,11 +144,11 @@ export async function renewExpiringCerts(): Promise<RenewalResult> {
     return !health || health.status !== "ok" || !!mail.certificateRenewalError;
   });
 
-  if (allDomains.length === 0 && mailCandidates.length === 0) {
+  if (allDomainsFair.length === 0 && mailCandidates.length === 0) {
     return { renewed: 0, failed: 0, total: 0, details: [] };
   }
 
-  const batch = allDomains.slice(0, SYSTEM.DOMAINS.SSL_RENEW_BATCH_SIZE);
+  const batch = allDomainsFair.slice(0, SYSTEM.DOMAINS.SSL_RENEW_BATCH_SIZE);
 
   // Pre-fetch project → (org, project name) so the dispatcher knows
   // which org to fan out the notification to. Each org's members each
@@ -266,5 +287,5 @@ export async function renewExpiringCerts(): Promise<RenewalResult> {
     }
   }
 
-  return { renewed, failed, total: allDomains.length + mailCandidates.length, details };
+  return { renewed, failed, total: allDomainsFair.length + mailCandidates.length, details };
 }
