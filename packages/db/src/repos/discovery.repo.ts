@@ -347,6 +347,34 @@ export function createDiscoveryRepo(db: Database) {
         .where(and(inArray(binding.serverId, serverIds), eq(binding.suppressed, false)));
     },
 
+    /** Persist the probed target only if the inspected binding is still current. */
+    async resolveUpstream(
+      expected: Pick<DiscoveryBinding, "id" | "desiredGeneration" | "containerId" | "configHash">,
+      target: Pick<DiscoveryBinding, "upstreamStrategy" | "ipAddress" | "hostPort" | "hostIp">,
+    ) {
+      const [row] = await db.update(binding).set({
+        ...target,
+        // Target selection itself is versioned so stale completions cannot
+        // mark a route applied against a newer observation.
+        desiredGeneration: sql`${binding.desiredGeneration} + case when
+          ${binding.upstreamStrategy} is distinct from ${target.upstreamStrategy} or
+          ${binding.ipAddress} is distinct from ${target.ipAddress} or
+          ${binding.hostPort} is distinct from ${target.hostPort} or
+          ${binding.hostIp} is distinct from ${target.hostIp} then 1 else 0 end`,
+        updatedAt: new Date(),
+      }).where(and(
+        eq(binding.id, expected.id),
+        eq(binding.desiredGeneration, expected.desiredGeneration),
+        expected.containerId ? eq(binding.containerId, expected.containerId) : isNull(binding.containerId),
+        eq(binding.configHash, expected.configHash),
+        eq(binding.observationStatus, "observed"),
+        eq(binding.containerRunning, true),
+        eq(binding.suppressed, false),
+        inArray(binding.applyState, ["pending", "error"]),
+      )).returning();
+      return row;
+    },
+
     /** Record a verified Edge apply for `generation` (applyState → applied). */
     async markApplied(serverId: string, serviceKey: string, generation: number) {
       const [row] = await db
@@ -372,7 +400,20 @@ export function createDiscoveryRepo(db: Database) {
     },
 
     /** Record a failed apply with persisted backoff. */
-    async markApplyError(serverId: string, serviceKey: string, error: string, retryAt: Date) {
+    /**
+     * Record a failed apply with persisted backoff. `expectedGeneration` makes
+     * the write GENERATION-CONDITIONAL: a stale attempt failing after a newer
+     * observation requeued the binding must not overwrite that pending state or
+     * impose backoff on work that was never attempted at the new generation.
+     * Returns the row when recorded, undefined when the generation had moved on.
+     */
+    async markApplyError(
+      serverId: string,
+      serviceKey: string,
+      error: string,
+      retryAt: Date,
+      expectedGeneration?: number,
+    ) {
       const [row] = await db
         .update(binding)
         .set({
@@ -383,8 +424,15 @@ export function createDiscoveryRepo(db: Database) {
           updatedAt: new Date(),
         })
         .where(
-          // A blocked binding is not retryable, backoff or not.
-          and(eq(binding.serverId, serverId), eq(binding.serviceKey, serviceKey), ne(binding.applyState, "blocked")),
+          and(
+            eq(binding.serverId, serverId),
+            eq(binding.serviceKey, serviceKey),
+            // A blocked binding is not retryable, backoff or not.
+            ne(binding.applyState, "blocked"),
+            expectedGeneration !== undefined
+              ? eq(binding.desiredGeneration, expectedGeneration)
+              : undefined,
+          ),
         )
         .returning();
       return row;

@@ -101,6 +101,7 @@ import {
   type StaticProbeOptions,
 } from "../system/output-exists";
 import { probeHostedHttp } from "../system/reachability";
+import { probeEdgeUpstream } from "../system/edge-upstream-probe";
 
 /**
  * POSIX joining, deliberately shadowing node:path's platform default.
@@ -1310,6 +1311,10 @@ export class NginxProvider implements RoutingProvider, SslProvider {
     this.configLock = opts.configLock ?? {
       run: (fn, signal) => withKeyedMutex(`edge-config:${opts.paths.sitesDir}`, fn, signal),
     };
+  }
+
+  async probeUpstream(host: string, port: number) {
+    return probeEdgeUpstream(this.executor, host, port);
   }
 
   async listLoopbackUpstreamPortsStrict(): Promise<Set<number>> {

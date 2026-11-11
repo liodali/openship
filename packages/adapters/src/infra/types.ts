@@ -16,12 +16,15 @@
 import type { ManualCert, RouteConfig, SslResult } from "../types";
 import type { OutputProbeResult, StaticProbeOptions } from "../system/output-exists";
 import type { RouteProtection } from "./route-protection";
+import type { TcpProbeResult } from "../system/reachability";
 
 // ─── Routing ─────────────────────────────────────────────────────────────────
 
 export type ProjectRouteCleanupResult = "removed" | "absent" | "foreign";
 
 export interface RoutingProvider {
+  /** Dial from the proxy's own network namespace, never the control plane's. */
+  probeUpstream?(host: string, port: number): Promise<TcpProbeResult>;
   /** Full loopback upstream inventory from this edge's own connection.
    * Unreadable or ambiguous configuration must reject, never return an empty set. */
   listLoopbackUpstreamPortsStrict?(opts?: { refresh?: boolean }): Promise<Set<number>>;

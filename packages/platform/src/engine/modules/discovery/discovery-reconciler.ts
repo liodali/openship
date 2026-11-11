@@ -20,9 +20,9 @@
  *     returned; the DB write alone is never "active". Failures persist
  *     backoff via markApplyError and retry on a later pass.
  *
- * Explicitly NOT here (step-4 continuations): the Edge-context reachability
- * probe before activation, server-domain certificate scheduling, and repair
- * sweeps — each lands with the TLS/watcher wiring. The route writer is the
+ * Upstreams are probed from the routing provider's own network namespace, with
+ * fresh container inspection before selection and before the route write.
+ * Repair sweeps and unavailable-vhost retention remain separate work. The route writer is the
  * adapter's own `routing.registerRoute`; no project wrapper is faked (docs:
  * "must not call a wrapper that demands an active deployment").
  */
@@ -32,6 +32,11 @@ import { repos, type DiscoveryBinding } from "@repo/db";
 import { edgeProxyFor, type RoutingProvider, type Platform, type RuntimeAdapter } from "@repo/adapters";
 import type { HostPortTargetIdentity } from "../../lib/host-port-target";
 import { manageDomainSsl } from "../../lib/domain-ssl";
+import {
+  resolveReachableDiscoveryUpstream,
+  assertDiscoveryUpstreamCurrent,
+  type DiscoveryInspectionRuntime,
+} from "./discovery-upstream";
 import {
   reserveObservedLoopbackPublishes,
   type ObservedLoopbackPublish,
@@ -53,9 +58,9 @@ import {
 const APPLY_BACKOFF_MS = [30_000, 120_000, 480_000, 1_800_000];
 
 export interface DiscoveryEdgeTarget {
-  routing: Pick<RoutingProvider, "registerRoute" | "removeRoute">;
+  routing: Pick<RoutingProvider, "registerRoute" | "removeRoute" | "probeUpstream">;
   hostPortTarget: HostPortTargetIdentity | null;
-  runtime?: ObservedHostPortRuntime;
+  runtime?: ObservedHostPortRuntime & DiscoveryInspectionRuntime;
   /** Edge strict-inventory proxy for the loopback ownership guard. */
   edgeProxy: ReturnType<typeof edgeProxyFor> | null;
   dispose: () => Promise<void>;
@@ -75,10 +80,10 @@ export async function resolveDiscoveryEdgeTarget(
   return {
     routing: platform.routing,
     hostPortTarget,
-    runtime: platform.runtime as unknown as ObservedHostPortRuntime,
+    runtime: platform.runtime,
     edgeProxy,
     dispose: async () => {
-      disposePlatform(platform);
+      await disposePlatform(platform);
     },
   };
 }
@@ -89,7 +94,9 @@ export function upstreamUrlFor(binding: DiscoveryBinding): string | null {
   if (!binding.containerRunning) return null;
   if (binding.upstreamStrategy === "published-port") {
     if (!binding.hostPort) return null;
-    return `http://127.0.0.1:${binding.hostPort}`;
+    const host = binding.hostIp === "::" ? "::1"
+      : !binding.hostIp || binding.hostIp === "0.0.0.0" ? "127.0.0.1" : binding.hostIp;
+    return `http://${host.includes(":") ? `[${host}]` : host}:${binding.hostPort}`;
   }
   if (binding.upstreamStrategy === "network-ip") {
     if (!binding.ipAddress) return null;
@@ -101,6 +108,31 @@ export function upstreamUrlFor(binding: DiscoveryBinding): string | null {
 /** Stable, FK-free claim owner for discovered published-port routes. */
 function discoveryClaimOwner(binding: DiscoveryBinding): string {
   return `discovery:${binding.id}`;
+}
+
+/**
+ * Release or re-pin this binding's host-port claims to exactly `desired`.
+ * Runs under the target lock when the Edge context can support it (no target
+ * identity or inventory = nothing this owner could have claimed, so it is a
+ * no-op). A route switch from published-port to direct IP — or a withdrawal —
+ * must converge with an EMPTY set, or the stale discovery-owned claim blocks
+ * legitimate reuse of that host port forever.
+ */
+async function convergeDiscoveryClaims(
+  edge: DiscoveryEdgeTarget,
+  binding: DiscoveryBinding,
+  desired: ObservedLoopbackPublish[],
+): Promise<void> {
+  const { hostPortTarget, edgeProxy } = edge;
+  if (!hostPortTarget || !edgeProxy) return;
+  await withHostPortTargetLock(hostPortTarget, async () => {
+    await convergeTargetHostPortClaimsUnlocked({
+      target: hostPortTarget,
+      projectId: discoveryClaimOwner(binding),
+      desiredPublishes: desired,
+      edgeProxy,
+    });
+  });
 }
 
 /**
@@ -175,6 +207,9 @@ export async function reconcileServerDiscovery(
     for (const binding of await repos.discovery.dueForWithdrawal(serverId)) {
       try {
         await routing.removeRoute(binding.hostname);
+        // Release this owner's published-port claims: a withdrawal must not
+        // leave a stale discovery claim blocking legitimate port reuse.
+        await convergeDiscoveryClaims(edge, binding, []);
         await repos.discovery.markWithdrawn(serverId, binding.serviceKey);
         summary.withdrawals.push(binding.serviceKey);
       } catch (error) {
@@ -183,18 +218,43 @@ export async function reconcileServerDiscovery(
     }
 
     // ── Due applies ────────────────────────────────────────────────────────
-    for (const binding of await repos.discovery.dueForApply(serverId)) {
-      const upstream = upstreamUrlFor(binding);
+    for (let binding of await repos.discovery.dueForApply(serverId)) {
       try {
-        if (!upstream) {
+        if (binding.observationStatus !== "observed" || !binding.containerRunning) {
           // Missing/invalid/stopped: withdraw the application upstream. The
           // domain row and certificate material stay (TLS lifecycle decides
           // vhost retention with cert files; see TLS scheduling continuation).
           await routing.removeRoute(binding.hostname);
-          await repos.discovery.markApplied(serverId, binding.serviceKey, binding.desiredGeneration);
-          summary.removed.push(binding.serviceKey);
+          // Release the owner's published-port claims — the upstream is gone,
+          // so a lingering claim would block legitimate port reuse.
+          await convergeDiscoveryClaims(edge, binding, []);
+          const withdrawn = await repos.discovery.markApplied(serverId, binding.serviceKey, binding.desiredGeneration);
+          if (withdrawn) summary.removed.push(binding.serviceKey);
           continue;
         }
+
+        const selected = await resolveReachableDiscoveryUpstream(
+          binding,
+          edge.runtime,
+          routing.probeUpstream?.bind(routing),
+        );
+        const resolved = await repos.discovery.resolveUpstream(binding, selected.target);
+        if (!resolved) {
+          summary.skipped++;
+          continue; // A new scan, suppression, or block superseded this probe.
+        }
+        binding = resolved;
+        const upstream = selected.targetUrl;
+        const assertCurrent = async () => {
+          const current = await repos.discovery.getBinding(serverId, binding.serviceKey);
+          const enabled = await repos.discovery.getSettings(serverId);
+          if (!enabled?.enabled || !current || current.desiredGeneration !== binding.desiredGeneration ||
+              current.containerId !== binding.containerId || current.suppressed ||
+              current.applyState === "blocked" || current.observationStatus !== "observed") {
+            throw new Error("Discovery binding changed while probing; retry before applying the route");
+          }
+          await assertDiscoveryUpstreamCurrent(binding, selected, edge.runtime);
+        };
 
         // The server-scoped domain row backs the TLS lifecycle (verification
         // flows, the renewal sweep, the cert scheduling below). Created here,
@@ -224,6 +284,7 @@ export async function reconcileServerDiscovery(
             },
           ];
           await withHostPortTargetLock(hostPortTarget, async () => {
+            await assertCurrent();
             await prepareTargetPinnedHostPorts({
               target: hostPortTarget,
               edgeProxy,
@@ -234,6 +295,9 @@ export async function reconcileServerDiscovery(
               runtime: edge.runtime,
               publishes,
             });
+            // Inventory/claim recovery can wait on the engine; do not write a
+            // target that changed during that work, even if its TCP probe passed.
+            await assertCurrent();
             await routing.registerRoute({
               domain: binding.hostname,
               targetUrl: upstream,
@@ -248,17 +312,26 @@ export async function reconcileServerDiscovery(
             });
           });
         } else {
-          // Bridge-IP direct route: no loopback, no host-port claims.
+          // Bridge-IP direct route: no loopback, no NEW host-port claims — but
+          // if an earlier generation of this binding routed via published-port,
+          // its claims must be released or legitimate reuse of that port stays
+          // blocked forever.
+          await assertCurrent();
           await routing.registerRoute({
             domain: binding.hostname,
             targetUrl: upstream,
             tls: true,
             terminatesTlsLocally: true,
           });
+          await convergeDiscoveryClaims(edge, binding, []);
         }
 
-        await repos.discovery.markApplied(serverId, binding.serviceKey, binding.desiredGeneration);
-        summary.applied.push(binding.serviceKey);
+        const applied = await repos.discovery.markApplied(serverId, binding.serviceKey, binding.desiredGeneration);
+        // A stale apply (newer generation desired meanwhile) must not be
+        // reported as success: markApplied returns undefined when the desired
+        // generation moved past this attempt, and the newer state remains queued.
+        if (applied) summary.applied.push(binding.serviceKey);
+        else summary.skipped += 1;
         // Immediate certificate reconciliation for the freshly (re-)applied
         // upstream. Deferred inside: the ACME gate re-inspects the container
         // fresh and defers (never fails the route) when it stopped meanwhile.
@@ -270,7 +343,16 @@ export async function reconcileServerDiscovery(
         const attempts = binding.applyAttempts;
         const delay = APPLY_BACKOFF_MS[Math.min(attempts, APPLY_BACKOFF_MS.length - 1)];
         await repos.discovery
-          .markApplyError(serverId, binding.serviceKey, reason, new Date(Date.now() + delay))
+          .markApplyError(
+            serverId,
+            binding.serviceKey,
+            reason,
+            new Date(Date.now() + delay),
+            // GENERATION-CONDITIONAL: a stale attempt failing after a newer
+            // observation requeued the binding must not overwrite that pending
+            // state or impose backoff on work never attempted at that generation.
+            binding.desiredGeneration,
+          )
           .catch(() => {});
       }
     }

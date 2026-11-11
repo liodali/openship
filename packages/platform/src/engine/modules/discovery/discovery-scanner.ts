@@ -32,6 +32,7 @@ import { reportCaughtError } from "@repo/core/diagnostics";
 import type { RuntimeAdapter } from "@repo/adapters";
 import { mapWithLimit } from "../../lib/map-with-limit";
 import { createServerDockerRuntime } from "../../lib/deployment-runtime";
+import { discoveryTarget, sameDiscoveryTarget } from "./discovery-upstream";
 
 export interface DiscoveryScanSummary {
   /** Containers inspected this pass. */
@@ -191,6 +192,8 @@ export async function scanServerDiscovery(
       configHash: string;
       running: boolean;
     };
+    const existing = await repos.discovery.listByServer(serverId);
+    const previousByKey = new Map(existing.map((row) => [row.serviceKey, row]));
     const candidatesByKey = new Map<string, { running: Candidate[]; stopped: Candidate[] }>();
     const presentContainerIds = new Set<string>();
     for (const { containerId, view } of views) {
@@ -215,15 +218,17 @@ export async function scanServerDiscovery(
       }
       summary.eligible += 1;
       const { declaration } = result;
-      // Deterministic interim upstream selection (docs: "Persist the resolved
-      // strategy and observed target separately from authored config"). The
-      // parser orders candidates deterministically; the resolver's Edge-context
-      // REACHABILITY PROBE (reconciler, step 4) makes the final call before any
-      // route write — a strategy flip requeues via observe(). Until that lands,
-      // prefer the bridge IP when present, else the first published binding.
+      // Keep the last resolved fallback if it is still present in this fresh
+      // inspection. Otherwise an unreachable rootless bridge would overwrite
+      // the working published port and requeue the same route on every sweep.
+      // The reconciler still probes and re-inspects before any route write.
       const bridge = declaration.upstreams.find((u) => u.kind === "bridge-ip");
       const published = declaration.upstreams.find((u) => u.kind === "published-port");
-      const selected = bridge ?? published;
+      const previous = previousByKey.get(declaration.serviceKey);
+      const retained = previous?.configHash === discoveryConfigHash(declaration)
+        ? declaration.upstreams.find((u) => sameDiscoveryTarget(discoveryTarget(u), previous))
+        : undefined;
+      const selected = retained ?? bridge ?? published;
       const candidate: Candidate = {
         view,
         hostname: declaration.hostname,
@@ -233,7 +238,7 @@ export async function scanServerDiscovery(
         ipAddress:
           selected?.kind === "bridge-ip"
             ? selected.ipAddress
-            : (view.networks.find((n) => n.name === declaration.network)?.ipAddress ?? undefined),
+            : undefined,
         upstreamStrategy: selected?.kind === "published-port" ? "published-port" : "network-ip",
         ...(selected?.kind === "published-port"
           ? { hostPort: selected.hostPort, hostIp: selected.hostIp }
@@ -330,7 +335,6 @@ export async function scanServerDiscovery(
     //    reconciler retires discovery-owned routes; domain metadata retained);
     //  - container absent from the host → MISSING (confirmed removal);
     //  - container unreadable this scan → UNCLASSIFIED (state kept).
-    const existing = await repos.discovery.listByServer(serverId);
     const seenKeys = new Set(candidatesByKey.keys());
 
     // Report EVERY invalid opted-in container — not only ones matching a
