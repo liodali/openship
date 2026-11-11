@@ -171,7 +171,24 @@ export class DockerEdgeExecutor implements CommandExecutor {
       // error and must reach the caller untouched (a 101 upgrade failure diagnosed as
       // "the edge is down" would send an operator after the wrong thing entirely).
       const message = (err as { message?: string })?.message ?? String(err);
-      if (isEdgeDownFailure(message) || /\b409\b/.test(message)) throw await this.explainDown(err);
+      if (isEdgeDownFailure(message) || /\b409\b/.test(message)) {
+        // Edge-down diagnostics inspect the container and read its logs — dockerode
+        // awaits that can stall exactly like the call that failed. A 409 followed
+        // by a hung inspection must not reintroduce the hang the deadline exists
+        // to prevent: diagnostics are bounded by the REMAINING deadline, falling
+        // back to the original error when they stall or the deadline already
+        // expired. Without a deadline, diagnostics stay unbounded as before.
+        const explain = (): Error => (err instanceof Error ? err : new Error(message));
+        let diagnostic: Promise<Error> = this.explainDown(err);
+        if (deadline !== null) {
+          const remaining = deadline - Date.now();
+          diagnostic =
+            remaining <= 0
+              ? Promise.resolve(explain())
+              : withDeadline(this.explainDown(err), "diagnosing the edge failure").catch(() => explain());
+        }
+        throw await diagnostic;
+      }
       throw err instanceof Error ? err : new Error(message);
     }
 
