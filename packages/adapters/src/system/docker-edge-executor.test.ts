@@ -214,6 +214,44 @@ describe("DockerEdgeExecutor — exec timeout enforcement", () => {
     await expect(ex.exec("echo hi", { timeout: 500 })).rejects.toThrow(/restarting/);
   });
 
+  it("bounds exit-path DIAGNOSTICS too — completed command with edge-down output plus a stalled inspection", async () => {
+    // The command RAN and exited 1 with "invalid PID number" output (the
+    // restart-under-us case), so run() completes — and the exit-path
+    // explainDown then hangs on a stalled inspection. With a 50ms timeout the
+    // call must reject with the command's own detail inside the bound, not
+    // pend on diagnostics.
+    const hang = (): Promise<never> => new Promise(() => {});
+    const multiplexed = new PassThrough();
+    const docker = {
+      getContainer: () => ({
+        exec: async () => ({
+          start: async () => multiplexed,
+          inspect: async () => ({ Running: false, ExitCode: 1 }),
+        }),
+        inspect: hang, // explainDown's diagnostic hangs forever
+        logs: hang,
+      }),
+      modem: {
+        demuxStream: (s: PassThrough, out: PassThrough, _err: PassThrough) => {
+          // Fake demux: the "daemon" multiplexes the payload; the executor
+          // collects it from `out` (which run() attached listeners to). The
+          // stream must enter flowing mode or its end never emits.
+          s.resume();
+          setImmediate(() => {
+            out.write("nginx: [emerg] invalid PID number \" \" in /usr/local/openresty/nginx/conf/nginx.conf\n");
+            s.end();
+          });
+        },
+      },
+    };
+    const ex = new DockerEdgeExecutor({ containerName: "openship-edge", docker: docker as never });
+    const started = Date.now();
+    await expect(
+      ex.exec("openresty -s reload", { timeout: 50 }),
+    ).rejects.toThrow(/invalid PID number/);
+    expect(Date.now() - started).toBeLessThan(250); // the repro bound at 50ms
+  });
+
   it("stays unbounded without a timeout (certbot runs long)", async () => {
     // The output stream ends late; without a deadline the wait survives past
     // any implicit bound and completes through the exit poll.
