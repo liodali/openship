@@ -1028,6 +1028,15 @@ export function createDomainRepo(db: Database) {
     async findExpiringSsl(beforeDate: Date) {
       return db.query.domain.findMany({
         where: and(inArray(domain.sslStatus, ["active", "error"]), lt(domain.sslExpiresAt, beforeDate), ne(domain.sslDnsMode, "manual")),
+        // Fair batching: least-recently-checked first (creation time as the
+        // fallback for rows never checked), stable id tie-breaker. WITHOUT this
+        // ordering, deferred entries (recordSslDeferred advances lastCheckedAt)
+        // could not rotate to the back, and whatever order the planner returned
+        // would be truncated into the batch arbitrarily.
+        orderBy: (domain, { asc, sql }) => [
+          sql`coalesce(${domain.lastCheckedAt}, ${domain.createdAt})`,
+          asc(domain.id),
+        ],
       });
     },
 
