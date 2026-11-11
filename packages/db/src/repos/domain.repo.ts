@@ -1062,6 +1062,38 @@ export function createDomainRepo(db: Database) {
         .limit(limit);
     },
 
+    /**
+     * Server-scoped discovery domains whose certificate needs (re)issuance —
+     * the retry path for a FAILED FIRST issuance. Such a row is unverified (TXT
+     * does not apply) with no expiry (nothing issued yet), so it lands in none
+     * of the project queues; THIS queue is what keeps it retrying. Eligibility
+     * is the server predicate: discovery enabled + binding observed + container
+     * running + not suppressed, plus the shared verify backoff
+     * (`recordSslFailure` increments `verifyAttempts` for every owner type).
+     * Issuance itself is ACME-as-verification; no project, ever.
+     */
+    async findPendingServerIssuance(
+      limit = 25,
+      organizationId?: string,
+    ): Promise<Domain[]> {
+      const conds = [
+        eq(domain.ownerType, "server"),
+        or(
+          inArray(domain.sslStatus, ["none", "pending", "provisioning", "error"]),
+          and(eq(domain.sslStatus, "active"), lte(domain.sslExpiresAt, new Date())),
+        ),
+        ne(domain.status, "removing"),
+        retryDue(),
+        serverVerificationOwner(organizationId),
+      ];
+      return db
+        .select()
+        .from(domain)
+        .where(and(...conds))
+        .orderBy(sql`coalesce(${domain.lastCheckedAt}, ${domain.createdAt})`, asc(domain.id))
+        .limit(limit);
+    },
+
     /** Unverified custom domains, including failed checks, after the first-check
      * grace period and persisted backoff. Scope and eligibility precede LIMIT. */
     async findPendingVerification(

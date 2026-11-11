@@ -62,6 +62,21 @@ export async function renewExpiringCerts(): Promise<RenewalResult> {
   let allDomains = (await repos.domain.findExpiringSsl(cutoff)).filter(
     (d) => !tlsIssuedElsewhere(d) && d.ownerType !== MAIL_DOMAIN_OWNER,
   );
+  // Server-scoped discovery domains with a MISSING or FAILED certificate: no
+  // expiry exists yet, so findExpiringSsl cannot see them, and they are
+  // unverified by design (ACME-as-verification). Without this retry path a
+  // failed first issuance would strand the service certificate-less forever.
+  // Eligibility (discovery enabled, binding observed, container running, not
+  // suppressed) plus the shared verify backoff live in the query itself.
+  const pendingServerIssuance = await repos.domain.findPendingServerIssuance(
+    SYSTEM.DOMAINS.SSL_RENEW_BATCH_SIZE,
+  );
+  const seenIds = new Set(allDomains.map((d) => d.id));
+  for (const domain of pendingServerIssuance) {
+    if (seenIds.has(domain.id)) continue;
+    seenIds.add(domain.id);
+    allDomains.push(domain);
+  }
   if (env.CLOUD_MODE) {
     const { assertManagementAccess } = await import("../modules/billing/management.service");
     const customerDomains = [];
@@ -162,6 +177,9 @@ export async function renewExpiringCerts(): Promise<RenewalResult> {
         action: "provision",
         projectId: domain.projectId ?? undefined,
         serverId: domain.ownerType === "server" ? (domain.serverId ?? undefined) : undefined,
+        // Server domains verify THROUGH issuance (ACME-as-verification); the
+        // verified flag only exists after the first success.
+        allowUnverified: domain.ownerType === "server" ? true : undefined,
       });
       if (!result.verified) {
         throw new Error(

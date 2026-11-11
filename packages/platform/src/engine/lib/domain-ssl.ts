@@ -495,6 +495,16 @@ async function assertDiscoveryBackendFresh(
   owner: Extract<SslOwner, { kind: "server" }>,
   hostname: string,
 ): Promise<void> {
+  // Discovery disabled on this server: automatic issuance/renewal stops (docs:
+  // "Disabled bindings retain certificate files but stop automatic
+  // issuance/renewal"). The queue predicates already exclude it; this is the
+  // last line before an order for rows selected on stale eligibility.
+  const settings = await repos.discovery.getSettings(owner.serverId);
+  if (!settings?.enabled) {
+    throw new DiscoveryBackendUnavailableError(
+      `Discovery is disabled on this server; certificate issuance for ${hostname} is paused.`,
+    );
+  }
   const binding = await repos.discovery.getBindingForDomain(owner.serverId, hostname);
   if (
     !binding ||
@@ -919,9 +929,16 @@ async function manageAuthorizedDomainSsl(
             isDns ? { challenge: "dns-01" } : opts.challenge ? { challenge: opts.challenge } : {}),
           ...dnsHooks,
         };
-        return createProvisionLock(acmeIssueLockKey(lockScope)).run(() =>
-          executeSslAction(ssl, domainRecord.hostname, opts.action, provOpts),
-        );
+        // `renew` opens an ACME order exactly like provision: the server-domain
+        // gate runs INSIDE the per-box lock so a container that stopped while
+        // this hostname waited for the lock (or for the scheduler batch) cannot
+        // have its order opened anyway. Every order-opening path is gated.
+        return createProvisionLock(acmeIssueLockKey(lockScope)).run(async () => {
+          if (owner.kind === "server") {
+            await assertDiscoveryBackendFresh(owner, domainRecord.hostname);
+          }
+          return executeSslAction(ssl, domainRecord.hostname, opts.action, provOpts);
+        });
       });
       await persistSslResult(domainRecord.id, domainRecord.sslStatus, result);
       return result;
@@ -1030,22 +1047,24 @@ async function provisionAuthorizedDomainCert(
                 opts,
               )
             : {};
-          // Server-domain ACME gate: fresh running inspection before the order.
-          if (owner.kind === "server") {
-            await assertDiscoveryBackendFresh(owner, domainRecord.hostname);
-          }
           // Decided to issue (missing / near-expiry / forced): pass `force` so the
           // adapter runs certbot even when a stale cert file is present on disk —
           // otherwise its file-exists short-circuit would return the old cert and a
-          // near-expiry renewal would silently no-op.
-          return createProvisionLock(acmeIssueLockKey(lockScope)).run(() =>
-            ssl.provisionCert(domainRecord.hostname, {
+          // near-expiry renewal would silently no-op. The server-domain ACME gate
+          // runs INSIDE the per-box lock, immediately before the order: the
+          // container can stop while this hostname waits for the lock, and a
+          // queued order must not open for a backend that is no longer running.
+          return createProvisionLock(acmeIssueLockKey(lockScope)).run(async () => {
+            if (owner.kind === "server") {
+              await assertDiscoveryBackendFresh(owner, domainRecord.hostname);
+            }
+            return ssl.provisionCert(domainRecord.hostname, {
               onLog: opts.onLog,
               force: true,
               ...(ssl.certificateManagement === "provider" ? {} : { challenge: isDns ? "dns-01" as const : "http-01" as const }),
               ...dnsHooks,
-            }),
-          );
+            });
+          });
         },
       );
 
