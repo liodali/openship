@@ -105,12 +105,14 @@ export class DockerEdgeExecutor implements CommandExecutor {
   /**
    * Run one command inside the edge container, capturing stdout/stderr + exit.
    *
-   * `timeoutMs` (when provided) is ENFORCED here at the executor level: both
-   * the output-stream wait and the exit poll race the deadline, and the demux
-   * stream is destroyed on expiry so a stalled daemon/exec connection cannot
-   * hang the caller (e.g. reconciliation awaiting a TCP probe) indefinitely.
-   * Python's own socket timeout bounds the probe process; this bounds the
-   * transport around it. No timeout = unbounded, as before (certbot runs).
+   * `timeoutMs` (when provided) is ENFORCED here at the executor level across
+   * EVERY asynchronous phase — exec creation, exec start, the output-stream
+   * wait, and each inspection — so a stalled daemon connection cannot hang the
+   * caller (e.g. reconciliation awaiting a TCP probe) indefinitely no matter
+   * WHICH phase stalls. On expiry the demux stream is destroyed, dropping the
+   * exec's output connection for the daemon to reap. Python's own socket
+   * timeout bounds the probe process; this bounds the transport around it.
+   * No timeout = unbounded, as before (certbot runs).
    */
   private async run(
     command: string,
@@ -121,16 +123,38 @@ export class DockerEdgeExecutor implements CommandExecutor {
       new Error(
         `command timed out after ${timeoutMs}ms while ${phase} in edge container ${this.containerName}: ${command.slice(0, 120)}`,
       );
+    /** Race ANY operation against the single deadline. */
+    const withDeadline = <T>(operation: Promise<T>, phase: string): Promise<T> => {
+      if (deadline === null) return operation;
+      return new Promise<T>((resolve, reject) => {
+        const timer = setTimeout(() => reject(timeoutError(phase)), Math.max(0, deadline - Date.now()));
+        timer.unref?.();
+        operation.then(
+          (value) => {
+            clearTimeout(timer);
+            resolve(value);
+          },
+          (err) => {
+            clearTimeout(timer);
+            reject(err);
+          },
+        );
+      });
+    };
+
     const container = this.docker.getContainer(this.containerName);
     let exec: Dockerode.Exec;
     let stream: NodeJS.ReadWriteStream;
     try {
-      exec = await container.exec({
-        Cmd: ["/bin/sh", "-c", command],
-        AttachStdout: true,
-        AttachStderr: true,
-        Tty: false,
-      });
+      exec = await withDeadline(
+        container.exec({
+          Cmd: ["/bin/sh", "-c", command],
+          AttachStdout: true,
+          AttachStderr: true,
+          Tty: false,
+        }),
+        "creating the exec",
+      );
       // NO `hijack` — and it must stay that way. Hijack makes docker-modem request a
       // connection upgrade; the daemon answers `101 Switching Protocols`, and Bun's
       // node:http does not surface that upgrade the way modem expects, so every exec
@@ -140,7 +164,7 @@ export class DockerEdgeExecutor implements CommandExecutor {
       // Verified both ways under Bun: hijack=true → 101; hijack=false → stdout,
       // stderr and exit code all correct. Hijack only exists for interactive stdin,
       // which no edge command uses.
-      stream = await exec.start({ stdin: false });
+      stream = await withDeadline(exec.start({ stdin: false }), "starting the exec");
     } catch (err) {
       // The daemon refuses the exec outright when the edge isn't up. Rewrite it into
       // the named container plus its `[emerg]`; anything else is a genuine transport
@@ -160,38 +184,40 @@ export class DockerEdgeExecutor implements CommandExecutor {
     // Split dockerode's multiplexed (non-TTY) stream into stdout/stderr.
     this.docker.modem.demuxStream(stream, outStream, errStream);
 
-    await new Promise<void>((resolve, reject) => {
-      let timer: NodeJS.Timeout | null = null;
-      if (deadline !== null) {
-        timer = setTimeout(() => {
-          // Cancellation: tearing down the demux pipe drops the exec's output
-          // connection; the daemon reaps the process when the client goes away.
-          (stream as unknown as import("node:stream").Readable).destroy();
-          reject(timeoutError("waiting for output"));
-        }, Math.max(0, deadline - Date.now()));
-        timer.unref?.();
-      }
-      stream.on("end", () => {
-        if (timer) clearTimeout(timer);
-        resolve();
-      });
-      stream.on("error", (err) => {
-        if (timer) clearTimeout(timer);
-        reject(err);
-      });
-    });
+    // The output wait races the deadline like every other phase; expiry ALSO
+    // destroys the demux pipe, dropping the connection for the daemon to reap.
+    let destroyTimer: NodeJS.Timeout | null = null;
+    if (deadline !== null) {
+      destroyTimer = setTimeout(() => {
+        (stream as unknown as import("node:stream").Readable).destroy();
+      }, Math.max(0, deadline - Date.now()));
+      destroyTimer.unref?.();
+    }
+    try {
+      await withDeadline(
+        new Promise<void>((resolve, reject) => {
+          stream.on("end", () => resolve());
+          stream.on("error", reject);
+        }),
+        "waiting for output",
+      );
+    } finally {
+      if (destroyTimer) clearTimeout(destroyTimer);
+    }
     outStream.end();
     errStream.end();
 
     // dockerode can still report Running:true / ExitCode:null in the window right
     // after the output stream ends. Poll until the exec has actually exited so a
     // null ExitCode isn't read as success (which would mask a failed
-    // `openresty -t` / certbot). Bounded (~5s), then treat still-running as failure.
-    let info = await exec.inspect();
+    // `openresty -t` / certbot). Each inspection is deadline-raced (a stalled
+    // daemon hangs inspect just like any other call); the whole poll is bounded
+    // (~5s without a deadline), then still-running is treated as failure.
+    let info = await withDeadline(exec.inspect(), "inspecting the exec");
     for (let i = 0; info.Running && i < 50; i++) {
       if (deadline !== null && Date.now() > deadline) throw timeoutError("waiting for exit");
       await new Promise((r) => setTimeout(r, 100));
-      info = await exec.inspect();
+      info = await withDeadline(exec.inspect(), "inspecting the exec");
     }
     return { code: info.ExitCode ?? (info.Running ? 1 : 0), stdout, stderr };
   }
