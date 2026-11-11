@@ -114,6 +114,43 @@ export class DockerEdgeExecutor implements CommandExecutor {
    * timeout bounds the probe process; this bounds the transport around it.
    * No timeout = unbounded, as before (certbot runs).
    */
+  /**
+   * Race ANY operation against a fresh `timeoutMs` budget, with a phase-named
+   * rejection. Shared by run()'s per-phase remaining-time races and by the
+   * diagnostic paths that run after a command completed (a hung inspection
+   * must not reintroduce the wait the caller's timeout exists to prevent).
+   */
+  private withDeadlineOp<T>(
+    operation: Promise<T>,
+    phase: string,
+    timeoutMs?: number,
+    command?: string,
+  ): Promise<T> {
+    if (!timeoutMs || timeoutMs <= 0) return operation;
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(
+        () =>
+          reject(
+            new Error(
+              `command timed out after ${timeoutMs}ms while ${phase} in edge container ${this.containerName}${command ? `: ${command.slice(0, 120)}` : ""}`,
+            ),
+          ),
+        timeoutMs,
+      );
+      timer.unref?.();
+      operation.then(
+        (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        (err) => {
+          clearTimeout(timer);
+          reject(err);
+        },
+      );
+    });
+  }
+
   private async run(
     command: string,
     timeoutMs?: number,
@@ -250,7 +287,18 @@ export class DockerEdgeExecutor implements CommandExecutor {
       // file is the case that matters: nginx is PID 1 here, so the master is already
       // gone and the container is about to be restarted under us. Diagnosing it the
       // same way keeps "invalid PID number" from reading as a config problem.
-      if (isEdgeDownFailure(detail)) throw await this.explainDown(new Error(detail));
+      if (isEdgeDownFailure(detail)) {
+        // Diagnostics hang like any dockerode await (a hung container inspection
+        // never rejects, and explainDown swallows rejections into nulls). Bound
+        // them by the caller's timeout as a fresh diagnostic budget — when they
+        // stall, the completed command's own detail is the honest error.
+        const fallback = (): Error =>
+          new Error(detail || `command exited ${code} in edge container ${this.containerName}`);
+        const diagnostic = this.explainDown(new Error(detail));
+        throw await (opts?.timeout
+          ? this.withDeadlineOp(diagnostic, "diagnosing the edge failure", opts.timeout).catch(fallback)
+          : diagnostic);
+      }
       throw new Error(
         detail || `command exited ${code} in edge container ${this.containerName}`,
       );
