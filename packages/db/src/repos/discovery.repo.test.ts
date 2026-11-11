@@ -91,6 +91,19 @@ describe("discovery settings", () => {
 });
 
 describe("binding observations", () => {
+  it("versions a probed fallback and rejects a stale resolver completion", async () => {
+    const { binding: original } = await repo.observe(SERVER, observation({ upstreamStrategy: "network-ip" }));
+    const fallback = { upstreamStrategy: "published-port" as const, hostPort: 18080, hostIp: "127.0.0.1", ipAddress: null };
+    const resolved = await repo.resolveUpstream(original, fallback);
+    expect(resolved?.upstreamStrategy).toBe("published-port");
+    expect(resolved?.desiredGeneration).toBe(2);
+    expect(await repo.resolveUpstream(original, fallback)).toBeUndefined();
+    const repeated = await repo.resolveUpstream(resolved!, fallback);
+    expect(repeated?.desiredGeneration).toBe(2);
+    await repo.block(SERVER, original.serviceKey, "conflicting owner");
+    expect(await repo.resolveUpstream(repeated!, fallback)).toBeUndefined();
+  });
+
   it("creates a pending binding on first sight with generation 1", async () => {
     const { binding: row, desiredChanged } = await repo.observe(SERVER, observation());
     expect(desiredChanged).toBe(true);

@@ -23,6 +23,10 @@ type BindingRow = {
   appliedGeneration: number;
   suppressed: boolean;
   withdrawalPending: boolean;
+  upstreamStrategy?: "network-ip" | "published-port" | null;
+  ipAddress?: string | null;
+  hostPort?: number | null;
+  hostIp?: string | null;
 };
 
 const SERVER = "srv_scan";
@@ -81,6 +85,10 @@ const discoveryRepo = {
         port: number;
         networkName: string;
         configHash: string;
+        upstreamStrategy?: "network-ip" | "published-port" | null;
+        ipAddress?: string | null;
+        hostPort?: number | null;
+        hostIp?: string | null;
       },
     ) => {
       const existing = state.bindings.get(obs.serviceKey);
@@ -95,6 +103,10 @@ const discoveryRepo = {
           port: obs.port,
           networkName: obs.networkName,
           configHash: obs.configHash,
+          upstreamStrategy: obs.upstreamStrategy,
+          ipAddress: obs.ipAddress,
+          hostPort: obs.hostPort,
+          hostIp: obs.hostIp,
           observationStatus: "observed",
           applyState: "pending",
           applyError: null,
@@ -119,6 +131,10 @@ const discoveryRepo = {
         port: obs.port,
         networkName: obs.networkName,
         configHash: obs.configHash,
+        upstreamStrategy: obs.upstreamStrategy,
+        ipAddress: obs.ipAddress,
+        hostPort: obs.hostPort,
+        hostIp: obs.hostIp,
         observationStatus: "observed",
         ...(existing.applyState !== "blocked" && (desiredChanged || requeued)
           ? {
@@ -261,6 +277,22 @@ function runtime(containers: DiscoveryContainerView[]): RuntimeAdapter {
 }
 
 describe("discovery scanner", () => {
+  it("retains a resolved published fallback across scans without restoring its unreachable bridge IP", async () => {
+    resetDb(true);
+    const live = view({ publishedPorts: [{ containerPort: 3000, hostPort: 18080, hostIp: "127.0.0.1" }] });
+    await scanServerDiscovery(SERVER, "org_1", { runtime: runtime([live]) });
+    const initial = state.bindings.get("id:my-app")!;
+    state.bindings.set("id:my-app", {
+      ...initial, upstreamStrategy: "published-port", ipAddress: null,
+      hostPort: 18080, hostIp: "127.0.0.1", applyState: "applied",
+    });
+    const scan = await scanServerDiscovery(SERVER, "org_1", { runtime: runtime([live]) });
+    expect(scan.desiredChanged).toEqual([]);
+    expect(discoveryRepo.observe).toHaveBeenLastCalledWith(SERVER, expect.objectContaining({
+      upstreamStrategy: "published-port", ipAddress: null, hostPort: 18080, hostIp: "127.0.0.1",
+    }));
+  });
+
   beforeAll(() => {
     // silence diagnostic side effects if any
   });

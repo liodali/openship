@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { repos } from "@repo/db";
+import { discoveryConfigHash } from "@repo/core";
 
 // ── In-memory discovery repo (same contract as the scanner tests) ───────────
 
@@ -25,6 +26,16 @@ const discoveryRepo = {
   getSettings: vi.fn(async () => state.settings),
   dueForApply: vi.fn(async () => state.dueApply),
   dueForWithdrawal: vi.fn(async () => state.dueWithdrawal),
+  getBinding: vi.fn(async (_serverId: string, key: string) => state.dueApply.find((b) => b.serviceKey === key)),
+  resolveUpstream: vi.fn(async (expected: Record<string, unknown>, target: Record<string, unknown>) => {
+    const index = state.dueApply.findIndex((b) => b.id === expected.id);
+    const row = state.dueApply[index];
+    if (!row || row.desiredGeneration !== expected.desiredGeneration) return undefined;
+    const changed = Object.keys(target).some((key) => row[key] !== target[key]);
+    const resolved = { ...row, ...target, desiredGeneration: Number(row.desiredGeneration) + (changed ? 1 : 0) };
+    state.dueApply[index] = resolved;
+    return resolved;
+  }),
   markApplied: vi.fn(async (_serverId: string, serviceKey: string, generation: number) => {
     state.applied.push({ serviceKey, generation });
     return { serviceKey };
@@ -73,12 +84,33 @@ function edge(): import("./discovery-reconciler").DiscoveryEdgeTarget {
     routing: {
       registerRoute: vi.fn(async () => {}),
       removeRoute: vi.fn(async () => {}),
+      probeUpstream: vi.fn(async () => ({ ok: true })),
     },
     hostPortTarget: { targetKey: "server:test", machineId: "m", hostId: "h" },
-    runtime: undefined,
+    runtime: {
+      supports: () => true,
+      getDiscoveryContainerView: vi.fn(async (id: string) => {
+        const row = state.dueApply.find((b) => b.containerId === id);
+        if (!row) return null;
+        return liveView(row);
+      }),
+      listAllNetworks: vi.fn(async () => [{ id: "net_fe", name: "frontend", driver: "bridge" }]),
+    },
     edgeProxy: { listLoopbackUpstreamPortsStrict: async () => [] },
     dispose: vi.fn(async () => {}),
   } as unknown as import("./discovery-reconciler").DiscoveryEdgeTarget;
+}
+
+function liveView(row: Record<string, unknown>) {
+  return {
+    containerId: String(row.containerId), running: true, status: "running", labels: {},
+    env: ["OPENSHIP_DISCOVERY=true", "OPENSHIP_SERVICE_ID=my-app",
+      `OPENSHIP_DOMAIN=${row.hostname}`, `OPENSHIP_PORT=${row.port}`],
+    networks: [{ name: "frontend", id: "net_fe", ipAddress: "172.20.0.5" }],
+    publishedPorts: row.hostPort
+      ? [{ containerPort: 3000, hostPort: Number(row.hostPort), hostIp: row.hostIp as string | null }]
+      : [],
+  };
 }
 
 function binding(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -86,6 +118,9 @@ function binding(overrides: Record<string, unknown> = {}): Record<string, unknow
     id: "dsb_1",
     serviceKey: "id:my-app",
     hostname: "app.example.com",
+    networkName: "frontend",
+    networkId: "net_fe",
+    configHash: discoveryConfigHash({ hostname: "app.example.com", port: 3000, network: "frontend" }),
     port: 3000,
     containerId: "ctr_1",
     observationStatus: "observed",
@@ -215,6 +250,54 @@ describe("reconcileServerDiscovery", () => {
     expect(state.applyErrors[0].error).toContain("edge write failed");
     expect(state.applyErrors[0].retryAt.getTime()).toBeGreaterThan(Date.now());
     expect(state.applied).toEqual([]);
+  });
+
+  it("falls back from an unreachable rootless bridge to the live published port", async () => {
+    state.dueApply = [binding()];
+    const target = edge();
+    const view = { ...liveView(state.dueApply[0]),
+      publishedPorts: [{ containerPort: 3000, hostPort: 18080, hostIp: "127.0.0.1" }] };
+    vi.mocked(target.runtime!.getDiscoveryContainerView!).mockResolvedValue(view);
+    vi.mocked(target.routing.probeUpstream!).mockImplementation(async (host) =>
+      host === "127.0.0.1" ? { ok: true } : { ok: false, reason: "no_route" });
+    const summary = await reconcileServerDiscovery(SERVER(), "org_1", { edge: target });
+    expect(summary.failed).toEqual([]);
+    expect(target.routing.probeUpstream).toHaveBeenNthCalledWith(1, "172.20.0.5", 3000);
+    expect(target.routing.probeUpstream).toHaveBeenNthCalledWith(2, "127.0.0.1", 18080);
+    expect(target.routing.registerRoute).toHaveBeenCalledWith(expect.objectContaining({ targetUrl: "http://127.0.0.1:18080" }));
+    expect(state.applied).toEqual([{ serviceKey: "id:my-app", generation: 2 }]);
+    expect(state.dueApply[0].upstreamStrategy).toBe("published-port");
+  });
+
+  it("writes no route or certificate when Edge cannot reach any candidate", async () => {
+    state.dueApply = [binding()];
+    const target = edge();
+    vi.mocked(target.routing.probeUpstream!).mockResolvedValue({ ok: false, reason: "timeout" });
+    const summary = await reconcileServerDiscovery(SERVER(), "org_1", { edge: target });
+    expect(summary.failed[0].reason).toContain("No upstream reachable from Openship Edge");
+    expect(target.routing.registerRoute).not.toHaveBeenCalled();
+    expect(manageDomainSsl).not.toHaveBeenCalled();
+    expect(state.applied).toEqual([]);
+  });
+
+  it("refuses an upstream that disappeared after its successful probe", async () => {
+    state.dueApply = [binding()];
+    const target = edge();
+    vi.mocked(target.runtime!.getDiscoveryContainerView!)
+      .mockResolvedValueOnce(liveView(state.dueApply[0]))
+      .mockResolvedValueOnce(null);
+    const summary = await reconcileServerDiscovery(SERVER(), "org_1", { edge: target });
+    expect(summary.failed[0].reason).toContain("no longer running");
+    expect(target.routing.registerRoute).not.toHaveBeenCalled();
+  });
+
+  it("never falls back to probing from the control plane when Edge lacks a probe", async () => {
+    state.dueApply = [binding()];
+    const target = edge();
+    delete target.routing.probeUpstream;
+    const summary = await reconcileServerDiscovery(SERVER(), "org_1", { edge: target });
+    expect(summary.failed[0].reason).toContain("serving Edge cannot probe");
+    expect(target.routing.registerRoute).not.toHaveBeenCalled();
   });
 });
 
