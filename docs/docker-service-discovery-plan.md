@@ -62,9 +62,10 @@ Docker/Podman compatibility work below is required before declaring full runtime
   the reconciler's `resolveReachableDiscoveryUpstream`/`resolveUpstream`
   wiring landed (probing from the Edge execution context before activation;
   strategy flips requeue via observe). DockerEdgeExecutor.exec now ENFORCES
-  the caller's timeout at the executor level (deadline races the output wait
-  and exit poll; demux stream destroyed on expiry) so a stalled exec cannot
-  hang reconciliation.
+  the caller's timeout at the executor level — ONE deadline races EVERY async
+  phase (exec creation, start, output wait, each inspection) with phase-named
+  rejections and demux-stream destruction on expiry — so a stalled daemon or
+  exec stream in ANY phase cannot hang reconciliation.
 - **Step 4 — scanner, route reconciler, server-domain TLS, and reachability landed; repair sweeps pending.**
   `packages/platform/src/engine/modules/discovery/discovery-reconciler.ts`
   (+7 tests): withdrawals first (blocked/suppressed owners included), then
