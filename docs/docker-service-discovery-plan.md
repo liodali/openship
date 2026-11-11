@@ -85,7 +85,10 @@ Docker/Podman compatibility work below is required before declaring runtime supp
   finds up failed first issuances (unverified, no expiry — invisible to the
   other queues) into the renewal batch with allowUnverified (round-robin
   fair-merged with the expiring queue so a full expiring batch cannot starve
-  retries; cross-queue duplicates dedupe); every ACME order
+  retries; cross-queue duplicates dedupe); deferred orders (stopped backend,
+  disabled discovery) ADVANCE the entry's scheduling state via
+  recordSslDeferred so it rotates to the back of the queue instead of pinning
+  the head; every ACME order
   path (provision AND renew) runs the fresh-container + discovery-enabled gate
   INSIDE the per-box ACME lock, immediately before the order. STILL NOT DONE:
   Edge-context
