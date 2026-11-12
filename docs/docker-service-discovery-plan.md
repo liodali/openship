@@ -65,7 +65,9 @@ Docker/Podman compatibility work below is required before declaring full runtime
   the caller's timeout at the executor level — ONE deadline races EVERY async
   phase (exec creation, start, output wait, each inspection, and edge-down
   DIAGNOSTICS on both the refusal path and the completed-command exit path,
-  which fall back to the original error when they stall) with
+  which fall back to the original error when they stall — ONE absolute
+  deadline spans execution and diagnostics, so slow execution leaves only the
+  remainder for diagnostics) with
   phase-named rejections and demux-stream destruction on expiry — so a
   stalled daemon or exec stream in ANY phase cannot hang reconciliation.
 - **Step 4 — scanner, route reconciler, server-domain TLS, and reachability landed; repair sweeps pending.**
