@@ -252,6 +252,46 @@ describe("DockerEdgeExecutor — exec timeout enforcement", () => {
     expect(Date.now() - started).toBeLessThan(250); // the repro bound at 50ms
   });
 
+  it("ONE deadline spans execution and diagnostics — execution consuming most of the budget leaves diagnostics only the remainder", async () => {
+    // Reproduction: the command ran ~140ms of a 200ms budget, exited with
+    // edge-down output, and diagnostics got a FRESH 200ms — 354ms total. With
+    // one absolute deadline the whole call must land at ~200ms.
+    const hang = (): Promise<never> => new Promise(() => {});
+    const multiplexed = new PassThrough();
+    const docker = {
+      getContainer: () => ({
+        exec: async () => ({
+          start: async () => {
+            setTimeout(() => {
+              multiplexed.write("nginx: [emerg] invalid PID number \" \" in /usr/local/openresty/nginx/conf/nginx.conf\n");
+              multiplexed.end();
+            }, 140); // execution consumes most of the budget
+            return multiplexed;
+          },
+          inspect: async () => ({ Running: false, ExitCode: 1 }),
+        }),
+        inspect: hang, // diagnostics stall forever
+        logs: hang,
+      }),
+      modem: {
+        demuxStream: (s: PassThrough, out: PassThrough, _err: PassThrough) => {
+          s.resume();
+          s.on("data", (chunk: Buffer) => out.write(chunk));
+          s.on("end", () => out.end());
+        },
+      },
+    };
+    const ex = new DockerEdgeExecutor({ containerName: "openship-edge", docker: docker as never });
+    const started = Date.now();
+    await expect(
+      ex.exec("openresty -s reload", { timeout: 200 }),
+    ).rejects.toThrow(/invalid PID number/);
+    const elapsed = Date.now() - started;
+    // Fresh-budget diagnostics would have landed at ~340ms (140 + 200).
+    expect(elapsed).toBeLessThan(300);
+    expect(elapsed).toBeGreaterThanOrEqual(140);
+  });
+
   it("stays unbounded without a timeout (certbot runs long)", async () => {
     // The output stream ends late; without a deadline the wait survives past
     // any implicit bound and completes through the exit poll.
