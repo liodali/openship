@@ -292,6 +292,39 @@ describe("DockerEdgeExecutor — exec timeout enforcement", () => {
     expect(elapsed).toBeGreaterThanOrEqual(140);
   });
 
+  it("observes an already-started operation when rejecting immediately on an expired budget — no unhandled rejection", async () => {
+    // The deadline racer receives operations that are ALREADY in flight (the
+    // caller created the promise before calling). When the budget is spent the
+    // racer rejects immediately — and must still observe the started
+    // operation, or its LATER failure becomes an unhandledRejection
+    // (reproduced: an exit inspection failing after the deadline).
+    const ex = new DockerEdgeExecutor({ containerName: "openship-edge", docker: fakeDocker() as never });
+    let failLater: (err: Error) => void = () => {};
+    const lateFailure = new Promise<never>((_, reject) => {
+      failLater = reject;
+    });
+    const racer = (
+      ex as unknown as {
+        withDeadlineOp: (op: Promise<never>, phase: string, timeoutMs?: number) => Promise<never>;
+      }
+    ).withDeadlineOp(lateFailure, "inspecting the exec", 0);
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      // Immediate phase timeout — the started operation is abandoned.
+      await expect(racer).rejects.toThrow(/timed out .* while inspecting the exec/);
+      // The abandoned operation then FAILS, well after the deadline.
+      failLater(new Error("exit inspection failed after the deadline"));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(unhandled).toHaveLength(0);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
   it("stays unbounded without a timeout (certbot runs long)", async () => {
     // The output stream ends late; without a deadline the wait survives past
     // any implicit bound and completes through the exit poll.
