@@ -125,7 +125,17 @@ export class DockerEdgeExecutor implements CommandExecutor {
     phase: string,
     timeoutMs?: number,
     command?: string,
+    budgetMs?: number,
   ): Promise<T> {
+    // STABLE MESSAGE: `timeoutMs` is the REMAINING budget (phases share one
+    // absolute deadline, so it drifts toward 0) — reporting it would make the
+    // same caller request log "after 187ms" once and "after 3ms" the next.
+    // The message reports the caller's REQUESTED timeout instead.
+    const reported = budgetMs ?? timeoutMs;
+    const timeoutError = (): Error =>
+      new Error(
+        `command timed out after ${reported}ms while ${phase} in edge container ${this.containerName}${command ? `: ${command.slice(0, 120)}` : ""}`,
+      );
     // undefined = no deadline requested (stay unbounded); an EXPIRED budget
     // (<= 0 remaining) is an immediate timeout — never "run unbounded".
     if (timeoutMs === undefined) return operation;
@@ -135,22 +145,10 @@ export class DockerEdgeExecutor implements CommandExecutor {
       // eventual failure after the deadline becomes an unhandled rejection
       // (reproduced: an exit inspection failing after the deadline expired).
       void operation.catch(() => {});
-      return Promise.reject(
-        new Error(
-          `command timed out after ${timeoutMs}ms while ${phase} in edge container ${this.containerName}${command ? `: ${command.slice(0, 120)}` : ""}`,
-        ),
-      );
+      return Promise.reject(timeoutError());
     }
     return new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(
-        () =>
-          reject(
-            new Error(
-              `command timed out after ${timeoutMs}ms while ${phase} in edge container ${this.containerName}${command ? `: ${command.slice(0, 120)}` : ""}`,
-            ),
-          ),
-        timeoutMs,
-      );
+      const timer = setTimeout(() => reject(timeoutError()), timeoutMs);
       timer.unref?.();
       operation.then(
         (value) => {
@@ -174,13 +172,14 @@ export class DockerEdgeExecutor implements CommandExecutor {
       new Error(
         `command timed out after ${timeoutMs}ms while ${phase} in edge container ${this.containerName}: ${command.slice(0, 120)}`,
       );
-    /** Race ANY operation against the single deadline. */
+    /** Race ANY operation against the single deadline, reporting the requested budget. */
     const withDeadline = <T>(operation: Promise<T>, phase: string): Promise<T> =>
       this.withDeadlineOp(
         operation,
         phase,
         deadline !== null ? Math.max(0, deadline - Date.now()) : undefined,
         command,
+        timeoutMs,
       );
 
     const container = this.docker.getContainer(this.containerName);
@@ -235,6 +234,25 @@ export class DockerEdgeExecutor implements CommandExecutor {
 
     const outStream = new PassThrough();
     const errStream = new PassThrough();
+    // Demux outputs have no other listener: once the demux pipe is torn down
+    // (stream.destroy() on deadline expiry), modem can still write/destroy into
+    // them, and an unhandled stream 'error' event would CRASH the process
+    // instead of failing the command. Output collected so far stays readable.
+
+    // Demux outputs have no other listener: once the demux pipe is torn down
+    // (stream.destroy() on deadline expiry), modem can still write/destroy into
+    // them, and an unhandled stream 'error' event would CRASH the process
+    // instead of failing the command. Output collected so far stays readable.
+    // Demux outputs have no other listener: once the demux pipe is torn down
+    // (stream.destroy() on deadline expiry), modem can still write/destroy into
+    // them, and an unhandled stream 'error' event would CRASH the process
+    // instead of failing the command. Output collected so far stays readable.
+    // Demux outputs have no other listener: once the demux pipe is torn down
+    // (stream.destroy() on deadline expiry), modem can still write/destroy into
+    // them, and an unhandled stream 'error' event would CRASH the process
+    // instead of failing the command. Output collected so far stays readable.
+    outStream.on("error", () => {});
+    errStream.on("error", () => {});
     let stdout = "";
     let stderr = "";
     outStream.on("data", (c: Buffer) => (stdout += c.toString()));
@@ -304,7 +322,13 @@ export class DockerEdgeExecutor implements CommandExecutor {
         const fallback = (): Error =>
           new Error(detail || `command exited ${code} in edge container ${this.containerName}`);
         const diagnostic = this.explainDown(new Error(detail));
-        throw await this.withDeadlineOp(diagnostic, "diagnosing the edge failure", remaining(), command).catch(fallback);
+        throw await this.withDeadlineOp(
+          diagnostic,
+          "diagnosing the edge failure",
+          remaining(),
+          command,
+          opts?.timeout,
+        ).catch(fallback);
       }
       throw new Error(
         detail || `command exited ${code} in edge container ${this.containerName}`,
