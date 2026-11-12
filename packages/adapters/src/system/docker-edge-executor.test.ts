@@ -325,6 +325,72 @@ describe("DockerEdgeExecutor — exec timeout enforcement", () => {
     }
   });
 
+  it("reports the caller's REQUESTED timeout in the message, not the drifting remaining budget", async () => {
+    // Phases share one absolute deadline, so the remaining time shrinks toward
+    // 0 — a message built from it would say "after 187ms" once and "after 3ms"
+    // the next. The racer rejects with the requested budget instead.
+    const ex = new DockerEdgeExecutor({ containerName: "openship-edge", docker: fakeDocker() as never });
+    const racer = (
+      ex as unknown as {
+        withDeadlineOp: (
+          op: Promise<never>,
+          phase: string,
+          timeoutMs?: number,
+          command?: string,
+          budgetMs?: number,
+        ) => Promise<never>;
+      }
+    ).withDeadlineOp(new Promise<never>(() => {}), "inspecting the exec", 5, "openresty -s reload", 200);
+    await expect(racer).rejects.toThrow(/command timed out after 200ms while inspecting the exec in edge container openship-edge: openresty -s reload/);
+  });
+
+  it("survives modem's demux pipe erroring the outputs after they were collected — no uncaught stream error", async () => {
+    // run() collects stdout/stderr into PassThroughs and `end()`s them once the
+    // demux source ends. The daemon (or modem tearing the pipe down after our
+    // stream.destroy() on deadline expiry) can still write/error those streams
+    // afterwards; with no 'error' listener that raises an UNCAUGHT stream error
+    // and crashes the process instead of completing the command.
+    const multiplexed = new PassThrough();
+    const docker = {
+      getContainer: () => ({
+        exec: async () => ({
+          start: async () => {
+            multiplexed.end("probe output\n");
+            return multiplexed;
+          },
+          inspect: async () => ({ Running: false, ExitCode: 0 }),
+        }),
+        inspect: async () => ({ Running: false, ExitCode: 0 }),
+        logs: async () => Buffer.from(""),
+      }),
+      modem: {
+        demuxStream: (s: PassThrough, out: PassThrough, _err: PassThrough) => {
+          s.on("data", (chunk: Buffer) => out.write(chunk));
+          // Emulate modem's late flush after the source ended: run() has
+          // already end()ed `out` by then (microtask before macrotask), so
+          // this write-after-end must raise — and must be swallowed.
+          s.on("end", () => {
+            setTimeout(() => out.write("late chunk from the daemon\n"), 10);
+          });
+        },
+      },
+    };
+    const ex = new DockerEdgeExecutor({ containerName: "openship-edge", docker: docker as never });
+    const uncaught: unknown[] = [];
+    const onUncaught = (err: unknown): void => {
+      uncaught.push(err);
+    };
+    process.on("uncaughtException", onUncaught);
+    try {
+      // The command itself completes normally; the late write lands after.
+      await expect(ex.exec("probe", { timeout: 500 })).resolves.toBe("probe output");
+      await new Promise((resolve) => setTimeout(resolve, 60)); // let the late flush land
+      expect(uncaught).toHaveLength(0);
+    } finally {
+      process.off("uncaughtException", onUncaught);
+    }
+  });
+
   it("stays unbounded without a timeout (certbot runs long)", async () => {
     // The output stream ends late; without a deadline the wait survives past
     // any implicit bound and completes through the exit poll.
