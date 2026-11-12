@@ -130,6 +130,11 @@ export class DockerEdgeExecutor implements CommandExecutor {
     // (<= 0 remaining) is an immediate timeout — never "run unbounded".
     if (timeoutMs === undefined) return operation;
     if (timeoutMs <= 0) {
+      // The operation is ALREADY STARTED (its promise was created by the caller
+      // before this call). An immediate timeout must still observe it, or its
+      // eventual failure after the deadline becomes an unhandled rejection
+      // (reproduced: an exit inspection failing after the deadline expired).
+      void operation.catch(() => {});
       return Promise.reject(
         new Error(
           `command timed out after ${timeoutMs}ms while ${phase} in edge container ${this.containerName}${command ? `: ${command.slice(0, 120)}` : ""}`,
