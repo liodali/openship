@@ -68,7 +68,8 @@ Docker/Podman compatibility work below is required before declaring full runtime
   which fall back to the original error when they stall — ONE absolute
   deadline spans execution and diagnostics, so slow execution leaves only the
   remainder for diagnostics) with
-  phase-named rejections and demux-stream destruction on expiry — so a
+  phase-named rejections (each reporting the caller's REQUESTED timeout, not
+  the drifting remaining budget) and demux-stream destruction on expiry — so a
   stalled daemon or exec stream in ANY phase cannot hang reconciliation.
 - **Step 4 — scanner, route reconciler, server-domain TLS, and reachability landed; repair sweeps pending.**
   `packages/platform/src/engine/modules/discovery/discovery-reconciler.ts`
