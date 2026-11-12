@@ -126,7 +126,16 @@ export class DockerEdgeExecutor implements CommandExecutor {
     timeoutMs?: number,
     command?: string,
   ): Promise<T> {
-    if (!timeoutMs || timeoutMs <= 0) return operation;
+    // undefined = no deadline requested (stay unbounded); an EXPIRED budget
+    // (<= 0 remaining) is an immediate timeout — never "run unbounded".
+    if (timeoutMs === undefined) return operation;
+    if (timeoutMs <= 0) {
+      return Promise.reject(
+        new Error(
+          `command timed out after ${timeoutMs}ms while ${phase} in edge container ${this.containerName}${command ? `: ${command.slice(0, 120)}` : ""}`,
+        ),
+      );
+    }
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(
         () =>
@@ -161,23 +170,13 @@ export class DockerEdgeExecutor implements CommandExecutor {
         `command timed out after ${timeoutMs}ms while ${phase} in edge container ${this.containerName}: ${command.slice(0, 120)}`,
       );
     /** Race ANY operation against the single deadline. */
-    const withDeadline = <T>(operation: Promise<T>, phase: string): Promise<T> => {
-      if (deadline === null) return operation;
-      return new Promise<T>((resolve, reject) => {
-        const timer = setTimeout(() => reject(timeoutError(phase)), Math.max(0, deadline - Date.now()));
-        timer.unref?.();
-        operation.then(
-          (value) => {
-            clearTimeout(timer);
-            resolve(value);
-          },
-          (err) => {
-            clearTimeout(timer);
-            reject(err);
-          },
-        );
-      });
-    };
+    const withDeadline = <T>(operation: Promise<T>, phase: string): Promise<T> =>
+      this.withDeadlineOp(
+        operation,
+        phase,
+        deadline !== null ? Math.max(0, deadline - Date.now()) : undefined,
+        command,
+      );
 
     const container = this.docker.getContainer(this.containerName);
     let exec: Dockerode.Exec;
@@ -277,7 +276,12 @@ export class DockerEdgeExecutor implements CommandExecutor {
   }
 
   async exec(command: string, opts?: { timeout?: number }): Promise<string> {
-    const { code, stdout, stderr } = await this.run(command, opts?.timeout);
+    // ONE absolute deadline spans execution AND diagnostics: a fresh budget
+    // here would let a slow command plus stalled diagnostics take 2× the
+    // caller's timeout (reproduced at 354ms with a 200ms timeout).
+    const deadline = opts?.timeout && opts.timeout > 0 ? Date.now() + opts.timeout : null;
+    const remaining = () => (deadline !== null ? deadline - Date.now() : undefined);
+    const { code, stdout, stderr } = await this.run(command, remaining());
     if (code !== 0) {
       // Fold both streams like LocalExecutor — certbot prints its real cause to
       // stdout while stderr carries boilerplate.
@@ -290,14 +294,12 @@ export class DockerEdgeExecutor implements CommandExecutor {
       if (isEdgeDownFailure(detail)) {
         // Diagnostics hang like any dockerode await (a hung container inspection
         // never rejects, and explainDown swallows rejections into nulls). Bound
-        // them by the caller's timeout as a fresh diagnostic budget — when they
-        // stall, the completed command's own detail is the honest error.
+        // them by the REMAINING deadline — when they stall (or the budget is
+        // spent), the completed command's own detail is the honest error.
         const fallback = (): Error =>
           new Error(detail || `command exited ${code} in edge container ${this.containerName}`);
         const diagnostic = this.explainDown(new Error(detail));
-        throw await (opts?.timeout
-          ? this.withDeadlineOp(diagnostic, "diagnosing the edge failure", opts.timeout).catch(fallback)
-          : diagnostic);
+        throw await this.withDeadlineOp(diagnostic, "diagnosing the edge failure", remaining(), command).catch(fallback);
       }
       throw new Error(
         detail || `command exited ${code} in edge container ${this.containerName}`,
