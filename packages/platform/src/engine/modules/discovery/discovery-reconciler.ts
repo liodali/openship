@@ -67,7 +67,10 @@ import {
 const APPLY_BACKOFF_MS = [30_000, 120_000, 480_000, 1_800_000];
 
 export interface DiscoveryEdgeTarget {
-  routing: Pick<RoutingProvider, "registerRoute" | "removeRoute" | "probeUpstream" | "hasRoute">;
+  routing: Pick<
+    RoutingProvider,
+    "registerRoute" | "removeRoute" | "probeUpstream" | "hasRoute" | "readRouteState"
+  >;
   hostPortTarget: HostPortTargetIdentity | null;
   runtime?: ObservedHostPortRuntime & DiscoveryInspectionRuntime;
   /** Edge strict-inventory proxy for the loopback ownership guard. */
@@ -117,6 +120,30 @@ export function upstreamUrlFor(binding: DiscoveryBinding): string | null {
 /** Stable, FK-free claim owner for discovered published-port routes. */
 function discoveryClaimOwner(binding: DiscoveryBinding): string {
   return `discovery:${binding.id}`;
+}
+
+/**
+ * Does THIS binding keep its hostname as an unavailable vhost (503 + TLS) when
+ * its backend disappears — or does its route retire outright?
+ *
+ * Durable application history (`appliedGeneration > 0`) is the evidence a real
+ * vhost exists: normal stop/removal observations requeue applied bindings as
+ * `applyState: "pending"`, so the apply STATE cannot distinguish "never had a
+ * route" from "had one and lost its backend" — only the generation record can.
+ * Explicit control (suppressed owner, blocked declaration) always retires
+ * fully: an operator opting out or a rejected declaration must not leave a
+ * 503 vhost behind.
+ */
+export function shouldRetainUnavailableVhost(
+  binding: Pick<DiscoveryBinding, "appliedGeneration" | "suppressed" | "applyState">,
+): boolean {
+  if (binding.suppressed || binding.applyState === "blocked") return false;
+  return binding.appliedGeneration > 0;
+}
+
+/** The unavailable-vhost route shape for a retained hostname (503 + TLS + ACME). */
+export function unavailableRouteFor(hostname: string) {
+  return { domain: hostname, tls: true, terminatesTlsLocally: true, unavailable: true } as const;
 }
 
 /**
@@ -216,14 +243,28 @@ export async function reconcileServerDiscovery(
     }
 
     // ── Withdrawals first: retire live routes for blocked/suppressed owners ──
+    // Also consumes observation-driven losses (markMissing/markInvalid flag
+    // previously-applied bindings): those RETAIN the hostname instead of
+    // dropping the vhost — the certificate lifecycle continues.
     for (const binding of await repos.discovery.dueForWithdrawal(serverId)) {
       try {
-        await routing.removeRoute(binding.hostname);
-        // Release this owner's published-port claims: a withdrawal must not
-        // leave a stale discovery claim blocking legitimate port reuse.
+        if (shouldRetainUnavailableVhost(binding)) {
+          await repos.domain.ensureServerDomain({
+            serverId,
+            hostname: binding.hostname,
+            targetPort: binding.port,
+          });
+          await routing.registerRoute(unavailableRouteFor(binding.hostname));
+          const retained = await repos.discovery.markWithdrawn(serverId, binding.serviceKey);
+          if (retained) summary.retained.push(binding.serviceKey);
+        } else {
+          await routing.removeRoute(binding.hostname);
+          const withdrawn = await repos.discovery.markWithdrawn(serverId, binding.serviceKey);
+          if (withdrawn) summary.withdrawals.push(binding.serviceKey);
+        }
+        // Either way, this owner's published-port claims must release: a
+        // withdrawal or retention leaves no dialing upstream behind.
         await convergeDiscoveryClaims(edge, binding, []);
-        await repos.discovery.markWithdrawn(serverId, binding.serviceKey);
-        summary.withdrawals.push(binding.serviceKey);
       } catch (error) {
         summary.failed.push({ serviceKey: binding.serviceKey, reason: safeErrorMessage(error) });
       }
@@ -233,24 +274,22 @@ export async function reconcileServerDiscovery(
     for (let binding of await repos.discovery.dueForApply(serverId)) {
       try {
         if (binding.observationStatus !== "observed" || !binding.containerRunning) {
-          // Missing/invalid/stopped: the upstream is gone. A binding that HAS
-          // applied before keeps its hostname as an unavailable vhost (503 +
-          // TLS + ACME, existing certificate material) — the TLS lifecycle
-          // continues and a returning container re-registers over it. A
-          // never-applied binding has no vhost to retain; plain removal.
+          // Missing/invalid/stopped: the upstream is gone. A binding with
+          // durable application history keeps its hostname as an unavailable
+          // vhost (503 + TLS + ACME, existing certificate material) — the
+          // TLS lifecycle continues and a returning container re-registers
+          // over it. A binding that never applied has no vhost to retain;
+          // plain removal. (Stop/removal observations requeue applied
+          // bindings as applyState "pending" — the history record, not the
+          // apply state, is what proves a vhost exists.)
           await convergeDiscoveryClaims(edge, binding, []);
-          if (binding.applyState === "applied" || binding.applyState === "error") {
+          if (shouldRetainUnavailableVhost(binding)) {
             await repos.domain.ensureServerDomain({
               serverId,
               hostname: binding.hostname,
               targetPort: binding.port,
             });
-            await routing.registerRoute({
-              domain: binding.hostname,
-              tls: true,
-              terminatesTlsLocally: true,
-              unavailable: true,
-            });
+            await routing.registerRoute(unavailableRouteFor(binding.hostname));
             const retained = await repos.discovery.markApplied(serverId, binding.serviceKey, binding.desiredGeneration);
             if (retained) summary.retained.push(binding.serviceKey);
           } else {

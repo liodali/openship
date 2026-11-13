@@ -2491,6 +2491,22 @@ ${serveLocation}
     return this._exists(join(this.sitesDir, `${slug}.conf`));
   }
 
+  async readRouteState(domain: string): Promise<RouteConfig | null> {
+    assertValidDomain(domain);
+    const slug = await this.resolveSlug(domain);
+    const statePath = this.routeStatePath(slug);
+    if (!(await this._exists(statePath))) return null;
+    try {
+      return this.parseRouteState(await this._readFile(statePath));
+    } catch (error) {
+      // A corrupt sidecar (SyntaxError) reads as "unclassifiable" — callers
+      // must never overwrite a vhost they cannot classify. Other failures
+      // (transport, permissions) are real errors.
+      if (error instanceof SyntaxError) return null;
+      throw error;
+    }
+  }
+
   private async deleteRoute(domain: string, opts?: { signal?: AbortSignal }): Promise<void> {
     assertValidDomain(domain);
     if (opts?.signal?.aborted) {

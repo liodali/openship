@@ -47,6 +47,13 @@ export interface RoutingProvider {
    * has nothing to probe and nothing to repair — sweeps skip it. */
   hasRoute?(domain: string): Promise<boolean>;
 
+  /** The persisted config state of a hostname's vhost (what registerRoute last
+   * wrote), or null when there is no sidecar or it is unreadable. Repair uses
+   * this to CLASSIFY an existing vhost (serving proxy vs retained 503) instead
+   * of assuming file existence means correctness. Optional: same scope as
+   * hasRoute. */
+  readRouteState?(domain: string): Promise<RouteConfig | null>;
+
   /** Project-scoped teardown may preserve a route freshly proven to belong to
    * another project. Unknown ownership must reject. A foreign result also forbids
    * a later generic release of the managed hostname. */
