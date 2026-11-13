@@ -8,21 +8,30 @@
  *     suppressed owners included): retire the application route, clear the
  *     flag. Blocking forbids forward applies; it never strands a live route.
  *  2. Due applies (pending/error, backoff elapsed, not suppressed):
- *     - missing/invalid observation → removeRoute (upstream withdrawn; the
- *       domain row and certificate material stay for the TLS lifecycle);
+ *     - missing/invalid/stopped observation → RETAIN the hostname as an
+ *       unavailable vhost when a route was applied before: `return 503;` with
+ *       TLS and both ACME challenge locations kept, so the certificate
+ *       lifecycle continues and clients see "backend unavailable" instead of
+ *       the default-server page (docs: "Retain an unavailable vhost with
+ *       TLS/challenge handling while a backend is absent"). The domain row
+ *       and certificate material stay. A binding that was never applied has
+ *       no vhost to retain — plain removeRoute. Explicit withdrawal (blocked
+ *       or suppressed owner, above) is full retirement, never retention.
  *     - observed+running → registerRoute against the resolved upstream:
  *       bridge-ip → `http://<ip>:<port>`; published-port → the container's
  *       observed loopback binding `http://127.0.0.1:<hostPort>` — a remote
  *       server's loopback is THAT server's, never the API host's, and the
  *       host-port claim subsystem proves ownership before anything dials it
  *       (the publish is OBSERVED from the container; no allocator runs).
+ *       Registering over a retained unavailable vhost is the resume path.
  *  3. Success is `markApplied(desiredGeneration)` only after the edge write
  *     returned; the DB write alone is never "active". Failures persist
  *     backoff via markApplyError and retry on a later pass.
  *
  * Upstreams are probed from the routing provider's own network namespace, with
  * fresh container inspection before selection and before the route write.
- * Repair sweeps and unavailable-vhost retention remain separate work. The route writer is the
+ * Route repair from durable records lives in discovery-repair.ts; the sweep and
+ * lifecycle watchers that drive both are step 5. The route writer is the
  * adapter's own `routing.registerRoute`; no project wrapper is faked (docs:
  * "must not call a wrapper that demands an active deployment").
  */
@@ -58,7 +67,7 @@ import {
 const APPLY_BACKOFF_MS = [30_000, 120_000, 480_000, 1_800_000];
 
 export interface DiscoveryEdgeTarget {
-  routing: Pick<RoutingProvider, "registerRoute" | "removeRoute" | "probeUpstream">;
+  routing: Pick<RoutingProvider, "registerRoute" | "removeRoute" | "probeUpstream" | "hasRoute">;
   hostPortTarget: HostPortTargetIdentity | null;
   runtime?: ObservedHostPortRuntime & DiscoveryInspectionRuntime;
   /** Edge strict-inventory proxy for the loopback ownership guard. */
@@ -168,6 +177,8 @@ export interface DiscoveryReconcileSummary {
   withdrawals: string[];
   applied: string[];
   removed: string[];
+  /** Hostnames switched to an unavailable vhost (backend absent, TLS kept). */
+  retained: string[];
   failed: Array<{ serviceKey: string; reason: string }>;
   skipped: number;
   ok: boolean;
@@ -185,6 +196,7 @@ export async function reconcileServerDiscovery(
     withdrawals: [],
     applied: [],
     removed: [],
+    retained: [],
     failed: [],
     skipped: 0,
     ok: false,
@@ -221,15 +233,31 @@ export async function reconcileServerDiscovery(
     for (let binding of await repos.discovery.dueForApply(serverId)) {
       try {
         if (binding.observationStatus !== "observed" || !binding.containerRunning) {
-          // Missing/invalid/stopped: withdraw the application upstream. The
-          // domain row and certificate material stay (TLS lifecycle decides
-          // vhost retention with cert files; see TLS scheduling continuation).
-          await routing.removeRoute(binding.hostname);
-          // Release the owner's published-port claims — the upstream is gone,
-          // so a lingering claim would block legitimate port reuse.
+          // Missing/invalid/stopped: the upstream is gone. A binding that HAS
+          // applied before keeps its hostname as an unavailable vhost (503 +
+          // TLS + ACME, existing certificate material) — the TLS lifecycle
+          // continues and a returning container re-registers over it. A
+          // never-applied binding has no vhost to retain; plain removal.
           await convergeDiscoveryClaims(edge, binding, []);
-          const withdrawn = await repos.discovery.markApplied(serverId, binding.serviceKey, binding.desiredGeneration);
-          if (withdrawn) summary.removed.push(binding.serviceKey);
+          if (binding.applyState === "applied" || binding.applyState === "error") {
+            await repos.domain.ensureServerDomain({
+              serverId,
+              hostname: binding.hostname,
+              targetPort: binding.port,
+            });
+            await routing.registerRoute({
+              domain: binding.hostname,
+              tls: true,
+              terminatesTlsLocally: true,
+              unavailable: true,
+            });
+            const retained = await repos.discovery.markApplied(serverId, binding.serviceKey, binding.desiredGeneration);
+            if (retained) summary.retained.push(binding.serviceKey);
+          } else {
+            await routing.removeRoute(binding.hostname);
+            const withdrawn = await repos.discovery.markApplied(serverId, binding.serviceKey, binding.desiredGeneration);
+            if (withdrawn) summary.removed.push(binding.serviceKey);
+          }
           continue;
         }
 

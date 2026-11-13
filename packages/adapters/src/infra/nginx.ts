@@ -1986,7 +1986,7 @@ export class NginxProvider implements RoutingProvider, SslProvider {
     }
     if ("staticRoot" in route && route.staticRoot) {
       assertValidStaticRoot(route.staticRoot, { adopted: route.staticRootAdopted });
-    } else if (!route.notFound) {
+    } else if (!route.notFound && !route.unavailable) {
       assertValidUpstream((route as { targetUrl: string }).targetUrl);
     }
     // A canonical host redirect REPLACES the body — this host serves no content of
@@ -1995,13 +1995,18 @@ export class NginxProvider implements RoutingProvider, SslProvider {
     const hostRedirect = renderHostRedirect(route);
     const locationBody = hostRedirect
       ? hostRedirect
-      : route.notFound
-        ? "return 404;"
-        : "staticRoot" in route && route.staticRoot
-          ? `root ${route.staticRoot};
+      : route.unavailable
+        ? // Retained hostname without its backend: answer 503 everywhere (the
+          // ACME locations are emitted separately and stay live — see
+          // UnavailableRouteConfig).
+          "return 503;"
+        : route.notFound
+          ? "return 404;"
+          : "staticRoot" in route && route.staticRoot
+            ? `root ${route.staticRoot};
         index index.html;
         ${renderStaticTryFiles(route)}`
-          : `proxy_pass ${(route as { targetUrl: string }).targetUrl};
+            : `proxy_pass ${(route as { targetUrl: string }).targetUrl};
         ${PROXY_HEADERS}`;
 
     // `cleanUrls` / `trailingSlash` redirects. They live INSIDE `location /` so they
@@ -2100,6 +2105,7 @@ export class NginxProvider implements RoutingProvider, SslProvider {
     // locations, which is why this tests for an upstream rather than for `!staticRoot`.
     const proxiesUpstream =
       !hostRedirect &&
+      !route.unavailable &&
       (!("staticRoot" in route && route.staticRoot) || (route.proxyLocations?.length ?? 0) > 0);
     const upstreamDown = proxiesUpstream ? `\n\n${EDGE_UPSTREAM_DOWN_HANDLER}` : "";
 
@@ -2477,6 +2483,12 @@ ${serveLocation}
    */
   async removeRoute(domain: string, opts?: { signal?: AbortSignal }): Promise<void> {
     return this.withConfigLock(() => this.deleteRoute(domain, opts), opts?.signal);
+  }
+
+  async hasRoute(domain: string): Promise<boolean> {
+    assertValidDomain(domain);
+    const slug = await this.resolveSlug(domain);
+    return this._exists(join(this.sitesDir, `${slug}.conf`));
   }
 
   private async deleteRoute(domain: string, opts?: { signal?: AbortSignal }): Promise<void> {

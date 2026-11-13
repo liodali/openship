@@ -230,6 +230,8 @@ export class CloudInfraProvider implements RoutingProvider, SslProvider {
     if (route.protection) throw new Error("Password protection is not supported by the Cloud edge.");
     if (route.webhookProxy)
       throw new Error("Managed application routes cannot proxy control-plane webhooks");
+    if ("unavailable" in route && route.unavailable)
+      throw new Error("Unavailable-vhost retention is an on-edge nginx feature; the Cloud edge has no vhost to retain.");
     const proxyTargets = new Map<string, { workspace: string; port: number }>();
     for (const location of route.proxyLocations ?? []) {
       if (location.external) continue;

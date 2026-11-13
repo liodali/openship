@@ -40,6 +40,13 @@ export interface RoutingProvider {
    * removal must not recreate it after the caller has abandoned the attempt. */
   removeRoute(domain: string, opts?: { signal?: AbortSignal }): Promise<void>;
 
+  /** Does this hostname have a generated vhost on this provider's edge right now?
+   * The repair sweeps' existence probe: a DELETED vhost has no sidecar left to
+   * replay from, so only durable caller records know it should exist. Optional:
+   * a provider without on-edge generated config (cloud API, no-edge desktop)
+   * has nothing to probe and nothing to repair — sweeps skip it. */
+  hasRoute?(domain: string): Promise<boolean>;
+
   /** Project-scoped teardown may preserve a route freshly proven to belong to
    * another project. Unknown ownership must reject. A foreign result also forbids
    * a later generic release of the managed hostname. */

@@ -684,6 +684,7 @@ export interface ProxyRouteConfig extends BaseRouteConfig {
   targetUrl: string;
   staticRoot?: never;
   notFound?: never;
+  unavailable?: never;
 }
 
 export interface StaticRouteConfig extends BaseRouteConfig {
@@ -691,6 +692,7 @@ export interface StaticRouteConfig extends BaseRouteConfig {
   staticRoot: string;
   targetUrl?: never;
   notFound?: never;
+  unavailable?: never;
   /**
    * This root is being ADOPTED from a proxy we're taking over, not produced by an
    * Openship build.
@@ -712,9 +714,25 @@ export interface PathRouteConfig extends BaseRouteConfig {
   notFound: true;
   targetUrl?: never;
   staticRoot?: never;
+  unavailable?: never;
 }
 
-export type RouteConfig = ProxyRouteConfig | StaticRouteConfig | PathRouteConfig;
+/**
+ * Backend withdrawn, hostname RETAINED: every path answers 503 while the vhost
+ * keeps its TLS blocks and both ACME challenge locations, so the certificate
+ * lifecycle continues (renewal needs a live vhost to answer challenges) and
+ * clients see "backend unavailable" instead of the default-server page under
+ * someone else's certificate. Written when a discovered service's container
+ * goes away; a later `registerRoute` with a `targetUrl` replaces it.
+ */
+export interface UnavailableRouteConfig extends BaseRouteConfig {
+  unavailable: true;
+  targetUrl?: never;
+  staticRoot?: never;
+  notFound?: never;
+}
+
+export type RouteConfig = ProxyRouteConfig | StaticRouteConfig | PathRouteConfig | UnavailableRouteConfig;
 
 /** An operator-supplied certificate to install verbatim (no ACME). */
 export interface ManualCert {
