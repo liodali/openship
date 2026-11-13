@@ -89,8 +89,15 @@ Docker/Podman compatibility work below is required before declaring full runtime
   vhost only, and switches a still-SERVING vhost whose stored backend the
   record says is dead to the retained form. Comparison is ACTUAL vs record
   via the new `routing.readRouteState` probe (sidecar state; unreadable →
-  reported, never clobbered). Serving routes come exclusively from guarded
-  reconciliation (fresh probe + ownership + assertCurrent). Repair never
+  reported, never clobbered) INCLUDING the target URL: a serving vhost whose
+  URL differs from the recorded upstream is STALE and is queued (not written).
+  Serving routes come exclusively from guarded reconciliation (fresh probe +
+  ownership + assertCurrent): whenever repair restores a 503 while the record
+  describes a RUNNING backend — or detects a stale serving target — it queues
+  the guarded pass via the new generation-safe `requeueForApply` repo
+  primitive (desiredGeneration bump invalidates in-flight applies; skipped
+  for already-queued pending/error bindings). A restored 503 for a dead
+  backend is NOT requeued (reconciliation would only re-retain). Repair never
   probes live, never touches claims, never orders a certificate. Sweep/watcher
   wiring is step 5.**
   `packages/platform/src/engine/modules/discovery/discovery-reconciler.ts`
