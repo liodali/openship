@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { PassThrough } from "node:stream";
 
 import { DockerEdgeExecutor } from "./docker-edge-executor";
@@ -38,6 +38,10 @@ function fakeDocker(opts: { exitCode?: number; stdout?: string; stderr?: string 
   };
   return { docker: docker as never, startOpts };
 }
+
+afterEach(() => {
+  vi.useRealTimers(); // safety net for the deadline tests' fake timers
+});
 
 describe("DockerEdgeExecutor — exec transport", () => {
   it("NEVER requests a hijacked connection", async () => {
@@ -144,9 +148,7 @@ describe("DockerEdgeExecutor — exec timeout enforcement", () => {
   it("bounds exec CREATION: a hanging container.exec rejects at the deadline", async () => {
     const { docker } = hangingDocker("creation");
     const ex = new DockerEdgeExecutor({ containerName: "openship-edge", docker });
-    const started = Date.now();
     await expect(ex.exec("echo hi", { timeout: 150 })).rejects.toThrow(/while creating the exec/);
-    expect(Date.now() - started).toBeLessThan(5000);
   });
 
   it("bounds exec START: a hanging exec.start rejects at the deadline", async () => {
@@ -192,9 +194,13 @@ describe("DockerEdgeExecutor — exec timeout enforcement", () => {
       modem: { demuxStream: (s: PassThrough) => s.resume() },
     };
     const ex = new DockerEdgeExecutor({ containerName: "openship-edge", docker: failingDocker as never });
-    const started = Date.now();
-    await expect(ex.exec("echo hi", { timeout: 50 })).rejects.toThrow(/409/);
-    expect(Date.now() - started).toBeLessThan(250); // the reviewer's repro bound
+    // Fake timers make boundedness deterministic: the deadline timer fires
+    // exactly when advanced, immune to parallel-suite event-loop congestion.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const expectation = expect(ex.exec("echo hi", { timeout: 50 })).rejects.toThrow(/409/); // handler attached BEFORE the clock advances
+    await vi.advanceTimersByTimeAsync(50); // the whole budget: diagnostics stall
+    await expectation;
+    vi.useRealTimers();
   });
 
   it("still delivers edge-down diagnostics when they complete within the deadline", async () => {
@@ -233,23 +239,23 @@ describe("DockerEdgeExecutor — exec timeout enforcement", () => {
       }),
       modem: {
         demuxStream: (s: PassThrough, out: PassThrough, _err: PassThrough) => {
-          // Fake demux: the "daemon" multiplexes the payload; the executor
-          // collects it from `out` (which run() attached listeners to). The
-          // stream must enter flowing mode or its end never emits.
+          // Fake demux, SYNCHRONOUS: the "daemon" hands over the payload the
+          // moment the executor attaches the demux pipe. (Timers/ immediates
+          // interact badly with the fake-clock advance loop.)
           s.resume();
-          setImmediate(() => {
-            out.write("nginx: [emerg] invalid PID number \" \" in /usr/local/openresty/nginx/conf/nginx.conf\n");
-            s.end();
-          });
+          out.write("nginx: [emerg] invalid PID number \" \" in /usr/local/openresty/nginx/conf/nginx.conf\n");
+          s.end();
         },
       },
     };
     const ex = new DockerEdgeExecutor({ containerName: "openship-edge", docker: docker as never });
-    const started = Date.now();
-    await expect(
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const expectation = expect(
       ex.exec("openresty -s reload", { timeout: 50 }),
-    ).rejects.toThrow(/invalid PID number/);
-    expect(Date.now() - started).toBeLessThan(250); // the repro bound at 50ms
+    ).rejects.toThrow(/invalid PID number/); // handler attached BEFORE the clock advances
+    await vi.advanceTimersByTimeAsync(50); // command completed; diagnostics stall
+    await expectation;
+    vi.useRealTimers();
   });
 
   it("ONE deadline spans execution and diagnostics — execution consuming most of the budget leaves diagnostics only the remainder", async () => {
@@ -282,14 +288,23 @@ describe("DockerEdgeExecutor — exec timeout enforcement", () => {
       },
     };
     const ex = new DockerEdgeExecutor({ containerName: "openship-edge", docker: docker as never });
-    const started = Date.now();
-    await expect(
-      ex.exec("openresty -s reload", { timeout: 200 }),
-    ).rejects.toThrow(/invalid PID number/);
-    const elapsed = Date.now() - started;
-    // Fresh-budget diagnostics would have landed at ~340ms (140 + 200).
-    expect(elapsed).toBeLessThan(300);
-    expect(elapsed).toBeGreaterThanOrEqual(140);
+    // Fake timers turn the fresh-vs-shared discrimination STRUCTURAL: the
+    // 140ms execution timer fires only when advanced, and a fresh diagnostic
+    // budget (started at t=140 with 200ms) would reject at t=340 — never at
+    // t=200. The shared deadline rejects exactly at t=200.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    let rejected: unknown = null;
+    const pending = ex.exec("openresty -s reload", { timeout: 200 }).catch((err: unknown) => {
+      rejected = err;
+    });
+    await vi.advanceTimersByTimeAsync(140); // execution consumes most of the budget
+    await vi.advanceTimersByTimeAsync(59); // t=199: one ms of budget left
+    expect(rejected).toBeNull(); // diagnostics did NOT get a fresh 200ms
+    await vi.advanceTimersByTimeAsync(1); // t=200: the absolute deadline fires
+    await pending;
+    expect(rejected).toBeInstanceOf(Error);
+    expect((rejected as Error).message).toMatch(/invalid PID number/);
+    vi.useRealTimers();
   });
 
   it("observes an already-started operation when rejecting immediately on an expired budget — no unhandled rejection", async () => {
