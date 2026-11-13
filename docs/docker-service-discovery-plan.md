@@ -75,16 +75,24 @@ Docker/Podman compatibility work below is required before declaring full runtime
   Unavailable-vhost retention: `UnavailableRouteConfig` in the adapter route
   union — `return 503;` with the TLS blocks and both ACME challenge locations
   kept, sidecar-stored, so `reapplyStoredRoutes` replays it and a later
-  `targetUrl` registration replaces it (the resume path). The reconciler now
-  splits withdrawal: observation-driven loss of a PREVIOUSLY-applied binding
-  retains the hostname (503 + TLS, domain row kept, claims released, NO ACME
-  order); a never-applied binding and explicit withdrawal
-  (blocked/suppressed) fully remove. Route repair:
-  `discovery-repair.ts` re-derives the desired vhost from durable binding
-  rows only (stored upstream / unavailable), detects missing files via the
-  new `routing.hasRoute` probe, switches still-registered routes whose stored
-  backend is dead to the retained form, never probes live, never touches
-  claims, and never orders a certificate. Sweep/watcher wiring is step 5.**
+  `targetUrl` registration replaces it (the resume path). Retention is decided
+  by DURABLE APPLICATION HISTORY — `shouldRetainUnavailableVhost`:
+  `appliedGeneration > 0` retains, unless suppressed/blocked (explicit control
+  always retires fully). Normal stop/removal observations requeue applied
+  bindings as applyState "pending", so the apply state cannot be the gate; the
+  reconciler's withdrawal loop (markMissing/markInvalid flag
+  withdrawalPending) and apply loop both retain on that predicate, and a
+  PGlite flow test drives observe→apply→stop→markMissing through the real
+  repo. Route repair (`discovery-repair.ts`) NEVER writes a serving upstream:
+  stored IPs/ports are not validated by repair and after downtime may belong
+  to another container — it restores missing route files as the unavailable
+  vhost only, and switches a still-SERVING vhost whose stored backend the
+  record says is dead to the retained form. Comparison is ACTUAL vs record
+  via the new `routing.readRouteState` probe (sidecar state; unreadable →
+  reported, never clobbered). Serving routes come exclusively from guarded
+  reconciliation (fresh probe + ownership + assertCurrent). Repair never
+  probes live, never touches claims, never orders a certificate. Sweep/watcher
+  wiring is step 5.**
   `packages/platform/src/engine/modules/discovery/discovery-reconciler.ts`
   (+7 tests): withdrawals first (blocked/suppressed owners included), then
   due applies — bridge-ip registers `http://<ip>:<port>`; published-port
