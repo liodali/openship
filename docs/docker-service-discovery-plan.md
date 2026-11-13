@@ -71,7 +71,20 @@ Docker/Podman compatibility work below is required before declaring full runtime
   phase-named rejections (each reporting the caller's REQUESTED timeout, not
   the drifting remaining budget) and demux-stream destruction on expiry — so a
   stalled daemon or exec stream in ANY phase cannot hang reconciliation.
-- **Step 4 — scanner, route reconciler, server-domain TLS, and reachability landed; repair sweeps pending.**
+- **Step 4 — scanner, route reconciler, server-domain TLS, reachability, unavailable-vhost retention, and record-based route repair landed; sweep/watcher WIRING (step 5) pending.**
+  Unavailable-vhost retention: `UnavailableRouteConfig` in the adapter route
+  union — `return 503;` with the TLS blocks and both ACME challenge locations
+  kept, sidecar-stored, so `reapplyStoredRoutes` replays it and a later
+  `targetUrl` registration replaces it (the resume path). The reconciler now
+  splits withdrawal: observation-driven loss of a PREVIOUSLY-applied binding
+  retains the hostname (503 + TLS, domain row kept, claims released, NO ACME
+  order); a never-applied binding and explicit withdrawal
+  (blocked/suppressed) fully remove. Route repair:
+  `discovery-repair.ts` re-derives the desired vhost from durable binding
+  rows only (stored upstream / unavailable), detects missing files via the
+  new `routing.hasRoute` probe, switches still-registered routes whose stored
+  backend is dead to the retained form, never probes live, never touches
+  claims, and never orders a certificate. Sweep/watcher wiring is step 5.**
   `packages/platform/src/engine/modules/discovery/discovery-reconciler.ts`
   (+7 tests): withdrawals first (blocked/suppressed owners included), then
   due applies — bridge-ip registers `http://<ip>:<port>`; published-port
@@ -133,11 +146,9 @@ Docker/Podman compatibility work below is required before declaring full runtime
   the head; every ACME order
   path (provision AND renew) runs the fresh-container + discovery-enabled gate
   INSIDE the per-box ACME lock, immediately before the order. STILL NOT DONE:
-  Edge-context
-  unavailable-vhost retention with TLS detail (removed routes drop the vhost
-  today); route-file repair from
-  server-domain records; watcher/sweep wiring (step 5); API/UI (steps 3/6);
-  live Podman canary (step 7/8).
+  watcher/sweep wiring (step 5); API/UI (steps 3/6); live Podman canary
+  (step 7/8). [Unavailable-vhost retention and route repair LANDED — see the
+  Step 4 entry above.]
 - **Review acceptance check.** After `markInvalid()` clears `containerId`, a
   repeated scan must continue matching the rejected declaration by stable identity
   and retain `observationStatus='invalid'`. Add a regression that repeats the scan;
