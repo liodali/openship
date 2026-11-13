@@ -310,6 +310,73 @@ const PROXY: RouteConfig = {
 const OURS: RouteConfig = { ...PROXY, terminatesTlsLocally: true };
 const BOOTSTRAP_DIR = "/etc/letsencrypt/openship-bootstrap/app.example.com";
 
+describe("NginxProvider unavailable routes (retained hostname, 503 + TLS)", () => {
+  test("answers 503 everywhere while keeping TLS and the ACME challenge locations (existing cert)", async () => {
+    const { nginx, conf } = setup({ certDomains: ["app.example.com"] });
+    await nginx.registerRoute({
+      domain: "app.example.com",
+      tls: true,
+      terminatesTlsLocally: true,
+      unavailable: true,
+    });
+    const c = conf("app-example-com")!;
+    // The retained vhost's entire answer: the serving location 503s — no
+    // application upstream (the only proxy_pass left is the edge-challenge
+    // helper, which challenge handling needs).
+    expect(c).toMatch(/location \/ \{\s*(?:if[\s\S]*?\n\s*\}\s*)?return 503;/);
+    // TLS continues with the EXISTING certificate material — the whole point
+    // of retention: renewal and the challenge flow keep working.
+    expect(c).toContain("listen 443 ssl;");
+    expect(c).toContain("ssl_certificate /etc/letsencrypt/live/app.example.com/fullchain.pem;");
+    // The ACME challenge location stays live (HTTP-01 arrives on :80) alongside
+    // the edge-target challenge.
+    expect(c.match(/location \^~ \/\.well-known\/acme-challenge\//g)?.length).toBe(1);
+    expect(c).toContain("location ^~ /.well-known/oblien-proxy-challenge/");
+  });
+
+  test("without certificate material it serves the bootstrap self-signed on :443 (no dead :443)", async () => {
+    const { nginx, conf } = setup({ certDomains: [] });
+    await nginx.registerRoute({
+      domain: "app.example.com",
+      tls: true,
+      terminatesTlsLocally: true,
+      unavailable: true,
+    });
+    const c = conf("app-example-com")!;
+    expect(c).toContain("return 503;");
+    expect(c).toContain("openship-bootstrap-tls");
+    expect(c).toContain("listen 443 ssl;");
+  });
+
+  test("the sidecar stores the unavailable route and a later targetUrl registration replaces it", async () => {
+    const { nginx, conf, files } = setup({ certDomains: ["app.example.com"] });
+    await nginx.registerRoute({
+      domain: "app.example.com",
+      tls: true,
+      terminatesTlsLocally: true,
+      unavailable: true,
+    });
+    const sidecar = `${SITES}/app-example-com.route.json`;
+    expect(JSON.parse(files.get(sidecar)!)).toMatchObject({ domain: "app.example.com", unavailable: true });
+    // The resume path: the container returns, the reconciler registers the
+    // upstream over the retained vhost.
+    await nginx.registerRoute({ domain: "app.example.com", tls: true, terminatesTlsLocally: true, targetUrl: "http://10.0.0.9:8080" });
+    const resumed = conf("app-example-com")!;
+    expect(resumed).toContain("proxy_pass http://10.0.0.9:8080;");
+    expect(resumed).not.toContain("return 503;");
+    expect(JSON.parse(files.get(sidecar)!)).toMatchObject({ targetUrl: "http://10.0.0.9:8080" });
+  });
+
+  test("hasRoute tracks the vhost across register/remove", async () => {
+    const { nginx, files } = setup({});
+    await expect(nginx.hasRoute("app.example.com")).resolves.toBe(false);
+    await nginx.registerRoute({ domain: "app.example.com", tls: false, targetUrl: "http://127.0.0.1:3009" });
+    await expect(nginx.hasRoute("app.example.com")).resolves.toBe(true);
+    await nginx.removeRoute("app.example.com");
+    await expect(nginx.hasRoute("app.example.com")).resolves.toBe(false);
+  });
+});
+
 describe("NginxProvider path-only routes", () => {
   test.each([false, true])("returns 404 outside explicit paths (existing TLS cert: %s)", async (withCert) => {
     const { nginx, conf, files } = setup({ certDomains: withCert ? ["app.example.com"] : [] });

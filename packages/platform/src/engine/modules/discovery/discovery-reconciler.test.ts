@@ -53,10 +53,14 @@ const discoveryRepo = {
   recordScan: vi.fn(async () => {}),
 };
 
+const domainRepo = {
+  ensureServerDomain: vi.fn(async () => ({ domain: { id: "dom_x" }, created: true })),
+};
+
 vi.mock("@repo/db", () => ({
   repos: {
     discovery: discoveryRepo,
-    domain: { ensureServerDomain: vi.fn(async () => ({ domain: { id: "dom_x" }, created: true })) },
+    domain: domainRepo,
   },
 }));
 
@@ -189,9 +193,42 @@ describe("reconcileServerDiscovery", () => {
     );
   });
 
-  it("withdraws the upstream for missing/invalid/stopped bindings while keeping the domain", async () => {
+  it("RETAINS a previously-applied hostname as an unavailable vhost when its backend disappears", async () => {
+    // Applied route + container gone: replace the live proxy with 503 + TLS +
+    // ACME (existing certificate material) instead of dropping the vhost —
+    // the certificate lifecycle continues, clients see "backend unavailable".
     state.dueApply = [
-      binding({ observationStatus: "missing", containerId: null, ipAddress: null, containerRunning: false }),
+      binding({ applyState: "applied", observationStatus: "missing", containerId: null, ipAddress: null, containerRunning: false }),
+    ];
+    const target = edge();
+    const summary = await reconcileServerDiscovery(SERVER(), "org_1", { edge: target });
+    expect(target.routing.registerRoute).toHaveBeenCalledWith({
+      domain: "app.example.com",
+      tls: true,
+      terminatesTlsLocally: true,
+      unavailable: true,
+    });
+    expect(target.routing.removeRoute).not.toHaveBeenCalled();
+    // The server-scoped domain row backs the TLS lifecycle for the retained vhost.
+    expect(domainRepo.ensureServerDomain).toHaveBeenCalledWith({
+      serverId: SERVER(),
+      hostname: "app.example.com",
+      targetPort: 3000,
+    });
+    expect(summary.retained).toEqual(["id:my-app"]);
+    expect(summary.removed).toEqual([]);
+    expect(state.applied).toEqual([{ serviceKey: "id:my-app", generation: 1 }]);
+    // Retention never orders a certificate: the backend gate would defer.
+    expect(manageDomainSsl).not.toHaveBeenCalled();
+    // The upstream is gone — the owner's published-port claims still release.
+    expect(convergeTargetHostPortClaimsUnlocked).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: "discovery:dsb_1", desiredPublishes: [] }),
+    );
+  });
+
+  it("removes the route outright for a missing binding that was NEVER applied", async () => {
+    state.dueApply = [
+      binding({ applyState: "pending", observationStatus: "missing", containerId: null, ipAddress: null, containerRunning: false }),
     ];
     const target = edge();
     const summary = await reconcileServerDiscovery(SERVER(), "org_1", { edge: target });
@@ -201,6 +238,18 @@ describe("reconcileServerDiscovery", () => {
     expect(state.applied).toEqual([{ serviceKey: "id:my-app", generation: 1 }]);
     // No certificate order for a withdrawn upstream.
     expect(manageDomainSsl).not.toHaveBeenCalled();
+  });
+
+  it("retains an error-state binding's hostname too (a vhost may exist from the failed apply)", async () => {
+    state.dueApply = [
+      binding({ applyState: "error", observationStatus: "observed", containerRunning: false }),
+    ];
+    const target = edge();
+    const summary = await reconcileServerDiscovery(SERVER(), "org_1", { edge: target });
+    expect(target.routing.registerRoute).toHaveBeenCalledWith(
+      expect.objectContaining({ domain: "app.example.com", unavailable: true }),
+    );
+    expect(summary.retained).toEqual(["id:my-app"]);
   });
 
   it("processes withdrawals first and clears the retirement flag", async () => {
