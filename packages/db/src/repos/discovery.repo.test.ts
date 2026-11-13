@@ -341,6 +341,41 @@ describe("binding observations", () => {
     expect((await repo.dueForApply(SERVER)).map((r) => r.serviceKey)).toEqual(["id:my-app"]);
   });
 
+  it("requeueForApply bumps the generation of a converged binding and invalidates stale applies", async () => {
+    // The repair sweep's primitive: an applied binding whose route file needed
+    // restoring (or whose serving target went stale) must be handed to guarded
+    // reconciliation — and the bump must invalidate any in-flight apply.
+    await repo.observe(SERVER, observation());
+    await repo.markApplied(SERVER, "id:my-app", 1);
+    expect(await repo.dueForApply(SERVER)).toHaveLength(0); // converged
+
+    const requeued = await repo.requeueForApply(SERVER, "id:my-app");
+    expect(requeued?.applyState).toBe("pending");
+    expect(requeued?.desiredGeneration).toBe(2); // bumped past the applied generation
+    // The backoff bookkeeping resets: the pass runs now, not on stale backoff.
+    expect(requeued?.applyAttempts).toBe(0);
+    expect(requeued?.nextApplyAt).toBeNull();
+    expect((await repo.dueForApply(SERVER)).map((r) => r.serviceKey)).toEqual(["id:my-app"]);
+
+    // An apply that was in flight against generation 1 can no longer "succeed":
+    // markApplied's stale-generation guard drops it, and the history is safe.
+    expect(await repo.markApplied(SERVER, "id:my-app", 1)).toBeUndefined();
+    // The real reconciliation pass applies the NEW generation.
+    expect(await repo.markApplied(SERVER, "id:my-app", 2)).toMatchObject({ appliedGeneration: 2 });
+    expect(await repo.dueForApply(SERVER)).toHaveLength(0);
+  });
+
+  it("requeueForApply is a no-op for unknown bindings and coexists with scanner bumps", async () => {
+    expect(await repo.requeueForApply(SERVER, "id:ghost")).toBeUndefined();
+
+    await repo.observe(SERVER, observation());
+    // Scanner bump and repair requeue serialize: each monotonic, never regressive.
+    const first = await repo.requeueForApply(SERVER, "id:my-app");
+    const gen1 = first?.desiredGeneration ?? 0;
+    const second = await repo.requeueForApply(SERVER, "id:my-app");
+    expect((second?.desiredGeneration ?? 0)).toBeGreaterThan(gen1);
+  });
+
   it("does not re-bump an already-missing binding on repeated removals", async () => {
     await repo.observe(SERVER, observation());
     await repo.markMissing(SERVER, "id:my-app");
