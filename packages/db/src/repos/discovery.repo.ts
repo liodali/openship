@@ -399,6 +399,42 @@ export function createDiscoveryRepo(db: Database) {
       return row;
     },
 
+    /**
+     * Force a converged ("applied") binding back into the reconcile queue.
+     *
+     * Used by the repair sweep: it restores route files from durable records
+     * but cannot validate an upstream, so when the record describes a RUNNING
+     * backend (or a serving vhost disagrees with the record) the guarded
+     * reconciliation must re-probe fresh and rewrite — and an unchanged scan
+     * would never requeue an applied binding on its own. Generation-safe: the
+     * desiredGeneration bump invalidates any in-flight apply (markApplied's
+     * stale-generation guard no-ops it) and serializes against concurrent
+     * scanner observations under the row lock.
+     */
+    async requeueForApply(serverId: string, serviceKey: string) {
+      return db.transaction(async (tx) => {
+        const [existing] = await tx
+          .select()
+          .from(binding)
+          .where(and(eq(binding.serverId, serverId), eq(binding.serviceKey, serviceKey)))
+          .for("update");
+        if (!existing) return undefined;
+        const [row] = await tx
+          .update(binding)
+          .set({
+            applyState: "pending" as const,
+            desiredGeneration: existing.desiredGeneration + 1,
+            applyError: null,
+            applyAttempts: 0,
+            nextApplyAt: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(binding.id, existing.id))
+          .returning();
+        return row;
+      });
+    },
+
     /** Record a failed apply with persisted backoff. */
     /**
      * Record a failed apply with persisted backoff. `expectedGeneration` makes

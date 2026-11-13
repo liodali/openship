@@ -9,24 +9,23 @@
  * failure mode `terminatesTlsLocally` exists to prevent (#308).
  *
  * SAFETY RULE (the repair loop's whole shape): repair only ever writes the
- * UNAVAILABLE vhost — 503 + TLS + ACME, from the durable record alone. It NEVER
- * re-emits a serving upstream from stored records: after downtime a stored bridge IP
- * or published port may belong to a DIFFERENT container, and repair has no fresh
- * inspection or ownership guard to prove otherwise. Serving routes are (re)established
- * exclusively by the normal guarded reconciliation (fresh probe, ownership check,
- * assertCurrent). What repair CAN safely do:
- *   - a MISSING route file → restore the unavailable vhost (hostname + cert
- *     lifecycle kept; docs: "Repair may restore that unavailable vhost using
- *     existing certificate material");
- *   - a route file still serving a stored upstream that the record says is DEAD
- *     (backend missing/stopped/invalid) → switch it to the unavailable form
- *     (retention sweep for a backend that stopped while no reconcile pass ran);
- *   - anything else (healthy serving route, already-retained vhost) → untouched.
+ * UNAVAILABLE vhost — 503 + TLS + ACME. It NEVER re-emits a serving upstream from
+ * stored records: after downtime a stored bridge IP or published port may belong to
+ * a DIFFERENT container, and repair has no fresh inspection or ownership guard to
+ * prove otherwise. Serving routes are established exclusively by the normal guarded
+ * reconciliation (fresh probe, ownership check, assertCurrent). Repair therefore
+ * writes the retained 503 form and — whenever the record describes a RUNNING backend
+ * — QUEUES guarded reconciliation (`requeueForApply`), so the restored hostname
+ * never stays unavailable indefinitely: an unchanged scan would never requeue an
+ * applied binding on its own.
  *
  * Comparison is ACTUAL-vs-record: the provider's `readRouteState` returns the vhost's
- * persisted config, so an existing file is classified, not assumed correct. A conf
- * whose sidecar is unreadable was not (provably) written by us — it is reported and
- * left alone, never clobbered.
+ * persisted config, so an existing file is classified, not assumed correct. A serving
+ * vhost whose target disagrees with the record's upstream is STALE (old IP/port after
+ * a replacement): repair can't validate a replacement either, so it leaves the file
+ * and queues guarded reconciliation to re-probe and rewrite. A conf whose sidecar is
+ * unreadable was not (provably) written by us — reported and left alone, never
+ * clobbered.
  *
  * No ACME order here, ever (docs: "Prove Edge repair can restore an unavailable vhost
  * without triggering an ACME order"); issuance eligibility is the TLS lifecycle's own
@@ -37,10 +36,12 @@
 import { safeErrorMessage } from "@repo/core";
 import { reportCaughtError } from "@repo/core/diagnostics";
 import { repos } from "@repo/db";
+import type { DiscoveryBinding } from "@repo/db";
 import {
   resolveDiscoveryEdgeTarget,
   shouldRetainUnavailableVhost,
   unavailableRouteFor,
+  upstreamUrlFor,
   type DiscoveryEdgeTarget,
 } from "./discovery-reconciler";
 
@@ -51,28 +52,27 @@ export interface DiscoveryRepairSummary {
   repaired: string[];
   /** Serving vhosts switched to the unavailable form (stored backend is dead). */
   retained: string[];
+  /** Hostnames queued for guarded reconciliation (running backend / stale target). */
+  requeued: string[];
   failed: Array<{ serviceKey: string; reason: string }>;
-}
-
-/** True when the binding's durable record still names a plausible upstream. */
-function recordUpstreamAlive(binding: {
-  observationStatus: string;
-  containerRunning: boolean;
-  upstreamStrategy: string | null;
-  ipAddress: string | null;
-  hostPort: number | null;
-  port: number;
-}): boolean {
-  if (binding.observationStatus !== "observed" || !binding.containerRunning) return false;
-  if (binding.upstreamStrategy === "published-port") return binding.hostPort !== null;
-  if (binding.upstreamStrategy === "network-ip") return binding.ipAddress !== null;
-  return false;
 }
 
 /** True when the persisted route config is a live serving proxy (not 503/404/redirect). */
 function isServingRouteState(state: { targetUrl?: string; unavailable?: boolean } | null): boolean {
   return state !== null && typeof state.targetUrl === "string" && state.targetUrl.length > 0 &&
     state.unavailable !== true;
+}
+
+/**
+ * Queue a guarded reconciliation for a binding whose route file repair cannot make
+ * correct. Only converged bindings need it — pending/error bindings are already
+ * queued (backoff), blocked ones are excluded by the retention predicate. The
+ * generation bump invalidates in-flight applies; the next reconcile pass re-probes
+ * fresh and either rewrites the serving route or re-retains.
+ */
+async function queueGuardedReconciliation(serverId: string, binding: DiscoveryBinding): Promise<boolean> {
+  if (binding.applyState !== "applied") return false;
+  return (await repos.discovery.requeueForApply(serverId, binding.serviceKey)) !== undefined;
 }
 
 /**
@@ -93,7 +93,13 @@ export async function repairDiscoveryRoutes(
     onLog?: (message: string, level?: "info" | "warn") => void;
   },
 ): Promise<DiscoveryRepairSummary> {
-  const summary: DiscoveryRepairSummary = { scanned: 0, repaired: [], retained: [], failed: [] };
+  const summary: DiscoveryRepairSummary = {
+    scanned: 0,
+    repaired: [],
+    retained: [],
+    requeued: [],
+    failed: [],
+  };
   const settings = await repos.discovery.getSettings(serverId);
   if (!settings?.enabled) return summary;
 
@@ -108,16 +114,29 @@ export async function repairDiscoveryRoutes(
       if (!shouldRetainUnavailableVhost(binding)) continue;
       summary.scanned += 1;
       try {
-        const recordAlive = recordUpstreamAlive(binding);
+        // The record's own upstream: null = backend missing/stopped/invalid or
+        // unresolvable — the record itself says nothing is serving.
+        const storedUpstream = upstreamUrlFor(binding);
         if (!(await routing.hasRoute(binding.hostname))) {
           // MISSING route file: the only safe restore is the retained 503 form —
-          // never a serving upstream replayed from records (P1: after downtime
-          // that endpoint may belong to another container).
+          // never a serving upstream replayed from records. When the record
+          // describes a RUNNING backend, queue guarded reconciliation right
+          // away, or the restored 503 would sit forever (an unchanged scan
+          // never requeues an applied binding).
           await routing.registerRoute(unavailableRouteFor(binding.hostname));
+          // Queue guarded reconciliation ONLY when the record describes a
+          // running backend — a dead one would just be re-retained by the next
+          // pass (churn without effect).
+          const queued = storedUpstream !== null
+            ? await queueGuardedReconciliation(serverId, binding)
+            : false;
           summary.repaired.push(binding.hostname);
+          if (queued) summary.requeued.push(binding.hostname);
           options?.onLog?.(
             `Restored discovered route ${binding.hostname} from its stored record` +
-              (recordAlive ? " (backend running; guarded reconciliation will resume serving)." : " (backend unavailable, TLS kept)."),
+              (queued
+                ? "; queued guarded reconciliation to resume serving."
+                : " (backend unavailable, TLS kept)."),
             "warn",
           );
           continue;
@@ -134,14 +153,29 @@ export async function repairDiscoveryRoutes(
           continue;
         }
         if (!isServingRouteState(actual)) continue; // already 503/retained: nothing to do
-        if (recordAlive) continue; // serving and the record agrees: apply-time validation owns it
-        // Serving vhost whose stored upstream the record says is DEAD: switch to
-        // the retained form so clients see 503 under the right certificate
-        // instead of 502 into a possibly-reused endpoint.
-        await routing.registerRoute(unavailableRouteFor(binding.hostname));
-        summary.retained.push(binding.hostname);
+        if (storedUpstream === null) {
+          // Serving vhost whose stored upstream the record says is DEAD: switch to
+          // the retained form so clients see 503 under the right certificate
+          // instead of 502 into a possibly-reused endpoint. No requeue: the
+          // backend is gone; reconciliation would only re-retain.
+          await routing.registerRoute(unavailableRouteFor(binding.hostname));
+          summary.retained.push(binding.hostname);
+          options?.onLog?.(
+            `Retained discovered route ${binding.hostname} (backend unavailable, TLS kept).`,
+            "warn",
+          );
+          continue;
+        }
+        if (actual.targetUrl === storedUpstream) continue; // serving the recorded upstream: apply-time validation owns it
+        // STALE TARGET: the vhost serves an old IP/port (replacement, IP churn).
+        // Repair can't validate the new endpoint either — leave the file and
+        // queue guarded reconciliation to re-probe fresh and rewrite. (An
+        // already-queued binding needs no bump: its pass is coming.)
+        const queued = await queueGuardedReconciliation(serverId, binding);
+        if (queued) summary.requeued.push(binding.hostname);
         options?.onLog?.(
-          `Retained discovered route ${binding.hostname} (backend unavailable, TLS kept).`,
+          `Discovered route ${binding.hostname} serves ${actual.targetUrl} but the record names ${storedUpstream};` +
+            (queued ? " queued guarded reconciliation." : " already queued for reconciliation."),
           "warn",
         );
       } catch (error) {
