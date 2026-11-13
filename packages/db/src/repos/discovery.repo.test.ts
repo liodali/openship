@@ -308,6 +308,39 @@ describe("binding observations", () => {
     expect((await repo.dueForApply(SERVER)).map((r) => r.serviceKey)).toEqual(["id:my-app"]);
   });
 
+  it("retention-relevant state survives the real observe→apply→stop→markMissing flow", async () => {
+    // The full lifecycle the reconciler decides on, through the REAL repo:
+    // discover (observe) → apply (markApplied records durable history) →
+    // container stops (observe running:false requeues as pending) → container
+    // removed (markMissing flags retirement). Every state the retention logic
+    // consumes must survive: appliedGeneration (the history record), hostname,
+    // port — while the live upstream description is cleared.
+    await repo.observe(SERVER, observation());
+    await repo.markApplied(SERVER, "id:my-app", 1);
+    expect((await repo.getBinding(SERVER, "id:my-app"))?.appliedGeneration).toBe(1);
+
+    // Container stops but is still present: the scanner observes running:false.
+    await repo.observe(SERVER, observation({ running: false, ipAddress: null }));
+    let row = await repo.getBinding(SERVER, "id:my-app");
+    expect(row?.containerRunning).toBe(false);
+    expect(row?.applyState).toBe("pending"); // requeued for the reconciler
+    expect(row?.appliedGeneration).toBe(1);  // history intact — retention evidence
+    expect(row?.hostname).toBe("app.example.com");
+
+    // Container removed from the host entirely.
+    await repo.markMissing(SERVER, "id:my-app");
+    row = await repo.getBinding(SERVER, "id:my-app");
+    expect(row?.observationStatus).toBe("missing");
+    expect(row?.appliedGeneration).toBe(1);
+    expect(row?.withdrawalPending).toBe(true); // retirement flagged, hostname kept
+    expect(row?.hostname).toBe("app.example.com");
+    expect(row?.port).toBe(3000);
+    // Both queues see it; each consumer (withdrawal loop, apply loop) retains
+    // on exactly this state via shouldRetainUnavailableVhost.
+    expect((await repo.dueForWithdrawal(SERVER)).map((r) => r.serviceKey)).toEqual(["id:my-app"]);
+    expect((await repo.dueForApply(SERVER)).map((r) => r.serviceKey)).toEqual(["id:my-app"]);
+  });
+
   it("does not re-bump an already-missing binding on repeated removals", async () => {
     await repo.observe(SERVER, observation());
     await repo.markMissing(SERVER, "id:my-app");

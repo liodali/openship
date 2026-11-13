@@ -198,7 +198,7 @@ describe("reconcileServerDiscovery", () => {
     // ACME (existing certificate material) instead of dropping the vhost —
     // the certificate lifecycle continues, clients see "backend unavailable".
     state.dueApply = [
-      binding({ applyState: "applied", observationStatus: "missing", containerId: null, ipAddress: null, containerRunning: false }),
+      binding({ applyState: "applied", appliedGeneration: 2, observationStatus: "missing", containerId: null, ipAddress: null, containerRunning: false }),
     ];
     const target = edge();
     const summary = await reconcileServerDiscovery(SERVER(), "org_1", { edge: target });
@@ -227,8 +227,10 @@ describe("reconcileServerDiscovery", () => {
   });
 
   it("removes the route outright for a missing binding that was NEVER applied", async () => {
+    // No durable history (appliedGeneration 0) = no vhost ever existed to
+    // retain; retention would create one for a service that never served.
     state.dueApply = [
-      binding({ applyState: "pending", observationStatus: "missing", containerId: null, ipAddress: null, containerRunning: false }),
+      binding({ applyState: "pending", appliedGeneration: 0, observationStatus: "missing", containerId: null, ipAddress: null, containerRunning: false }),
     ];
     const target = edge();
     const summary = await reconcileServerDiscovery(SERVER(), "org_1", { edge: target });
@@ -240,9 +242,60 @@ describe("reconcileServerDiscovery", () => {
     expect(manageDomainSsl).not.toHaveBeenCalled();
   });
 
+  it("RETAINS a stop-requeued binding: a normal stop flips applied bindings to applyState pending, but durable history decides", async () => {
+    // The real observe flow: a stopped container is observed with running=false,
+    // which requeues the binding (applyState "pending", generation bumped) while
+    // appliedGeneration keeps its record. The apply STATE must not decide
+    // retention — the durable history does.
+    state.dueApply = [
+      binding({ applyState: "pending", appliedGeneration: 2, containerRunning: false }),
+    ];
+    const target = edge();
+    const summary = await reconcileServerDiscovery(SERVER(), "org_1", { edge: target });
+    expect(target.routing.registerRoute).toHaveBeenCalledWith(
+      expect.objectContaining({ domain: "app.example.com", unavailable: true }),
+    );
+    expect(target.routing.removeRoute).not.toHaveBeenCalled();
+    expect(summary.retained).toEqual(["id:my-app"]);
+    expect(summary.removed).toEqual([]);
+  });
+
+  it("retains through the WITHDRAWAL loop too: markMissing flags a previously-applied binding for retirement, and it keeps its hostname", async () => {
+    // The real markMissing flow: invalidateObservation sets withdrawalPending on
+    // any binding with applied-route evidence (appliedGeneration > 0) AND
+    // requeues it as pending — the withdrawal loop consumes the flag first.
+    state.dueWithdrawal = [
+      binding({ applyState: "pending", appliedGeneration: 2, withdrawalPending: true }),
+    ];
+    const target = edge();
+    const summary = await reconcileServerDiscovery(SERVER(), "org_1", { edge: target });
+    expect(target.routing.registerRoute).toHaveBeenCalledWith(
+      expect.objectContaining({ domain: "app.example.com", unavailable: true }),
+    );
+    expect(target.routing.removeRoute).not.toHaveBeenCalled();
+    expect(summary.retained).toEqual(["id:my-app"]);
+    expect(state.withdrawn).toEqual(["id:my-app"]); // the flag clears either way
+    // Retention still releases the owner's published-port claims.
+    expect(convergeTargetHostPortClaimsUnlocked).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: "discovery:dsb_1", desiredPublishes: [] }),
+    );
+  });
+
+  it("a SUPPRESSED binding with history still retires outright through the withdrawal loop", async () => {
+    // Explicit control (operator opt-out) is never retention, regardless of history.
+    state.dueWithdrawal = [
+      binding({ applyState: "pending", appliedGeneration: 2, withdrawalPending: true, suppressed: true }),
+    ];
+    const target = edge();
+    const summary = await reconcileServerDiscovery(SERVER(), "org_1", { edge: target });
+    expect(target.routing.removeRoute).toHaveBeenCalledWith("app.example.com");
+    expect(target.routing.registerRoute).not.toHaveBeenCalled();
+    expect(summary.withdrawals).toEqual(["id:my-app"]);
+  });
+
   it("retains an error-state binding's hostname too (a vhost may exist from the failed apply)", async () => {
     state.dueApply = [
-      binding({ applyState: "error", observationStatus: "observed", containerRunning: false }),
+      binding({ applyState: "error", appliedGeneration: 2, observationStatus: "observed", containerRunning: false }),
     ];
     const target = edge();
     const summary = await reconcileServerDiscovery(SERVER(), "org_1", { edge: target });

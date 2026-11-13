@@ -367,6 +367,28 @@ describe("NginxProvider unavailable routes (retained hostname, 503 + TLS)", () =
     expect(JSON.parse(files.get(sidecar)!)).toMatchObject({ targetUrl: "http://10.0.0.9:8080" });
   });
 
+  test("readRouteState classifies the persisted vhost and reads a corrupt sidecar as unclassifiable", async () => {
+    const { nginx, files } = setup({ certDomains: ["app.example.com"] });
+    await nginx.registerRoute({ domain: "app.example.com", tls: true, terminatesTlsLocally: true, unavailable: true });
+    let state = await nginx.readRouteState("app.example.com");
+    expect(state).toMatchObject({ domain: "app.example.com", unavailable: true });
+
+    // The resume path's registration is visible through the same read.
+    await nginx.registerRoute({ domain: "app.example.com", tls: true, terminatesTlsLocally: true, targetUrl: "http://10.0.0.9:8080" });
+    state = await nginx.readRouteState("app.example.com");
+    expect(state).toMatchObject({ targetUrl: "http://10.0.0.9:8080" });
+    expect(state && "unavailable" in state && state.unavailable).toBeFalsy();
+
+    // No route at all → null.
+    await nginx.removeRoute("app.example.com");
+    await expect(nginx.readRouteState("app.example.com")).resolves.toBeNull();
+
+    // Corrupt sidecar under an existing conf → null (unclassifiable), not a throw.
+    files.set(`${SITES}/app-example-com.conf`, "server { listen 80; }");
+    files.set(`${SITES}/app-example-com.route.json`, "{ not json");
+    await expect(nginx.readRouteState("app.example.com")).resolves.toBeNull();
+  });
+
   test("hasRoute tracks the vhost across register/remove", async () => {
     const { nginx, files } = setup({});
     await expect(nginx.hasRoute("app.example.com")).resolves.toBe(false);
