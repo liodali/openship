@@ -234,6 +234,18 @@ async function shutdown(signal: NodeJS.Signals, exitCode = 0): Promise<void> {
     } catch (err) {
       errorDiagnostics.warn("api/server", "[shutdown] container event watcher close failed:", err);
     }
+
+    // Discovery lifecycle-event watchers (step 5). Fence renewals FIRST — a
+    // sweep still draining on the job runner must not re-arm subscriptions —
+    // then drain every subscription, pending debounce, and held runtime here,
+    // before the job runner, SSH manager, and database close below.
+    try {
+      const { fenceDiscoveryWatchers } =
+        await import("@repo/platform/engine/modules/discovery/discovery-watch");
+      fenceDiscoveryWatchers();
+    } catch (err) {
+      errorDiagnostics.warn("api/server", "[shutdown] discovery watcher fence failed:", err);
+    }
   }
 
   try {

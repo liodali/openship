@@ -46,6 +46,15 @@ export interface DiscoveryServerSweepSummary {
   failed: Array<"scan" | "reconcile" | "repair">;
 }
 
+/**
+ * ONE queue per server: the startup inventory, the cron tick, and every
+ * event-triggered pass serialize through it. Without this, an older pass can
+ * read pre-event state and withdraw or replace a route a newer pass just
+ * wrote — scan→reconcile is a read-modify-write cycle and must not overlap
+ * itself for one server. Different servers still sweep independently.
+ */
+const serverSweepQueues = new Map<string, Promise<DiscoveryServerSweepSummary>>();
+
 export interface DiscoverySweepSummary {
   servers: number;
   failed: string[];
@@ -53,21 +62,49 @@ export interface DiscoverySweepSummary {
 }
 
 /**
- * Run scan → reconcile → repair for ONE enabled server. Every stage is
- * individually error-isolated; the summary reports which stages failed.
+ * Run scan → reconcile → repair for ONE enabled server, SERIALIZED through the
+ * per-server queue (startup, cron, and event triggers all enter here). Every
+ * stage is individually error-isolated; the summary reports which stages
+ * failed.
+ *
+ * `fresh` bypasses the per-server scan interval. It is REQUIRED for triggers
+ * whose whole point is current state — the startup inventory, and every
+ * lifecycle event (a stop event just after a scan must not reconcile cached
+ * state). Only the recurring cron poll applies the interval.
  */
 export async function sweepServerDiscovery(
   serverId: string,
   organizationId: string,
+  options?: { fresh?: boolean },
+): Promise<DiscoveryServerSweepSummary> {
+  const tail = serverSweepQueues.get(serverId);
+  const run = (tail ?? Promise.resolve<DiscoveryServerSweepSummary>({ serverId, failed: [] }))
+    .catch(() => undefined)
+    .then(() => runServerSweep(serverId, organizationId, options));
+  serverSweepQueues.set(serverId, run);
+  void run.finally(() => {
+    // Drop the queue entry once this run is the tail — otherwise the map grows
+    // by one entry per server forever.
+    if (serverSweepQueues.get(serverId) === run) serverSweepQueues.delete(serverId);
+  });
+  return run;
+}
+
+async function runServerSweep(
+  serverId: string,
+  organizationId: string,
+  options?: { fresh?: boolean },
 ): Promise<DiscoveryServerSweepSummary> {
   const summary: DiscoveryServerSweepSummary = { serverId, failed: [] };
 
-  // Honor the per-server scan interval: a server configured to rescan less
-  // often skips its inventory when the last scan is fresh. Reconcile and
-  // repair ALWAYS run — they are DB-driven and cheap, and a reconcile that
-  // clears the apply queue must not wait on a stretched scan cadence.
+  // Honor the per-server scan interval — for the recurring poll only (see the
+  // `fresh` option): a server configured to rescan less often skips its
+  // inventory when the last scan is fresh. Reconcile and repair ALWAYS run —
+  // they are DB-driven and cheap, and a reconcile that clears the apply queue
+  // must not wait on a stretched scan cadence.
   const settings = await repos.discovery.getSettings(serverId);
   const scanDue =
+    options?.fresh === true ||
     !settings?.lastScanAt ||
     Date.now() - settings.lastScanAt.getTime() >= Math.max(0, (settings?.sweepIntervalSeconds ?? 60) - 5) * 1000;
   if (scanDue) {
@@ -107,8 +144,11 @@ export async function sweepServerDiscovery(
   return summary;
 }
 
-/** One sweep across every enabled server. */
-export async function sweepDiscovery(): Promise<DiscoverySweepSummary> {
+/**
+ * One sweep across every enabled server. `fresh` (startup inventory) forces
+ * fresh inventory on every server; the recurring cron body calls without it.
+ */
+export async function sweepDiscovery(options?: { fresh?: boolean }): Promise<DiscoverySweepSummary> {
   const summary: DiscoverySweepSummary = { servers: 0, failed: [], details: [] };
   let enabled: Array<{ serverId: string }>;
   try {
@@ -131,7 +171,7 @@ export async function sweepDiscovery(): Promise<DiscoverySweepSummary> {
         summary.failed.push(serverId);
         continue;
       }
-      const detail = await sweepServerDiscovery(serverId, server.organizationId);
+      const detail = await sweepServerDiscovery(serverId, server.organizationId, options);
       summary.details.push(detail);
       if (detail.failed.length > 0) summary.failed.push(serverId);
     } catch (error) {
@@ -163,7 +203,7 @@ export async function startDiscoverySweep(): Promise<void> {
     jobId: DISCOVERY_SWEEP_JOB,
     cronExpression: "* * * * *", // every minute = the plan's 60-second sweep
     run: async (): Promise<JobSummary> => {
-      const summary = await sweepDiscovery();
+      const summary = await sweepDiscovery(); // cron poll: interval-gated
       return {
         servers: summary.servers,
         failed: summary.failed.length,
@@ -173,10 +213,11 @@ export async function startDiscoverySweep(): Promise<void> {
       };
     },
   });
-  // Startup inventory: converge now, don't wait for the first tick. The
-  // watcher subscriptions arm inside the sweep's renewal.
+  // Startup inventory: converge now, don't wait for the first tick, with
+  // FRESH inventory (the interval gate is a poll-cadence tool, not a startup
+  // one). The watcher subscriptions arm inside the sweep's renewal.
   void trackBackgroundWork(
-    sweepDiscovery().catch((error) => {
+    sweepDiscovery({ fresh: true }).catch((error) => {
       errorDiagnostics.warn(
         "platform/engine/modules/discovery/discovery-sweep",
         `[discovery-sweep] startup inventory failed: ${safeErrorMessage(error)}`,
