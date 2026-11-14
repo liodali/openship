@@ -169,6 +169,27 @@ Docker/Podman compatibility work below is required before declaring full runtime
   API/UI (steps 3/6); live Podman canary
   (step 7/8). [Retention, route repair, and sweep/watcher wiring LANDED — see the
   Step 4 entry above.]
+- **Step 5 — sweep/watcher wiring LANDED.** `discovery-sweep.ts`: ONE
+  minute-cron system job (`discovery:sweep` via scheduleSystemJob, job_run
+  history) runs scan → reconcile → repair per enabled server, per-stage
+  error-isolated, honoring per-server `sweepIntervalSeconds` for the SCAN
+  only. `startDiscoverySweep` runs the STARTUP INVENTORY immediately (fresh,
+  fire-and-forget) and wires from API startup (self-hosted).
+  `discovery-watch.ts`: lifecycle-event ACCELERATOR — events coalesce (1.5s
+  debounce) into one single-server sweep; the watcher never classifies;
+  subscriptions lease (150s), renew from the sweep, and self-expire via
+  timer; onClose re-arms on the next tick (the 60s cadence is the backoff);
+  unsupported streams run poll-only. Serialization: EVERY trigger (startup,
+  cron, event) enters ONE per-server queue — scan→reconcile is a
+  read-modify-write cycle and an overlapping older pass could withdraw or
+  replace a newer route. Fresh inventory: startup, events, and reconnect
+  arming sweeps pass `fresh: true` (only the recurring poll is interval-
+  gated). Closed watchers drop their instance with the stale expiry timer
+  cleared and runtime disposed, guarded by INSTANCE IDENTITY so a stale
+  timer can never drain the re-armed replacement.
+  `fenceDiscoveryWatchers()` from API shutdown (before job runner/SSH/db
+  close) fences renewals and drains everything. Tests: sweep 17, watch 14.
+  Remaining: API operations/UI (steps 3/6), live Podman canary (7/8).
 - **Review acceptance check.** After `markInvalid()` clears `containerId`, a
   repeated scan must continue matching the rejected declaration by stable identity
   and retain `observationStatus='invalid'`. Add a regression that repeats the scan;
