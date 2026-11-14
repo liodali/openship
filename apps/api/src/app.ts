@@ -553,6 +553,16 @@ async function startControllerBackground(): Promise<void> {
           );
       }
 
+      // Self-hosted: the discovery sweep (docs/docker-service-discovery-plan.md,
+      // step 5) — 60-second scan/reconcile/repair for every enabled server, with
+      // the startup inventory and lifecycle-event watchers arming inside it.
+      // Cheap when no server has discovery enabled.
+      void import("@repo/platform/engine/modules/discovery/discovery-sweep")
+        .then(({ startDiscoverySweep }) => startDiscoverySweep())
+        .catch(() =>
+          errorDiagnostics.warn("api/app", "[discovery-sweep] could not start; the next tick retries."),
+        );
+
       // Self-hosted only: backfill per-project GitHub webhook secrets for
       // auto-deploy projects registered before per-project secrets were wired
       // (self-gates on !CLOUD_MODE). Fixes silently-broken auto-deploy on installs
