@@ -178,6 +178,70 @@ describe("sweepDiscovery", () => {
   });
 });
 
+describe("per-server serialization and fresh inventory", () => {
+  it("serializes overlapping triggers for one server: the second pass waits for the first", async () => {
+    enable("srv_1", "org_1");
+    // Gate the FIRST call inside its scan so the second trigger overlaps.
+    let releaseScan: (() => void) | undefined;
+    scan.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          releaseScan = () =>
+            resolve({ scanned: 1, eligible: 1, observed: [], desiredChanged: [], invalid: [], missing: [], withdrawn: [], blocked: [], errors: [], ok: true });
+        }),
+    );
+    const first = sweepServerDiscovery("srv_1", "org_1", { fresh: true });
+    const second = sweepServerDiscovery("srv_1", "org_1"); // e.g. cron tick during the startup pass
+    await vi.waitFor(() => expect(releaseScan).toBeDefined());
+    // The second pass has not entered its scan while the first holds the queue.
+    expect(scan).toHaveBeenCalledTimes(1);
+    releaseScan!();
+    await Promise.all([first, second]);
+    expect(scan).toHaveBeenCalledTimes(2); // strictly after the first finished
+    expect(reconcile).toHaveBeenCalledTimes(2);
+  });
+
+  it("queues serialize per server but different servers sweep independently", async () => {
+    enable("srv_1", "org_1");
+    enable("srv_2", "org_2");
+    let release: (() => void) | undefined;
+    scan.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () =>
+            resolve({ scanned: 1, eligible: 1, observed: [], desiredChanged: [], invalid: [], missing: [], withdrawn: [], blocked: [], errors: [], ok: true });
+        }),
+    );
+    const p1 = sweepServerDiscovery("srv_1", "org_1");
+    const p2 = sweepServerDiscovery("srv_2", "org_2"); // different queue: runs now
+    await vi.waitFor(() => expect(release).toBeDefined());
+    expect(scan).toHaveBeenCalledTimes(2); // srv_2 was NOT blocked by srv_1's queue
+    release!();
+    await Promise.all([p1, p2]);
+  });
+
+  it("event/reconnect passes request FRESH inventory — the interval gate cannot skip them", async () => {
+    enable("srv_1", "org_1", { sweepIntervalSeconds: 3600, lastScanAt: new Date() }); // scan absurdly fresh
+    const summary = await sweepServerDiscovery("srv_1", "org_1", { fresh: true });
+    expect(scan).toHaveBeenCalledOnce(); // fresh bypasses the interval
+    expect(summary.failed).toEqual([]);
+  });
+
+  it("the recurring poll keeps its interval gating (no fresh flag)", async () => {
+    enable("srv_1", "org_1", { sweepIntervalSeconds: 3600, lastScanAt: new Date() });
+    await sweepDiscovery(); // cron body
+    expect(scan).not.toHaveBeenCalled();
+    expect(reconcile).toHaveBeenCalledOnce(); // reconcile/repair still run
+    expect(repair).toHaveBeenCalledOnce();
+  });
+
+  it("the startup inventory forces fresh inventory on every enabled server", async () => {
+    enable("srv_1", "org_1", { sweepIntervalSeconds: 3600, lastScanAt: new Date() });
+    await startDiscoverySweep();
+    await vi.waitFor(() => expect(scan).toHaveBeenCalledOnce()); // fresh despite the fresh lastScanAt
+  });
+});
+
 describe("startDiscoverySweep", () => {
   it("registers the 60-second cron job and runs the startup inventory immediately", async () => {
     enable("srv_1", "org_1");
