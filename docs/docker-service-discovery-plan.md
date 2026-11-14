@@ -188,7 +188,13 @@ Docker/Podman compatibility work below is required before declaring full runtime
   cleared and runtime disposed, guarded by INSTANCE IDENTITY so a stale
   timer can never drain the re-armed replacement.
   `fenceDiscoveryWatchers()` from API shutdown (before job runner/SSH/db
-  close) fences renewals and drains everything. Tests: sweep 17, watch 14.
+  close) fences renewals and drains everything — and the fence is RECHECKED
+  after a watcher's awaited setup, so a shutdown racing a sweep's renewal
+  drains the just-built subscription instead of registering one live watcher
+  with an undisposed runtime. The sweep queue's cleanup observes both
+  outcomes (then(onFulfilled, onRejected), never a discarded run.finally), so
+  a failing pass rejects only through the caller's catch — no unhandled
+  rejection. Tests: sweep 18, watch 15.
   Remaining: API operations/UI (steps 3/6), live Podman canary (7/8).
 - **Review acceptance check.** After `markInvalid()` clears `containerId`, a
   repeated scan must continue matching the rejected declaration by stable identity
