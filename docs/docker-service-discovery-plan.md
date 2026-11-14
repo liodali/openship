@@ -95,11 +95,16 @@ Docker/Podman compatibility work below is required before declaring full runtime
   ownership + assertCurrent): whenever repair restores a 503 while the record
   describes a RUNNING backend — or detects a stale serving target — it queues
   the guarded pass via the new generation-safe `requeueForApply` repo
-  primitive (desiredGeneration bump invalidates in-flight applies; skipped
-  for already-queued pending/error bindings). A restored 503 for a dead
-  backend is NOT requeued (reconciliation would only re-retain). Repair never
-  probes live, never touches claims, never orders a certificate. Sweep/watcher
-  wiring is step 5.**
+  primitive (row-locked and strictly conditional: expected generation +
+  still-applied + still-unsuppressed, so a scanner block or operator opt-out
+  between repair's snapshot and the write is never overridden; the bump
+  invalidates in-flight applies; skipped for already-queued pending/error
+  bindings). A restored 503 for a dead backend is NOT requeued (reconciliation
+  would only re-retain). CRASH-SAFETY: an EXISTING unavailable vhost whose
+  record describes a RUNNING backend is queued too — a previous repair may
+  have written the 503 and died before its requeue committed. Repair never
+  probes live, never touches claims, never orders a certificate.
+  Sweep/watcher wiring is step 5.**
   `packages/platform/src/engine/modules/discovery/discovery-reconciler.ts`
   (+7 tests): withdrawals first (blocked/suppressed owners included), then
   due applies — bridge-ip registers `http://<ip>:<port>`; published-port
