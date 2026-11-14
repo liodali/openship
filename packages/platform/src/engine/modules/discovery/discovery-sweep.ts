@@ -82,11 +82,16 @@ export async function sweepServerDiscovery(
     .catch(() => undefined)
     .then(() => runServerSweep(serverId, organizationId, options));
   serverSweepQueues.set(serverId, run);
-  void run.finally(() => {
-    // Drop the queue entry once this run is the tail — otherwise the map grows
-    // by one entry per server forever.
+  // Drop the queue entry once this run is the tail — otherwise the map grows
+  // by one entry per server forever. The cleanup observes BOTH outcomes: a
+  // bare `run.finally(...)` would discard a rejecting promise (an unhandled
+  // rejection even when the caller catches `run` itself — reproduced with a
+  // failing settings read), while then(onFulfilled, onRejected) settles the
+  // cleanup chain quietly and leaves `run`'s rejection to the caller's catch.
+  const dropQueueEntry = (): void => {
     if (serverSweepQueues.get(serverId) === run) serverSweepQueues.delete(serverId);
-  });
+  };
+  void run.then(dropQueueEntry, dropQueueEntry);
   return run;
 }
 

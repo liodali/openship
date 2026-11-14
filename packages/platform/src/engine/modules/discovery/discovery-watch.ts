@@ -159,6 +159,15 @@ async function armWatcher(serverId: string, organizationId: string): Promise<voi
         }
       },
     });
+    // The fence may have landed WHILE this setup was awaiting (shutdown
+    // racing a sweep's renewal): recheck before registering, or one live
+    // watcher with an undisposed runtime would survive the shutdown. Drain
+    // the just-established subscription here; the finally below disposes the
+    // runtime (the watcher was never registered).
+    if (fenced) {
+      void cleanup();
+      return;
+    }
     const watcher: DiscoveryWatcher = {
       cleanup,
       runtime,
