@@ -166,8 +166,8 @@ Docker/Podman compatibility work below is required before declaring full runtime
   the head; every ACME order
   path (provision AND renew) runs the fresh-container + discovery-enabled gate
   INSIDE the per-box ACME lock, immediately before the order. STILL NOT DONE:
-  watcher/sweep wiring (step 5); API/UI (steps 3/6); live Podman canary
-  (step 7/8). [Unavailable-vhost retention and route repair LANDED — see the
+  API/UI (steps 3/6); live Podman canary
+  (step 7/8). [Retention, route repair, and sweep/watcher wiring LANDED — see the
   Step 4 entry above.]
 - **Review acceptance check.** After `markInvalid()` clears `containerId`, a
   repeated scan must continue matching the rejected declaration by stable identity
