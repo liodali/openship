@@ -406,12 +406,17 @@ export function createDiscoveryRepo(db: Database) {
      * but cannot validate an upstream, so when the record describes a RUNNING
      * backend (or a serving vhost disagrees with the record) the guarded
      * reconciliation must re-probe fresh and rewrite — and an unchanged scan
-     * would never requeue an applied binding on its own. Generation-safe: the
-     * desiredGeneration bump invalidates any in-flight apply (markApplied's
-     * stale-generation guard no-ops it) and serializes against concurrent
-     * scanner observations under the row lock.
+     * would never requeue an applied binding on its own.
+     *
+     * Strictly conditional under the row lock: the requeue commits only if the
+     * row STILL matches the repair sweep's snapshot — expected generation,
+     * still "applied", still unsuppressed. Repair reads its snapshot, THEN the
+     * scanner may block a hostname conflict or an operator may opt out; a
+     * blind requeue would clear that conflict protection (blocked → pending).
+     * A lost race returns undefined and the next sweep (or the scanner's own
+     * requeue) handles the newer state.
      */
-    async requeueForApply(serverId: string, serviceKey: string) {
+    async requeueForApply(serverId: string, serviceKey: string, expectedDesiredGeneration: number) {
       return db.transaction(async (tx) => {
         const [existing] = await tx
           .select()
@@ -419,6 +424,14 @@ export function createDiscoveryRepo(db: Database) {
           .where(and(eq(binding.serverId, serverId), eq(binding.serviceKey, serviceKey)))
           .for("update");
         if (!existing) return undefined;
+        // Snapshot must still be current: a scanner observation bumped the
+        // generation meanwhile and owns the queuing decision.
+        if (existing.desiredGeneration !== expectedDesiredGeneration) return undefined;
+        // Only a converged binding is "stuck"; pending/error are already
+        // queued, and blocked/suppressed are explicit control repair must
+        // never override.
+        if (existing.applyState !== "applied") return undefined;
+        if (existing.suppressed) return undefined;
         const [row] = await tx
           .update(binding)
           .set({

@@ -69,10 +69,19 @@ function isServingRouteState(state: { targetUrl?: string; unavailable?: boolean 
  * queued (backoff), blocked ones are excluded by the retention predicate. The
  * generation bump invalidates in-flight applies; the next reconcile pass re-probes
  * fresh and either rewrites the serving route or re-retains.
+ *
+ * The requeue commits only if the row still matches THIS sweep's snapshot
+ * (generation, applied state, unsuppressed): the scanner may have blocked a
+ * conflict or an operator opted out between the read and the write, and repair
+ * must never override that. A lost race returns false and the next sweep — or
+ * the scanner's own queueing — handles the newer state.
  */
 async function queueGuardedReconciliation(serverId: string, binding: DiscoveryBinding): Promise<boolean> {
   if (binding.applyState !== "applied") return false;
-  return (await repos.discovery.requeueForApply(serverId, binding.serviceKey)) !== undefined;
+  return (
+    (await repos.discovery.requeueForApply(serverId, binding.serviceKey, binding.desiredGeneration)) !==
+    undefined
+  );
 }
 
 /**
@@ -152,7 +161,27 @@ export async function repairDiscoveryRoutes(
           });
           continue;
         }
-        if (!isServingRouteState(actual)) continue; // already 503/retained: nothing to do
+        if (!isServingRouteState(actual)) {
+          // Already the unavailable form — but CRASH-SAFETY: a previous repair
+          // may have written the 503 and died before its requeue committed, so
+          // "the sweep will fix it" must not depend on that sweep having
+          // finished. A record that says RUNNING with a converged binding gets
+          // its guarded pass (idempotent: a committed requeue already flipped
+          // the binding to pending, and this call then no-ops). A record that
+          // says the backend is dead is genuinely retained — reconciliation
+          // would only re-retain.
+          if (storedUpstream !== null) {
+            const queued = await queueGuardedReconciliation(serverId, binding);
+            if (queued) {
+              summary.requeued.push(binding.hostname);
+              options?.onLog?.(
+                `Discovered route ${binding.hostname} is retained while its record describes a running backend; queued guarded reconciliation.`,
+                "warn",
+              );
+            }
+          }
+          continue;
+        }
         if (storedUpstream === null) {
           // Serving vhost whose stored upstream the record says is DEAD: switch to
           // the retained form so clients see 503 under the right certificate
