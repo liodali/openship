@@ -14,7 +14,7 @@ const state = {
 const discoveryRepo = {
   getSettings: vi.fn(async () => state.settings),
   listActiveForServers: vi.fn(async (_serverIds: string[]) => state.bindings),
-  requeueForApply: vi.fn(async (_serverId: string, serviceKey: string) => ({ serviceKey })),
+  requeueForApply: vi.fn(async (_serverId: string, serviceKey: string, _expected: number) => ({ serviceKey })),
 };
 
 const domainRepo = { ensureServerDomain: vi.fn(async () => ({ created: false })) };
@@ -157,7 +157,7 @@ describe("repairDiscoveryRoutes", () => {
     const { edge: target, registered } = edge({ hasRoute: async () => false });
     const summary = await repairDiscoveryRoutes("srv_1", "org_1", { edge: target as never });
     expect(summary.requeued).toEqual(["app.example.com"]);
-    expect(discoveryRepo.requeueForApply).toHaveBeenCalledWith("srv_1", "id:my-app");
+    expect(discoveryRepo.requeueForApply).toHaveBeenCalledWith("srv_1", "id:my-app", 2);
     // The write stays 503 — the guarded pass does the serving registration.
     expect(registered).toEqual([
       { domain: "app.example.com", tls: true, terminatesTlsLocally: true, unavailable: true },
@@ -189,19 +189,32 @@ describe("repairDiscoveryRoutes", () => {
     ]);
   });
 
-  it("compares ACTUAL route state: an existing unavailable vhost is left alone even when the record says serving", async () => {
-    // P3: file existence is not correctness — but the flip side is equally
-    // binding: repair cannot VALIDATE an upstream, so a retained vhost stays
-    // retained and guarded reconciliation resumes serving when it can.
+  it("an unavailable vhost with a RUNNING recorded backend is queued too (crash-safe recovery)", async () => {
+    // P2: a previous repair may have written the 503 and died before its
+    // requeue committed — the next sweep must retry reconciliation, not treat
+    // the retained vhost as final. Record says running + binding converged →
+    // queue (idempotent: a committed requeue already flipped it to pending,
+    // and this no-ops). The vhost itself is never touched.
     state.bindings = [binding()];
     const { edge: target, registered } = edge({
       hasRoute: async () => true,
       routeState: { domain: "app.example.com", tls: true, unavailable: true },
     });
     const summary = await repairDiscoveryRoutes("srv_1", "org_1", { edge: target as never });
-    expect(summary.repaired).toEqual([]);
-    expect(summary.retained).toEqual([]);
+    expect(summary.requeued).toEqual(["app.example.com"]);
+    expect(discoveryRepo.requeueForApply).toHaveBeenCalledWith("srv_1", "id:my-app", 2);
+    expect(registered).toEqual([]); // no unvalidated write; the guarded pass decides
+  });
+
+  it("an unavailable vhost with a DEAD recorded backend stays retained without requeue", async () => {
+    state.bindings = [binding({ containerRunning: false })];
+    const { edge: target, registered } = edge({
+      hasRoute: async () => true,
+      routeState: { domain: "app.example.com", tls: true, unavailable: true },
+    });
+    const summary = await repairDiscoveryRoutes("srv_1", "org_1", { edge: target as never });
     expect(summary.requeued).toEqual([]);
+    expect(summary.retained).toEqual([]);
     expect(registered).toEqual([]);
     expect(discoveryRepo.requeueForApply).not.toHaveBeenCalled();
   });
@@ -237,7 +250,7 @@ describe("repairDiscoveryRoutes", () => {
     expect(summary.repaired).toEqual([]);
     // No unvalidated write: the serving decision belongs to guarded reconciliation.
     expect(registered).toEqual([]);
-    expect(discoveryRepo.requeueForApply).toHaveBeenCalledWith("srv_1", "id:my-app");
+    expect(discoveryRepo.requeueForApply).toHaveBeenCalledWith("srv_1", "id:my-app", 2);
   });
 
   it("an already-queued (pending) binding with a stale target is left to its scheduled pass", async () => {

@@ -349,7 +349,7 @@ describe("binding observations", () => {
     await repo.markApplied(SERVER, "id:my-app", 1);
     expect(await repo.dueForApply(SERVER)).toHaveLength(0); // converged
 
-    const requeued = await repo.requeueForApply(SERVER, "id:my-app");
+    const requeued = await repo.requeueForApply(SERVER, "id:my-app", 1);
     expect(requeued?.applyState).toBe("pending");
     expect(requeued?.desiredGeneration).toBe(2); // bumped past the applied generation
     // The backoff bookkeeping resets: the pass runs now, not on stale backoff.
@@ -366,14 +366,57 @@ describe("binding observations", () => {
   });
 
   it("requeueForApply is a no-op for unknown bindings and coexists with scanner bumps", async () => {
-    expect(await repo.requeueForApply(SERVER, "id:ghost")).toBeUndefined();
+    expect(await repo.requeueForApply(SERVER, "id:ghost", 1)).toBeUndefined();
 
     await repo.observe(SERVER, observation());
-    // Scanner bump and repair requeue serialize: each monotonic, never regressive.
-    const first = await repo.requeueForApply(SERVER, "id:my-app");
+    await repo.markApplied(SERVER, "id:my-app", 1); // requeue only fires on converged rows
+    const first = await repo.requeueForApply(SERVER, "id:my-app", 1);
     const gen1 = first?.desiredGeneration ?? 0;
-    const second = await repo.requeueForApply(SERVER, "id:my-app");
+    expect(gen1).toBeGreaterThan(1);
+    // A second sweep finds the binding already queued (pending) and must not
+    // double-bump — the scheduled pass owns it.
+    expect(await repo.requeueForApply(SERVER, "id:my-app", gen1)).toBeUndefined();
+    // Once the guarded pass converges again, the next repair-era requeue bumps
+    // monotonically from the applied generation.
+    await repo.markApplied(SERVER, "id:my-app", gen1);
+    const second = await repo.requeueForApply(SERVER, "id:my-app", gen1);
     expect((second?.desiredGeneration ?? 0)).toBeGreaterThan(gen1);
+  });
+
+  it("requeueForApply refuses to clear a concurrent block, suppression, or newer snapshot", async () => {
+    // P1: repair reads its snapshot, THEN the scanner blocks a hostname
+    // conflict (or an operator suppresses). The requeue must require the row to
+    // still match the snapshot — expected generation, applied state, and
+    // unsuppressed — or it would wipe conflict protection (blocked → pending).
+    await repo.observe(SERVER, observation());
+    await repo.markApplied(SERVER, "id:my-app", 1);
+
+    // Stale snapshot: the scanner bumped the generation meanwhile.
+    await repo.observe(SERVER, observation({ ipAddress: "172.20.0.9" })); // runtime change → requeue + bump
+    const current = await repo.getBinding(SERVER, "id:my-app");
+    expect(current?.applyState).toBe("pending");
+    expect(await repo.requeueForApply(SERVER, "id:my-app", 1)).toBeUndefined(); // old generation
+    let row = await repo.getBinding(SERVER, "id:my-app");
+    expect(row?.applyState).toBe("pending"); // untouched by the stale requeue
+    expect(row?.desiredGeneration).toBe(current?.desiredGeneration);
+
+    // Converged again, then BLOCKED: the requeue must not flip blocked → pending.
+    await repo.markApplied(SERVER, "id:my-app", current!.desiredGeneration);
+    const converged = await repo.getBinding(SERVER, "id:my-app");
+    await repo.block(SERVER, "id:my-app", "hostname conflict resolved into a block");
+    expect(await repo.requeueForApply(SERVER, "id:my-app", converged!.desiredGeneration)).toBeUndefined();
+    row = await repo.getBinding(SERVER, "id:my-app");
+    expect(row?.applyState).toBe("blocked"); // conflict protection intact
+
+    // Blocked cleared, converged, then SUPPRESSED: still no override.
+    await repo.unblock(SERVER, "id:my-app");
+    await repo.markApplied(SERVER, "id:my-app", (await repo.getBinding(SERVER, "id:my-app"))!.desiredGeneration);
+    await repo.suppress(SERVER, "id:my-app");
+    const beforeSuppress = await repo.getBinding(SERVER, "id:my-app");
+    expect(await repo.requeueForApply(SERVER, "id:my-app", beforeSuppress!.desiredGeneration)).toBeUndefined();
+    row = await repo.getBinding(SERVER, "id:my-app");
+    expect(row?.suppressed).toBe(true);
+    expect(row?.applyState).not.toBe("pending");
   });
 
   it("does not re-bump an already-missing binding on repeated removals", async () => {
