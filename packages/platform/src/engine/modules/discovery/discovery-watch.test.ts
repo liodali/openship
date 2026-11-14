@@ -56,8 +56,12 @@ function runtimeWithEvents(opts: { supported?: boolean } = {}): RuntimeFixture {
 
 const runtimeFixtures = new Map<string, RuntimeFixture>();
 
+const runtimeGates = new Map<string, Promise<void>>();
+
 vi.mock("../../lib/deployment-runtime", () => ({
   createServerDockerRuntime: vi.fn(async (serverId: string) => {
+    const gate = runtimeGates.get(serverId);
+    if (gate) await gate; // in-flight setup: the fixture is handed out only after release
     const fixture = runtimeFixtures.get(serverId);
     if (!fixture) throw new Error(`no runtime fixture for ${serverId}`);
     return fixture.runtime;
@@ -79,6 +83,7 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
   state.servers = {};
   runtimeFixtures.clear();
+  runtimeGates.clear();
 });
 
 afterEach(() => {
@@ -190,6 +195,32 @@ describe("renewDiscoveryWatchers", () => {
     expect(sweep).toHaveBeenCalledTimes(1);
     expect(sweep).toHaveBeenCalledWith("srv_1", "org_1", { fresh: true });
     void fixture;
+  });
+
+  it("a fence landing during in-flight SETUP drains the just-built subscription and never registers it", async () => {
+    // P2: armWatcher awaited its runtime/stream setup without rechecking the
+    // fence, so a shutdown racing a sweep's renewal left ONE live watcher with
+    // an undisposed runtime. The fence is rechecked after the awaited setup.
+    let releaseSetup: (() => void) | undefined;
+    const gated = new Promise<void>((resolve) => {
+      releaseSetup = resolve;
+    });
+    const fixture = enable("srv_1");
+    runtimeGates.set("srv_1", gated);
+    const renewal = renewDiscoveryWatchers(["srv_1"]); // arm starts, setup gated
+    fenceDiscoveryWatchers(); // shutdown lands mid-setup
+    releaseSetup!();
+    await renewal;
+    // Not registered, subscription drained immediately, runtime disposed once
+    // (the never-registered watcher's finally path).
+    expect(discoveryWatcherCount()).toBe(0);
+    expect(fixture.cleanups[0]).toHaveBeenCalledOnce();
+    expect(fixture.runtime.dispose).toHaveBeenCalledTimes(1);
+    // The fence holds: a later renewal must not re-arm against closing resources.
+    runtimeGates.delete("srv_1");
+    await renewDiscoveryWatchers(["srv_1"]);
+    expect(fixture.runtime.watchContainerEvents).toHaveBeenCalledTimes(1);
+    expect(discoveryWatcherCount()).toBe(0);
   });
 
   it("fenceDiscoveryWatchers drains everything and renewal becomes a no-op", async () => {

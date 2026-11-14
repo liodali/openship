@@ -178,6 +178,34 @@ describe("sweepDiscovery", () => {
   });
 });
 
+describe("queue cleanup under rejection", () => {
+  it("a failing settings read rejects the caller's promise WITHOUT an unhandled rejection from the cleanup chain", async () => {
+    // The queue's cleanup used to ride a bare run.finally(...) whose returned
+    // promise was discarded — a rejecting run (settings read fails before any
+    // stage isolation) produced an unhandledRejection even though the caller
+    // caught the run itself. The cleanup now observes both outcomes.
+    enable("srv_1", "org_1");
+    discoveryRepo.getSettings.mockRejectedValueOnce(new Error("db hiccough"));
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      await expect(sweepServerDiscovery("srv_1", "org_1")).rejects.toThrow("db hiccough");
+      // Give any discarded-rejection microtask a chance to surface.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(unhandled).toHaveLength(0);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+    // The queue entry is gone: the next sweep is not chained behind a dead tail.
+    discoveryRepo.getSettings.mockRejectedValueOnce(new Error("db hiccough again"));
+    await expect(sweepServerDiscovery("srv_1", "org_1")).rejects.toThrow("db hiccough again");
+    expect(scan).not.toHaveBeenCalled(); // both failures happened before any stage ran
+  });
+});
+
 describe("per-server serialization and fresh inventory", () => {
   it("serializes overlapping triggers for one server: the second pass waits for the first", async () => {
     enable("srv_1", "org_1");
