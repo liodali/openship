@@ -27,6 +27,8 @@
  *                              (pasta-forwarded channel source, podman VPS)
  *  10. build SSH submodules   — opt-in OPENSHIP_BUILD_SSH_DIR mount + SSH
  *                              transport for private git@<alias>: submodules
+ *  11. SELinux + podman socket — api sets security_opt: ["label=disable"] so
+ *                              container_t may use the rootless daemon socket
  *
  * WHEN UPSTREAM ADOPTS THE SAME FIX: resolve the merge by taking THEIR version
  * and delete that check here. Every merged upstream PR shrinks the fork back
@@ -274,6 +276,17 @@ check(
   ".env.example no longer documents OPENSHIP_BUILD_SSH_DIR.",
 );
 
+// ── Patch 11: SELinux + rootless Podman socket ──────────────────────────────
+// `container_t` is denied `write` on the mounted rootless podman socket
+// (user_tmp_t) AND `connectto` the podman service (container_runtime_t); `:z`
+// only fixes the first. Without label=disable every daemon call — including
+// the container-events health watch — fails with connect EACCES.
+check(
+  "patch 11 (api disables SELinux labeling)",
+  composeCliTs.includes('security_opt: ["label=disable"]'),
+  'compose.ts no longer emits `security_opt: ["label=disable"]` on the api service — rootless Podman on SELinux denies the daemon socket (EACCES) and the health watch sees no containers.',
+);
+
 if (failures.length > 0) {
   console.error("\n✖ fork patch guard: a patch no longer looks intact after the merge.\n");
   for (const f of failures) console.error(`  - ${f}`);
@@ -285,5 +298,5 @@ if (failures.length > 0) {
   process.exit(1);
 }
 console.log(
-  "✔ fork patch guard: all ten patches intact (extrahosts JSON, builder fallback, nginx Connection map, fork badge, folder-deploy endpoints, hosted-only own domain, podman actions runner, self-app api domain, host-key from= own IP, build SSH submodules).",
+  "✔ fork patch guard: all eleven patches intact (extrahosts JSON, builder fallback, nginx Connection map, fork badge, folder-deploy endpoints, hosted-only own domain, podman actions runner, self-app api domain, host-key from= own IP, build SSH submodules, SELinux api socket).",
 );

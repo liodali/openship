@@ -95,6 +95,15 @@ function volumesOf(service: string): string {
   return vol === -1 ? "" : block.slice(vol);
 }
 
+/** The full rendered block of one service, so service-level keys can be checked. */
+function serviceBlock(service: string): string {
+  const yaml = composeYaml();
+  const start = yaml.indexOf(`\n  ${service}:`);
+  if (start === -1) throw new Error(`service ${service} not found`);
+  const next = yaml.slice(start + 1).search(/\n {2}[a-z]/);
+  return next === -1 ? yaml.slice(start) : yaml.slice(start, start + 1 + next);
+}
+
 const ORIGINAL_DOCKER_CONFIG = process.env.DOCKER_CONFIG;
 const ORIGINAL_BUILD_SSH_DIR = process.env.OPENSHIP_BUILD_SSH_DIR;
 
@@ -119,6 +128,17 @@ describe("openship up — host Docker config mount (#581)", () => {
     expect(composeYaml()).not.toContain(".docker/config.json");
     // The marker must never survive into the written file.
     expect(composeYaml()).not.toContain("__OPENSHIP_DOCKER_CONFIG_MOUNT__");
+  });
+
+  // Fork patch 11: rootless Podman on an SELinux-enforcing host denies
+  // container_t BOTH the write on the rootless daemon socket and connectto on
+  // the podman service — :z only fixes the first. The api service therefore
+  // always renders with labeling disabled (a no-op where SELinux is not
+  // enforcing); without it every daemon call dies in `connect EACCES`.
+  it("disables SELinux labeling on the api service", async () => {
+    await composeUp({ version: "0.3.0" });
+    const api = serviceBlock("api");
+    expect(api).toContain('security_opt: ["label=disable"]');
   });
 
   it("mounts an existing config read-only into the api service", async () => {
