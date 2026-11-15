@@ -596,6 +596,15 @@ services:
       retries: 12
 
   api:
+    # Rootless Podman on an SELinux-enforcing host: the api reaches the daemon
+    # through the socket mounted below, but \`container_t\` is denied BOTH \`write\`
+    # on the rootless socket (\`user_tmp_t\`) and \`connectto\` the podman service
+    # (\`container_runtime_t\`). \`:z\` only relabels the socket, so it fixes the
+    # first and not the second. Without this every container operation dies in
+    # the transport with \`connect EACCES /var/run/docker.sock\` — including the
+    # container-events health watch, which then reports no containers at all.
+    # Labeling off is a no-op on hosts where SELinux is not enforcing.
+    security_opt: ["label=disable"]
     image: \${OPENSHIP_IMAGE_REGISTRY:-ghcr.io/oblien}/openship-api:\${OPENSHIP_VERSION:-latest}
     restart: unless-stopped
     logging: *default-logging
