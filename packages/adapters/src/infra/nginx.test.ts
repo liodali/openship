@@ -310,6 +310,27 @@ const PROXY: RouteConfig = {
 const OURS: RouteConfig = { ...PROXY, terminatesTlsLocally: true };
 const BOOTSTRAP_DIR = "/etc/letsencrypt/openship-bootstrap/app.example.com";
 
+describe("NginxProvider.readVhostGeneration", () => {
+  test("reads the generation a registered route was written by", async () => {
+    const { nginx } = setup({ certDomains: ["app.example.com"] });
+    await nginx.registerRoute({
+      domain: "app.example.com",
+      tls: true,
+      terminatesTlsLocally: true,
+      unavailable: true,
+    });
+    await expect(nginx.readVhostGeneration("app.example.com")).resolves.toBe(VHOST_GENERATION);
+  });
+
+  test("a missing conf THROWS — it must never read as stale", async () => {
+    // Between hasRoute and this read the route was removed concurrently: a null
+    // here would read as "older than the marker itself" to a caller whose next
+    // step re-registers, resurrecting a vhost an operator just removed.
+    const { nginx } = setup({});
+    await expect(nginx.readVhostGeneration("app.example.com")).rejects.toThrow();
+  });
+});
+
 describe("NginxProvider unavailable routes (retained hostname, 503 + TLS)", () => {
   test("answers 503 everywhere while keeping TLS and the ACME challenge locations (existing cert)", async () => {
     const { nginx, conf } = setup({ certDomains: ["app.example.com"] });
@@ -320,10 +341,17 @@ describe("NginxProvider unavailable routes (retained hostname, 503 + TLS)", () =
       unavailable: true,
     });
     const c = conf("app-example-com")!;
-    // The retained vhost's entire answer: the serving location 503s — no
-    // application upstream (the only proxy_pass left is the edge-challenge
-    // helper, which challenge handling needs).
-    expect(c).toMatch(/location \/ \{\s*(?:if[\s\S]*?\n\s*\}\s*)?return 503;/);
+    // The retained vhost's entire answer: the serving location types the response
+    // text/html and returns the Openship page with 503 — no application upstream
+    // (the only proxy_pass left is the edge-challenge helper, which challenge
+    // handling needs).
+    expect(c).toMatch(/location \/ \{\s*(?:if[\s\S]*?\n\s*\}\s*)?types \{ \}\s*default_type text\/html;\s*return 503 '/);
+    expect(c).toContain("openship-edge-unavailable");
+    // The page is served under BOTH listeners of the retained vhost.
+    expect(c.split("openship-edge-unavailable").length - 1).toBe(2);
+    // The upstream-down handler is NOT here: nothing proxies, so nothing can 502,
+    // and the retained page IS this vhost's error page.
+    expect(c).not.toContain("error_page 502 504");
     // TLS continues with the EXISTING certificate material — the whole point
     // of retention: renewal and the challenge flow keep working.
     expect(c).toContain("listen 443 ssl;");
@@ -332,6 +360,26 @@ describe("NginxProvider unavailable routes (retained hostname, 503 + TLS)", () =
     // the edge-target challenge.
     expect(c.match(/location \^~ \/\.well-known\/acme-challenge\//g)?.length).toBe(1);
     expect(c).toContain("location ^~ /.well-known/oblien-proxy-challenge/");
+  });
+
+  test("marks the unavailable page no-store at server scope, never inside a location", async () => {
+    // A 503 that a shared cache or the visitor's browser kept would outlive the
+    // container's return, so the header goes out with `always` (a bare add_header
+    // applies only to "successful" statuses and a 503 would go out bare).
+    const { nginx, conf } = setup({ certDomains: ["app.example.com"] });
+    await nginx.registerRoute({
+      domain: "app.example.com",
+      tls: true,
+      terminatesTlsLocally: true,
+      unavailable: true,
+    });
+    const c = conf("app-example-com")!;
+    expect(c).toContain('add_header Cache-Control "no-store" always;');
+    // Server scope, per the header-inheritance invariant: a location that declares
+    // its own add_header drops every inherited one, so the page body itself carries
+    // none — only types/default_type/return.
+    expect(c).not.toMatch(/location [^\n]*\{[^}]*add_header/);
+    expect(c).toContain("add_header Cache-Control \"no-store\" always;\n\n");
   });
 
   test("without certificate material it serves the bootstrap self-signed on :443 (no dead :443)", async () => {
@@ -343,7 +391,8 @@ describe("NginxProvider unavailable routes (retained hostname, 503 + TLS)", () =
       unavailable: true,
     });
     const c = conf("app-example-com")!;
-    expect(c).toContain("return 503;");
+    expect(c).toContain("return 503 '");
+    expect(c).toContain("openship-edge-unavailable");
     expect(c).toContain("openship-bootstrap-tls");
     expect(c).toContain("listen 443 ssl;");
   });
@@ -364,7 +413,55 @@ describe("NginxProvider unavailable routes (retained hostname, 503 + TLS)", () =
     const resumed = conf("app-example-com")!;
     expect(resumed).toContain("proxy_pass http://10.0.0.9:8080;");
     expect(resumed).not.toContain("return 503;");
+    // Starting the container replaces the page wholesale: neither the body nor a
+    // stray header of the unavailable form survives into the serving vhost.
+    expect(resumed).not.toContain("openship-edge-unavailable");
     expect(JSON.parse(files.get(sidecar)!)).toMatchObject({ targetUrl: "http://10.0.0.9:8080" });
+  });
+
+  test("the upgrade sweep re-renders a retained vhost written before the page existed", async () => {
+    // A retained vhost is never re-registered by the reconciler (once per stop
+    // event) and repair leaves an existing unavailable form untouched, so the
+    // generation marker is the only writer that reaches it — no stop/start needed.
+    const { nginx, files, conf, calls, writes } = setup({ certDomains: ["app.example.com"] });
+    await nginx.registerRoute({
+      domain: "app.example.com",
+      tls: true,
+      terminatesTlsLocally: true,
+      unavailable: true,
+    });
+    // Simulate the pre-5 shape: the bare 503, stamped with the generation that
+    // wrote it. The sidecar keeps the unavailable route the reconciler saved.
+    const staleConf = conf("app-example-com")!
+      .replace(/^# openship-vhost-gen: \d+$/m, `# openship-vhost-gen: ${VHOST_GENERATION - 1}`)
+      .replace(/types \{ \}\s*default_type text\/html;\s*return 503 '[^']*';/g, "return 503;")
+      .replace(/add_header Cache-Control "no-store" always;\n\n/g, "");
+    files.set(`${SITES}/app-example-com.conf`, staleConf);
+    expect(conf("app-example-com")).not.toContain("openship-edge-unavailable");
+    expect(readVhostGeneration(conf("app-example-com")!)).toBe(VHOST_GENERATION - 1);
+
+    const result = await nginx.reapplyStoredRoutes();
+    expect(result.repaired).toEqual(["app.example.com"]);
+    const rendered = conf("app-example-com")!;
+    expect(readVhostGeneration(rendered)).toBe(VHOST_GENERATION);
+    expect(rendered).toContain("openship-edge-unavailable");
+    expect(rendered).toContain("return 503 '");
+    expect(rendered).toContain('add_header Cache-Control "no-store" always;');
+    // Retention's other halves survive the re-render.
+    expect(rendered).toContain("listen 443 ssl;");
+    expect(rendered).toContain("location ^~ /.well-known/acme-challenge/");
+    // The sidecar still classifies as the unavailable route for repair/readRouteState.
+    expect(JSON.parse(files.get(`${SITES}/app-example-com.route.json`)!)).toMatchObject({
+      domain: "app.example.com",
+      unavailable: true,
+    });
+
+    // Converged: the second sweep writes nothing and reloads nothing.
+    const reloaded = calls.filter((call) => call.includes("-s reload")).length;
+    const written = writes.length;
+    expect(await nginx.reapplyStoredRoutes()).toEqual({ scanned: 1, repaired: [], failed: [] });
+    expect(calls.filter((call) => call.includes("-s reload")).length).toBe(reloaded);
+    expect(writes.length).toBe(written);
   });
 
   test("readRouteState classifies the persisted vhost and reads a corrupt sidecar as unclassifiable", async () => {

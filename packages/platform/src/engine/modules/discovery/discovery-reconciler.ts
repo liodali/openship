@@ -9,9 +9,10 @@
  *     flag. Blocking forbids forward applies; it never strands a live route.
  *  2. Due applies (pending/error, backoff elapsed, not suppressed):
  *     - missing/invalid/stopped observation → RETAIN the hostname as an
- *       unavailable vhost when a route was applied before: `return 503;` with
- *       TLS and both ACME challenge locations kept, so the certificate
- *       lifecycle continues and clients see "backend unavailable" instead of
+ *       unavailable vhost when a route was applied before: every path answers
+ *       the Openship "Application temporarily unavailable" page with 503,
+ *       with TLS and both ACME challenge locations kept, so the certificate
+ *       lifecycle continues and clients see an Openship-branded page instead of
  *       the default-server page (docs: "Retain an unavailable vhost with
  *       TLS/challenge handling while a backend is absent"). The domain row
  *       and certificate material stay. A binding that was never applied has
@@ -69,7 +70,12 @@ const APPLY_BACKOFF_MS = [30_000, 120_000, 480_000, 1_800_000];
 export interface DiscoveryEdgeTarget {
   routing: Pick<
     RoutingProvider,
-    "registerRoute" | "removeRoute" | "probeUpstream" | "hasRoute" | "readRouteState"
+    | "registerRoute"
+    | "removeRoute"
+    | "probeUpstream"
+    | "hasRoute"
+    | "readRouteState"
+    | "readVhostGeneration"
   >;
   hostPortTarget: HostPortTargetIdentity | null;
   runtime?: ObservedHostPortRuntime & DiscoveryInspectionRuntime;

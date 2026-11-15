@@ -27,6 +27,20 @@
  * unreadable was not (provably) written by us — reported and left alone, never
  * clobbered.
  *
+ * An existing UNAVAILABLE vhost is upgraded, not just skipped: a retained hostname is
+ * otherwise never rewritten (the reconciler registers only on a stop event, and this
+ * sweep used to `continue` past the retained form), so a vhost an older generator
+ * wrote keeps its old shape — e.g. the page-less bare 503 — for as long as the
+ * container stays stopped, no matter how many times the control plane ships a new
+ * emitted shape. When the record describes a RUNNING backend the queued guarded pass
+ * re-renders the vhost on either outcome, so the upgrade is skipped there (one write,
+ * not two). When the backend is dead and the conf's generation marker is older than
+ * this build's (`readVhostGeneration`), repair re-registers the SAME unavailable
+ * route from the same sidecar — the one write it is allowed to make, safe by
+ * construction — which is what brings the unavailable page, headers and any other
+ * shape fix to a stopped service without a stop/start cycle. An unanswerable
+ * generation read is "leave alone until the next sweep", never "guess".
+ *
  * No ACME order here, ever (docs: "Prove Edge repair can restore an unavailable vhost
  * without triggering an ACME order"); issuance eligibility is the TLS lifecycle's own
  * gate on a running container. Best-effort: one binding's failure is recorded and the
@@ -37,6 +51,7 @@ import { safeErrorMessage } from "@repo/core";
 import { reportCaughtError } from "@repo/core/diagnostics";
 import { repos } from "@repo/db";
 import type { DiscoveryBinding } from "@repo/db";
+import { VHOST_GENERATION } from "@repo/adapters";
 import {
   resolveDiscoveryEdgeTarget,
   shouldRetainUnavailableVhost,
@@ -54,6 +69,15 @@ export interface DiscoveryRepairSummary {
   retained: string[];
   /** Hostnames queued for guarded reconciliation (running backend / stale target). */
   requeued: string[];
+  /**
+   * Retained vhosts re-rendered IN PLACE at this build's generation — an
+   * existing unavailable conf an older generator wrote (no page, or any other
+   * shape drift) brought to the current one without a stop/start cycle. The
+   * deploy path reaches the same vhosts through `reapplyStoredRoutes`; this is
+   * the discovery sweep's own upgrade path, and it is the only one a hostname
+   * sees while its container stays stopped.
+   */
+  upgraded: string[];
   failed: Array<{ serviceKey: string; reason: string }>;
 }
 
@@ -61,6 +85,33 @@ export interface DiscoveryRepairSummary {
 function isServingRouteState(state: { targetUrl?: string; unavailable?: boolean } | null): boolean {
   return state !== null && typeof state.targetUrl === "string" && state.targetUrl.length > 0 &&
     state.unavailable !== true;
+}
+
+/**
+ * Is this retained vhost's conf older than THIS build's generator?
+ *
+ * Three answers, and they are not the same:
+ *  - the provider keeps no on-disk generated config (`readVhostGeneration`
+ *    absent — cloud API, no-edge desktop): nothing to upgrade, never stale;
+ *  - the read fails (transport down, or the conf vanished mid-sweep): UNKNOWN,
+ *    and a decision that acts on unknown repeats every sweep — leave it for the
+ *    next pass to answer again;
+ *  - otherwise, stale is the adapter's own replay rule: null (no marker) means
+ *    "written before the marker existed", and a lower number is an older shape.
+ */
+async function retainedVhostStale(
+  routing: DiscoveryEdgeTarget["routing"],
+  hostname: string,
+): Promise<boolean> {
+  if (!routing.readVhostGeneration) return false;
+  let generation: number | null;
+  try {
+    generation = await routing.readVhostGeneration(hostname);
+  } catch (error) {
+    reportCaughtError(error, "platform/engine/modules/discovery/discovery-repair");
+    return false;
+  }
+  return generation === null || generation < VHOST_GENERATION;
 }
 
 /**
@@ -107,6 +158,7 @@ export async function repairDiscoveryRoutes(
     repaired: [],
     retained: [],
     requeued: [],
+    upgraded: [],
     failed: [],
   };
   const settings = await repos.discovery.getSettings(serverId);
@@ -179,6 +231,27 @@ export async function repairDiscoveryRoutes(
                 "warn",
               );
             }
+            // The queued pass re-renders the vhost at this build's generation
+            // whichever way it lands (serving or re-retain), so the in-place
+            // upgrade below is deliberately NOT also taken: one write, not two.
+            continue;
+          }
+          // Dead backend: NOTHING else ever rewrites this vhost — the
+          // reconciler registers only on a stop event and repair skips an
+          // existing unavailable form — so a conf an older generator wrote
+          // keeps its old shape (e.g. the page-less bare 503) indefinitely.
+          // Re-render it in place from its own sidecar: the unavailable route
+          // is the one write repair is allowed to make, so it is safe by
+          // construction, and the generation marker is the only mechanism that
+          // reaches a retained vhost without another stop/start cycle.
+          if (await retainedVhostStale(routing, binding.hostname)) {
+            await routing.registerRoute(unavailableRouteFor(binding.hostname));
+            summary.upgraded.push(binding.hostname);
+            options?.onLog?.(
+              `Re-rendered retained route ${binding.hostname} at this version's config shape` +
+                " (backend unavailable, TLS kept).",
+              "info",
+            );
           }
           continue;
         }

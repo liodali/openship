@@ -718,11 +718,12 @@ export interface PathRouteConfig extends BaseRouteConfig {
 }
 
 /**
- * Backend withdrawn, hostname RETAINED: every path answers 503 while the vhost
- * keeps its TLS blocks and both ACME challenge locations, so the certificate
+ * Backend withdrawn, hostname RETAINED: every path answers 503 with the Openship
+ * "Application temporarily unavailable" page (`EDGE_UNAVAILABLE_BODY`) while the
+ * vhost keeps its TLS blocks and both ACME challenge locations, so the certificate
  * lifecycle continues (renewal needs a live vhost to answer challenges) and
- * clients see "backend unavailable" instead of the default-server page under
- * someone else's certificate. Written when a discovered service's container
+ * clients see an Openship-branded, no-store 503 instead of the default-server page
+ * under someone else's certificate. Written when a discovered service's container
  * goes away; a later `registerRoute` with a `targetUrl` replaces it.
  */
 export interface UnavailableRouteConfig extends BaseRouteConfig {

@@ -86,6 +86,7 @@ import {
   isCloudFrontedHost,
 } from "./edge-real-ip";
 import { EDGE_UPSTREAM_DOWN_HANDLER } from "./edge-upstream-down";
+import { EDGE_UNAVAILABLE_BODY } from "./edge-unavailable";
 import { sq } from "../system/local-shell";
 import { lstatFile } from "../system/file-stat";
 import type { RootChecked } from "../system/privilege";
@@ -240,8 +241,16 @@ const FORWARD_VARS = `    set $openship_fwd_proto $scheme;
  *     written before it serve OpenResty's stock 502 — which, behind Openship Cloud's
  *     edge, is a page branded for a third party on the operator's own domain (#556).
  * 4 — explicit static SPA fallback with isolated custom 404 handling.
+ * 5 — the retained-unavailable vhost serves the Openship "Application temporarily
+ *     unavailable" page with `Cache-Control: no-store` instead of OpenResty's stock
+ *     503 body ({@link ./edge-unavailable.ts}). Vhosts written before it answer a
+ *     stopped discovered service with the same bare third-party page #556 fixed for
+ *     the 502 case — and a retained vhost is otherwise never rewritten, because the
+ *     reconciler registers it once per stop event and repair leaves an existing
+ *     unavailable form untouched. The generation sweep is the only writer that can
+ *     reach it without another stop/start cycle.
  */
-export const VHOST_GENERATION = 4;
+export const VHOST_GENERATION = 5;
 
 /** Marker line carrying {@link VHOST_GENERATION}, matched by {@link readVhostGeneration}. */
 const GENERATION_MARKER = `# openship-vhost-gen: ${VHOST_GENERATION}`;
@@ -2125,10 +2134,16 @@ export class NginxProvider implements RoutingProvider, SslProvider {
     const locationBody = hostRedirect
       ? hostRedirect
       : route.unavailable
-        ? // Retained hostname without its backend: answer 503 everywhere (the
-          // ACME locations are emitted separately and stay live — see
-          // UnavailableRouteConfig).
-          "return 503;"
+        ? // Retained hostname without its backend: every path answers the Openship
+          // "temporarily unavailable" page with 503 — the sibling of the
+          // upstream-down handler (#556), for the case where the backend is KNOWN
+          // withdrawn rather than merely not answering. The ACME locations are
+          // emitted separately and stay live — see UnavailableRouteConfig. The
+          // body carries no headers itself: `add_header` may never be emitted
+          // inside a location (the inheritance invariant on
+          // renderServerHeaders), so `Cache-Control: no-store` is added below at
+          // server scope, where every other response header on this edge lives.
+          EDGE_UNAVAILABLE_BODY
         : route.notFound
           ? "return 404;"
           : "staticRoot" in route && route.staticRoot
@@ -2162,7 +2177,18 @@ export class NginxProvider implements RoutingProvider, SslProvider {
       ? ""
       : renderProxyLocations(route, { httpsUpgrade: true });
     // Response headers: global ones literally, path-scoped ones via the map prelude.
-    const serverHeaders = hostRedirect ? "" : renderServerHeaders(route, slug);
+    // A retained unavailable vhost adds ONE more, at server scope (never inside a
+    // location — the inheritance invariant on renderServerHeaders): its single
+    // answer is the unavailable page, and a 503 that a shared cache or the
+    // visitor's browser kept would outlive the container's return. `always` is
+    // load-bearing — a bare `add_header` applies only to "successful" statuses,
+    // and a 503 would go out bare.
+    const unavailableHeaders = route.unavailable
+      ? `\n    add_header Cache-Control "no-store" always;`
+      : "";
+    const serverHeaders = hostRedirect
+      ? ""
+      : `${renderServerHeaders(route, slug)}${unavailableHeaders}`;
     // http-scope `map` blocks the path-scoped headers read. Prepended to the file
     // ABOVE every server block — a redirecting host emits no headers, so none either.
     const prelude = hostRedirect ? "" : renderHeaderMaps(route, slug);
@@ -2643,6 +2669,22 @@ ${serveLocation}
       if (error instanceof SyntaxError) return null;
       throw error;
     }
+  }
+
+  /**
+   * The generation a vhost's conf on disk was written by, for callers that
+   * upgrade ONE retained vhost in place instead of sweeping the whole box.
+   *
+   * Deliberately NOT null-on-missing: `hasRoute` true → this read → conf gone
+   * means the route was removed concurrently, and answering null here would
+   * read as "stale" to a caller whose next step re-registers — resurrecting a
+   * vhost an operator just removed. A missing or unreadable conf throws; the
+   * caller records it and leaves the route alone.
+   */
+  async readVhostGeneration(domain: string): Promise<number | null> {
+    assertValidDomain(domain);
+    const slug = await this.resolveSlug(domain);
+    return readVhostGeneration(await this._readFile(join(this.sitesDir, `${slug}.conf`)));
   }
 
   private async deleteRoute(domain: string, opts?: { signal?: AbortSignal }): Promise<void> {
