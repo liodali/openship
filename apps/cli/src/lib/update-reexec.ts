@@ -8,7 +8,7 @@
  * unit-tested without importing the whole command (which pulls in compose/service
  * and their load-time IO).
  */
-import { accessSync, constants } from "node:fs";
+import { accessSync, closeSync, constants, openSync, readSync } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
 
 /** The env sentinel a re-exec'd child carries, so it never re-execs again. */
@@ -92,7 +92,44 @@ export function freshInvocation(
   if (!bin) return fallback;
   const entry = fallback.args[0] ? resolve(fallback.args[0]) : "";
   if (bin === entry) return fallback;
+  // The repointed bin is normally a JS entry this process's runtime can run.
+  // But an OLDER TARBALL LAUNCHER may still precede it on PATH — a /bin/sh
+  // script — and executing that through Node is a SyntaxError, exit 1 (#13
+  // review, reproduced). When the file's shebang names an interpreter that is
+  // NOT node/bun, the file is not JS: execute it WHOLE through its shebang —
+  // the OS resolves the interpreter, exactly like the operator's shell does,
+  // and the launcher re-resolves node + cli/current itself. A node/bun
+  // shebang (or no shebang) is a JS entry → keep running it under our runtime.
+  const she = shebangInterpreter(bin);
+  if (she !== null && !/(^|[\s/])(node|bun)(\s|$)/.test(she)) {
+    return { runtime: bin, args: [] };
+  }
   return { runtime: fallback.runtime, args: [bin] };
+}
+
+/**
+ * The file's shebang line (without "#!"), or null — including when the file
+ * has none or can't be read (unreadable is not evidence of an interpreter;
+ * the caller then keeps its own runtime). Only the first line matters.
+ */
+function shebangInterpreter(path: string): string | null {
+  let fd: number;
+  try {
+    fd = openSync(path, "r");
+  } catch {
+    return null;
+  }
+  try {
+    const buf = Buffer.alloc(128);
+    const read = readSync(fd, buf, 0, buf.length, 0);
+    const line = buf.subarray(0, read).toString("utf8").split("\n", 1)[0];
+    if (!line.startsWith("#!")) return null;
+    return line.slice(2).trim() || null;
+  } catch {
+    return null;
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /**

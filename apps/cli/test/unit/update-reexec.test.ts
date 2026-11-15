@@ -101,12 +101,84 @@ describe("freshInvocation", () => {
   it("prefers the PATH bin over a stale argv[1] entry", () => {
     const dir = mkdtempSync(join(tmpdir(), "openship-path-"));
     const bin = join(dir, "openship");
-    writeFileSync(bin, "#!/bin/sh\n");
+    // A JS entry (env-node shebang): still executed under this process's
+    // runtime — see the shell-launcher test below for the non-JS case.
+    writeFileSync(bin, "#!/usr/bin/env node\n");
     chmodSync(bin, 0o755);
     try {
       const inv = freshInvocation(fallback, { PATH: dir });
       expect(inv.runtime).toBe(fallback.runtime);
       expect(inv.args[0]).toBe(bin);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // #13 review, reproduced: an older tarball launcher (a /bin/sh script) may
+  // still precede the package-manager bin on PATH. Executing a shell script
+  // through Node is a SyntaxError, exit 1 — so a non-JS shebang is executed
+  // WHOLE (runtime = the file), letting the OS resolve the interpreter. The
+  // launcher re-resolves node + cli/current itself, so the fresh tarball
+  // bundle still runs the reconcile.
+  it("executes a shell launcher through its shebang, not through node", () => {
+    const dir = mkdtempSync(join(tmpdir(), "openship-path-"));
+    const bin = join(dir, "openship");
+    writeFileSync(bin, "#!/bin/sh\nexec echo hi\n");
+    chmodSync(bin, 0o755);
+    try {
+      const inv = freshInvocation(fallback, { PATH: dir });
+      expect(inv.runtime).toBe(bin);
+      expect(inv.args).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps node for a shebang-less JS entry", () => {
+    const dir = mkdtempSync(join(tmpdir(), "openship-path-"));
+    const bin = join(dir, "openship");
+    writeFileSync(bin, "process.exit(0);\n");
+    chmodSync(bin, 0o755);
+    try {
+      const inv = freshInvocation(fallback, { PATH: dir });
+      expect(inv.runtime).toBe(fallback.runtime);
+      expect(inv.args[0]).toBe(bin);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps node for a bun interpreter shebang", () => {
+    const dir = mkdtempSync(join(tmpdir(), "openship-path-"));
+    const bin = join(dir, "openship");
+    writeFileSync(bin, "#!/usr/bin/env bun\n");
+    chmodSync(bin, 0o755);
+    try {
+      const inv = freshInvocation(fallback, { PATH: dir });
+      expect(inv.runtime).toBe(fallback.runtime);
+      expect(inv.args[0]).toBe(bin);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // End-to-end shape of the re-exec contract when the PATH bin is a shell
+  // launcher: spawnSync(runtime=bin, applyOnlyArgv([])) must PARSE as
+  // `update --apply-only` — the exact spawn reexecApply performs.
+  it("re-execs a shell launcher with a parseable update --apply-only argv", async () => {
+    const { spawnSync } = await import("node:child_process");
+    const dir = mkdtempSync(join(tmpdir(), "openship-path-"));
+    const bin = join(dir, "openship");
+    writeFileSync(
+      bin,
+      '#!/bin/sh\n[ "$1" = update ] && [ "$2" = --apply-only ] && echo applied && exit 0\nexit 9\n',
+    );
+    chmodSync(bin, 0o755);
+    try {
+      const inv = freshInvocation(fallback, { PATH: dir });
+      const res = spawnSync(inv.runtime, applyOnlyArgv(inv.args, false), { encoding: "utf8" });
+      expect(res.status).toBe(0);
+      expect(res.stdout).toContain("applied");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
