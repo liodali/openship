@@ -1253,6 +1253,7 @@
   "discovery": {
     "title": "Konteyner keşfi",
     "subtitle": "Bu sunucunun edge'ine kaydolmuş isteğe bağlı konteynerler",
+    "manageDiscovery": "Keşfi yönet",
     "enabledLabel": "Açık",
     "disabledLabel": "Kapalı",
     "rescan": "Yeniden tara",
@@ -1342,6 +1343,15 @@
       "suppress": "Baskıla",
       "unsuppress": "Kabul et",
       "forget": "Unut"
+    },
+    "page": {
+      "subtitle": "Kapsayıcılarının sunduğu hizmetleri keşfetmek ve rotalarını ile TLS'lerini yönetmek için bir sunucu seçin.",
+      "serverLabel": "Sunucu",
+      "serverPlaceholder": "Sunucu seç",
+      "noServersTitle": "Henüz sunucu yok",
+      "noServersHint": "Kapsayıcılarının sunduğu hizmetleri keşfetmek için bir sunucu ekleyin.",
+      "noServersCta": "Sunucu ekle",
+      "serverUnavailable": "Bu sunucu burada kullanılamıyor — kaldırılmış olabilir ya da erişiminiz yok."
     }
   },
   "buildCache": {

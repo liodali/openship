@@ -1,6 +1,8 @@
 // @vitest-environment happy-dom
 /**
- * The server discovery card (docs/docker-service-discovery-plan.md, step 6).
+ * The shared server discovery card (docs/docker-service-discovery-plan.md,
+ * step 6) — one component for the server page's overview and the dedicated
+ * /discovery page.
  *
  * Under test here, against the REAL component and i18n copy with only the
  * network mocked:
@@ -8,7 +10,9 @@
  *     a successful request must never read as an active route),
  *   - authorization failures from the API degrade to a readable state,
  *   - disruptive actions confirm first and cannot be double-submitted,
- *   - polling runs only while reconciliation is pending, and cleans up.
+ *   - polling runs only while reconciliation is pending, and cleans up,
+ *   - the server-page "Manage discovery" shortcut appears only when the
+ *     caller passes a manageHref, and points at the deep link verbatim.
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { act } from "react";
@@ -204,6 +208,22 @@ describe("DiscoveryCard", () => {
     root.unmount();
   });
 
+  it("links to the dedicated page only when the caller passes a manageHref", async () => {
+    // The dedicated page renders this card too — no self-link there.
+    const bare = mount(<DiscoveryCard serverId="srv_1" />);
+    await act(async () => {});
+    expect(document.querySelector('a[href="/discovery?server=srv_1"]')).toBeNull();
+    bare.root.unmount();
+
+    // The server page hands the deep link through unchanged.
+    const linked = mount(<DiscoveryCard serverId="srv_1" manageHref="/discovery?server=srv_1" />);
+    await act(async () => {});
+    const link = document.querySelector<HTMLAnchorElement>('a[href="/discovery?server=srv_1"]');
+    expect(link).not.toBeNull();
+    expect(TEXT({ textContent: link!.textContent })).toContain("Manage discovery");
+    linked.root.unmount();
+  });
+
   it("renders confirmed route phases as chips, never as 'active' from a running container", async () => {
     discoveryApi.status.mockResolvedValue(status({}, [
       service(),
@@ -236,6 +256,22 @@ describe("DiscoveryCard", () => {
     await act(async () => {});
     expect(TEXT(document.body)).toContain("Retry");
     b.root.unmount();
+  });
+
+  it("a MALFORMED status body reads as a failure with retry, never as 'discovery off'", async () => {
+    // A gateway/proxy answering 200 with a body that is not a status (the
+    // opaque-gateway class) must degrade to the error line — an empty settings
+    // object would otherwise render an off switch for an UNKNOWN state, and
+    // reading `services` raw crashed the whole server page.
+    discoveryApi.status.mockResolvedValue({} as DiscoveryStatus);
+    const { root } = mount(<DiscoveryCard serverId="srv_1" />);
+    await act(async () => {});
+    const text = TEXT(document.body);
+    expect(text).toContain("The server returned an invalid response.");
+    expect(text).toContain("Retry");
+    // And it must not read as a settled, disabled server.
+    expect(text).not.toContain("Discovery is off");
+    root.unmount();
   });
 
   it("confirms before disabling, then configures enabled:false", async () => {
@@ -366,6 +402,25 @@ describe("DiscoveryCard", () => {
       (rescanButton as HTMLButtonElement).click();
     });
     expect(TEXT(document.body)).toContain("Rescan complete");
+    root.unmount();
+  });
+
+  it("a rescan that FAILS shows a failure toast, never success", async () => {
+    // The validated API client rejects an HTTP 200 body that is not the
+    // documented summary (and the network can fail) — either way the card
+    // must report a failure, not toast "Rescan complete" for an UNKNOWN sweep.
+    discoveryApi.rescan.mockRejectedValue(
+      new ApiError(502, "Invalid discovery response", { error: "The server returned an invalid response." }),
+    );
+    const { root } = mount(<DiscoveryCard serverId="srv_1" />);
+    await act(async () => {});
+    const rescanButton = Array.from(document.querySelectorAll("button")).find((b) => b.textContent?.includes("Rescan"));
+    await act(async () => {
+      (rescanButton as HTMLButtonElement).click();
+    });
+    const text = TEXT(document.body);
+    expect(text).toContain("The server returned an invalid response.");
+    expect(text).not.toContain("Rescan complete");
     root.unmount();
   });
 

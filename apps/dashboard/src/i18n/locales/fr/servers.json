@@ -1253,6 +1253,7 @@
   "discovery": {
     "title": "Découverte de conteneurs",
     "subtitle": "Conteneurs inscrits volontairement enregistrés sur l'edge de ce serveur",
+    "manageDiscovery": "Gérer la découverte",
     "enabledLabel": "Activé",
     "disabledLabel": "Désactivé",
     "rescan": "Rescanner",
@@ -1342,6 +1343,15 @@
       "suppress": "Supprimer",
       "unsuppress": "Réaccepter",
       "forget": "Oublier"
+    },
+    "page": {
+      "subtitle": "Choisissez un serveur pour découvrir les services que ses conteneurs exposent et gérer leurs routes et TLS.",
+      "serverLabel": "Serveur",
+      "serverPlaceholder": "Sélectionner un serveur",
+      "noServersTitle": "Aucun serveur pour l'instant",
+      "noServersHint": "Ajoutez un serveur pour découvrir les services que ses conteneurs exposent.",
+      "noServersCta": "Ajouter un serveur",
+      "serverUnavailable": "Ce serveur n'est pas disponible ici — il a peut-être été supprimé, ou vous n'y avez pas accès."
     }
   },
   "buildCache": {

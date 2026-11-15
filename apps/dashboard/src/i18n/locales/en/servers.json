@@ -1253,6 +1253,7 @@
   "discovery": {
     "title": "Container discovery",
     "subtitle": "Opted-in containers registered with this server's edge",
+    "manageDiscovery": "Manage discovery",
     "enabledLabel": "On",
     "disabledLabel": "Off",
     "rescan": "Rescan",
@@ -1342,6 +1343,15 @@
       "suppress": "Suppress",
       "unsuppress": "Unsuppress",
       "forget": "Forget"
+    },
+    "page": {
+      "subtitle": "Pick a server to discover the services its containers expose, and manage their routes and TLS.",
+      "serverLabel": "Server",
+      "serverPlaceholder": "Select a server",
+      "noServersTitle": "No servers yet",
+      "noServersHint": "Add a server to discover the services its containers expose.",
+      "noServersCta": "Add a server",
+      "serverUnavailable": "This server isn't available here — it may have been removed, or you don't have access to it."
     }
   },
   "buildCache": {

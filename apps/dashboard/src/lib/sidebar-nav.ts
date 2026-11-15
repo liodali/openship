@@ -99,6 +99,13 @@ export function getNavSections(
     { key: "actions", href: "/actions", icon: "play-circle" },
     { key: "backups", href: "/backups", icon: "database-backup" },
   ];
+  // Container discovery is per-operator-server (the rail's dedicated page with
+  // a server selector): meaningful only where the operator runs their own
+  // machines, so it stays out of the rail on cloud-only workspaces — the
+  // infrastructure section renders there too.
+  if (selfHosted) {
+    infraItems.push({ key: "discovery", href: "/discovery", icon: "scan" });
+  }
   // infraItems.push(
   //   { key: "monitoring", href: "/monitoring", icon: Activity },
   //   { key: "domains",    href: "/domains",    icon: Globe },

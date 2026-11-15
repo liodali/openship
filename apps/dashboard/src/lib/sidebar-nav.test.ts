@@ -66,8 +66,15 @@ describe("getNavSections (the platform rail)", () => {
       "issues",
       "assistant",
     ]);
-    expect(keysOf(find(s, "infrastructure"))).toEqual(["servers", "emails", "jobs", "actions", "backups"]);
+    expect(keysOf(find(s, "infrastructure"))).toEqual(["servers", "emails", "jobs", "actions", "backups", "discovery"]);
     expect(keysOf(find(s, "settings"))).toEqual(["settings", "audit"]);
+  });
+
+  it("links Discovery at the dedicated page, self-hosted only", () => {
+    const hosted = find(getNavSections(false, true), "infrastructure")?.items.find((i) => i.key === "discovery");
+    expect(hosted).toMatchObject({ href: "/discovery", icon: "scan" });
+    // Cloud-only workspaces have no operator-owned server to discover on.
+    expect(keysOf(find(getNavSections(true, false), "infrastructure"))).not.toContain("discovery");
   });
 
   it("includes Billing before Cloud infrastructure and links the generic email client", () => {
@@ -80,6 +87,7 @@ describe("getNavSections (the platform rail)", () => {
     expect(s.at(-1)?.items.at(-1)).toMatchObject({ key: "support", href: "/support" });
     expect(keysOf(find(s, "settings"))).toEqual(["settings", "billing", "referrals", "audit"]);
     expect(find(s, "settings")?.items.find((item) => item.key === "referrals")).toMatchObject({ href: "/referrals" });
+    // SaaS-only infrastructure: no Discovery row on a cloud workspace.
     expect(keysOf(find(s, "infrastructure"))).toEqual(["servers", "emails", "jobs", "actions", "backups"]);
     expect(find(s, "settings")?.items.find(item => item.key === "billing")).toMatchObject({ href: "/billing", alsoAt: ["/resources"] });
   });
@@ -100,6 +108,12 @@ describe("getNavSections (the platform rail)", () => {
     // Mail mode promotes the tabs, it doesn't move the page: an operator on the
     // full platform still reaches mail the way they always did.
     expect(keysOf(find(getNavSections(false, true), "infrastructure"))).toContain("emails");
+  });
+
+  it("shows Discovery on a cloud-linked self-hosted box", () => {
+    // The `selfHosted` gate, not the SaaS gate: a linked box still runs the
+    // operator's own machines.
+    expect(keysOf(find(getNavSections(true, true), "infrastructure"))).toContain("discovery");
   });
 });
 

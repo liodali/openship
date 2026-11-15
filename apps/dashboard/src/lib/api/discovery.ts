@@ -1,10 +1,28 @@
-import { api } from "./client";
+import { api, ApiError } from "./client";
+import type { TSchema } from "@sinclair/typebox";
+import { Value } from "@sinclair/typebox/value";
 import type {
   DiscoveryConfigureInput,
   DiscoveryRescan,
   DiscoveryService,
   DiscoveryStatus,
 } from "@repo/contracts";
+import { DiscoveryRescanSchema } from "@repo/contracts";
+
+/**
+ * Reject malformed responses before they can poison operator state (the same
+ * rule system.ts's checkedResponse applies): an HTTP 200 body that is not the
+ * documented shape must be a FAILURE — a rescan summary with no fields would
+ * otherwise read as "no failures" and toast success for an UNKNOWN sweep.
+ */
+function checked<T>(schema: TSchema, body: unknown): T {
+  if (!Value.Check(schema, body)) {
+    throw new ApiError(502, "Invalid discovery response", {
+      error: "The server returned an invalid response.",
+    });
+  }
+  return body as T;
+}
 
 /**
  * Server container discovery (docs/docker-service-discovery-plan.md).
@@ -29,11 +47,14 @@ export const discoveryApi = {
       `discovery/servers/${encodeURIComponent(serverId)}/discovery`,
       input,
     ),
-  rescan: (serverId: string) =>
-    api.post<DiscoveryRescan>(
-      `discovery/servers/${encodeURIComponent(serverId)}/discovery/rescan`,
-      undefined,
-      { timeout: 180_000, dedupe: false },
+  rescan: async (serverId: string) =>
+    checked<DiscoveryRescan>(
+      DiscoveryRescanSchema,
+      await api.post<DiscoveryRescan>(
+        `discovery/servers/${encodeURIComponent(serverId)}/discovery/rescan`,
+        undefined,
+        { timeout: 180_000, dedupe: false },
+      ),
     ),
   suppress: (serverId: string, serviceKey: string) =>
     api.post<DiscoveryService>(
