@@ -36,7 +36,8 @@ on:
     tags: ["fork-v*"]
 
 concurrency:
-  group: fork-images-${{ github.ref }}
+  # All releases share moving image tags; serialize across tag/manual refs.
+  group: fork-images-publish
   cancel-in-progress: false
 
 permissions:

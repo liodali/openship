@@ -35,7 +35,8 @@ on:
     tags: ["fork-v*"]
 
 concurrency:
-  group: fork-cli-${{ github.ref }}
+  # All releases share cli-latest; serialize across tag/manual refs.
+  group: fork-cli-publish
   cancel-in-progress: false
 
 permissions:
