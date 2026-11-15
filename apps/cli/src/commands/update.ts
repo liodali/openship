@@ -167,11 +167,14 @@ async function reconcileCurrentCompose(): Promise<void> {
  */
 function reexecApply(targetVersion?: string): { spawned: boolean; status: number | null } {
   if (isReexecChild()) return { spawned: false, status: null };
-  // PATH preference only on package-manager fetches (targetVersion set): the bin
-  // on PATH is what `add -g` just repointed, while argv[1] can still sit in the
-  // previous version's directory after a swap. Tarball/source installs keep
-  // selfInvocation() — the launcher/checkout IS the fresh bundle there, and a
-  // stray `openship` elsewhere on PATH must not hijack the reconcile.
+  // PATH preference only for the ENTRY shape on package-manager fetches
+  // (targetVersion set): the bin on PATH is what `add -g` just repointed, while
+  // argv[1] can still sit in the previous version's directory after a swap. The
+  // LAUNCHER shape (tarball: args []) falls through freshInvocation unchanged —
+  // substituting its empty entry would hand the launcher the bin path as a
+  // bogus first command — and its child is already the fresh bundle (the
+  // launcher re-resolves cli/current on every boot), so only the pinned target
+  // matters there.
   const { runtime, args } = targetVersion
     ? freshInvocation(selfInvocation())
     : selfInvocation();

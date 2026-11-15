@@ -81,6 +81,13 @@ export function freshInvocation(
   env: NodeJS.ProcessEnv = process.env,
 ): { runtime: string; args: string[] } {
   if (process.platform === "win32") return fallback;
+  // The LAUNCHER shape (tarball: no entry arg — the launcher takes the
+  // subcommand directly) falls through unchanged: substituting its empty entry
+  // with the PATH bin would hand the launcher that bin path as a bogus first
+  // COMMAND ("…/openship update --apply-only" → unknown command). The launcher
+  // re-resolves cli/current on every boot, so its child is already the fresh
+  // bundle; only the pinned target matters there.
+  if (fallback.args.length === 0) return fallback;
   const bin = whichOnPath("openship", env);
   if (!bin) return fallback;
   const entry = fallback.args[0] ? resolve(fallback.args[0]) : "";

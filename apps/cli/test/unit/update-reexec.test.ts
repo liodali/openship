@@ -124,6 +124,25 @@ describe("freshInvocation", () => {
       args: [entry],
     });
   });
+
+  // Tarball updates: the launcher takes the SUBCOMMAND directly (args []), so
+  // the PATH bin must NOT become args[0] — that hand the launcher its own path
+  // as a bogus first command and "update --apply-only" fails to parse.
+  it("keeps the tarball launcher shape (args []) even when a bin is on PATH", () => {
+    const dir = mkdtempSync(join(tmpdir(), "openship-path-"));
+    const bin = join(dir, "openship");
+    writeFileSync(bin, "#!/bin/sh\n");
+    chmodSync(bin, 0o755);
+    const launcher = "/home/op/.openship/bin/openship";
+    try {
+      expect(freshInvocation({ runtime: launcher, args: [] }, { PATH: dir })).toEqual({
+        runtime: launcher,
+        args: [],
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 /** The runtime's PATH delimiter without importing a second path module here. */
