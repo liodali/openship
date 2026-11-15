@@ -14,6 +14,8 @@
  */
 
 import { reportCaughtError as observeCaughtError } from "@repo/core/diagnostics";
+import { statSync } from "node:fs";
+import { join } from "node:path";
 import type { AmbientGitVia } from "../types";
 import { shellQuote } from "@repo/core";
 
@@ -159,6 +161,34 @@ type EnvEntry = [name: string, value: string, quote: boolean];
 
 const TERMINAL_PROMPT: EnvEntry = ["GIT_TERMINAL_PROMPT", "0", false];
 
+/**
+ * The optional build-host SSH identity used for private SUBMODULES.
+ *
+ * A token clone is deliberately HTTPS-only: the parent repo gets a scoped
+ * credential and Git must not be able to send it somewhere else. Repos whose
+ * `.gitmodules` pins SSH aliases (`git@gh-backend:…` — one read-only deploy key
+ * per submodule) cannot use that token, so the alternative is to hand Git an
+ * operator-provided SSH config. This is opt-in and read-only: the compose
+ * renderer mounts `OPENSHIP_BUILD_SSH_DIR` into the API container and sets the
+ * same variable to the container path; nothing is enabled when it is unset or
+ * has no `config` file.
+ *
+ * `-F` points ssh at that config (the per-repo Host aliases), and `BatchMode`
+ * turns a would-be password/host-key prompt into a failure instead of a hang.
+ */
+function buildSshCommand(): string | null {
+  const dir = process.env.OPENSHIP_BUILD_SSH_DIR?.trim();
+  if (!dir) return null;
+  const config = join(dir, "config");
+  try {
+    if (!statSync(config).isFile()) return null;
+  } catch (err) {
+    observeCaughtError(err, "adapters/runtime/git-clone");
+    return null;
+  }
+  return `ssh -F ${shellQuote(config)} -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes`;
+}
+
 function invocation(
   cloneUrl: string,
   entries: EnvEntry[],
@@ -221,6 +251,7 @@ const SCOPED_TOKEN_HELPER = `!f() {
 
 function scopedTokenInvocation(auth: GitCloneAuth): GitCloneInvocation {
   const url = new URL(auth.repoUrl);
+  const sshCommand = buildSshCommand();
   const segments = url.pathname.replace(/^\/+|\/+$/g, "").split("/");
   const parent = segments.pop();
   const namespace = segments.join("/").toLowerCase();
@@ -254,13 +285,21 @@ function scopedTokenInvocation(auth: GitCloneAuth): GitCloneInvocation {
     ["credential.useHttpPath", "true"],
     ["protocol.allow", "never"],
     ["protocol.https.allow", "always"],
+    // Only when the operator supplied a build SSH identity: private submodules
+    // whose .gitmodules pins an SSH alias clone with those read-only keys.
+    ...(sshCommand ? ([ ["protocol.ssh.allow", "always"] ] as [string, string][]) : []),
     // A redirected clone must not carry credentials to another origin/path.
     ["http.followRedirects", "false"],
-    // Transport rewrites contain no secret. Private SSH submodules can use the
-    // credential only after becoming HTTPS requests inside its scope.
-    [`url.${base}.insteadOf`, `git@${url.hostname}:`],
-    [`url.${base}.insteadOf`, `ssh://git@${url.hostname}/`],
-    [`url.${base}.insteadOf`, `ssh://${url.hostname}/`],
+    // Transport rewrites contain no secret. Without a build SSH identity, private
+    // SSH submodules can use the credential only after becoming HTTPS requests
+    // inside its scope. With one, leave SSH URLs alone so they reach that config.
+    ...(sshCommand
+      ? []
+      : ([
+          [`url.${base}.insteadOf`, `git@${url.hostname}:`],
+          [`url.${base}.insteadOf`, `ssh://git@${url.hostname}/`],
+          [`url.${base}.insteadOf`, `ssh://${url.hostname}/`],
+        ] as [string, string][])),
     // The opposite rewrite, https:// to ssh, is a common user setting that this
     // clone must not follow: only HTTPS is allowed above, so git would fail with
     // "transport 'ssh' not allowed". Git applies the longest matching insteadOf,
@@ -274,10 +313,14 @@ function scopedTokenInvocation(auth: GitCloneAuth): GitCloneInvocation {
     url.href,
     [
       TERMINAL_PROMPT,
+      ...(sshCommand
+        ? ([ ["GIT_SSH_COMMAND", sshCommand, true] ] as EnvEntry[])
+        : []),
       ["GIT_ASKPASS", "/bin/false", false],
-      // Also override per-protocol ambient host allowances. Approved SSH URLs
-      // are rewritten to HTTPS before Git applies this transport policy.
-      ["GIT_ALLOW_PROTOCOL", "https", false],
+      // Also override per-protocol ambient host allowances. Approved HTTPS URLs
+      // are still rewritten to HTTPS; a configured build SSH identity adds ssh
+      // so SSH-alias submodule URLs authenticate with the mounted deploy keys.
+      ["GIT_ALLOW_PROTOCOL", sshCommand ? "https:ssh" : "https", false],
       ["OPENSHIP_GIT_HOST", url.host.toLowerCase(), true],
       ["OPENSHIP_GIT_NAMESPACE", namespace, true],
       [
