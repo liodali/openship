@@ -54,6 +54,22 @@ export interface RoutingProvider {
    * hasRoute. */
   readRouteState?(domain: string): Promise<RouteConfig | null>;
 
+  /**
+   * The generation marker stamped in a hostname's generated vhost conf — what
+   * `registerRoute` writes so a fix to the EMITTED config shape can reach boxes
+   * that are not redeploying (see `VHOST_GENERATION`/`reapplyStoredRoutes`).
+   * Null means the conf exists but carries no marker: older than the marker
+   * itself, therefore stale — the same rule the box-wide replay applies. THROWS
+   * when the conf cannot be read (transport failure, or it vanished mid-sweep):
+   * a caller deciding an in-place rewrite must treat "unknown" as "leave
+   * alone", never guess — and must not confuse "unstamped" with "missing", or
+   * a route removed between `hasRoute` and this read would be resurrected.
+   *
+   * Optional: only a provider that keeps generated config on disk can answer —
+   * same scope as hasRoute/readRouteState.
+   */
+  readVhostGeneration?(domain: string): Promise<number | null>;
+
   /** Project-scoped teardown may preserve a route freshly proven to belong to
    * another project. Unknown ownership must reject. A foreign result also forbids
    * a later generic release of the managed hostname. */

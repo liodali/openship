@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { discoveryConfigHash } from "@repo/core";
+import { VHOST_GENERATION } from "@repo/adapters";
 
 // ── In-memory discovery repo (same contract as the reconciler tests) ────────
 // NOTE: mocked modules are reached through these top-level handles, never
@@ -68,6 +69,12 @@ interface EdgeOpts {
   hasRoute?: (domain: string) => Promise<boolean>;
   /** The persisted vhost state the provider reports (null = unreadable). */
   routeState?: Record<string, unknown> | null;
+  /**
+   * The generation stamped in the vhost's conf on disk (null = unstamped), for
+   * the generation-aware upgrade path. Omitted = the provider has no such
+   * method at all (cloud/desktop) — `readVhostGeneration` stays undefined.
+   */
+  vhostGeneration?: number | null | (() => Promise<number | null>);
 }
 
 function edge(opts: EdgeOpts = {}) {
@@ -85,6 +92,14 @@ function edge(opts: EdgeOpts = {}) {
           opts.routeState === undefined
             ? vi.fn(async () => null)
             : vi.fn(async () => opts.routeState ?? null),
+        readVhostGeneration:
+          opts.vhostGeneration === undefined
+            ? undefined
+            : vi.fn(async () =>
+                typeof opts.vhostGeneration === "function"
+                  ? await opts.vhostGeneration()
+                  : (opts.vhostGeneration as number | null),
+              ),
       },
       hostPortTarget: null,
       edgeProxy: null,
@@ -217,6 +232,87 @@ describe("repairDiscoveryRoutes", () => {
     expect(summary.retained).toEqual([]);
     expect(registered).toEqual([]);
     expect(discoveryRepo.requeueForApply).not.toHaveBeenCalled();
+  });
+
+  it("re-renders a retained vhost an older generator wrote — no stop/start needed", async () => {
+    // The P2 gap: the generation bump reaches retained vhosts through the deploy
+    // path's reapplyStoredRoutes, but a stopped service sees no deploy and the
+    // sweep used to skip the retained form — the old shape (page-less bare 503)
+    // would sit until another route operation happened. The sweep is now the
+    // upgrade path: same unavailable route, same sidecar, current shape.
+    state.bindings = [binding({ containerRunning: false })];
+    const { edge: target, registered } = edge({
+      hasRoute: async () => true,
+      routeState: { domain: "app.example.com", tls: true, unavailable: true },
+      vhostGeneration: VHOST_GENERATION - 1,
+    });
+    const summary = await repairDiscoveryRoutes("srv_1", "org_1", { edge: target as never });
+    expect(summary.upgraded).toEqual(["app.example.com"]);
+    expect(summary.requeued).toEqual([]);
+    expect(summary.retained).toEqual([]);
+    expect(registered).toEqual([
+      { domain: "app.example.com", tls: true, terminatesTlsLocally: true, unavailable: true },
+    ]);
+    // Still the unavailable form — repair never writes a serving upstream from
+    // records, and the upgrade is no exception.
+    expect(JSON.stringify(registered)).not.toContain("targetUrl");
+  });
+
+  it("an unstamped retained conf counts as stale — older than the marker itself", async () => {
+    // Same rule the box-wide replay applies to an unmarked conf.
+    state.bindings = [binding({ containerRunning: false })];
+    const { edge: target, registered } = edge({
+      hasRoute: async () => true,
+      routeState: { domain: "app.example.com", tls: true, unavailable: true },
+      vhostGeneration: null,
+    });
+    const summary = await repairDiscoveryRoutes("srv_1", "org_1", { edge: target as never });
+    expect(summary.upgraded).toEqual(["app.example.com"]);
+    expect(registered).toHaveLength(1);
+  });
+
+  it("a current-generation retained vhost is left alone — converged sweeps write nothing", async () => {
+    state.bindings = [binding({ containerRunning: false })];
+    const { edge: target, registered } = edge({
+      hasRoute: async () => true,
+      routeState: { domain: "app.example.com", tls: true, unavailable: true },
+      vhostGeneration: VHOST_GENERATION,
+    });
+    const summary = await repairDiscoveryRoutes("srv_1", "org_1", { edge: target as never });
+    expect(summary.upgraded).toEqual([]);
+    expect(registered).toEqual([]);
+  });
+
+  it("a failing generation read leaves the vhost for the next sweep — never churn", async () => {
+    // Transport down, or the conf vanished mid-sweep: unknown is not stale, and
+    // a decision that acts on unknown would rewrite the vhost every 60s sweep.
+    state.bindings = [binding({ containerRunning: false })];
+    const { edge: target, registered } = edge({
+      hasRoute: async () => true,
+      routeState: { domain: "app.example.com", tls: true, unavailable: true },
+      vhostGeneration: async () => {
+        throw new Error("ssh connection dropped");
+      },
+    });
+    const summary = await repairDiscoveryRoutes("srv_1", "org_1", { edge: target as never });
+    expect(summary.upgraded).toEqual([]);
+    expect(summary.failed).toEqual([]); // the read failure is not the binding's failure
+    expect(registered).toEqual([]);
+  });
+
+  it("a stale retained vhost with a RUNNING backend is requeued, not double-written", async () => {
+    // The queued guarded pass re-renders the vhost at this generation whichever
+    // way it lands (serving or re-retain), so repair must not ALSO upgrade now.
+    state.bindings = [binding()];
+    const { edge: target, registered } = edge({
+      hasRoute: async () => true,
+      routeState: { domain: "app.example.com", tls: true, unavailable: true },
+      vhostGeneration: VHOST_GENERATION - 1,
+    });
+    const summary = await repairDiscoveryRoutes("srv_1", "org_1", { edge: target as never });
+    expect(summary.requeued).toEqual(["app.example.com"]);
+    expect(summary.upgraded).toEqual([]);
+    expect(registered).toEqual([]);
   });
 
   it("leaves a serving route whose target matches the recorded upstream untouched", async () => {
