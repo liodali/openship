@@ -8,7 +8,18 @@ import { describe, it, expect } from "vitest";
  * subcommand) and the loop guard (a re-exec'd child must never re-exec again).
  */
 
-import { applyOnlyArgv, isReexecChild, REEXEC_ENV } from "../../src/lib/update-reexec";
+import { mkdtempSync, chmodSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  applyOnlyArgv,
+  freshInvocation,
+  isReexecChild,
+  REEXEC_ENV,
+  targetVersionEnv,
+  whichOnPath,
+  TARGET_VERSION_ENV,
+} from "../../src/lib/update-reexec";
 
 describe("applyOnlyArgv", () => {
   it("appends the subcommand after the CLI's own entry args", () => {
@@ -47,3 +58,75 @@ describe("isReexecChild", () => {
     expect(isReexecChild({ [REEXEC_ENV]: "true" })).toBe(false);
   });
 });
+
+describe("targetVersionEnv", () => {
+  it("returns the version the fetch phase installed", () => {
+    expect(targetVersionEnv({ [TARGET_VERSION_ENV]: "0.9.12-fork.1" })).toBe("0.9.12-fork.1");
+  });
+
+  it("is null when unset, and trims/ignores blank values", () => {
+    expect(targetVersionEnv({})).toBeNull();
+    expect(targetVersionEnv({ [TARGET_VERSION_ENV]: "  " })).toBeNull();
+  });
+});
+
+describe("whichOnPath", () => {
+  it("finds the first executable match on PATH", () => {
+    const dir = mkdtempSync(join(tmpdir(), "openship-path-"));
+    const bin = join(dir, "openship");
+    writeFileSync(bin, "#!/bin/sh\n");
+    chmodSync(bin, 0o755);
+    try {
+      expect(whichOnPath("openship", { PATH: "/nonexistent" + delimiterChar() + dir })).toBe(bin);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("skips non-executable leftovers and returns null when nothing matches", () => {
+    const dir = mkdtempSync(join(tmpdir(), "openship-path-"));
+    writeFileSync(join(dir, "openship"), "not executable");
+    try {
+      expect(whichOnPath("openship", { PATH: dir })).toBeNull();
+      expect(whichOnPath("openship", { PATH: "" })).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("freshInvocation", () => {
+  const fallback = { runtime: "/usr/bin/bun", args: ["/old/store/openship/dist/index.js"] };
+
+  it("prefers the PATH bin over a stale argv[1] entry", () => {
+    const dir = mkdtempSync(join(tmpdir(), "openship-path-"));
+    const bin = join(dir, "openship");
+    writeFileSync(bin, "#!/bin/sh\n");
+    chmodSync(bin, 0o755);
+    try {
+      const inv = freshInvocation(fallback, { PATH: dir });
+      expect(inv.runtime).toBe(fallback.runtime);
+      expect(inv.args[0]).toBe(bin);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the fallback when PATH yields nothing", () => {
+    expect(freshInvocation(fallback, { PATH: "/nonexistent" })).toEqual(fallback);
+    expect(freshInvocation(fallback, { PATH: "" })).toEqual(fallback);
+  });
+
+  it("keeps the fallback when the PATH bin IS the fallback entry (replaced in place)", () => {
+    const entry = "/usr/local/bin/openship";
+    expect(freshInvocation({ runtime: "bun", args: [entry] }, { PATH: "/usr/local/bin" })).toEqual({
+      runtime: "bun",
+      args: [entry],
+    });
+  });
+});
+
+/** The runtime's PATH delimiter without importing a second path module here. */
+function delimiterChar(): string {
+  return process.platform === "win32" ? ";" : ":";
+}
