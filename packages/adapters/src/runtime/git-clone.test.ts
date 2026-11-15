@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
   sq,
   injectGitToken,
+  apiHostBuildSshIdentity,
   gitCredentialPair,
   toGitHubSshUrl,
   assembleGitClone,
@@ -563,9 +564,11 @@ describe("build SSH identity for private submodules", () => {
   });
 
   it("uses the mounted config and adds ssh to the allowed transports", () => {
+    const identity = apiHostBuildSshIdentity();
     const inv = assembleGitClone({
       repoUrl: "https://github.com/Acme/Parent.git",
       gitToken: token,
+      buildSsh: identity,
     });
     expect(inv.env.GIT_ALLOW_PROTOCOL).toBe("https:ssh");
     expect(inv.env.GIT_SSH_COMMAND).toContain(`-F '${join(dir, "config")}'`);
@@ -582,6 +585,7 @@ describe("build SSH identity for private submodules", () => {
     const inv = assembleGitClone({
       repoUrl: "https://github.com/Acme/Parent.git",
       gitToken: token,
+      buildSsh: apiHostBuildSshIdentity(),
     });
     expect(inv.env.GIT_ALLOW_PROTOCOL).toBe("https");
     expect(inv.env.GIT_SSH_COMMAND).toBeUndefined();
@@ -593,8 +597,25 @@ describe("build SSH identity for private submodules", () => {
     const inv = assembleGitClone({
       repoUrl: "https://github.com/Acme/Parent.git",
       gitToken: token,
+      buildSsh: apiHostBuildSshIdentity(),
     });
     expect(inv.env.GIT_ALLOW_PROTOCOL).toBe("https");
     expect(inv.env.GIT_SSH_COMMAND).toBeUndefined();
+  });
+
+  // Review finding on #12: the identity lives in the API process's env, but a
+  // clone can execute ELSEWHERE (SSH server build clones on the target; a cloud
+  // build runs in the provider workspace) — neither has the /root/.ssh mount.
+  // Only a caller that KNOWS the clone runs on the API host may set buildSsh;
+  // assembling without it must stay HTTPS-only even with the env var present.
+  it("leaks nothing to clones that execute elsewhere: no buildSsh → HTTPS-only", () => {
+    const inv = assembleGitClone({
+      repoUrl: "https://github.com/Acme/Parent.git",
+      gitToken: token,
+    });
+    expect(inv.env.GIT_ALLOW_PROTOCOL).toBe("https");
+    expect(inv.env.GIT_SSH_COMMAND).toBeUndefined();
+    expect(inv.credArgs.join(" ")).toContain("url.https://github.com/.insteadOf=git@github.com:");
+    expect(inv.credArgs.join(" ")).not.toContain("protocol.ssh.allow");
   });
 });

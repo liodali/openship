@@ -63,10 +63,17 @@ behaviour, unchanged.
 
 - still clones the **parent** over HTTPS with the App/PAT token and the scoped
   credential helper;
-- when a build SSH identity is configured, adds `protocol.ssh.allow=always` and
-  `GIT_ALLOW_PROTOCOL=https:ssh`, sets
+- when a build SSH identity is configured AND the clone runs on the API host,
+  adds `protocol.ssh.allow=always` and `GIT_ALLOW_PROTOCOL=https:ssh`, sets
   `GIT_SSH_COMMAND="ssh -F <dir>/config -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes"`,
   and leaves SSH submodule URLs alone instead of rewriting them to HTTPS.
+
+The identity is resolved by each clone's caller and **only for clones that
+execute on the API host** — the container the compose renderer mounts the
+directory into. A build that clones elsewhere never sees it: an SSH server
+build clones on the target server, and a cloud build runs in the provider
+workspace — neither has the `/root/.ssh` mount, so their clone commands must
+not reference it (they keep the HTTPS-only behaviour, unchanged).
 
 The token is never placed in the SSH path and the SSH keys are never placed in a
 clone URL or Git config. The directory is mounted read-only; the API already

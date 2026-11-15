@@ -131,6 +131,16 @@ export interface GitCloneAuth {
    * these are — never for an orchestrator clone standing in for a server.
    */
   ambient?: { via: AmbientGitVia };
+  /**
+   * The API host's optional build SSH identity (private SSH submodules), for a
+   * clone that executes ON THE API HOST — where the compose renderer mounts
+   * `OPENSHIP_BUILD_SSH_DIR` read-only at /root/.ssh. Resolve it with
+   * `apiHostBuildSshIdentity()`; a clone that executes elsewhere (SSH server
+   * build, cloud workspace) MUST leave this unset — the mount exists only
+   * inside the API container, and the command would reference a path the
+   * execution target doesn't have.
+   */
+  buildSsh?: { configFile: string };
 }
 
 export interface GitCloneInvocation {
@@ -162,31 +172,52 @@ type EnvEntry = [name: string, value: string, quote: boolean];
 const TERMINAL_PROMPT: EnvEntry = ["GIT_TERMINAL_PROMPT", "0", false];
 
 /**
- * The optional build-host SSH identity used for private SUBMODULES.
+ * The build-host SSH identity for private SUBMODULES — resolved by the CALLER,
+ * for clones that execute on the API host.
  *
  * A token clone is deliberately HTTPS-only: the parent repo gets a scoped
  * credential and Git must not be able to send it somewhere else. Repos whose
  * `.gitmodules` pins SSH aliases (`git@gh-backend:…` — one read-only deploy key
  * per submodule) cannot use that token, so the alternative is to hand Git an
  * operator-provided SSH config. This is opt-in and read-only: the compose
- * renderer mounts `OPENSHIP_BUILD_SSH_DIR` into the API container and sets the
- * same variable to the container path; nothing is enabled when it is unset or
- * has no `config` file.
+ * renderer mounts `OPENSHIP_BUILD_SSH_DIR` into the API container at /root/.ssh
+ * and sets the same variable to the container path; nothing is enabled when the
+ * directory is unset or has no `config` file.
+ *
+ * Identity vs execution target: the env var lives in the API process, but a
+ * clone can execute ELSEWHERE (an SSH server build clones on the target, a
+ * cloud build runs in the provider workspace) — neither has that mount. The
+ * caller therefore sets {@link GitCloneAuth.buildSsh} only when the clone runs
+ * on the API host; a remote command that referenced /root/.ssh would fail ssh
+ * with "Can't open user config file" on a path that exists only here.
+ */
+export function apiHostBuildSshIdentity(
+  env: NodeJS.ProcessEnv = process.env,
+): { configFile: string } | undefined {
+  const dir = env.OPENSHIP_BUILD_SSH_DIR?.trim();
+  if (!dir) return undefined;
+  const config = join(dir, "config");
+  try {
+    if (!statSync(config).isFile()) return undefined;
+  } catch (err) {
+    observeCaughtError(err, "adapters/runtime/git-clone");
+    return undefined;
+  }
+  return { configFile: config };
+}
+
+/**
+ * The GIT_SSH_COMMAND for the caller-resolved build identity, or null.
  *
  * `-F` points ssh at that config (the per-repo Host aliases), and `BatchMode`
  * turns a would-be password/host-key prompt into a failure instead of a hang.
  */
-function buildSshCommand(): string | null {
-  const dir = process.env.OPENSHIP_BUILD_SSH_DIR?.trim();
-  if (!dir) return null;
-  const config = join(dir, "config");
-  try {
-    if (!statSync(config).isFile()) return null;
-  } catch (err) {
-    observeCaughtError(err, "adapters/runtime/git-clone");
-    return null;
-  }
-  return `ssh -F ${shellQuote(config)} -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes`;
+function buildSshCommand(identity: { configFile: string } | undefined): string | null {
+  if (!identity) return null;
+  return (
+    `ssh -F ${shellQuote(identity.configFile)} ` +
+    "-o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes"
+  );
 }
 
 function invocation(
@@ -251,7 +282,8 @@ const SCOPED_TOKEN_HELPER = `!f() {
 
 function scopedTokenInvocation(auth: GitCloneAuth): GitCloneInvocation {
   const url = new URL(auth.repoUrl);
-  const sshCommand = buildSshCommand();
+  // Identity comes from the CALLER (execution-target aware) — see GitCloneAuth.buildSsh.
+  const sshCommand = buildSshCommand(auth.buildSsh);
   const segments = url.pathname.replace(/^\/+|\/+$/g, "").split("/");
   const parent = segments.pop();
   const namespace = segments.join("/").toLowerCase();
