@@ -20,9 +20,11 @@ const IDLE_POLL_INTERVAL_MS = 60_000;
  * returns: a route apply/withdrawal is queued or retrying, reconciliation has
  * not caught up with the desired generation, or a certificate order is in
  * flight. Drives the card's polling — a settled server is not polled at all.
+ * Null-safe on the settings/services fields: a gateway can answer with a body
+ * that is not a status at all, and polling is an optimization, never a crash.
  */
-export function discoveryNeedsPolling(status: DiscoveryStatus): boolean {
-  return status.services.some(
+export function discoveryNeedsPolling(status: DiscoveryStatus | null | undefined): boolean {
+  return status?.services?.some(
     (s) =>
       s.withdrawalPending ||
       s.desiredGeneration !== s.appliedGeneration ||
@@ -31,41 +33,66 @@ export function discoveryNeedsPolling(status: DiscoveryStatus): boolean {
       // The domain row's TLS lifecycle writes provisioning while an order is
       // in flight (never "pending"/"issued").
       s.tls?.sslStatus === "provisioning",
-  );
+  ) ?? false;
 }
 
 /**
  * True when a completed sweep reported anything that needs the operator's
  * attention: a failed stage, per-service failures, or a scan that did not run
  * cleanly. Retained/removed/withdrawn entries are PLANNED outcomes, not
- * failures.
+ * failures. Null-safe per field for tolerant rendering only — the API client
+ * already rejects a body that is not a valid summary, so "no observable
+ * failures" here means a real, complete summary reported none.
  */
-export function rescanHasFailures(summary: DiscoveryRescan): boolean {
-  if (summary.failed.length > 0) return true;
-  if (summary.scan && !summary.scan.ok) return true;
-  if (summary.reconcile && (!summary.reconcile.ok || summary.reconcile.failed.length > 0)) return true;
-  if (summary.repair && summary.repair.failed.length > 0) return true;
+export function rescanHasFailures(summary: DiscoveryRescan | null | undefined): boolean {
+  if (summary?.failed?.length) return true;
+  if (summary?.scan && !summary.scan.ok) return true;
+  if (summary?.reconcile && (!summary.reconcile.ok || (summary.reconcile.failed?.length ?? 0) > 0)) return true;
+  if (summary?.repair && (summary.repair.failed?.length ?? 0) > 0) return true;
   return false;
 }
 
 /** Short human-readable list of what failed inside a finished sweep. */
-export function rescanFailureDetail(summary: DiscoveryRescan): string {
+export function rescanFailureDetail(summary: DiscoveryRescan | null | undefined): string {
   const parts: string[] = [];
-  if (summary.scan && !summary.scan.ok) parts.push("scan");
-  if (summary.reconcile && !summary.reconcile.ok) parts.push("reconcile");
-  if (summary.reconcile?.failed.length) {
+  if (summary?.scan && !summary.scan.ok) parts.push("scan");
+  if (summary?.reconcile && !summary.reconcile.ok) parts.push("reconcile");
+  if (summary?.reconcile?.failed?.length) {
     parts.push(`${summary.reconcile.failed.length} service failure(s): ${summary.reconcile.failed[0].reason}`);
   }
-  if (summary.repair?.failed.length) {
+  if (summary?.repair?.failed?.length) {
     parts.push(`${summary.repair.failed.length} repair failure(s): ${summary.repair.failed[0].reason}`);
   }
-  if (summary.failed.length) parts.push(summary.failed.join(", "));
+  if (summary?.failed?.length) parts.push(summary.failed.join(", "));
   return parts.join(", ");
 }
 
 /** An API failure that is really an authorization failure. */
 export function isPermissionError(err: unknown): boolean {
   return err instanceof ApiError && (err.status === 401 || err.status === 403);
+}
+
+/**
+ * A status body that is not the documented shape — a proxy answering HTML or a
+ * stale gateway answering `{}` — must read as a FAILURE, never as a settled
+ * "discovery off" state: an empty settings object would render an off switch
+ * for a server whose truth is unknown. The wording matches the system client's
+ * checkedResponse so both surfaces say the same thing.
+ */
+function parseDiscoveryStatus(body: unknown): DiscoveryStatus {
+  const status = body as DiscoveryStatus | null | undefined;
+  if (
+    !status ||
+    typeof status !== "object" ||
+    typeof status.settings !== "object" ||
+    status.settings === null ||
+    !Array.isArray(status.services)
+  ) {
+    throw new ApiError(502, "Invalid discovery response", {
+      error: "The server returned an invalid response.",
+    });
+  }
+  return status;
 }
 
 /**
@@ -114,7 +141,9 @@ export function useServerDiscovery(serverId: string | null | undefined) {
       abort.current = new AbortController();
       if (!opts.silent) setLoading(true);
       try {
-        const next = await discoveryApi.status(serverId, { signal: abort.current.signal });
+        const next = parseDiscoveryStatus(
+          await discoveryApi.status(serverId, { signal: abort.current.signal }),
+        );
         if (mounted.current && current === seq.current) {
           setStatus(next);
           setError(null);

@@ -1253,6 +1253,7 @@
   "discovery": {
     "title": "Descoberta de contêineres",
     "subtitle": "Contêineres inscritos registrados no edge deste servidor",
+    "manageDiscovery": "Gerir descoberta",
     "enabledLabel": "Ativa",
     "disabledLabel": "Inativa",
     "rescan": "Rreexaminar",
@@ -1342,6 +1343,15 @@
       "suppress": "Suprimir",
       "unsuppress": "Reaceitar",
       "forget": "Esquecer"
+    },
+    "page": {
+      "subtitle": "Escolha um servidor para descobrir os serviços que os seus contêineres expõem e gerir as respetivas rotas e TLS.",
+      "serverLabel": "Servidor",
+      "serverPlaceholder": "Selecionar servidor",
+      "noServersTitle": "Ainda não há servidores",
+      "noServersHint": "Adicione um servidor para descobrir os serviços que os seus contêineres expõem.",
+      "noServersCta": "Adicionar servidor",
+      "serverUnavailable": "Este servidor não está disponível aqui — pode ter sido removido ou você não tem acesso a ele."
     }
   },
   "buildCache": {

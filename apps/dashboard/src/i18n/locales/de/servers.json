@@ -1253,6 +1253,7 @@
   "discovery": {
     "title": "Container-Erkennung",
     "subtitle": "Angemeldete Container, die über die Edge dieses Servers registriert sind",
+    "manageDiscovery": "Discovery verwalten",
     "enabledLabel": "Ein",
     "disabledLabel": "Aus",
     "rescan": "Neu scannen",
@@ -1342,6 +1343,15 @@
       "suppress": "Unterdrücken",
       "unsuppress": "Freigeben",
       "forget": "Vergessen"
+    },
+    "page": {
+      "subtitle": "Wählen Sie einen Server aus, um die Dienste seiner Container zu erkennen sowie deren Routen und TLS zu verwalten.",
+      "serverLabel": "Server",
+      "serverPlaceholder": "Server auswählen",
+      "noServersTitle": "Noch keine Server",
+      "noServersHint": "Fügen Sie einen Server hinzu, um die Dienste seiner Container zu erkennen.",
+      "noServersCta": "Server hinzufügen",
+      "serverUnavailable": "Dieser Server ist hier nicht verfügbar — er wurde möglicherweise entfernt, oder Ihnen fehlt der Zugriff."
     }
   },
   "buildCache": {

@@ -11,7 +11,12 @@ const { api } = vi.hoisted(() => ({
   api: { get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() },
 }));
 
-vi.mock("./client", () => ({ api }));
+// Keep the real module's ApiError/getApiErrorMessage: the checked-response
+// guard throws ApiError(502) for malformed bodies.
+vi.mock("./client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./client")>();
+  return { ...actual, api };
+});
 
 import { discoveryApi } from "./discovery";
 
@@ -47,13 +52,30 @@ describe("discoveryApi", () => {
     );
   });
 
-  it("lets rescan run far longer than the default timeout and never dedupes", () => {
-    discoveryApi.rescan("srv_1");
+  it("lets rescan run far longer than the default timeout and never dedupes", async () => {
+    api.post.mockResolvedValue({
+      serverId: "srv_1",
+      failed: [],
+      scan: { scanned: 0, ok: true },
+      reconcile: null,
+      repair: null,
+    });
+    await discoveryApi.rescan("srv_1");
     expect(api.post).toHaveBeenCalledWith(
       "discovery/servers/srv_1/discovery/rescan",
       undefined,
       { timeout: 180_000, dedupe: false },
     );
+  });
+
+  it("rejects an HTTP 200 rescan body that is not the documented summary", async () => {
+    // `{}` carries no sweep truth at all — returning it would let the card
+    // report "Rescan complete" for an UNKNOWN sweep. It must throw instead.
+    api.post.mockResolvedValue({});
+    await expect(discoveryApi.rescan("srv_1")).rejects.toMatchObject({ status: 502 });
+
+    api.post.mockResolvedValue({ serverId: "srv_1", failed: "nope" });
+    await expect(discoveryApi.rescan("srv_1")).rejects.toMatchObject({ status: 502 });
   });
 
   it("sends the enable/disable toggle as the JSON body of the PUT", () => {

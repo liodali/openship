@@ -2,6 +2,7 @@
 
 import { Icon as UiIcon } from "@repo/ui/icons";
 
+import Link from "next/link";
 import { useCallback } from "react";
 import { discoveryApi, type DiscoveryService, type DiscoveryStatus } from "@/lib/api";
 import {
@@ -17,6 +18,17 @@ import DropdownMenu from "@/components/ui/DropdownMenu";
 
 /**
  * Server container discovery (docs/docker-service-discovery-plan.md, step 6).
+ *
+ * ONE card for both surfaces that show discovery — the server page's overview
+ * and the dedicated /discovery page — so the enable/disable, rescan and
+ * suppress/unsuppress/forget controls are never implemented twice.
+ *
+ * The card loads status from the discovery API DIRECTLY and never consults a
+ * component health check: a pending or failed docker/Podman check must not
+ * make an existing feature disappear. The caller only decides whether the
+ * operator can reach the server at all; everything else degrades here — an
+ * unreachable engine renders its error with Retry, a missing grant renders
+ * the permission line.
  *
  * The backend owns every routing/TLS decision; this card only renders state
  * and issues operator intent (enable/disable, rescan, suppress/unsuppress,
@@ -106,7 +118,7 @@ const PHASE_TONE: Record<DiscoveryRoutePhase, string> = {
   unknown: "bg-muted/40 text-muted-foreground",
 };
 
-export function DiscoveryCard({ serverId }: { serverId: string }) {
+export function DiscoveryCard({ serverId, manageHref }: { serverId: string; manageHref?: string }) {
   const { t } = useI18n();
   const s = t.servers.discovery;
   const { showToast } = useToast();
@@ -241,6 +253,15 @@ export function DiscoveryCard({ serverId }: { serverId: string }) {
           </div>
         </div>
         <div className="flex items-center gap-3">
+          {manageHref && (
+            <Link
+              href={manageHref}
+              className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            >
+              <UiIcon name="arrow-up-right" className="size-3.5" />
+              {s.manageDiscovery}
+            </Link>
+          )}
           {configured && (
             <button
               type="button"
@@ -524,4 +545,3 @@ function SkeletonRows() {
     </div>
   );
 }
-

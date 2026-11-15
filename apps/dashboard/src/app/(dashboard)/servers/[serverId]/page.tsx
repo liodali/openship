@@ -39,7 +39,7 @@ import {
 import { RateLimitSettings } from "./_components/rate-limit-settings";
 import { GpuCard } from "./_components/gpu-card";
 import { BuildCacheCard } from "./_components/build-cache-card";
-import { DiscoveryCard } from "./_components/discovery-card";
+import { DiscoveryCard } from "@/components/discovery/discovery-card";
 import { ExposedPortsCard } from "./_components/exposed-ports-card";
 import { PortForwardingCard } from "./_components/port-forwarding-card";
 import { ServerGitHubConnect } from "@/components/github/ServerGitHubConnect";
@@ -736,9 +736,16 @@ function ServerDetail({ serverId }: { serverId: string }) {
               {server.gpu && <GpuCard key={`${serverId}:${server.gpu.override ?? "auto"}`} server={server} onChanged={updated => setServer(current => current ? { ...current, ...updated } : updated)} />}
               {server.buildCacheBudgetBytes !== undefined && server.capabilities?.buildCacheBudget && <BuildCacheCard key={`${serverId}:${server.buildCacheBudgetBytes ?? "auto"}`} server={server} onChanged={updated => setServer(current => current ? { ...current, ...updated } : updated)} />}
               {canInspect && components.some(component => component.name === "docker" && component.installed) && <ServerSwarm serverId={serverId} />}
-              {/* Container discovery (Docker and Podman via the compat API) — same
-                  runtime gate as ServerSwarm: needs the docker component present. */}
-              {canInspect && components.some(component => component.name === "docker" && component.installed) && <DiscoveryCard key={serverId} serverId={serverId} />}
+              {/* Container discovery (Docker and Podman via the compat API).
+                  Gated on SERVER ACCESS only (`canInspect` — exec-capable,
+                  operator-connected) and never on a component health check:
+                  a pending or failed docker/Podman check must not hide an
+                  existing feature. The card loads status from the discovery
+                  API directly, so an unavailable engine renders its own
+                  error + Retry instead of vanishing. "Manage discovery"
+                  opens the dedicated /discovery page on this server — that
+                  navigation is independent of component health too. */}
+              {canInspect && <DiscoveryCard key={serverId} serverId={serverId} manageHref={`/discovery?server=${encodeURIComponent(serverId)}`} />}
               <ServerUsage serverId={serverId} showProjects metrics={!canMonitor} />
             </>}
 

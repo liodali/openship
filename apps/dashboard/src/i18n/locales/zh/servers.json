@@ -1253,6 +1253,7 @@
   "discovery": {
     "title": "容器发现",
     "subtitle": "已选择加入并注册到本服务器边缘的容器",
+    "manageDiscovery": "管理发现",
     "enabledLabel": "开",
     "disabledLabel": "关",
     "rescan": "重新扫描",
@@ -1342,6 +1343,15 @@
       "suppress": "抑制",
       "unsuppress": "重新接受",
       "forget": "遗忘"
+    },
+    "page": {
+      "subtitle": "选择一台服务器，发现其容器提供的服务，并管理它们的路由和 TLS。",
+      "serverLabel": "服务器",
+      "serverPlaceholder": "选择服务器",
+      "noServersTitle": "还没有服务器",
+      "noServersHint": "添加一台服务器，即可发现其容器提供的服务。",
+      "noServersCta": "添加服务器",
+      "serverUnavailable": "该服务器在此处不可用——它可能已被移除，或者您没有访问权限。"
     }
   },
   "buildCache": {

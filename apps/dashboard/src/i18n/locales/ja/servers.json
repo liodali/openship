@@ -1253,6 +1253,7 @@
   "discovery": {
     "title": "コンテナ検出",
     "subtitle": "このサーバーのエッジに登録されたオプトイン済みコンテナ",
+    "manageDiscovery": "検出を管理",
     "enabledLabel": "オン",
     "disabledLabel": "オフ",
     "rescan": "再スキャン",
@@ -1342,6 +1343,15 @@
       "suppress": "抑制",
       "unsuppress": "再受け入れ",
       "forget": "忘れる"
+    },
+    "page": {
+      "subtitle": "サーバーを選択してコンテナが公開するサービスを検出し、ルートとTLSを管理します。",
+      "serverLabel": "サーバー",
+      "serverPlaceholder": "サーバーを選択",
+      "noServersTitle": "サーバーがまだありません",
+      "noServersHint": "サーバーを追加すると、そのコンテナが公開するサービスを検出できます。",
+      "noServersCta": "サーバーを追加",
+      "serverUnavailable": "このサーバーはここでは利用できません。削除されたか、アクセス権がない可能性があります。"
     }
   },
   "buildCache": {

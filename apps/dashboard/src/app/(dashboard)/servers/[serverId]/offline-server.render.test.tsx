@@ -267,10 +267,33 @@ describe("server detail page with an unreachable server", () => {
   }
 
   /**
+   * Container discovery is gated on SERVER ACCESS, never on a health check:
+   * a failed docker/Podman check must not make the feature disappear. The card
+   * loads its status from the discovery API directly — with the box
+   * unreachable that degrades to the card's error + Retry line, exactly as on
+   * the dedicated /discovery page, and the "Manage discovery" shortcut stays
+   * navigable.
+   */
+  it("keeps the discovery card visible when the health check fails", async () => {
+    searchParams = new URLSearchParams({ tab: "overview" });
+    const text = await mountOfflineServer(CHECK_FAILURES[0]!);
+
+    expect(errors).toEqual([]);
+    const d = baseDictionary.servers.discovery;
+    // The card renders (the old code required the docker component to be
+    // reported installed, which a failed check never does).
+    expect(text).toContain(d.title);
+    // Its own status read failed through the same unreachable box…
+    expect(text).toContain("The server returned an invalid response.");
+    // …and it offers recovery instead of a silent gap.
+    expect(text).toContain(d.retry);
+    expect(container.querySelector('a[href="/discovery?server=srv_1"]')).not.toBeNull();
+  });
+
+  /**
    * The actual regression: the page is the ONLY place a server can be deleted
    * from, so the remove action has to be reachable while the box is down.
-   */
-  it("exposes the remove action for a server that is down", async () => {
+   */  it("exposes the remove action for a server that is down", async () => {
     await mountOfflineServer(CHECK_FAILURES[0]!);
     expect(errors).toEqual([]);
 
