@@ -192,7 +192,9 @@ describe("checkDocker", () => {
 
     expect(status.healthy).toBe(true);
     expect(status.running).toBe(true);
-    expect(status.version).toBe("29.7.1");
+    // The daemon's answer outranks the CLI's --version line: what's RUNNING is
+    // 5.8.2, and the CLI version (29.7.1) is a different engine's number.
+    expect(status.version).toBe("5.8.2");
   });
 });
 
@@ -228,7 +230,12 @@ describe("checkDocker names the engine it finds", () => {
     ]));
 
     expect(status.engine).toBe("podman");
-    expect(status.message).toBe("podman 29.7.1 - running");
+    // Review finding on #11: the message must not pair Podman's NAME with the
+    // docker CLI's VERSION ("podman 29.7.1 - running") — the daemon probe's
+    // answer is the version that is actually running.
+    expect(status.version).toBe("5.8.2");
+    expect(status.message).toBe("podman 5.8.2 - running");
+    expect(status.message).not.toContain("29.7.1");
   });
 
   it("names a real dockerd as docker, same words as before", async () => {

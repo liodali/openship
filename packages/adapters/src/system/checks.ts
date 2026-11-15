@@ -168,7 +168,11 @@ export async function checkDocker(
   }
 
   systemDebug("checks", `docker:healthy (${formatDuration(startedAt)})`);
-  return healthy("docker", parsed, true, engine ?? undefined);
+  // Pair the engine name with the DAEMON's version, not the CLI's: a real
+  // docker CLI 29 pointed at a podman 5.8.2 socket would otherwise read
+  // "podman 29.0.0 - running" — one engine's version under another's name.
+  // `info` is the daemon probe, i.e. the daemon's own word.
+  return healthy("docker", info.output || parsed, true, engine ?? undefined);
 }
 
 export async function checkGit(
