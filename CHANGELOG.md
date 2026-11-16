@@ -29,6 +29,29 @@ Runtime security notices use the signed feed published from `security-advisories
   keep the source draining indefinitely. Restore stream access when the controller resumes,
   and link server preparation to its build view while deployment reads remain available.
 
+## 0.9.12-fork.3
+
+### Discovery
+
+- Add a dedicated Discovery sidebar page with a server selector and direct server
+  links. Keep discovery accessible while container-engine health checks are pending
+  or failing, and clear stale data when switching accounts or workspaces.
+- Validate rescan summaries before reporting success and surface partial scan,
+  reconciliation, and repair failures.
+
+### Edge
+
+- Serve an Openship-branded "Application temporarily unavailable" page with HTTP
+  503 and no-store caching for retained discovered services. Preserve HTTPS and
+  challenge handling, and upgrade existing retained vhosts through discovery repair
+  without requiring another stop/start cycle.
+
+### Podman
+
+- Disable SELinux labeling for the API container so it can access the mounted
+  Podman socket on SELinux-enforcing hosts, restoring container operations and
+  lifecycle-event monitoring.
+
 ## 0.9.12
 
 **Critical update** for build-secret protection, database upgrade repairs and
