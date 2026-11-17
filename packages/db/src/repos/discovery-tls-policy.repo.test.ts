@@ -25,8 +25,11 @@ const domainRepo = createDomainRepo(db);
 const SERVER = "srv_tls_policy";
 const SERVER_B = "srv_tls_policy_b";
 const ORG = "org_tls_policy";
+const ORG_FOREIGN = "org_tls_foreign";
 const CRED_A = "cred_tls_a";
 const CRED_B = "cred_tls_b";
+const CRED_FOREIGN = "cred_tls_foreign"; // belongs to ANOTHER organization
+const CRED_NON_CF = "cred_tls_noncf"; // right org, wrong provider type
 
 /** The certificate-material columns a policy write must NEVER touch. */
 function material(row: Domain) {
@@ -76,6 +79,8 @@ beforeAll(async () => {
   await db.insert(schema.credential).values([
     { id: CRED_A, organizationId: ORG, provider: "cloudflare", name: "zone A token", secretsEnc: "enc1:test-a", createdAt: now, updatedAt: now },
     { id: CRED_B, organizationId: ORG, provider: "cloudflare", name: "zone B token", secretsEnc: "enc1:test-b", createdAt: now, updatedAt: now },
+    { id: CRED_FOREIGN, organizationId: ORG_FOREIGN, provider: "cloudflare", name: "foreign org token", secretsEnc: "enc1:test-foreign", createdAt: now, updatedAt: now },
+    { id: CRED_NON_CF, organizationId: ORG, provider: "docker-registry", name: "registry login", secretsEnc: "enc1:test-noncf", createdAt: now, updatedAt: now },
   ]);
 });
 beforeEach(async () => {
@@ -242,7 +247,7 @@ describe("explicit per-domain policy (setTlsPolicy)", () => {
     });
   });
 
-  it("requires the credential and zone together, and bounded validity", async () => {
+  it("requires the credential and zone together, and Cloudflare's DISCRETE validity values", async () => {
     const row = await seedServerDomain({ id: "dom_bad", hostname: "bad.example.com" });
     await expect(
       domainRepo.setTlsPolicy({ domainId: row.id, policy: { provider: "cloudflare-origin-ca", zoneId: "zone_123" } as never }),
@@ -250,16 +255,87 @@ describe("explicit per-domain policy (setTlsPolicy)", () => {
     await expect(
       domainRepo.setTlsPolicy({ domainId: row.id, policy: { provider: "cloudflare-origin-ca", credentialId: CRED_A } as never }),
     ).rejects.toBeInstanceOf(ValidationError);
-    await expect(
-      domainRepo.setTlsPolicy({ domainId: row.id, policy: { provider: "cloudflare-origin-ca", credentialId: CRED_A, zoneId: "zone_123", validityDays: 2 } }),
-    ).rejects.toBeInstanceOf(ValidationError);
-    await expect(
-      domainRepo.setTlsPolicy({ domainId: row.id, policy: { provider: "cloudflare-origin-ca", credentialId: CRED_A, zoneId: "zone_123", validityDays: 9999 } }),
-    ).rejects.toBeInstanceOf(ValidationError);
-    // Nothing above may have half-applied.
+    // Any integer-looking but unsupported duration — 8 and 3650 sit INSIDE the
+    // naive 7–3650 range the API still rejects; 5475 (15y) is supported.
+    for (const bad of [2, 8, 3650, 5474]) {
+      await expect(
+        domainRepo.setTlsPolicy({ domainId: row.id, policy: { provider: "cloudflare-origin-ca", credentialId: CRED_A, zoneId: "zone_123", validityDays: bad } }),
+      ).rejects.toBeInstanceOf(ValidationError);
+    }
+    for (const good of [7, 30, 365, 730, 1095, 5475] as const) {
+      await domainRepo.setTlsPolicy({ domainId: row.id, policy: { provider: "cloudflare-origin-ca", credentialId: CRED_A, zoneId: "zone_123", validityDays: good } });
+    }
+    // Nothing above may have half-applied: the last accepted write is the row's state.
+    const settled = await domainRepo.getTlsPolicy(row.id);
+    expect(settled?.tlsValidityDays).toBe(5475);
+    expect(settled?.tlsCfCredentialId).toBe(CRED_A);
+  });
+
+  it("enforces credential ownership: same org as the domain's server, and a Cloudflare credential", async () => {
+    const row = await seedServerDomain({ id: "dom_owner", hostname: "owner.example.com" });
+    // Another organization's token — exists, satisfies the FK, still refused.
+    await client.exec("SET session_replication_role = DEFAULT;");
+    try {
+      await expect(
+        domainRepo.setTlsPolicy({ domainId: row.id, policy: { provider: "cloudflare-origin-ca", credentialId: CRED_FOREIGN, zoneId: "zone_123" } }),
+      ).rejects.toBeInstanceOf(ConflictError);
+      // Right organization, wrong credential type.
+      await expect(
+        domainRepo.setTlsPolicy({ domainId: row.id, policy: { provider: "cloudflare-origin-ca", credentialId: CRED_NON_CF, zoneId: "zone_123" } }),
+      ).rejects.toBeInstanceOf(ValidationError);
+      // A well-formed unknown id is input validation, not a conflict.
+      await expect(
+        domainRepo.setTlsPolicy({ domainId: row.id, policy: { provider: "cloudflare-origin-ca", credentialId: "cred_ghost", zoneId: "zone_123" } }),
+      ).rejects.toBeInstanceOf(ValidationError);
+    } finally {
+      await client.exec("SET session_replication_role = replica;");
+    }
     const untouched = await domainRepo.getTlsPolicy(row.id);
     expect(untouched?.tlsProvider).toBe("letsencrypt"); // backfill default
     expect(untouched?.tlsCfCredentialId).toBeNull();
+  });
+
+  it("repeating the IDENTICAL policy is a no-op — the generation never moves", async () => {
+    const row = await seedServerDomain({ id: "dom_idem", hostname: "idem.example.com" });
+    const first = await domainRepo.setTlsPolicy({
+      domainId: row.id,
+      policy: { provider: "cloudflare-origin-ca", credentialId: CRED_A, zoneId: "zone_123", zoneName: "example.com", validityDays: 90 },
+    });
+    expect(first.tlsPolicyGeneration).toBe(2); // enrolled at 1 → one change
+    // Same selection re-submitted (even WITHOUT zoneName, and 90 spelled the same):
+    const again = await domainRepo.setTlsPolicy({
+      domainId: row.id,
+      policy: { provider: "cloudflare-origin-ca", credentialId: CRED_A, zoneId: "zone_123", validityDays: 90 },
+    });
+    expect(again.tlsPolicyGeneration).toBe(2); // unchanged — no pending work invalidated
+    expect(again.updatedAt).toEqual(first.updatedAt); // no write happened at all
+    expect(again.tlsCfZoneName).toBe("example.com"); // the verified zone name survives
+    // Explicit default validity (365) and an omitted validity are the SAME policy
+    // (both store null): a fresh row proves the normalization in both directions.
+    const defaults = await seedServerDomain({ id: "dom_idem_dflt", hostname: "idem-dflt.example.com" });
+    const omitted = await domainRepo.setTlsPolicy({
+      domainId: defaults.id,
+      policy: { provider: "cloudflare-origin-ca", credentialId: CRED_A, zoneId: "zone_123" },
+    });
+    expect(omitted.tlsPolicyGeneration).toBe(2);
+    expect(omitted.tlsValidityDays).toBeNull();
+    const spelledOut = await domainRepo.setTlsPolicy({
+      domainId: defaults.id,
+      policy: { provider: "cloudflare-origin-ca", credentialId: CRED_A, zoneId: "zone_123", validityDays: 365 },
+    });
+    expect(spelledOut.tlsPolicyGeneration).toBe(2); // 365 IS the default → identical
+    // A genuinely different selection still bumps.
+    const changed = await domainRepo.setTlsPolicy({
+      domainId: row.id,
+      policy: { provider: "cloudflare-origin-ca", credentialId: CRED_A, zoneId: "zone_456", validityDays: 365 },
+    });
+    expect(changed.tlsPolicyGeneration).toBe(3);
+    expect(changed.tlsCfZoneName).toBeNull(); // new zone → recorded name invalidated until re-verified
+    // Repeating an explicit LET'S ENCRYPT that matches the enrolled default is a no-op too.
+    const le = await seedServerDomain({ id: "dom_idem_le", hostname: "idem-le.example.com" });
+    const leOnce = await domainRepo.setTlsPolicy({ domainId: le.id, policy: { provider: "letsencrypt" } });
+    expect(leOnce.tlsPolicyGeneration).toBe(1); // identical → no bump
+    expect(leOnce.tlsProviderSource).toBe("explicit"); // but the choice is now recorded as explicit
   });
 
   it("refuses stale generations, non-discovery owners, and unknown domains", async () => {
