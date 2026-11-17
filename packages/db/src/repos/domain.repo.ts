@@ -24,14 +24,16 @@ import {
   resolveRedirectStatus,
   ValidationError,
   DISCOVERY_TLS_DEFAULT_PROVIDER,
-  DISCOVERY_TLS_ORIGIN_CA_VALIDITY,
-  isValidOriginCaValidityDays,
+  DISCOVERY_TLS_ORIGIN_CA_DEFAULT_VALIDITY_DAYS,
+  DISCOVERY_TLS_ORIGIN_CA_VALIDITY_DAYS,
+  isSupportedOriginCaValidityDays,
   type DiscoveryTlsProvider,
 } from "@repo/core";
 import type { Database } from "../client";
 import {
   discoveryBinding,
   discoverySettings,
+  credential,
   domain,
   orphanedResource,
   project,
@@ -69,16 +71,21 @@ function validateTlsPolicySelection(policy: TlsPolicySelection) {
   if (policy.provider === "cloudflare-origin-ca") {
     if (!policy.credentialId?.trim() || !policy.zoneId?.trim())
       throw new ValidationError("Cloudflare Origin CA requires this domain's credential and zone");
-    if (policy.validityDays !== undefined && !isValidOriginCaValidityDays(policy.validityDays))
+    if (policy.validityDays !== undefined && !isSupportedOriginCaValidityDays(policy.validityDays))
       throw new ValidationError(
-        `Origin CA validity must be ${DISCOVERY_TLS_ORIGIN_CA_VALIDITY.minDays}–${DISCOVERY_TLS_ORIGIN_CA_VALIDITY.maxDays} days`,
+        `Origin CA validity must be one of Cloudflare's supported durations: ${DISCOVERY_TLS_ORIGIN_CA_VALIDITY_DAYS.join(", ")} days`,
       );
     return {
       provider: policy.provider,
       credentialId: policy.credentialId.trim(),
       zoneId: policy.zoneId.trim(),
       zoneName: policy.zoneName?.trim() || undefined,
-      validityDays: policy.validityDays,
+      // The provider default (365) normalizes to null: an explicit 365 and an
+      // omitted validity are the SAME policy (identical writes stay idempotent).
+      validityDays:
+        policy.validityDays !== undefined && policy.validityDays !== DISCOVERY_TLS_ORIGIN_CA_DEFAULT_VALIDITY_DAYS
+          ? policy.validityDays
+          : null,
     } as const;
   }
   if (policy.provider !== "letsencrypt") throw new ValidationError(`Unknown managed TLS provider: ${String((policy as { provider?: unknown }).provider)}`);
@@ -525,7 +532,7 @@ export function createDomainRepo(db: Database) {
       return db.transaction(async (tx) => {
         const [row] = await tx.select().from(domain).where(eq(domain.id, input.domainId)).for("update");
         if (!row) throw new ConflictError(`Unknown domain ${input.domainId}`);
-        if (row.ownerType !== "server")
+        if (row.ownerType !== "server" || !row.serverId)
           throw new ConflictError(
             `Managed TLS policy applies only to server-scoped discovery domains; ${row.hostname} is a ${row.ownerType} domain`,
           );
@@ -533,16 +540,77 @@ export function createDomainRepo(db: Database) {
           throw new ConflictError(
             `TLS policy changed concurrently (generation ${row.tlsPolicyGeneration}, expected ${input.expectedGeneration})`,
           );
+
+        // The desired selection, normalized for comparison with the row. A
+        // repeated IDENTICAL policy is a no-op: the generation stays put, so a
+        // retrying operator never invalidates pending issuance/transition work.
+        // zoneName is deliberately NOT compared — it is verified-then-Cloudflare
+        // metadata, not the operator's selection, and a re-submitted policy
+        // without it must not erase (or fake-change) the recorded name.
+        const desired = {
+          provider: validated.provider as DiscoveryTlsProvider,
+          credentialId: validated.provider === "cloudflare-origin-ca" ? validated.credentialId : null,
+          zoneId: validated.provider === "cloudflare-origin-ca" ? validated.zoneId : null,
+          validityDays: validated.provider === "cloudflare-origin-ca" ? validated.validityDays : null,
+        };
+        const identical =
+          desired.provider === row.tlsProvider &&
+          desired.credentialId === row.tlsCfCredentialId &&
+          desired.zoneId === row.tlsCfZoneId &&
+          desired.validityDays === row.tlsValidityDays;
+        if (identical) {
+          // Same selection: never bump the generation. Only record that the
+          // provider is now an EXPLICIT choice (audit truth) if it wasn't yet.
+          if (row.tlsProviderSource === "explicit") return row;
+          const [marked] = await tx
+            .update(domain)
+            .set({ tlsProviderSource: "explicit", updatedAt: new Date() })
+            .where(eq(domain.id, input.domainId))
+            .returning();
+          return marked!;
+        }
+
+        // Cloudflare selections reference an organization credential. Enforce
+        // ownership BEFORE writing: the credential must exist, be a Cloudflare
+        // credential, and belong to the SAME organization as this domain's
+        // server — a FK only proves existence, never tenancy, and reusing one
+        // org's token must never authorize another org's issuance.
+        if (validated.provider === "cloudflare-origin-ca") {
+          const [credentialRow] = await tx
+            .select({ organizationId: credential.organizationId, provider: credential.provider })
+            .from(credential)
+            .where(eq(credential.id, validated.credentialId));
+          if (!credentialRow)
+            throw new ValidationError(`Unknown credential ${validated.credentialId} for this domain's TLS policy`);
+          if (credentialRow.provider !== "cloudflare")
+            throw new ValidationError(
+              `Credential ${validated.credentialId} is a ${credentialRow.provider} credential; Cloudflare Origin CA requires a cloudflare credential`,
+            );
+          const [server] = await tx
+            .select({ organizationId: servers.organizationId })
+            .from(servers)
+            .where(eq(servers.id, row.serverId));
+          if (!server || credentialRow.organizationId !== server.organizationId)
+            throw new ConflictError(
+              `Credential ${validated.credentialId} belongs to another organization; it cannot issue this server's certificates`,
+            );
+        }
+
         const [updated] = await tx
           .update(domain)
           .set({
-            tlsProvider: validated.provider,
+            tlsProvider: desired.provider,
             tlsProviderSource: "explicit",
             tlsPolicyGeneration: row.tlsPolicyGeneration + 1,
-            tlsCfCredentialId: validated.provider === "cloudflare-origin-ca" ? validated.credentialId : null,
-            tlsCfZoneId: validated.provider === "cloudflare-origin-ca" ? validated.zoneId : null,
-            tlsCfZoneName: validated.provider === "cloudflare-origin-ca" ? (validated.zoneName ?? null) : null,
-            tlsValidityDays: validated.provider === "cloudflare-origin-ca" ? (validated.validityDays ?? null) : null,
+            tlsCfCredentialId: desired.credentialId,
+            tlsCfZoneId: desired.zoneId,
+            // The verified zone name survives a re-submitted policy for the
+            // SAME zone; a different zone invalidates it until re-verified.
+            tlsCfZoneName:
+              desired.provider === "cloudflare-origin-ca"
+                ? (validated.zoneName ?? (desired.zoneId === row.tlsCfZoneId ? row.tlsCfZoneName : null))
+                : null,
+            tlsValidityDays: desired.validityDays,
             updatedAt: new Date(),
           })
           .where(eq(domain.id, input.domainId))

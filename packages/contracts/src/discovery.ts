@@ -1,5 +1,10 @@
 import { Type, type Static } from "@sinclair/typebox";
-import { DISCOVERY_TLS_ORIGIN_CA_VALIDITY, DISCOVERY_TLS_PROVIDERS, DISCOVERY_TLS_DEFAULT_PROVIDER } from "@repo/core";
+import {
+  DISCOVERY_TLS_ORIGIN_CA_DEFAULT_VALIDITY_DAYS,
+  DISCOVERY_TLS_ORIGIN_CA_VALIDITY_DAYS,
+  DISCOVERY_TLS_PROVIDERS,
+  DISCOVERY_TLS_DEFAULT_PROVIDER,
+} from "@repo/core";
 
 const nullableString = Type.Union([Type.String(), Type.Null()]);
 
@@ -39,11 +44,12 @@ export const DiscoveryDomainTlsCloudflareSchema = Type.Object(
     /** Zone display name; recorded only once verified through Cloudflare. */
     zoneName: Type.Optional(Type.String({ minLength: 1 })),
     validityDays: Type.Optional(
-      Type.Integer({
-        minimum: DISCOVERY_TLS_ORIGIN_CA_VALIDITY.minDays,
-        maximum: DISCOVERY_TLS_ORIGIN_CA_VALIDITY.maxDays,
-        description: `Origin CA validity in days (default ${DISCOVERY_TLS_ORIGIN_CA_VALIDITY.defaultDays})`,
-      }),
+      Type.Union(
+        DISCOVERY_TLS_ORIGIN_CA_VALIDITY_DAYS.map((days) => Type.Literal(days)),
+        {
+          description: `Origin CA validity in days — Cloudflare's discrete supported durations only (${DISCOVERY_TLS_ORIGIN_CA_VALIDITY_DAYS.join(", ")}); default ${DISCOVERY_TLS_ORIGIN_CA_DEFAULT_VALIDITY_DAYS}`,
+        },
+      ),
     ),
   },
   { additionalProperties: false },

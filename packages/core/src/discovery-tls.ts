@@ -40,19 +40,22 @@ export function isDiscoveryTlsProvider(value: unknown): value is DiscoveryTlsPro
 export const DISCOVERY_TLS_PROVIDER_SOURCES = ["default", "explicit"] as const;
 export type DiscoveryTlsProviderSource = (typeof DISCOVERY_TLS_PROVIDER_SOURCES)[number];
 
-/** Origin CA validity bounds (Cloudflare API-supported range, in days). */
-export const DISCOVERY_TLS_ORIGIN_CA_VALIDITY = {
-  minDays: 7,
-  maxDays: 3650,
-  defaultDays: 365,
-} as const;
+/**
+ * Origin CA validity — Cloudflare's DISCRETE supported durations, in days
+ * (https://developers.cloudflare.com/api/resources/origin_ca_certificates/methods/create/).
+ * Not a free integer range: 8 or 3650 days are rejected by the API just like
+ * an out-of-bounds value, while 5475 days (15 years) is supported.
+ */
+export const DISCOVERY_TLS_ORIGIN_CA_VALIDITY_DAYS = [7, 30, 90, 365, 730, 1095, 5475] as const;
+export type OriginCaValidityDays = (typeof DISCOVERY_TLS_ORIGIN_CA_VALIDITY_DAYS)[number];
 
-/** Total validator for Origin CA validity-in-days. */
-export function isValidOriginCaValidityDays(value: unknown): boolean {
+/** The provider default when a policy requests none. */
+export const DISCOVERY_TLS_ORIGIN_CA_DEFAULT_VALIDITY_DAYS: OriginCaValidityDays = 365;
+
+/** Total validator: ONLY Cloudflare's discrete supported values. */
+export function isSupportedOriginCaValidityDays(value: unknown): value is OriginCaValidityDays {
   return (
     typeof value === "number" &&
-    Number.isInteger(value) &&
-    value >= DISCOVERY_TLS_ORIGIN_CA_VALIDITY.minDays &&
-    value <= DISCOVERY_TLS_ORIGIN_CA_VALIDITY.maxDays
+    (DISCOVERY_TLS_ORIGIN_CA_VALIDITY_DAYS as readonly unknown[]).includes(value)
   );
 }
