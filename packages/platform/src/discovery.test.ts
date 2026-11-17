@@ -11,9 +11,20 @@ vi.mock("./authorization", () => ({
 const state = {
   settings: { enabled: true, workspaceId: null, sweepIntervalSeconds: 60, lastScanAt: null, lastScanError: null },
   bindings: new Map<string, Record<string, unknown>>(),
+  /** Server-scoped domain rows by hostname — the join target for TLS state. */
+  domains: new Map<string, Record<string, unknown>>(),
   forgotten: [] as string[],
   configured: [] as Array<{ enabled: boolean }>,
   withdrawalsScheduled: 0,
+};
+
+/** The one domain fixture every lookup path shares — batch and single alike. */
+const DOMAIN_ROW = {
+  hostname: "app.example.com",
+  verified: true,
+  sslStatus: "issued",
+  sslExpiresAt: new Date("2030-01-01"),
+  sslIssuer: "letsencrypt",
 };
 
 const discoveryRepo = {
@@ -29,11 +40,15 @@ const discoveryRepo = {
   }),
   getBinding: vi.fn(async (_serverId: string, serviceKey: string) => state.bindings.get(serviceKey)),
   listByServer: vi.fn(async () => [...state.bindings.values()]),
-  findDomainForBinding: vi.fn(async (_serverId: string, hostname: string) =>
-    hostname === "app.example.com"
-      ? { hostname, verified: true, sslStatus: "issued", sslExpiresAt: new Date("2030-01-01"), sslIssuer: "letsencrypt" }
-      : null,
-  ),
+  findDomainForBinding: vi.fn(async (_serverId: string, hostname: string) => state.domains.get(hostname.toLowerCase()) ?? null),
+  findDomainsForBindings: vi.fn(async (_serverId: string, hostnames: string[]) => {
+    const out = new Map<string, Record<string, unknown>>();
+    for (const hostname of hostnames) {
+      const row = state.domains.get(hostname.toLowerCase());
+      if (row) out.set(hostname.toLowerCase(), row);
+    }
+    return out;
+  }),
   suppress: vi.fn(async (_serverId: string, serviceKey: string) => state.bindings.get(serviceKey)),
   unsuppress: vi.fn(async (_serverId: string, serviceKey: string) => state.bindings.get(serviceKey)),
   forget: vi.fn(async (_serverId: string, serviceKey: string) => {
@@ -107,6 +122,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   state.settings = { enabled: true, workspaceId: null, sweepIntervalSeconds: 60, lastScanAt: null, lastScanError: null };
   state.bindings = new Map([["id:my-app", binding()]]);
+  state.domains = new Map([["app.example.com", { ...DOMAIN_ROW }]]);
   state.forgotten = [];
   state.configured = [];
   state.withdrawalsScheduled = 0;
@@ -118,6 +134,9 @@ describe("createDiscoveryOperations", () => {
   it("authorizes SERVER access for every operation, at the right strength", async () => {
     const ops = createDiscoveryOperations({ authorize } as never);
     await ops.status(ctx, "srv_1");
+    expect(authorize).toHaveBeenCalledWith(ctx, { resourceType: "server", resourceId: "srv_1", action: "read" });
+    authorize.mockClear();
+    await ops.getService(ctx, "srv_1", { serviceKey: "id:my-app" });
     expect(authorize).toHaveBeenCalledWith(ctx, { resourceType: "server", resourceId: "srv_1", action: "read" });
     authorize.mockClear();
     await ops.configure(ctx, "srv_1", { enabled: false });
@@ -139,7 +158,55 @@ describe("createDiscoveryOperations", () => {
       serviceKey: "id:my-app",
       hostname: "app.example.com",
       applyState: "applied",
-      tls: { verified: true, sslStatus: "issued", sslIssuer: "letsencrypt" },
+      tls: { verified: true, sslStatus: "issued", sslIssuer: "letsencrypt", sslExpiresAt: "2030-01-01T00:00:00.000Z" },
+    });
+  });
+
+  it("status reads domains in ONE server-scoped batch — never a per-binding loop", async () => {
+    // The N+1 pin: whatever the binding count, the domain join is one call.
+    // A regression to findDomainForBinding per row scales with binding count
+    // (hundreds to thousands per server are expected).
+    const ops = createDiscoveryOperations({ authorize } as never);
+    state.bindings.set("id:second", binding({ serviceKey: "id:second", hostname: "second.example.com" }));
+    await ops.status(ctx, "srv_1");
+    expect(discoveryRepo.findDomainsForBindings).toHaveBeenCalledTimes(1);
+    expect(discoveryRepo.findDomainsForBindings).toHaveBeenCalledWith("srv_1", ["app.example.com", "second.example.com"]);
+    expect(discoveryRepo.findDomainForBinding).not.toHaveBeenCalled();
+  });
+
+  it("getService reads one service with a CONSTANT shape — the same serializer the list uses", async () => {
+    const ops = createDiscoveryOperations({ authorize } as never);
+    const list = await ops.status(ctx, "srv_1");
+    vi.clearAllMocks(); // isolate the single read's own repository calls
+    const single = await ops.getService(ctx, "srv_1", { serviceKey: "id:my-app" });
+    expect(single.data).toEqual(list.data.services[0]);
+    // The single read joins the domain server-scoped on its own — one binding
+    // lookup plus one domain lookup, and never the batch path.
+    expect(discoveryRepo.getBinding).toHaveBeenCalledWith("srv_1", "id:my-app");
+    expect(discoveryRepo.findDomainForBinding).toHaveBeenCalledWith("srv_1", "app.example.com");
+    expect(discoveryRepo.findDomainsForBindings).not.toHaveBeenCalled();
+  });
+
+  it("a binding without a domain row keeps today's TLS defaults in BOTH reads", async () => {
+    state.domains.clear();
+    const ops = createDiscoveryOperations({ authorize } as never);
+    const single = await ops.getService(ctx, "srv_1", { serviceKey: "id:my-app" });
+    const list = await ops.status(ctx, "srv_1");
+    const expected = {
+      hostname: "app.example.com", // falls back to the binding's own declaration
+      verified: false,
+      sslStatus: "none",
+      sslExpiresAt: null,
+      sslIssuer: null,
+    };
+    expect(single.data.tls).toEqual(expected);
+    expect(list.data.services[0].tls).toEqual(expected);
+  });
+
+  it("getService rejects unknown services with the not-found error", async () => {
+    const ops = createDiscoveryOperations({ authorize } as never);
+    await expect(ops.getService(ctx, "srv_1", { serviceKey: "id:ghost" })).rejects.toMatchObject({
+      statusCode: 404,
     });
   });
 
@@ -242,5 +309,6 @@ describe("createDiscoveryOperations", () => {
     await expect(ops.forget(ctx, "srv_1", { serviceKey: "id:ghost" })).rejects.toMatchObject({
       statusCode: 404,
     });
+    await expect(ops.getService(ctx, "srv_1", { serviceKey: "" })).rejects.toBeDefined(); // empty key fails input validation
   });
 });

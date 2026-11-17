@@ -30,6 +30,19 @@ describe("discoveryApi", () => {
     expect(api.get).toHaveBeenCalledWith("discovery/servers/srv_1/discovery", undefined);
   });
 
+  it("reads ONE service by its key, encoding both separators in the path", () => {
+    discoveryApi.service("srv_1", "compose:proj/serv");
+    expect(api.get).toHaveBeenCalledWith(
+      "discovery/servers/srv_1/discovery/services/compose%3Aproj%2Fserv",
+      undefined,
+    );
+    discoveryApi.service("srv_1", "id:my-app", { signal: expect.any(AbortSignal) });
+    expect(api.get).toHaveBeenCalledWith(
+      "discovery/servers/srv_1/discovery/services/id%3Amy-app",
+      { signal: expect.any(AbortSignal) },
+    );
+  });
+
   it("encodes BOTH separators of a Compose service key in the path", () => {
     discoveryApi.suppress("srv_1", "compose:proj/serv");
     expect(api.post).toHaveBeenCalledWith(
