@@ -22,6 +22,11 @@ import {
   DOMAIN_RETRY_DELAYS_MS,
   normalizeCustomHostname,
   resolveRedirectStatus,
+  ValidationError,
+  DISCOVERY_TLS_DEFAULT_PROVIDER,
+  DISCOVERY_TLS_ORIGIN_CA_VALIDITY,
+  isValidOriginCaValidityDays,
+  type DiscoveryTlsProvider,
 } from "@repo/core";
 import type { Database } from "../client";
 import {
@@ -42,6 +47,43 @@ import { assertProjectConfigurationWritable, withProjectConfigurationWrite } fro
 export type Domain = typeof domain.$inferSelect;
 export type NewDomain = typeof domain.$inferInsert;
 type RepoTransaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
+
+/**
+ * An explicit per-domain managed-TLS selection, exactly as the plan's strict
+ * discriminated shape: Let's Encrypt carries nothing else; Cloudflare Origin CA
+ * REQUIRES its organization credential and exact zone (zoneName only once
+ * verified through Cloudflare; validityDays optional with provider default).
+ */
+export type TlsPolicySelection =
+  | { provider: "letsencrypt" }
+  | {
+      provider: "cloudflare-origin-ca";
+      credentialId: string;
+      zoneId: string;
+      zoneName?: string;
+      validityDays?: number;
+    };
+
+/** Structural validation shared by every policy writer (repo today, HTTP/labels later). */
+function validateTlsPolicySelection(policy: TlsPolicySelection) {
+  if (policy.provider === "cloudflare-origin-ca") {
+    if (!policy.credentialId?.trim() || !policy.zoneId?.trim())
+      throw new ValidationError("Cloudflare Origin CA requires this domain's credential and zone");
+    if (policy.validityDays !== undefined && !isValidOriginCaValidityDays(policy.validityDays))
+      throw new ValidationError(
+        `Origin CA validity must be ${DISCOVERY_TLS_ORIGIN_CA_VALIDITY.minDays}–${DISCOVERY_TLS_ORIGIN_CA_VALIDITY.maxDays} days`,
+      );
+    return {
+      provider: policy.provider,
+      credentialId: policy.credentialId.trim(),
+      zoneId: policy.zoneId.trim(),
+      zoneName: policy.zoneName?.trim() || undefined,
+      validityDays: policy.validityDays,
+    } as const;
+  }
+  if (policy.provider !== "letsencrypt") throw new ValidationError(`Unknown managed TLS provider: ${String((policy as { provider?: unknown }).provider)}`);
+  return { provider: "letsencrypt" } as const;
+}
 
 // ─── Repository ──────────────────────────────────────────────────────────────
 
@@ -386,6 +428,8 @@ export function createDomainRepo(db: Database) {
             );
           }
           if (existing.targetPort !== input.targetPort) {
+            // A port change updates routing metadata ONLY: the persisted TLS
+            // policy (and every ssl_* column) survives re-ensuring untouched.
             const [updated] = await tx
               .update(domain)
               .set({ targetPort: input.targetPort, updatedAt: new Date() })
@@ -395,6 +439,13 @@ export function createDomainRepo(db: Database) {
           }
           return { domain: existing, created: false };
         }
+        // Enrollment-time TLS default for the row this call may create (the
+        // resolved policy persists with the row; a concurrent default change
+        // afterwards never rewrites it).
+        const [serverDefault] = await tx
+          .select({ tlsDefaultProvider: discoverySettings.tlsDefaultProvider })
+          .from(discoverySettings)
+          .where(eq(discoverySettings.serverId, input.serverId));
         const [created] = await tx
           .insert(domain)
           .values({
@@ -406,6 +457,14 @@ export function createDomainRepo(db: Database) {
             targetPort: input.targetPort,
             status: "pending",
             verified: false,
+            // Enrollment resolves the managed TLS provider ONCE, from the
+            // server default at this moment (no explicit override exists yet —
+            // labels arrive with the parser step). The resolved value persists
+            // here and is authoritative from now on: later default changes never
+            // rewrite it. Generation 1 = a policy exists.
+            tlsProvider: serverDefault?.tlsDefaultProvider ?? DISCOVERY_TLS_DEFAULT_PROVIDER,
+            tlsProviderSource: "default",
+            tlsPolicyGeneration: 1,
           })
           .onConflictDoNothing({ target: domain.hostname })
           .returning();
@@ -416,6 +475,79 @@ export function createDomainRepo(db: Database) {
           throw new ConflictError(`Hostname ${hostname} is owned by another domain; discovery cannot claim it`);
         }
         return { domain: raced, created: false };
+      });
+    },
+
+    // ── Managed TLS policy (server-scoped discovery domains) ─────────────
+    //
+    // docs/cloudflare-origin-ca-discovery-plan.md §1: the persisted operator
+    // INTENT for a discovery domain's managed TLS. These writes touch ONLY the
+    // tls_policy columns — never ssl_*/manualSsl/certificate material (existing
+    // certificates are unchanged by policy writes) and never tlsActiveProvider
+    // (the installed-provider marker advances only through managed activation).
+
+    /** The persisted policy for one domain row, or null when it has none. */
+    async getTlsPolicy(domainId: string) {
+      const [row] = await db
+        .select({
+          hostname: domain.hostname,
+          ownerType: domain.ownerType,
+          serverId: domain.serverId,
+          tlsProvider: domain.tlsProvider,
+          tlsProviderSource: domain.tlsProviderSource,
+          tlsActiveProvider: domain.tlsActiveProvider,
+          tlsPolicyGeneration: domain.tlsPolicyGeneration,
+          tlsCfCredentialId: domain.tlsCfCredentialId,
+          tlsCfZoneId: domain.tlsCfZoneId,
+          tlsCfZoneName: domain.tlsCfZoneName,
+          tlsValidityDays: domain.tlsValidityDays,
+        })
+        .from(domain)
+        .where(eq(domain.id, domainId));
+      return row ?? null;
+    },
+
+    /**
+     * Persist an EXPLICIT per-domain TLS policy (operator action; labels get an
+     * agreeing path later). Bumps the policy generation — stale in-flight work
+     * and lost races detect the bump — and refuses stale writers when
+     * `expectedGeneration` no longer matches. Let's Encrypt clears every
+     * Cloudflare reference; Cloudflare requires its credential and zone together
+     * (zoneName may accompany them once verified through Cloudflare). Returns
+     * the updated row.
+     */
+    async setTlsPolicy(input: {
+      domainId: string;
+      policy: TlsPolicySelection;
+      expectedGeneration?: number;
+    }): Promise<Domain> {
+      const validated = validateTlsPolicySelection(input.policy);
+      return db.transaction(async (tx) => {
+        const [row] = await tx.select().from(domain).where(eq(domain.id, input.domainId)).for("update");
+        if (!row) throw new ConflictError(`Unknown domain ${input.domainId}`);
+        if (row.ownerType !== "server")
+          throw new ConflictError(
+            `Managed TLS policy applies only to server-scoped discovery domains; ${row.hostname} is a ${row.ownerType} domain`,
+          );
+        if (input.expectedGeneration !== undefined && input.expectedGeneration !== row.tlsPolicyGeneration)
+          throw new ConflictError(
+            `TLS policy changed concurrently (generation ${row.tlsPolicyGeneration}, expected ${input.expectedGeneration})`,
+          );
+        const [updated] = await tx
+          .update(domain)
+          .set({
+            tlsProvider: validated.provider,
+            tlsProviderSource: "explicit",
+            tlsPolicyGeneration: row.tlsPolicyGeneration + 1,
+            tlsCfCredentialId: validated.provider === "cloudflare-origin-ca" ? validated.credentialId : null,
+            tlsCfZoneId: validated.provider === "cloudflare-origin-ca" ? validated.zoneId : null,
+            tlsCfZoneName: validated.provider === "cloudflare-origin-ca" ? (validated.zoneName ?? null) : null,
+            tlsValidityDays: validated.provider === "cloudflare-origin-ca" ? (validated.validityDays ?? null) : null,
+            updatedAt: new Date(),
+          })
+          .where(eq(domain.id, input.domainId))
+          .returning();
+        return updated!;
       });
     },
 

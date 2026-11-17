@@ -1625,6 +1625,13 @@
       "when": 1794459600000,
       "tag": "0231_server_discovery",
       "breakpoints": true
+    },
+    {
+      "idx": 232,
+      "version": "7",
+      "when": 1794546000000,
+      "tag": "0232_discovery_tls_providers",
+      "breakpoints": true
     }
   ]
 }

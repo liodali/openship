@@ -1,6 +1,77 @@
 import { Type, type Static } from "@sinclair/typebox";
+import { DISCOVERY_TLS_ORIGIN_CA_VALIDITY, DISCOVERY_TLS_PROVIDERS, DISCOVERY_TLS_DEFAULT_PROVIDER } from "@repo/core";
 
 const nullableString = Type.Union([Type.String(), Type.Null()]);
+
+// ── Managed TLS providers (docs/cloudflare-origin-ca-discovery-plan.md) ─────
+
+/** The ONLY two managed provider IDs — mirrored from @repo/core's vocabulary. */
+export const DiscoveryTlsProviderSchema = Type.Union(
+  DISCOVERY_TLS_PROVIDERS.map((p) => Type.Literal(p)),
+);
+export type DiscoveryTlsProvider = Static<typeof DiscoveryTlsProviderSchema>;
+
+/**
+ * Server discovery TLS settings: the default provider applied to NEWLY
+ * enrolled domains. Changing it never switches existing certificates (each
+ * domain persists its own resolved provider); no Cloudflare credential or
+ * zone is stored at server scope.
+ */
+export const DiscoveryTlsSettingsSchema = Type.Object({
+  defaultProvider: DiscoveryTlsProviderSchema,
+});
+export type DiscoveryTlsSettings = Static<typeof DiscoveryTlsSettingsSchema>;
+
+/** PUT body for the server default (accepted values: the two provider IDs only). */
+export const DiscoveryTlsSettingsInputSchema = Type.Object(
+  { defaultProvider: DiscoveryTlsProviderSchema },
+  { additionalProperties: false },
+);
+export type DiscoveryTlsSettingsInput = Static<typeof DiscoveryTlsSettingsInputSchema>;
+
+/** Per-domain Cloudflare Origin CA configuration — required as a block. */
+export const DiscoveryDomainTlsCloudflareSchema = Type.Object(
+  {
+    /** An existing encrypted organization credential (never a token). */
+    credentialId: Type.String({ minLength: 1 }),
+    /** The exact authorized Cloudflare zone id. */
+    zoneId: Type.String({ minLength: 1 }),
+    /** Zone display name; recorded only once verified through Cloudflare. */
+    zoneName: Type.Optional(Type.String({ minLength: 1 })),
+    validityDays: Type.Optional(
+      Type.Integer({
+        minimum: DISCOVERY_TLS_ORIGIN_CA_VALIDITY.minDays,
+        maximum: DISCOVERY_TLS_ORIGIN_CA_VALIDITY.maxDays,
+        description: `Origin CA validity in days (default ${DISCOVERY_TLS_ORIGIN_CA_VALIDITY.defaultDays})`,
+      }),
+    ),
+  },
+  { additionalProperties: false },
+);
+
+/**
+ * STRICT discriminated per-domain policy: Let's Encrypt rejects Cloudflare-only
+ * fields; Cloudflare requires its credential and zone. Invalid provider IDs are
+ * validation errors, never a fallback.
+ */
+export const DiscoveryDomainTlsPolicyInputSchema = Type.Union([
+  Type.Object({ provider: Type.Literal("letsencrypt") }, { additionalProperties: false }),
+  Type.Object(
+    { provider: Type.Literal("cloudflare-origin-ca"), cloudflare: DiscoveryDomainTlsCloudflareSchema },
+    { additionalProperties: false },
+  ),
+]);
+export type DiscoveryDomainTlsPolicyInput = Static<typeof DiscoveryDomainTlsPolicyInputSchema>;
+
+/** How a domain's persisted provider was chosen. */
+export const DiscoveryTlsProviderSourceSchema = Type.Union([
+  Type.Literal("default"),
+  Type.Literal("explicit"),
+]);
+export type DiscoveryTlsProviderSource = Static<typeof DiscoveryTlsProviderSourceSchema>;
+
+/** The initial server default, as a schema (for tests and generated clients). */
+export const DISCOVERY_TLS_DEFAULT_PROVIDER_SCHEMA = Type.Literal(DISCOVERY_TLS_DEFAULT_PROVIDER);
 
 /** Enable/disable server discovery. */
 export const DiscoveryConfigureInputSchema = Type.Object(

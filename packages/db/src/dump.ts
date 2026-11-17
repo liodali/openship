@@ -1592,6 +1592,14 @@ export function assertDumpSelfContained(dump: DatabaseDump): void {
     // a VICTIM's domain would otherwise attach a rate-limit / ban rule to their
     // hostname (traffic denial on someone else's site).
     domainId: "domain",
+    // domain.tlsCfCredentialId — the per-domain Cloudflare Origin CA credential
+    // (docs/cloudflare-origin-ca-discovery-plan.md). `credential` travels in an
+    // organization dump (org-scoped catalogued table), so a legitimate dump is
+    // self-contained: the domain's credential row ships beside it and gets
+    // remapped with the org. A crafted dump pointing tlsCfCredentialId at a
+    // VICTIM tenant's credential would otherwise adopt their Cloudflare token
+    // for issuance — rejected here exactly like destinationId above.
+    tlsCfCredentialId: "credential",
     // webhook_source / project_connection / personal_access_token_grant are
     // instance-scope only and never travel on a remap dump, so any value here could
     // only be a pre-existing cross-tenant parent. Rejected defensively, exactly as

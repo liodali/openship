@@ -1,4 +1,5 @@
 import { sql } from "drizzle-orm";
+import type { DiscoveryTlsProvider } from "@repo/core";
 import {
   pgTable,
   text,
@@ -46,6 +47,20 @@ export const discoverySettings = pgTable("discovery_settings", {
 
   /** Periodic repair sweep cadence. First release fixes this at 60s. */
   sweepIntervalSeconds: integer("sweep_interval_seconds").notNull().default(60),
+
+  /**
+   * Managed TLS provider for NEWLY enrolled discovery domains only
+   * (docs/cloudflare-origin-ca-discovery-plan.md). Exactly the two managed IDs
+   * in @repo/core; the initial default is `letsencrypt`. CHANGING THIS NEVER
+   * SWITCHES EXISTING CERTIFICATES: every domain persists its own resolved
+   * provider at enrollment (domain.tlsProvider), and that row is authoritative
+   * from then on. No server-wide Cloudflare credential or zone lives here —
+   * Cloudflare configuration is PER DOMAIN.
+   */
+  tlsDefaultProvider: text("tls_default_provider")
+    .$type<DiscoveryTlsProvider>()
+    .notNull()
+    .default("letsencrypt"),
 
   /** Last completed inventory, for status UI. Error text is sanitized upstream. */
   lastScanAt: timestamp("last_scan_at"),

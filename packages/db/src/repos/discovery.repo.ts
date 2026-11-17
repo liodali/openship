@@ -1,4 +1,10 @@
 import { and, eq, gt, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
+import {
+  DISCOVERY_TLS_DEFAULT_PROVIDER,
+  ValidationError,
+  isDiscoveryTlsProvider,
+  type DiscoveryTlsProvider,
+} from "@repo/core";
 import type { Database } from "../client";
 import { discoveryBinding as binding, discoverySettings as settings, domain } from "../schema";
 import type { DiscoveryDeclaration } from "@repo/core";
@@ -70,6 +76,39 @@ export function createDiscoveryRepo(db: Database) {
         .update(settings)
         .set({ workspaceId: null, updatedAt: new Date() })
         .where(eq(settings.serverId, serverId));
+    },
+
+    // ── Managed TLS settings (docs/cloudflare-origin-ca-discovery-plan.md) ──
+
+    /**
+     * The server's managed TLS defaults. A server with NO settings row (never
+     * configured) still reports the initial default — letsencrypt. This is the
+     * default for NEWLY enrolled domains only; existing domains carry their own
+     * persisted policy on the domain row.
+     */
+    async getTlsSettings(serverId: string): Promise<{ defaultProvider: DiscoveryTlsProvider }> {
+      const row = await this.getSettings(serverId);
+      return { defaultProvider: row?.tlsDefaultProvider ?? DISCOVERY_TLS_DEFAULT_PROVIDER };
+    },
+
+    /**
+     * Set ONLY the managed TLS default provider for newly enrolled domains.
+     * Idempotent; never flips `enabled`/sweep/workspace state (the upsert
+     * touches one column), and NEVER rewrites any existing domain's persisted
+     * provider — those rows are authoritative once enrolled.
+     */
+    async configureTls(serverId: string, defaultProvider: DiscoveryTlsProvider) {
+      if (!isDiscoveryTlsProvider(defaultProvider))
+        throw new ValidationError(`Unknown managed TLS provider: ${String(defaultProvider)}`);
+      const now = new Date();
+      await db
+        .insert(settings)
+        .values({ serverId, tlsDefaultProvider: defaultProvider, updatedAt: now })
+        .onConflictDoUpdate({
+          target: settings.serverId,
+          set: { tlsDefaultProvider: defaultProvider, updatedAt: now },
+        });
+      return { defaultProvider };
     },
 
     async recordScan(serverId: string, result: { ok: true } | { ok: false; error: string }) {
