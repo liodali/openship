@@ -690,6 +690,20 @@ export function createDiscoveryRepo(db: Database) {
       });
     },
 
+    /** Batch variant of {@link findDomainForBinding} — ONE round trip for a
+     *  whole server's bindings (the status/list read path). Keyed by the
+     *  domain row's normalized hostname; server-scoped, so no other server's
+     *  or tenant's rows can appear. Empty input returns an empty map WITHOUT
+     *  querying (an empty IN clause is invalid SQL). */
+    async findDomainsForBindings(serverId: string, hostnames: string[]): Promise<Map<string, typeof domain.$inferSelect>> {
+      const normalized = [...new Set(hostnames.map((h) => h.toLowerCase()))];
+      if (normalized.length === 0) return new Map();
+      const rows = await db.query.domain.findMany({
+        where: and(eq(domain.serverId, serverId), inArray(domain.hostname, normalized)),
+      });
+      return new Map(rows.map((row) => [row.hostname, row]));
+    },
+
     /** The live discovery binding behind a server-scoped domain (TLS gate). */
     getBindingForDomain(serverId: string, hostname: string) {
       return db.query.discoveryBinding.findFirst({

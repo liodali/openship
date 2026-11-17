@@ -75,3 +75,7 @@ packages/openship/*.tgz
 
 # Local review screenshots and generated previews (not product assets)
 /artifacts/
+
+# Local documentation and planning briefs
+/docs/
+/openship-discovery-sites-brief.md

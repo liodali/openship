@@ -10,6 +10,11 @@ r.get(
   { tag: "server:read", mcp: { description: "Read a server's discovery settings and every discovered service with its route state and TLS status." } },
   ctrl.getDiscovery,
 );
+r.get(
+  "/servers/:id/discovery/services/:serviceKey",
+  { tag: "server:read", mcp: { description: "Read ONE discovered service by its stable identity (e.g. \"id:my-app\"), with its route state and TLS status — a constant-size read instead of the full server status. The service key travels URL-encoded as one path segment, including its colon and slash characters." } },
+  ctrl.getDiscoveryService,
+);
 r.put(
   "/servers/:id/discovery",
   { tag: "server:admin", auditHandledByOperation: true, mcp: { description: "Enable or disable server discovery. Disable schedules retirement of every applied route (they are removed, certificates retained) and expires the event watchers." } },

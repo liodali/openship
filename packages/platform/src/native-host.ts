@@ -311,6 +311,7 @@ export async function createNativePlatform(value: NativePlatformOptions): Promis
   const discovery: PlatformDiscoveryOperations = {
     configure: (ctx, id, input) => call("discovery.configure", ctx, id, input),
     status: (ctx, id) => call("discovery.status", ctx, id),
+    getService: (ctx, id, input) => call("discovery.getService", ctx, id, input),
     rescan: (ctx, id) => call("discovery.rescan", ctx, id),
     suppress: (ctx, id, input) => call("discovery.suppress", ctx, id, input),
     unsuppress: (ctx, id, input) => call("discovery.unsuppress", ctx, id, input),

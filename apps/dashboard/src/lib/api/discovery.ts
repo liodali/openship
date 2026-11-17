@@ -42,6 +42,13 @@ export const discoveryApi = {
       `discovery/servers/${encodeURIComponent(serverId)}/discovery`,
       opts,
     ),
+  /** One service by stable identity — a constant-size read; the key's `:` and
+   *  `/` travel percent-encoded as a single path segment. */
+  service: (serverId: string, serviceKey: string, opts?: { signal?: AbortSignal }) =>
+    api.get<DiscoveryService>(
+      `discovery/servers/${encodeURIComponent(serverId)}/discovery/services/${encodeURIComponent(serviceKey)}`,
+      opts,
+    ),
   configure: (serverId: string, input: DiscoveryConfigureInput) =>
     api.put<DiscoveryStatus>(
       `discovery/servers/${encodeURIComponent(serverId)}/discovery`,

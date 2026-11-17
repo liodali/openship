@@ -10,6 +10,11 @@ export async function getDiscovery(c: Context) {
   return c.json(await operationData(c, operations().status(operationContext(c), param(c, "id"))));
 }
 
+/** The service key arrives URL-encoded in the path (`id:my-app`, `compose:proj/serv`). */
+export async function getDiscoveryService(c: Context) {
+  return c.json(await operationData(c, operations().getService(operationContext(c), param(c, "id"), { serviceKey: param(c, "serviceKey") })));
+}
+
 export async function configureDiscovery(c: Context) {
   return c.json(
     await operationData(c, operations().configure(operationContext(c), param(c, "id"), await c.req.json())),

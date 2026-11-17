@@ -46,11 +46,11 @@ import {
   retireBindingRoute,
   type DiscoveryEdgeTarget,
 } from "./engine/modules/discovery/discovery-reconciler";
-import type { DiscoveryBinding as BindingRow } from "@repo/db";
 
 export interface PlatformDiscoveryOperations {
   configure(ctx: ExecutionContext, serverId: string, input: unknown): Promise<OperationResult<DiscoveryStatus>>;
   status(ctx: ExecutionContext, serverId: string): Promise<OperationResult<DiscoveryStatus>>;
+  getService(ctx: ExecutionContext, serverId: string, input: unknown): Promise<OperationResult<DiscoveryService>>;
   rescan(ctx: ExecutionContext, serverId: string): Promise<OperationResult<DiscoveryRescan>>;
   suppress(ctx: ExecutionContext, serverId: string, input: unknown): Promise<OperationResult<DiscoveryService>>;
   unsuppress(ctx: ExecutionContext, serverId: string, input: unknown): Promise<OperationResult<DiscoveryService>>;
@@ -70,7 +70,11 @@ export function createDiscoveryOperations(authorization: Authorization): Platfor
     })();
   }
 
-  function toService(row: DiscoveryBinding, tls: DiscoveryService["tls"]): DiscoveryService {
+  /** The ONE binding→service serializer: single reads, list reads, and action
+   *  responses all render through it, so TLS defaults and field formats stay
+   *  identical across every surface. A missing (or partial) domain row keeps
+   *  today's defaults — hostname falls back to the binding's own declaration. */
+  function toService(row: DiscoveryBinding, domainRow: { hostname: string; verified: boolean | null; sslStatus: string | null; sslExpiresAt: Date | null; sslIssuer: string | null } | undefined | null): DiscoveryService {
     return {
       id: row.id,
       serviceKey: row.serviceKey,
@@ -94,26 +98,23 @@ export function createDiscoveryOperations(authorization: Authorization): Platfor
       desiredGeneration: row.desiredGeneration,
       appliedGeneration: row.appliedGeneration,
       updatedAt: row.updatedAt ? row.updatedAt.toISOString() : null,
-      tls,
+      tls: {
+        hostname: domainRow?.hostname ?? row.hostname,
+        verified: domainRow?.verified ?? false,
+        sslStatus: domainRow?.sslStatus ?? "none",
+        sslExpiresAt: domainRow?.sslExpiresAt ? domainRow.sslExpiresAt.toISOString() : null,
+        sslIssuer: domainRow?.sslIssuer ?? null,
+      },
     };
   }
 
   async function statusData(ctx: ExecutionContext, serverId: string): Promise<DiscoveryStatus> {
     const settings = await repos.discovery.getSettings(serverId);
     const bindings = await repos.discovery.listByServer(serverId);
-    const services: DiscoveryService[] = [];
-    for (const row of bindings) {
-      const domainRow = await repos.discovery.findDomainForBinding(serverId, row.hostname);
-      services.push(
-        toService(row, {
-          hostname: domainRow?.hostname ?? row.hostname,
-          verified: domainRow?.verified ?? false,
-          sslStatus: domainRow?.sslStatus ?? "none",
-          sslExpiresAt: domainRow?.sslExpiresAt ? domainRow.sslExpiresAt.toISOString() : null,
-          sslIssuer: domainRow?.sslIssuer ?? null,
-        }),
-      );
-    }
+    // ONE server-scoped batch lookup for every binding's domain — never a
+    // per-binding query (an N+1 that scales with binding count; expect hundreds
+    // to thousands per server). The empty-server case must not query at all.
+    const domains = await repos.discovery.findDomainsForBindings(serverId, bindings.map((row) => row.hostname));
     void ctx;
     return {
       settings: {
@@ -124,7 +125,7 @@ export function createDiscoveryOperations(authorization: Authorization): Platfor
         lastScanAt: settings?.lastScanAt ? settings.lastScanAt.toISOString() : null,
         lastScanError: settings?.lastScanError ?? null,
       },
-      services,
+      services: bindings.map((row) => toService(row, domains.get(row.hostname.toLowerCase()))),
     };
   }
 
@@ -161,6 +162,16 @@ export function createDiscoveryOperations(authorization: Authorization): Platfor
       return { context: ctx, data: await statusData(ctx, serverId) };
     },
 
+    /** Read ONE discovered service by its stable identity — a constant-size,
+     *  constant-query-count alternative to the full server status for callers
+     *  (ContainerPub's site controllers) that already know the key. */
+    async getService(ctx, serverId, input): Promise<OperationResult<DiscoveryService>> {
+      await authorizeServer(ctx, serverId, "read");
+      const { serviceKey } = parseInput(DiscoveryServiceActionInputSchema, input ?? {});
+      const row = await requireBinding(serverId, serviceKey);
+      return { context: ctx, data: toService(row, await repos.discovery.findDomainForBinding(serverId, row.hostname)) };
+    },
+
     async rescan(ctx, serverId): Promise<OperationResult<DiscoveryRescan>> {
       await authorizeServer(ctx, serverId, "write");
       const sweep = await sweepServerDiscovery(serverId, ctx.organizationId, { fresh: true });
@@ -193,7 +204,7 @@ export function createDiscoveryOperations(authorization: Authorization): Platfor
       const row = await repos.discovery.suppress(serverId, serviceKey);
       if (!row) throw new NotFoundError("Discovered service", serviceKey);
       void binding;
-      return { context: ctx, data: toService(row, await tlsFor(serverId, row)) };
+      return { context: ctx, data: toService(row, await repos.discovery.findDomainForBinding(serverId, row.hostname)) };
     },
 
     async unsuppress(ctx, serverId, input): Promise<OperationResult<DiscoveryService>> {
@@ -201,7 +212,7 @@ export function createDiscoveryOperations(authorization: Authorization): Platfor
       const { serviceKey } = parseInput(DiscoveryServiceActionInputSchema, input ?? {});
       const row = await repos.discovery.unsuppress(serverId, serviceKey);
       if (!row) throw new NotFoundError("Discovered service", serviceKey);
-      return { context: ctx, data: toService(row, await tlsFor(serverId, row)) };
+      return { context: ctx, data: toService(row, await repos.discovery.findDomainForBinding(serverId, row.hostname)) };
     },
 
     async forget(ctx, serverId, input): Promise<OperationResult<{ forgotten: boolean }>> {
@@ -224,17 +235,6 @@ export function createDiscoveryOperations(authorization: Authorization): Platfor
     },
   };
   return Object.freeze(operations);
-
-  async function tlsFor(serverId: string, row: BindingRow): Promise<DiscoveryService["tls"]> {
-    const domainRow = await repos.discovery.findDomainForBinding(serverId, row.hostname);
-    return {
-      hostname: domainRow?.hostname ?? row.hostname,
-      verified: domainRow?.verified ?? false,
-      sslStatus: domainRow?.sslStatus ?? "none",
-      sslExpiresAt: domainRow?.sslExpiresAt ? domainRow.sslExpiresAt.toISOString() : null,
-      sslIssuer: domainRow?.sslIssuer ?? null,
-    };
-  }
 }
 
 export type { DiscoveryEdgeTarget };
