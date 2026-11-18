@@ -1,5 +1,9 @@
 import { sql } from "drizzle-orm";
-import type { DiscoveryTlsProvider } from "@repo/core";
+import type {
+  DiscoveryTlsOperationSource,
+  DiscoveryTlsOperationState,
+  DiscoveryTlsProvider,
+} from "@repo/core";
 import {
   pgTable,
   text,
@@ -12,6 +16,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { servers } from "./servers";
 import { cloudWorkspace } from "./cloud-workspace";
+import { domain } from "./domain";
 
 // ─── Docker service discovery (docs/docker-service-discovery-plan.md) ───────
 
@@ -231,3 +236,78 @@ export const discoveryBinding = pgTable(
  * retry state survive; docs "retain ownership/certificate metadata"), which a
  * cascade could not do. The certificate sweep joins on hostname + server.
  */
+
+// ─── Durable TLS operations (the paced issuance queue) ───────────────────────
+
+/**
+ * ONE durable TLS issuance operation (plan: "Asynchronous queue, ensure API").
+ * The ROW is the queue: waiting work survives restarts, drains through worker
+ * leases, and dedupes by its unique ACTIVE identity — (serving server,
+ * certificate source hostname, policy generation). A retried ensure never
+ * creates a second job; a policy change bumps the generation and supersedes.
+ *
+ * State machine: waiting → running → (complete | deferred | error); deferred
+ * and error return to waiting at their backoff. Leases make crash recovery
+ * safe: a running row whose lease expired was abandoned by a dead worker and
+ * is reclaimable. `complete` rows are history (bounded-pruned), never work.
+ */
+export const discoveryTlsOperation = pgTable(
+  "discovery_tls_operation",
+  {
+    id: text("id")
+      .primaryKey()
+      .default(sql`'dtop_' || gen_random_uuid()::text`),
+    /** The site hostname this operation serves (binding identity scope). */
+    hostname: text("hostname").notNull(),
+    /** The certificate SOURCE identity: the exact hostname, or the shared
+     *  wildcard pattern when `source` is 'wildcard'. Dedup key component. */
+    sourceHostname: text("source_hostname").notNull(),
+    /** exact | wildcard. */
+    source: text("source").$type<DiscoveryTlsOperationSource>().notNull().default("exact"),
+    /** The provider this operation must issue through — never fallen back from. */
+    provider: text("provider").$type<DiscoveryTlsProvider>().notNull(),
+    /** The server-scoped domain row this work belongs to. */
+    domainId: text("domain_id")
+      .notNull()
+      .references(() => domain.id, { onDelete: "cascade" }),
+    /** The serving Edge — with sourceHostname and organization this is the
+     *  plan's dedup scope; never dedupe unrelated tenants by hostname string. */
+    serverId: text("server_id")
+      .notNull()
+      .references(() => servers.id, { onDelete: "cascade" }),
+    organizationId: text("organization_id").notNull(),
+    /** The binding that requested the work (audit/UI pointer). */
+    serviceKey: text("service_key").notNull(),
+    /** Policy generation at enqueue — a bump supersedes this operation. */
+    policyGeneration: integer("policy_generation").notNull(),
+    /** waiting | running | deferred | error | complete (see core vocabulary). */
+    state: text("state")
+      .$type<DiscoveryTlsOperationState>()
+      .notNull()
+      .default("waiting"),
+    /** Terminal outcome for complete rows: issued | reused | superseded. */
+    outcome: text("outcome"),
+    /** Sanitized defer reason or actionable error — never provider bodies. */
+    reason: text("reason"),
+    attempts: integer("attempts").notNull().default(0),
+    /** When the next attempt may start (backoff); null = immediately. */
+    nextAttemptAt: timestamp("next_attempt_at"),
+    /** Worker lease: who claimed a running row and until when. */
+    leasedBy: text("leased_by"),
+    leasedUntil: timestamp("leased_until"),
+
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    // THE dedup: at most one ACTIVE operation per serving server + certificate
+    // source + policy generation. Complete rows free the slot for renewals.
+    uniqueIndex("uq_discovery_tls_operation_active")
+      .on(t.serverId, t.sourceHostname, t.policyGeneration)
+      .where(sql`${t.state} IN ('waiting','running','deferred','error')`),
+    // The drain claims due work in fair created_at order.
+    index("idx_discovery_tls_operation_due").on(t.state, t.nextAttemptAt, t.createdAt),
+    // Status reads: a server's active operations joined onto its services.
+    index("idx_discovery_tls_operation_server").on(t.serverId, t.hostname),
+  ],
+);

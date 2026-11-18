@@ -313,6 +313,7 @@ export async function createNativePlatform(value: NativePlatformOptions): Promis
     status: (ctx, id) => call("discovery.status", ctx, id),
     getService: (ctx, id, input) => call("discovery.getService", ctx, id, input),
     rescan: (ctx, id) => call("discovery.rescan", ctx, id),
+    ensureServiceTls: (ctx, id, input) => call("discovery.ensureServiceTls", ctx, id, input),
     suppress: (ctx, id, input) => call("discovery.suppress", ctx, id, input),
     unsuppress: (ctx, id, input) => call("discovery.unsuppress", ctx, id, input),
     forget: (ctx, id, input) => call("discovery.forget", ctx, id, input),

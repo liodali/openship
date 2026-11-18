@@ -79,6 +79,81 @@ export type DiscoveryTlsProviderSource = Static<typeof DiscoveryTlsProviderSourc
 /** The initial server default, as a schema (for tests and generated clients). */
 export const DISCOVERY_TLS_DEFAULT_PROVIDER_SCHEMA = Type.Literal(DISCOVERY_TLS_DEFAULT_PROVIDER);
 
+// ── Durable TLS operations: ensure API + status (plan "Asynchronous queue") ──
+
+/** Lifecycle of one durable TLS operation (mirrors @repo/core's vocabulary). */
+export const DiscoveryTlsOperationStateSchema = Type.Union([
+  Type.Literal("waiting"),
+  Type.Literal("running"),
+  Type.Literal("deferred"),
+  Type.Literal("error"),
+  Type.Literal("complete"),
+]);
+export type DiscoveryTlsOperationState = Static<typeof DiscoveryTlsOperationStateSchema>;
+
+/** What a TLS operation issues for. */
+export const DiscoveryTlsOperationSourceSchema = Type.Union([
+  Type.Literal("exact"),
+  Type.Literal("wildcard"),
+]);
+export type DiscoveryTlsOperationSource = Static<typeof DiscoveryTlsOperationSourceSchema>;
+
+/** Idempotent ensure request: identity comes from the encoded service key — the body carries NOTHING. */
+export const DiscoveryTlsEnsureInputSchema = Type.Object(
+  {},
+  { additionalProperties: false, description: "Empty body: {} — the service key in the path is the identity." },
+);
+export type DiscoveryTlsEnsureInput = Static<typeof DiscoveryTlsEnsureInputSchema>;
+
+/**
+ * POST .../services/:serviceKey/tls/ensure — the four durable outcomes.
+ * `skipped` (HTTP 200): valid installed material for the desired provider/
+ * source already exists; due-renewal scheduling stays the scheduler's job.
+ * `queued` (202): newly accepted work. `already_queued` (202): the SAME
+ * durable operation (stable id) — a client retry never creates a second job.
+ * `deferred` (202): durable wait (stopped/unobservable backend, provider
+ * dispatch pending) — the operation exists and reports its reason.
+ */
+export const DiscoveryTlsEnsureResponseSchema = Type.Union([
+  Type.Object({
+    outcome: Type.Literal("skipped"),
+    reason: Type.Literal("already_valid"),
+    hostname: Type.String(),
+    source: DiscoveryTlsOperationSourceSchema,
+  }),
+  Type.Object({
+    outcome: Type.Literal("queued"),
+    hostname: Type.String(),
+    /** Stable repository operation id — the retry/progress handle. */
+    operationId: Type.String(),
+  }),
+  Type.Object({
+    outcome: Type.Literal("already_queued"),
+    hostname: Type.String(),
+    operationId: Type.String(),
+  }),
+  Type.Object({
+    outcome: Type.Literal("deferred"),
+    hostname: Type.String(),
+    operationId: Type.String(),
+    /** Sanitized, actionable reason — never a provider response body. */
+    reason: Type.String(),
+  }),
+]);
+export type DiscoveryTlsEnsureResponse = Static<typeof DiscoveryTlsEnsureResponseSchema>;
+
+/** The ACTIVE TLS operation behind a discovered service, for status reads. */
+export const DiscoveryTlsOperationStatusSchema = Type.Object({
+  operationId: Type.String(),
+  state: DiscoveryTlsOperationStateSchema,
+  source: DiscoveryTlsOperationSourceSchema,
+  provider: DiscoveryTlsProviderSchema,
+  reason: nullableString,
+  attempts: Type.Number(),
+  updatedAt: nullableString,
+});
+export type DiscoveryTlsOperationStatus = Static<typeof DiscoveryTlsOperationStatusSchema>;
+
 /** Enable/disable server discovery. */
 export const DiscoveryConfigureInputSchema = Type.Object(
   {
@@ -158,6 +233,10 @@ export const DiscoveryServiceSchema = Type.Object({
     }),
     Type.Null(),
   ]),
+  /** The ACTIVE durable TLS operation for this service (paced issuance queue),
+   *  or null when no issuance/transition work is pending. Additive: consumers
+   *  that ignore it keep working unchanged. */
+  tlsOperation: Type.Union([DiscoveryTlsOperationStatusSchema, Type.Null()]),
 });
 export type DiscoveryService = Static<typeof DiscoveryServiceSchema>;
 

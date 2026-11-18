@@ -32,6 +32,7 @@ import {
   type DiscoveryReconcileSummary,
 } from "./discovery-reconciler";
 import { repairDiscoveryRoutes, type DiscoveryRepairSummary } from "./discovery-repair";
+import { kickDiscoveryTlsQueue } from "./discovery-tls-queue";
 import { renewDiscoveryWatchers } from "./discovery-watch";
 
 export const DISCOVERY_SWEEP_JOB = "discovery:sweep";
@@ -222,6 +223,9 @@ export async function startDiscoverySweep(): Promise<void> {
     cronExpression: "* * * * *", // every minute = the plan's 60-second sweep
     run: async (): Promise<JobSummary> => {
       const summary = await sweepDiscovery(); // cron poll: interval-gated
+      // The durable TLS queue drains on every tick too (restart recovery for
+      // waiting/abandoned work; the in-drain pacing keeps starts ≤1/sec).
+      void kickDiscoveryTlsQueue();
       return {
         servers: summary.servers,
         failed: summary.failed.length,
@@ -242,4 +246,7 @@ export async function startDiscoverySweep(): Promise<void> {
       );
     }),
   );
+  // Resume durable TLS work abandoned by a previous process (expired leases)
+  // and any waiting rows that never drained.
+  void kickDiscoveryTlsQueue();
 }

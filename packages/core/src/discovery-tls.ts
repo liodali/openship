@@ -84,3 +84,52 @@ export function isSupportedOriginCaValidityDays(value: unknown): value is Origin
     (DISCOVERY_TLS_ORIGIN_CA_VALIDITY_DAYS as readonly unknown[]).includes(value)
   );
 }
+
+// ── Durable TLS operation queue ─────────────────────────────────────────────
+
+/**
+ * Lifecycle of one durable TLS operation (the paced issuance queue,
+ * plan "Asynchronous queue, ensure API"):
+ *  - `waiting`: accepted, not yet started (paced starts, provider budget).
+ *  - `running`: a worker holds the lease and is executing.
+ *  - `deferred`: durable wait — stopped/unobservable backend, provider dispatch
+ *    pending, or unknown state; retains intent and retries with backoff.
+ *  - `error`:  the attempt failed with an actionable reason; still retryable.
+ *  - `complete`: finished (issued/reused/superseded) — history, not work.
+ *
+ * waiting/running/deferred/error are the ACTIVE states: at most one active
+ * operation may exist per (serving server, certificate source, policy
+ * generation) — that unique identity is the dedup an idempotent ensure hits.
+ */
+export const DISCOVERY_TLS_OPERATION_STATES = [
+  "waiting",
+  "running",
+  "deferred",
+  "error",
+  "complete",
+] as const;
+export type DiscoveryTlsOperationState = (typeof DISCOVERY_TLS_OPERATION_STATES)[number];
+export const DISCOVERY_TLS_ACTIVE_OPERATION_STATES = [
+  "waiting",
+  "running",
+  "deferred",
+  "error",
+] as const;
+export type DiscoveryTlsActiveOperationState = (typeof DISCOVERY_TLS_ACTIVE_OPERATION_STATES)[number];
+
+/** What a TLS operation issues for: the exact hostname, or a shared wildcard. */
+export const DISCOVERY_TLS_OPERATION_SOURCES = ["exact", "wildcard"] as const;
+export type DiscoveryTlsOperationSource = (typeof DISCOVERY_TLS_OPERATION_SOURCES)[number];
+
+/** Queue pacing (plan): at most one issuance START per second per self-hosted
+ *  instance, and only a small bounded set of jobs in flight at once. These are
+ *  START-rate/in-flight caps, not throughput promises. */
+export const DISCOVERY_TLS_QUEUE = {
+  startSpacingMs: 1_000,
+  maxInFlight: 5,
+  /** Worker lease: a running operation whose lease expired was abandoned by a
+   *  dead/restarted process and may be reclaimed. */
+  leaseMs: 5 * 60_000,
+  /** Completed operations are history; prune them from the table after a day. */
+  completeRetentionMs: 24 * 60 * 60_000,
+} as const;

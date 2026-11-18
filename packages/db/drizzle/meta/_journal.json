@@ -1646,6 +1646,13 @@
       "when": 1794718800000,
       "tag": "0234_discovery_tls_policy_origin",
       "breakpoints": true
+    },
+    {
+      "idx": 235,
+      "version": "7",
+      "when": 1794805200000,
+      "tag": "0235_discovery_tls_operations",
+      "breakpoints": true
     }
   ]
 }

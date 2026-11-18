@@ -26,22 +26,26 @@
  *     lease. Certificates are retained unless separately forgotten.
  */
 
+import { ConflictError, DISCOVERY_TLS_DEFAULT_PROVIDER } from "@repo/core";
 import {
   AppError,
   DiscoveryConfigureInputSchema,
   DiscoveryRescanSchema,
   DiscoveryServiceActionInputSchema,
+  DiscoveryTlsEnsureInputSchema,
   NotFoundError,
   parseInput,
   type DiscoveryRescan,
   type DiscoveryService,
   type DiscoveryStatus,
+  type DiscoveryTlsEnsureResponse,
 } from "@repo/contracts";
-import { repos, type DiscoveryBinding } from "@repo/db";
+import { repos, type DiscoveryBinding, type DiscoveryTlsOperation } from "@repo/db";
 import type { Authorization } from "./authorization";
 import type { ExecutionContext } from "./context";
 import type { OperationResult } from "./deployments";
 import { runInServerQueue, sweepServerDiscovery } from "./engine/modules/discovery/discovery-sweep";
+import { kickDiscoveryTlsQueue } from "./engine/modules/discovery/discovery-tls-queue";
 import {
   retireBindingRoute,
   type DiscoveryEdgeTarget,
@@ -52,6 +56,7 @@ export interface PlatformDiscoveryOperations {
   status(ctx: ExecutionContext, serverId: string): Promise<OperationResult<DiscoveryStatus>>;
   getService(ctx: ExecutionContext, serverId: string, input: unknown): Promise<OperationResult<DiscoveryService>>;
   rescan(ctx: ExecutionContext, serverId: string): Promise<OperationResult<DiscoveryRescan>>;
+  ensureServiceTls(ctx: ExecutionContext, serverId: string, input: unknown): Promise<OperationResult<DiscoveryTlsEnsureResponse>>;
   suppress(ctx: ExecutionContext, serverId: string, input: unknown): Promise<OperationResult<DiscoveryService>>;
   unsuppress(ctx: ExecutionContext, serverId: string, input: unknown): Promise<OperationResult<DiscoveryService>>;
   forget(ctx: ExecutionContext, serverId: string, input: unknown): Promise<OperationResult<{ forgotten: boolean }>>;
@@ -74,7 +79,11 @@ export function createDiscoveryOperations(authorization: Authorization): Platfor
    *  responses all render through it, so TLS defaults and field formats stay
    *  identical across every surface. A missing (or partial) domain row keeps
    *  today's defaults — hostname falls back to the binding's own declaration. */
-  function toService(row: DiscoveryBinding, domainRow: { hostname: string; verified: boolean | null; sslStatus: string | null; sslExpiresAt: Date | null; sslIssuer: string | null } | undefined | null): DiscoveryService {
+  function toService(
+    row: DiscoveryBinding,
+    domainRow: { hostname: string; verified: boolean | null; sslStatus: string | null; sslExpiresAt: Date | null; sslIssuer: string | null } | undefined | null,
+    tlsOperation?: DiscoveryTlsOperation | null,
+  ): DiscoveryService {
     return {
       id: row.id,
       serviceKey: row.serviceKey,
@@ -108,6 +117,17 @@ export function createDiscoveryOperations(authorization: Authorization): Platfor
         sslExpiresAt: domainRow?.sslExpiresAt ? domainRow.sslExpiresAt.toISOString() : null,
         sslIssuer: domainRow?.sslIssuer ?? null,
       },
+      tlsOperation: tlsOperation
+        ? {
+            operationId: tlsOperation.id,
+            state: tlsOperation.state,
+            source: tlsOperation.source,
+            provider: tlsOperation.provider,
+            reason: tlsOperation.reason ?? null,
+            attempts: tlsOperation.attempts,
+            updatedAt: tlsOperation.updatedAt ? tlsOperation.updatedAt.toISOString() : null,
+          }
+        : null,
     };
   }
 
@@ -118,6 +138,8 @@ export function createDiscoveryOperations(authorization: Authorization): Platfor
     // per-binding query (an N+1 that scales with binding count; expect hundreds
     // to thousands per server). The empty-server case must not query at all.
     const domains = await repos.discovery.findDomainsForBindings(serverId, bindings.map((row) => row.hostname));
+    // Same batching for the ACTIVE TLS operations (progress visibility).
+    const tlsOperations = await repos.discoveryTlsQueue.listActiveOperationsByServer(serverId);
     void ctx;
     return {
       settings: {
@@ -128,7 +150,9 @@ export function createDiscoveryOperations(authorization: Authorization): Platfor
         lastScanAt: settings?.lastScanAt ? settings.lastScanAt.toISOString() : null,
         lastScanError: settings?.lastScanError ?? null,
       },
-      services: bindings.map((row) => toService(row, domains.get(row.hostname.toLowerCase()))),
+      services: bindings.map((row) =>
+        toService(row, domains.get(row.hostname.toLowerCase()), tlsOperations.get(row.hostname.toLowerCase()) ?? null),
+      ),
     };
   }
 
@@ -172,7 +196,11 @@ export function createDiscoveryOperations(authorization: Authorization): Platfor
       await authorizeServer(ctx, serverId, "read");
       const { serviceKey } = parseInput(DiscoveryServiceActionInputSchema, input ?? {});
       const row = await requireBinding(serverId, serviceKey);
-      return { context: ctx, data: toService(row, await repos.discovery.findDomainForBinding(serverId, row.hostname)) };
+      const [domainRow, tlsOperation] = await Promise.all([
+        repos.discovery.findDomainForBinding(serverId, row.hostname),
+        repos.discoveryTlsQueue.findActiveOperationForHostname(serverId, row.hostname),
+      ]);
+      return { context: ctx, data: toService(row, domainRow, tlsOperation ?? null) };
     },
 
     async rescan(ctx, serverId): Promise<OperationResult<DiscoveryRescan>> {
@@ -197,6 +225,103 @@ export function createDiscoveryOperations(authorization: Authorization): Platfor
       // Validate the shaped output against the published contract before it
       // leaves the kernel, so a drifted summary fails loudly here.
       parseInput(DiscoveryRescanSchema, JSON.parse(JSON.stringify(data)));
+      return { context: ctx, data };
+    },
+
+    /**
+     * Idempotent TLS ensure for ONE discovered service (plan: "Asynchronous
+     * queue, ensure API"). Persists the desired TLS work through the durable
+     * operation queue and returns PROMPTLY — container/application readiness
+     * is never coupled to certificate issuance. Outcomes: skipped (valid
+     * material for the desired provider/source already installed), queued /
+     * already_queued (the SAME stable operation id — a retry never creates a
+     * second job), deferred (durable wait with reason). Configuration,
+     * authorization and conflicts use the normal error conventions and
+     * perform no create. A kicked, paced drain does the issuing.
+     */
+    async ensureServiceTls(ctx, serverId, input): Promise<OperationResult<DiscoveryTlsEnsureResponse>> {
+      await authorizeServer(ctx, serverId, "write");
+      const { serviceKey } = parseInput(DiscoveryServiceActionInputSchema, input ?? {});
+      const binding = await requireBinding(serverId, serviceKey);
+
+      // The server-scoped domain row backs the TLS lifecycle. The shared
+      // ownership helper is idempotent — no route activation and no issuance
+      // happens here, only the eligible metadata this work needs.
+      const { domain: domainRow } = await repos.domain.ensureServerDomain({
+        serverId,
+        hostname: binding.hostname,
+        targetPort: binding.port,
+      });
+      const policy = await repos.domain.getTlsPolicy(domainRow.id);
+      const provider = policy?.tlsProvider ?? DISCOVERY_TLS_DEFAULT_PROVIDER;
+      const wildcard = binding.tlsDeclaredWildcard ?? null;
+      const source = wildcard ? "wildcard" : "exact";
+      const sourceHostname = (wildcard ?? binding.hostname).toLowerCase();
+
+      // Cloudflare selection without its per-domain configuration waits in a
+      // VISIBLE configuration-required state — no implicit Let's Encrypt
+      // fallback, and no operation pretending to make progress.
+      if (provider === "cloudflare-origin-ca" && !(policy?.tlsCfCredentialId && policy?.tlsCfZoneId)) {
+        throw new ConflictError(
+          `TLS configuration required: ${binding.hostname} is set to Cloudflare Origin CA but has no credential/zone for this domain. Configure them before ensuring.`,
+          "TLS_CONFIGURATION_REQUIRED",
+        );
+      }
+
+      // Skip: valid INSTALLED material for the DESIRED provider/source. A
+      // valid certificate of an OLD provider during a pending switch is a
+      // fallback, not proof — so Cloudflare/wildcard intent never skips until
+      // its dispatch records the installed provider. Due-renewal scheduling
+      // stays the scheduler's job; near-expiry material still skips.
+      if (
+        source === "exact" &&
+        provider === "letsencrypt" &&
+        domainRow.sslStatus === "active" &&
+        domainRow.verified &&
+        domainRow.sslExpiresAt &&
+        domainRow.sslExpiresAt.getTime() > Date.now()
+      ) {
+        return {
+          context: ctx,
+          data: { outcome: "skipped", reason: "already_valid", hostname: binding.hostname, source },
+        };
+      }
+
+      // A stopped/unobservable/suppressed backend defers its durable
+      // operation immediately — the queue keeps the intent and the reason;
+      // fresh runtime eligibility (or the next sweep) resumes it.
+      const notRunnable =
+        binding.suppressed ||
+        binding.observationStatus !== "observed" ||
+        !binding.containerRunning;
+      const initialReason = notRunnable
+        ? `The discovered backend for ${binding.hostname} is ${
+            binding.suppressed ? "suppressed" : binding.observationStatus !== "observed" ? binding.observationStatus : "not running"
+          }; certificate work waits for a running backend.`
+        : undefined;
+
+      const { operation, created } = await repos.discoveryTlsQueue.ensureOperation({
+        hostname: binding.hostname,
+        sourceHostname,
+        source,
+        provider,
+        domainId: domainRow.id,
+        serverId,
+        organizationId: ctx.organizationId,
+        serviceKey,
+        policyGeneration: policy?.tlsPolicyGeneration ?? 0,
+        initialReason,
+      });
+      if (created) kickDiscoveryTlsQueue();
+
+      const data: DiscoveryTlsEnsureResponse =
+        created && initialReason
+          ? { outcome: "deferred", hostname: binding.hostname, operationId: operation.id, reason: operation.reason ?? initialReason }
+          : created
+            ? { outcome: "queued", hostname: binding.hostname, operationId: operation.id }
+            : operation.state === "deferred"
+              ? { outcome: "deferred", hostname: binding.hostname, operationId: operation.id, reason: operation.reason ?? "waiting for a runnable backend" }
+              : { outcome: "already_queued", hostname: binding.hostname, operationId: operation.id };
       return { context: ctx, data };
     },
 

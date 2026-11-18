@@ -75,6 +75,15 @@ export const discoveryApi = {
     api.delete<{ forgotten: boolean }>(
       `discovery/servers/${encodeURIComponent(serverId)}/discovery/services/${encodeURIComponent(serviceKey)}`,
     ),
+  /** Idempotent TLS ensure: skips when valid material for the desired provider
+   *  is installed; otherwise the durable operation id comes back (202). The
+   *  body is empty — identity is the encoded service key. */
+  ensureTls: (serverId: string, serviceKey: string) =>
+    api.post<import("@repo/contracts").DiscoveryTlsEnsureResponse>(
+      `discovery/servers/${encodeURIComponent(serverId)}/discovery/services/${encodeURIComponent(serviceKey)}/tls/ensure`,
+      {},
+      { timeout: 30_000, dedupe: false },
+    ),
 };
 
 export type { DiscoveryConfigureInput, DiscoveryRescan, DiscoveryService, DiscoveryStatus };

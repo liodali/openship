@@ -39,9 +39,9 @@
 import { safeErrorMessage, type DiscoveryTlsProvider } from "@repo/core";
 import { reportCaughtError } from "@repo/core/diagnostics";
 import { repos, type DiscoveryBinding } from "@repo/db";
+import { kickDiscoveryTlsQueue } from "./discovery-tls-queue";
 import { edgeProxyFor, type RoutingProvider, type Platform, type RuntimeAdapter } from "@repo/adapters";
 import type { HostPortTargetIdentity } from "../../lib/host-port-target";
-import { manageDomainSsl } from "../../lib/domain-ssl";
 import {
   resolveReachableDiscoveryUpstream,
   assertDiscoveryUpstreamCurrent,
@@ -246,17 +246,36 @@ async function scheduleServerDomainCert(
 ): Promise<void> {
   if (desiredProvider === "cloudflare-origin-ca") return;
   if (binding.tlsDeclaredWildcard != null) return;
+  // Durable queue, not inline issuance: the sweep persists the desired TLS
+  // work and returns — container/application readiness never waits for a
+  // certificate. The paced drain re-runs every eligibility gate (fresh
+  // backend, dispatch, under-lock policy re-read) before any order opens,
+  // and the intent survives restarts.
   try {
-    await manageDomainSsl(binding.hostname, {
-      action: "provision",
-      allowUnverified: true,
+    const { domain: domainRow } = await repos.domain.ensureServerDomain({
       serverId,
+      hostname: binding.hostname,
+      targetPort: binding.port,
     });
+    const policy = await repos.domain.getTlsPolicy(domainRow.id);
+    const { created } = await repos.discoveryTlsQueue.ensureOperation({
+      hostname: binding.hostname,
+      sourceHostname: binding.hostname.toLowerCase(),
+      source: "exact",
+      provider: desiredProvider ?? "letsencrypt",
+      domainId: domainRow.id,
+      serverId,
+      organizationId,
+      serviceKey: binding.serviceKey,
+      policyGeneration: policy?.tlsPolicyGeneration ?? 0,
+      initialReason: !binding.containerRunning || binding.observationStatus !== "observed"
+        ? `The discovered backend for ${binding.hostname} is ${binding.observationStatus !== "observed" ? binding.observationStatus : "not running"}; certificate work waits for a running backend.`
+        : undefined,
+    });
+    if (created) kickDiscoveryTlsQueue();
   } catch (error) {
-    // DiscoveryBackendUnavailableError = deferred (stop/gate), already recorded
-    // by manageDomainSsl's failure path only when it is a real SSL failure.
-    // Everything else is surfaced for diagnostics; the sweep and the next
-    // start/replacement re-trigger this.
+    // Enrollment/dedup failures surface for diagnostics; the sweep and the
+    // next start/replacement re-trigger this, and ensure can enqueue too.
     reportCaughtError(error, "platform/engine/modules/discovery/discovery-reconciler");
   }
 }

@@ -26,6 +26,11 @@ r.post(
   ctrl.rescanDiscovery,
 );
 r.post(
+  "/servers/:id/discovery/services/:serviceKey/tls/ensure",
+  { tag: "server:write", mcp: { description: "Idempotently request TLS work for ONE discovered service: skips when valid material for the desired provider is already installed, otherwise persists a durable paced issuance operation and returns its stable operation id (queued/already_queued) or a deferred state with the reason. Never waits for issuance and never bypasses preflight." } },
+  ctrl.ensureDiscoveryServiceTls,
+);
+r.post(
   "/servers/:id/discovery/services/:serviceKey/suppress",
   { tag: "server:write", auditHandledByOperation: true, mcp: { description: "Opt a discovered service out: it stays visible, its live route is removed outright, and no route is reconciled until re-accepted. Certificate material is retained." } },
   ctrl.suppressDiscoveryService,

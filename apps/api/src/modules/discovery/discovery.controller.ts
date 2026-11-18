@@ -1,5 +1,6 @@
 import type { Context } from "hono";
 import { getPlatformKernel } from "@repo/platform/engine/lib/platform";
+import { parseInput, DiscoveryTlsEnsureInputSchema } from "@repo/contracts";
 import { operationContext, operationData } from "../../lib/operation-context";
 import { param } from "../../lib/controller-helpers";
 
@@ -23,6 +24,19 @@ export async function configureDiscovery(c: Context) {
 
 export async function rescanDiscovery(c: Context) {
   return c.json(await operationData(c, operations().rescan(operationContext(c), param(c, "id"))));
+}
+
+/** The service key arrives URL-encoded in the path; the HTTP body is EMPTY
+ *  ({} — the contract rejects anything else; identity is the service key). */
+export async function ensureDiscoveryServiceTls(c: Context) {
+  parseInput(DiscoveryTlsEnsureInputSchema, await c.req.json().catch(() => ({})));
+  const data = await operationData(
+    c,
+    operations().ensureServiceTls(operationContext(c), param(c, "id"), { serviceKey: param(c, "serviceKey") }),
+  );
+  // skipped = nothing to do (200); queued/already_queued/deferred = accepted
+  // asynchronous work (202). The response body always carries the outcome.
+  return c.json(data, data.outcome === "skipped" ? 200 : 202);
 }
 
 /** The service key arrives URL-encoded in the path (`id:my-app`). */
