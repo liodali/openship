@@ -30,10 +30,14 @@ import { kickDiscoveryTlsQueue } from "@repo/platform/engine/modules/discovery/d
 // ─── Core renewal logic ──────────────────────────────────────────────────────
 
 export interface RenewalResult {
+  /** CONFIRMED completions only — certificate work that actually finished. */
   renewed: number;
+  /** Entries handed to the durable TLS queue: accepted work, not yet executed
+   *  (and for stopped backends, durably deferred). NEVER counted as renewed. */
+  queued: number;
   failed: number;
   total: number;
-  details: Array<{ domain: string; status: "renewed" | "failed"; error?: string }>;
+  details: Array<{ domain: string; status: "renewed" | "queued" | "deferred" | "failed"; error?: string }>;
 }
 
 const managementAccessEnded = (error: unknown) =>
@@ -146,7 +150,7 @@ export async function renewExpiringCerts(): Promise<RenewalResult> {
   });
 
   if (allDomainsFair.length === 0 && mailCandidates.length === 0) {
-    return { renewed: 0, failed: 0, total: 0, details: [] };
+    return { renewed: 0, queued: 0, failed: 0, total: 0, details: [] };
   }
 
   const batch = allDomainsFair.slice(0, SYSTEM.DOMAINS.SSL_RENEW_BATCH_SIZE);
@@ -181,6 +185,7 @@ export async function renewExpiringCerts(): Promise<RenewalResult> {
 
   const details: RenewalResult["details"] = [];
   let renewed = 0;
+  let queued = 0;
   let failed = 0;
 
   for (const domain of batch) {
@@ -196,7 +201,7 @@ export async function renewExpiringCerts(): Promise<RenewalResult> {
         const provider = policy?.tlsProvider ?? "letsencrypt";
         const binding = await repos.discovery.getBindingForDomain(domain.serverId, domain.hostname);
         const wildcard = binding?.tlsDeclaredWildcard ?? null;
-        const { created } = await repos.discoveryTlsQueue.ensureOperation({
+        const { created, operation } = await repos.discoveryTlsQueue.ensureOperation({
           hostname: domain.hostname,
           sourceHostname: (wildcard ?? domain.hostname).toLowerCase(),
           source: wildcard ? "wildcard" : "exact",
@@ -216,8 +221,16 @@ export async function renewExpiringCerts(): Promise<RenewalResult> {
         await repos.domain.recordSslDeferred(domain.id, "queued for paced TLS issuance").catch(
           (diagnosticFailure) => observeCaughtError(diagnosticFailure, "platform/engine/lib/ssl-scheduler"),
         );
-        renewed++;
-        details.push({ domain: domain.hostname, status: "renewed" });
+        // ACCEPTED, not completed: certificate work has not executed yet (for a
+        // stopped backend the durable operation is durably deferred). Reporting
+        // "renewed" here made job summaries/audits claim success before any
+        // issuance ran — so queued/deferred is separate and "renewed" is
+        // reserved for confirmed completions below. The DEFER classification
+        // reads the DURABLE row: a pre-existing deferred operation (stopped
+        // backend earlier) reports deferred too, not just freshly seeded ones.
+        if (operation.state === "deferred") details.push({ domain: domain.hostname, status: "deferred" });
+        else details.push({ domain: domain.hostname, status: "queued" });
+        queued++;
       } catch (err) {
         observeCaughtError(err, "platform/engine/lib/ssl-scheduler");
         failed++;
@@ -340,5 +353,5 @@ export async function renewExpiringCerts(): Promise<RenewalResult> {
     }
   }
 
-  return { renewed, failed, total: allDomainsFair.length + mailCandidates.length, details };
+  return { renewed, queued, failed, total: allDomainsFair.length + mailCandidates.length, details };
 }
