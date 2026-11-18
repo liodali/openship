@@ -97,13 +97,38 @@ export async function preflightCloudflareOriginCa(input: {
   //    Cloudflare — it does NOT enable any wildcard certificate.
   const isAddressRecord = (record: CloudflareDnsRecord) =>
     record.type === "A" || record.type === "AAAA" || record.type === "CNAME";
-  const listRecords = async (name: string): Promise<CloudflareDnsRecord[]> =>
-    cloudflareList<CloudflareDnsRecord>(
+  const listRecords = async (name: string, type?: string): Promise<CloudflareDnsRecord[]> => {
+    const records = await cloudflareList<CloudflareDnsRecord>(
       input.apiToken,
       `/zones/${encodeURIComponent(input.zoneId)}/dns_records?name=${encodeURIComponent(name)}`,
     );
+    // Type filtered client-side: the exact-name query and the NS probe for the
+    // same name share one round trip's worth of mocking and caching semantics.
+    return type ? records.filter((record) => record.type === type) : records;
+  };
   let proxied = false;
   try {
+    // Delegation boundary FIRST: NS records at any name strictly below the zone
+    // apex and at-or-above the queried hostname cut the zone — answers at and
+    // below the delegated name come from the child zone, so NOTHING this zone
+    // stores there (exact record or wildcard) is proxy evidence: traffic does
+    // not ride Cloudflare through this zone's records. The apex is excluded
+    // (a zone's own NS records at its apex are normal, not a delegation).
+    const labels = hostname.split(".");
+    const zoneLabels = zone.name.toLowerCase().replace(/\.$/, "").split(".");
+    const pathDepth = labels.length - zoneLabels.length; // labels below the apex
+    for (let i = 0; i < pathDepth; i++) {
+      const pathName = labels.slice(i).join(".");
+      const nsRecords = await listRecords(pathName, "NS");
+      if (nsRecords.length > 0) {
+        throw new AppError(
+          `${pathName} is delegated (NS records inside zone ${zone.name}); DNS answers at and below it come from the delegated zone, so ${hostname} cannot be proven proxied through this zone. Remove the delegation or select the zone that actually serves this hostname.`,
+          409,
+          "TLS_DNS_DELEGATION",
+        );
+      }
+    }
+
     // Exact records at the queried name govern outright: a proxied one proves
     // proxying; any exact record (even DNS-only, even non-address) BLOCKS every
     // wildcard — so a DNS-only exact record wins over a proxied ancestor
@@ -114,8 +139,8 @@ export async function preflightCloudflareOriginCa(input: {
     } else {
       // No exact records: wildcard coverage applies — but only from the
       // DEEPEST candidate whose intermediate levels are record-free, and its
-      // proxied status governs (no fall-through to shallower wildcards).
-      const labels = hostname.split(".");
+      // proxied status governs (no fall-through to shallower wildcards). The
+      // delegation check above already handled NS cuts at every level.
       for (let i = 1; i <= labels.length - 2 && !proxied; i++) {
         const candidateBase = labels.slice(i).join(".");
         // Blocking check for THIS candidate: any record at an intervening name
