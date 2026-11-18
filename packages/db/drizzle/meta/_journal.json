@@ -1653,6 +1653,13 @@
       "when": 1794805200000,
       "tag": "0235_discovery_tls_operations",
       "breakpoints": true
+    },
+    {
+      "idx": 236,
+      "version": "7",
+      "when": 1794891600000,
+      "tag": "0236_discovery_tls_issuance",
+      "breakpoints": true
     }
   ]
 }

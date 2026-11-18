@@ -52,6 +52,7 @@ export type {
 } from "./schema/cloud-workspace";
 export type { DiscoveryBinding } from "./repos/discovery.repo";
 export type { DiscoveryTlsOperation } from "./repos/discovery-tls-queue.repo";
+export type { DiscoveryTlsIssuance } from "./repos/discovery-tls-issuance.repo";
 export type { ServerContainerDetail } from "./schema/server-container-status";
 export type {
   IncomingWebhookActionType,

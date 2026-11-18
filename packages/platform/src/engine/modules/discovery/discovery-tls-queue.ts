@@ -21,7 +21,15 @@ import { randomUUID } from "node:crypto";
 import { AppError, DISCOVERY_TLS_QUEUE } from "@repo/core";
 import { repos } from "@repo/db";
 import { reportCaughtError } from "@repo/core/diagnostics";
-import { manageDomainSsl, DiscoveryBackendUnavailableError } from "../../lib/domain-ssl";
+import {
+  assertDiscoveryBackendFresh,
+  DiscoveryBackendUnavailableError,
+  manageDomainSsl,
+  sslIssueLockKey,
+} from "../../lib/domain-ssl";
+import { createProvisionLock } from "../../lib/provision-lock";
+import { ensureOriginCaIssued } from "./origin-ca-issuance";
+import { readCredentialSecrets } from "../credentials/credential.service";
 import type { DiscoveryTlsOperation } from "@repo/db";
 
 /** Injectable clock: production wall time; tests drive spacing deterministically. */
@@ -163,16 +171,29 @@ async function executeOperation(operation: DiscoveryTlsOperation, clock: TlsQueu
       return;
     }
 
-    // Dispatch gate mirror: until provider/source dispatch exists, exact
-    // Let's Encrypt is the ONLY executable work. Cloudflare/wildcard intent
-    // stays durably deferred — never an ACME fallback, never an exact-host
-    // fallback — and the persisted row keeps it visible for the dispatch step.
-    if (operation.provider !== "letsencrypt" || operation.source !== "exact") {
+    // Dispatch gate mirror: exact Let's Encrypt through the shared entrypoint;
+    // Cloudflare Origin CA through the dedicated resumable issuance flow (no
+    // ACME fallback in either direction). Wildcard sources stay durably
+    // deferred — the shared-certificate dispatch is a later step, and an
+    // exact-host certificate is never ordered as a fallback.
+    if (operation.provider === "cloudflare-origin-ca") {
+      if (operation.source !== "exact") {
+        await repos.discoveryTlsQueue.deferOperation(
+          operation.id,
+          `${operation.hostname} requests the shared wildcard certificate ${operation.sourceHostname}; wildcard issuance waits for the shared-certificate dispatch (no exact-host fallback).`,
+          retryAt(operation.attempts, now()),
+          now(),
+          WORKER_ID,
+        );
+        return;
+      }
+      await dispatchOriginCaIssuance(operation, clock);
+      return;
+    }
+    if (operation.source !== "exact") {
       await repos.discoveryTlsQueue.deferOperation(
         operation.id,
-        operation.provider !== "letsencrypt"
-          ? `Cloudflare Origin CA issuance for ${operation.hostname} waits for the provider dispatch (no Let's Encrypt fallback).`
-          : `${operation.hostname} requests the shared wildcard certificate ${operation.sourceHostname}; wildcard issuance waits for the shared-certificate dispatch (no exact-host fallback).`,
+        `${operation.hostname} requests the shared wildcard certificate ${operation.sourceHostname}; wildcard issuance waits for the shared-certificate dispatch (no exact-host fallback).`,
         retryAt(operation.attempts, now()),
         now(),
         WORKER_ID,
@@ -223,4 +244,105 @@ async function executeOperation(operation: DiscoveryTlsOperation, clock: TlsQueu
   } finally {
     clearInterval(leaseRenewal);
   }
+}
+
+/**
+ * The Cloudflare Origin CA dispatch: provider configuration resolution
+ * (credential + zone + validity from the persisted policy), the per-hostname
+ * TLS lock, the SAME fresh-backend eligibility gate ACME uses, the stale
+ * generation check re-run UNDER the lock, then the resumable issuance
+ * (reuse healthy active material — or resume/recover/create, ambiguity-safe).
+ */
+async function dispatchOriginCaIssuance(operation: DiscoveryTlsOperation, clock: TlsQueueClock): Promise<void> {
+  await createProvisionLock(sslIssueLockKey(operation.hostname)).run(async () => {
+    const now = () => clock.now();
+    try {
+      // Under-lock policy re-read: a policy change while this job waited must
+      // not issue for the old intent (mirror of the ACME under-lock guard).
+      const currentGeneration = await repos.discoveryTlsQueue.currentPolicyGeneration(
+        operation.serverId,
+        operation.hostname,
+      );
+      if (currentGeneration === null) {
+        await defer(operation.id, `The domain record for ${operation.hostname} disappeared while this work waited; deferring.`, operation.attempts, now(), WORKER_ID);
+        return;
+      }
+      if (currentGeneration > operation.policyGeneration) {
+        await repos.discoveryTlsQueue.completeOperation(operation.id, "superseded", now(), WORKER_ID);
+        return;
+      }
+
+      // Provider configuration from the persisted policy.
+      const policy = await repos.domain.getTlsPolicy(operation.domainId);
+      if (!policy?.tlsCfCredentialId || !policy?.tlsCfZoneId) {
+        await defer(operation.id, `TLS configuration required: ${operation.hostname} has no Cloudflare credential/zone for this domain.`, operation.attempts, now(), WORKER_ID);
+        return;
+      }
+      const credential = await repos.credential.findById(operation.organizationId, policy.tlsCfCredentialId);
+      if (!credential || credential.provider !== "cloudflare") {
+        await defer(operation.id, `The domain's Cloudflare credential (${policy.tlsCfCredentialId}) is missing or is not a cloudflare credential.`, operation.attempts, now(), WORKER_ID);
+        return;
+      }
+      const apiToken = readCredentialSecrets(credential).apiToken;
+      if (!apiToken) {
+        await defer(operation.id, "The domain's Cloudflare credential has no stored API token; re-enter it through the credentials flow.", operation.attempts, now(), WORKER_ID);
+        return;
+      }
+
+      // Backend eligibility: the SAME fresh-inspection contract ACME uses —
+      // absent/stopped/unobservable defers, never issues.
+      await assertDiscoveryBackendFresh(
+        { kind: "server", serverId: operation.serverId, organizationId: operation.organizationId, isLocal: false, workspaceId: null },
+        operation.hostname,
+      );
+
+      const result = await ensureOriginCaIssued({
+        domainId: operation.domainId,
+        operationId: operation.id,
+        hostname: operation.hostname,
+        zoneId: policy.tlsCfZoneId,
+        apiToken,
+        organizationId: operation.organizationId,
+        validityDays: (policy.tlsValidityDays ?? undefined) as import("@repo/core").OriginCaValidityDays | undefined,
+      });
+      if (result.outcome === "reused") {
+        await repos.discoveryTlsQueue.completeOperation(operation.id, "reused", now(), WORKER_ID);
+        return;
+      }
+      if (result.outcome === "issued") {
+        // The validated certificate is stored as candidate inventory; the
+        // Edge installation/activation dispatch advances active state.
+        await repos.discoveryTlsQueue.deferOperation(
+          operation.id,
+          `Origin CA certificate issued (${result.certificateId}, expires ${result.expiresAt.toISOString().slice(0, 10)}); Edge installation dispatch is the next step.`,
+          retryAt(operation.attempts, now()),
+          now(),
+          WORKER_ID,
+        );
+        return;
+      }
+      // unknown: ambiguity/recovery in progress — visible, bounded, no duplicate.
+      await defer(operation.id, result.reason, operation.attempts, now(), WORKER_ID);
+    } catch (error) {
+      if (error instanceof DiscoveryBackendUnavailableError) {
+        await defer(operation.id, error.message, operation.attempts, now(), WORKER_ID);
+        return;
+      }
+      const reason =
+        error instanceof AppError ? error.message : "Origin CA issuance failed; the next attempt retries.";
+      reportCaughtError(error, "platform/engine/modules/discovery/discovery-tls-queue");
+      await defer(operation.id, reason, operation.attempts, now(), WORKER_ID);
+    }
+  });
+}
+
+/** Local helper: the worker's defer call with its lease identity. */
+async function defer(
+  operationId: string,
+  reason: string,
+  attempts: number,
+  now: Date,
+  leasedBy: string,
+): Promise<void> {
+  await repos.discoveryTlsQueue.deferOperation(operationId, reason, retryAt(attempts, now), now, leasedBy);
 }

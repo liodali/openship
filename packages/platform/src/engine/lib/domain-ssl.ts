@@ -495,7 +495,7 @@ async function resolveSslOnly(
  * queue is still caught. Transport failures also defer: unknown inspection
  * state waits for a successful inventory instead of burning an order.
  */
-async function assertDiscoveryBackendFresh(
+export async function assertDiscoveryBackendFresh(
   owner: Extract<SslOwner, { kind: "server" }>,
   hostname: string,
 ): Promise<void> {

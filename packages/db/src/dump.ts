@@ -489,6 +489,16 @@ const TABLES: ReadonlyArray<TableSpec> = [
     hasOrganizationId: false,
   },
   {
+    // Origin CA issuance inventory (plan §3): durable encrypted intent +
+    // candidate state, server-Edge work like discovery_binding — never
+    // travels in org/project remaps (and its key_enc column must never leave
+    // the instance that encrypted it).
+    sqlName: "discovery_tls_issuance",
+    table: schema.discoveryTlsIssuance,
+    scopes: [{ in: "instance", via: "all-rows" }],
+    hasOrganizationId: false,
+  },
+  {
     // The durable TLS operation queue (paced issuance). Instance-scope only,
     // exactly like discovery_binding/discovery_settings: operations reference
     // a server Edge and its policy generation, so a project/org promotion to

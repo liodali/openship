@@ -195,6 +195,12 @@ export const domain = pgTable(
     /** Requested Origin CA validity in days; null = provider default (365). */
     tlsValidityDays: integer("tls_validity_days"),
 
+    /* ── Active certificate inventory (managed providers) ───────────────── */
+    /** The provider certificate ID for the INSTALLED managed certificate (Origin CA id; null for ACME). */
+    tlsCertificateId: text("tls_certificate_id"),
+    /** SHA-256 fingerprint of the installed managed certificate. */
+    tlsCertificateFingerprint: text("tls_certificate_fingerprint"),
+
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },

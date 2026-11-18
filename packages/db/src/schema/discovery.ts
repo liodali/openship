@@ -311,3 +311,65 @@ export const discoveryTlsOperation = pgTable(
     index("idx_discovery_tls_operation_server").on(t.serverId, t.hostname),
   ],
 );
+
+// ─── Origin CA issuance inventory (plan §1: candidate/active state) ──────────
+
+/**
+ * ONE Origin CA issuance attempt's DURABLE state. The intent (CSR + ENCRYPTED
+ * private key) is persisted BEFORE the create request; the returned candidate
+ * is persisted after. A crash between request and response leaves a
+ * pending_create row — the recovery path reads the provider and matches by
+ * hostname + CSR public key instead of ever blindly re-creating.
+ *
+ * Private key material lives ONLY in `key_enc` (the `enc1:` envelope, same
+ * cipher as credentials). It never travels in status, audit, MCP output, or
+ * diagnostics — only this column.
+ */
+export const discoveryTlsIssuance = pgTable(
+  "discovery_tls_issuance",
+  {
+    id: text("id")
+      .primaryKey()
+      .default(sql`'dti_' || gen_random_uuid()::text`),
+    /** The domain whose certificate this is. */
+    domainId: text("domain_id")
+      .notNull()
+      .references(() => domain.id, { onDelete: "cascade" }),
+    /** The queue operation that requested this issuance (recovery linkage). */
+    operationId: text("operation_id"),
+    hostname: text("hostname").notNull(),
+    /** The Cloudflare zone the issuance targets. */
+    zoneId: text("zone_id").notNull(),
+    /** pending_create (intent persisted, no id yet) | candidate (issued, not installed) | active | failed. */
+    state: text("state").notNull().default("pending_create"),
+    /** The CSR (PUBLIC material — the private key's counterpart). */
+    csr: text("csr").notNull(),
+    /** The private key, sealed in the `enc1:` envelope. NEVER surfaced anywhere else. */
+    keyEnc: text("key_enc").notNull(),
+    /** Requested validity in days (one of Cloudflare's discrete values). */
+    validityDays: integer("validity_days").notNull(),
+    attempts: integer("attempts").notNull().default(0),
+    /** Provider certificate id once known (from create or recovery). */
+    certificateId: text("certificate_id"),
+    /** The certificate PEM (PUBLIC material) once issued. */
+    certificatePem: text("certificate_pem"),
+    /** SHA-256 fingerprint of the issued certificate. */
+    fingerprint: text("fingerprint"),
+    /** Cloudflare's expires_on for the issued certificate. */
+    expiresOn: timestamp("expires_on"),
+    /** Sanitized ambiguity/recovery state for visible pending/unknown rows. */
+    reason: text("reason"),
+
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    // ONE live (pending/candidate) issuance per domain: recovery reads it, and
+    // a renewed attempt supersedes (completes) the previous one first.
+    uniqueIndex("uq_discovery_tls_issuance_live")
+      .on(t.domainId)
+      .where(sql`${t.state} IN ('pending_create','candidate')`),
+    index("idx_discovery_tls_issuance_cert").on(t.certificateId),
+    index("idx_discovery_tls_issuance_domain").on(t.domainId, t.state),
+  ],
+);
