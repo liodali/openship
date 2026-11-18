@@ -55,6 +55,7 @@ vi.mock("./discovery-scanner", () => ({ scanServerDiscovery: scan }));
 vi.mock("./discovery-reconciler", () => ({ reconcileServerDiscovery: reconcile }));
 vi.mock("./discovery-repair", () => ({ repairDiscoveryRoutes: repair }));
 vi.mock("./discovery-watch", () => ({ renewDiscoveryWatchers: renew }));
+vi.mock("./discovery-tls-queue", () => ({ kickDiscoveryTlsQueue: vi.fn() }));
 vi.mock("../../lib/system-jobs", () => ({
   scheduleSystemJob: vi.fn(async () => {}),
 }));

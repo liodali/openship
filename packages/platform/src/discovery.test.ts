@@ -16,6 +16,12 @@ const state = {
   forgotten: [] as string[],
   configured: [] as Array<{ enabled: boolean }>,
   withdrawalsScheduled: 0,
+  /** Durable TLS operations by id (the ensure/queue surface). */
+  tlsOperations: new Map<string, Record<string, unknown>>(),
+  /** Material state for the ensure-enrollment domain row (undefined = none). */
+  domainSsl: undefined as { sslStatus: string; verified: boolean; sslExpiresAt: Date | null } | undefined,
+  /** Persisted per-domain TLS policy for getTlsPolicy (undefined = default). */
+  domainPolicy: undefined as Record<string, unknown> | undefined,
 };
 
 /** The one domain fixture every lookup path shares — batch and single alike. */
@@ -61,9 +67,76 @@ const discoveryRepo = {
   }),
 };
 
+/** The durable TLS operation queue surface the operations module consumes. */
+let operationSeq = 0;
+const tlsQueueRepo = {
+  listActiveOperationsByServer: vi.fn(async () => {
+    const out = new Map<string, Record<string, unknown>>();
+    for (const op of state.tlsOperations.values()) {
+      if (!out.has(op.hostname as string)) out.set(op.hostname as string, op);
+    }
+    return out;
+  }),
+  findActiveOperationForHostname: vi.fn(async (_serverId: string, hostname: string) => {
+    for (const op of state.tlsOperations.values()) if (op.hostname === hostname.toLowerCase()) return op;
+    return undefined;
+  }),
+  ensureOperation: vi.fn(async (input: Record<string, unknown> & { hostname: string; sourceHostname: string; initialReason?: string }) => {
+    const existing = [...state.tlsOperations.values()].find(
+      (op) => op.hostname === input.hostname && op.sourceHostname === input.sourceHostname && op.state !== "complete",
+    );
+    if (existing) return { operation: existing, created: false };
+    const op = {
+      id: `dtop_test_${operationSeq++}`,
+      state: input.initialReason ? "deferred" : "waiting",
+      reason: input.initialReason ?? null,
+      attempts: 0,
+      updatedAt: new Date("2026-01-01T00:00:00Z"),
+      ...input,
+      hostname: input.hostname.toLowerCase(),
+    };
+    state.tlsOperations.set(op.id as string, op);
+    return { operation: op, created: true };
+  }),
+};
+
+/** The domain-repo surface the operations module consumes (ensure enrollment). */
+const domainRepo = {
+  ensureServerDomain: vi.fn(async (input: { hostname: string; targetPort: number }) => ({
+    domain: {
+      id: "dom_ensure",
+      hostname: input.hostname.toLowerCase(),
+      serverId: "srv_1",
+      ownerType: "server",
+      targetPort: input.targetPort,
+      sslStatus: state.domainSsl?.sslStatus ?? "none",
+      verified: state.domainSsl?.verified ?? false,
+      sslExpiresAt: state.domainSsl?.sslExpiresAt ?? null,
+      ...state.domainPolicy,
+    },
+    created: true,
+  })),
+  getTlsPolicy: vi.fn(async () => ({
+    hostname: "app.example.com",
+    ownerType: "server",
+    serverId: "srv_1",
+    tlsProvider: state.domainPolicy?.tlsProvider ?? "letsencrypt",
+    tlsProviderSource: state.domainPolicy?.tlsProviderSource ?? "default",
+    tlsActiveProvider: state.domainPolicy?.tlsActiveProvider ?? null,
+    tlsPolicyGeneration: state.domainPolicy?.tlsPolicyGeneration ?? 1,
+    tlsCfCredentialId: state.domainPolicy?.tlsCfCredentialId ?? null,
+    tlsCfZoneId: state.domainPolicy?.tlsCfZoneId ?? null,
+    tlsCfZoneName: state.domainPolicy?.tlsCfZoneName ?? null,
+    tlsValidityDays: state.domainPolicy?.tlsValidityDays ?? null,
+  })),
+};
+
 vi.mock("@repo/db", () => ({
-  repos: { discovery: discoveryRepo },
+  repos: { discovery: discoveryRepo, discoveryTlsQueue: tlsQueueRepo, domain: domainRepo },
 }));
+
+const kick = vi.fn();
+vi.mock("./engine/modules/discovery/discovery-tls-queue", () => ({ kickDiscoveryTlsQueue: kick }));
 
 const sweep = vi.fn(async () => ({
   serverId: "srv_1",
@@ -126,6 +199,9 @@ beforeEach(() => {
   state.forgotten = [];
   state.configured = [];
   state.withdrawalsScheduled = 0;
+  state.tlsOperations = new Map();
+  state.domainSsl = undefined;
+  state.domainPolicy = undefined;
   queueTasks.length = 0;
   deferQueue = false;
 });
@@ -310,5 +386,89 @@ describe("createDiscoveryOperations", () => {
       statusCode: 404,
     });
     await expect(ops.getService(ctx, "srv_1", { serviceKey: "" })).rejects.toBeDefined(); // empty key fails input validation
+  });
+
+  describe("ensureServiceTls (idempotent durable ensure)", () => {
+    const ensure = (input?: unknown) =>
+      createDiscoveryOperations({ authorize } as never).ensureServiceTls(ctx, "srv_1", input ?? { serviceKey: "id:my-app" });
+
+    it("authorizes server WRITE and skips when valid letsencrypt material is installed", async () => {
+      state.domainSsl = { sslStatus: "active", verified: true, sslExpiresAt: new Date(Date.now() + 30 * 86_400_000) };
+      const { data } = await ensure();
+      expect(authorize).toHaveBeenCalledWith(ctx, { resourceType: "server", resourceId: "srv_1", action: "write" });
+      expect(data).toEqual({ outcome: "skipped", reason: "already_valid", hostname: "app.example.com", source: "exact" });
+      expect(tlsQueueRepo.ensureOperation).not.toHaveBeenCalled(); // skip creates no job
+    });
+
+    it("queues durable work with a stable operation id and kicks the drain", async () => {
+      const { data } = await ensure();
+      expect(data).toMatchObject({ outcome: "queued", hostname: "app.example.com" });
+      expect(typeof (data as { operationId: string }).operationId).toBe("string");
+      expect(kick).toHaveBeenCalledTimes(1);
+      // A retried ensure returns the SAME operation id — never a second job.
+      const retry = await ensure();
+      expect(retry.data).toMatchObject({
+        outcome: "already_queued",
+        operationId: (data as { operationId: string }).operationId,
+      });
+      expect(kick).toHaveBeenCalledTimes(1); // only creations kick
+    });
+
+    it("defers — with a durable operation — when the backend is not runnable", async () => {
+      state.bindings.set("id:my-app", binding({ containerRunning: false }));
+      const { data } = await ensure();
+      expect(data).toMatchObject({ outcome: "deferred", hostname: "app.example.com" });
+      expect((data as { reason: string }).reason).toContain("not running");
+      // A later ensure against the still-deferred operation reports deferred again.
+      const retry = await ensure();
+      expect(retry.data).toMatchObject({ outcome: "deferred" });
+    });
+
+    it("refuses Cloudflare without its per-domain configuration (no create, no fallback)", async () => {
+      state.domainPolicy = { tlsProvider: "cloudflare-origin-ca", tlsCfCredentialId: null, tlsCfZoneId: null, tlsPolicyGeneration: 2 };
+      await expect(ensure()).rejects.toMatchObject({ code: "TLS_CONFIGURATION_REQUIRED" });
+      expect(tlsQueueRepo.ensureOperation).not.toHaveBeenCalled();
+    });
+
+    it("queues (durably deferred by the worker) a configured Cloudflare policy", async () => {
+      state.domainPolicy = { tlsProvider: "cloudflare-origin-ca", tlsCfCredentialId: "cred_1", tlsCfZoneId: "zone_1", tlsPolicyGeneration: 2 };
+      const { data } = await ensure();
+      expect(data).toMatchObject({ outcome: "queued", hostname: "app.example.com" });
+    });
+
+    it("a declared wildcard sources the operation from the wildcard identity", async () => {
+      state.bindings.set("id:my-app", binding({ tlsDeclaredWildcard: "*.example.com" }));
+      const { data } = await ensure();
+      expect(data).toMatchObject({ outcome: "queued" });
+      expect(tlsQueueRepo.ensureOperation).toHaveBeenCalledWith(
+        expect.objectContaining({ source: "wildcard", sourceHostname: "*.example.com", policyGeneration: 1 }),
+      );
+    });
+
+    it("an old-provider certificate is NOT proof during a pending switch — never skips", async () => {
+      state.domainSsl = { sslStatus: "active", verified: true, sslExpiresAt: new Date(Date.now() + 30 * 86_400_000) };
+      state.domainPolicy = { tlsProvider: "cloudflare-origin-ca", tlsCfCredentialId: "cred_1", tlsCfZoneId: "zone_1", tlsPolicyGeneration: 5 };
+      const { data } = await ensure();
+      expect(data).toMatchObject({ outcome: "queued" }); // desired provider ≠ installed material
+    });
+
+    it("expired installed material does not skip", async () => {
+      state.domainSsl = { sslStatus: "active", verified: true, sslExpiresAt: new Date(Date.now() - 86_400_000) };
+      const { data } = await ensure();
+      expect(data).toMatchObject({ outcome: "queued" });
+    });
+
+    it("rejects unknown services with NotFound", async () => {
+      await expect(createDiscoveryOperations({ authorize } as never).ensureServiceTls(ctx, "srv_1", { serviceKey: "id:ghost" })).rejects.toMatchObject({ statusCode: 404 });
+    });
+  });
+
+  it("status exposes the ACTIVE TLS operation for a service", async () => {
+    const ops = createDiscoveryOperations({ authorize } as never);
+    await ops.ensureServiceTls(ctx, "srv_1", { serviceKey: "id:my-app" });
+    const single = await ops.getService(ctx, "srv_1", { serviceKey: "id:my-app" });
+    const list = await ops.status(ctx, "srv_1");
+    expect(single.data.tlsOperation).toMatchObject({ state: "waiting", source: "exact", provider: "letsencrypt", attempts: 0 });
+    expect(list.data.services[0].tlsOperation?.operationId).toBe(single.data.tlsOperation?.operationId);
   });
 });
