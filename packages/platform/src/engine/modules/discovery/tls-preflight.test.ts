@@ -22,7 +22,7 @@ vi.mock("../../lib/cloudflare-api", () => ({
   cloudflareList: cf.list,
 }));
 
-const { preflightCloudflareOriginCa, hostnameInZone, wildcardCandidates } = await import("./tls-preflight");
+const { preflightCloudflareOriginCa, hostnameInZone } = await import("./tls-preflight");
 const { CloudflareApiError } = await import("../../lib/cloudflare-api");
 /** A Cloudflare 404 (phase/route absent) as the transport raises it. */
 const rulesetMissing = () => new CloudflareApiError(404, "could not be found (404)");
@@ -38,6 +38,10 @@ function zoneResponse(name = "example.com", status = "active") {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Fresh implementations per test: mockImplementation from a previous test
+  // (e.g. a DNS override map) must not leak into the next one.
+  cf.fetch.mockReset();
+  cf.list.mockReset();
   cf.fetch.mockImplementation(async (_token: string, path: string) => {
     if (path.startsWith("/zones/zone_1/settings/ssl")) return strict;
     if (path.includes("/rulesets/")) throw rulesetMissing();
@@ -59,11 +63,6 @@ describe("zone membership (DNS-label boundary)", () => {
     expect(hostnameInZone("other.org", "example.com")).toBe(false);
   });
 
-  it("wildcard candidates walk ancestors only down to the registrable apex", () => {
-    expect(wildcardCandidates("a.b.example.com")).toEqual(["*.b.example.com", "*.example.com"]);
-    expect(wildcardCandidates("site.example.com")).toEqual(["*.example.com"]);
-    expect(wildcardCandidates("example.com")).toEqual([]);
-  });
 
   it("preflight refuses a hostname outside the CONFIGURED zone", async () => {
     await expect(
@@ -116,7 +115,10 @@ describe("proxied DNS (effective hostname)", () => {
     expect(cf.list).toHaveBeenCalledWith("tok", expect.stringContaining("dns_records?name=site.example.com"));
   });
 
-  it("accepts a proxied ancestor wildcard DNS record (proxy evidence, not a wildcard certificate)", async () => {
+  it("P2: an EXACT DNS-only record blocks the proxied ancestor wildcard (DNS precedence)", async () => {
+    // Cloudflare precedence: any record at the queried name stops wildcard
+    // matching — the DNS-only exact answer is authoritative, so traffic does
+    // NOT ride Cloudflare even though *.example.com is proxied.
     cf.list.mockImplementation(async (_t: string, path: string) => {
       if (path.includes("name=site.example.com")) return [{ name: "site.example.com", type: "A", proxied: false }];
       if (path.includes("name=*.example.com")) return [{ name: "*.example.com", type: "A", proxied: true }];
@@ -124,7 +126,62 @@ describe("proxied DNS (effective hostname)", () => {
     });
     await expect(
       preflightCloudflareOriginCa({ apiToken: "tok", zoneId: "zone_1", hostname: "site.example.com" }),
+    ).rejects.toMatchObject({ code: "TLS_DNS_NOT_PROXIED" });
+    // The wildcard was never consulted as cover: only the exact-name query ran.
+    expect(cf.list).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts a proxied ancestor wildcard when NO exact record exists at the hostname", async () => {
+    cf.list.mockImplementation(async (_t: string, path: string) => {
+      if (path.includes("name=site.example.com")) return []; // no exact records
+      if (path.includes("name=*.example.com")) return [{ name: "*.example.com", type: "A", proxied: true }];
+      return [];
+    });
+    await expect(
+      preflightCloudflareOriginCa({ apiToken: "tok", zoneId: "zone_1", hostname: "site.example.com" }),
     ).resolves.toMatchObject({ zoneName: "example.com" });
+  });
+
+  it("P2: a record at an INTERVENING level blocks a shallower wildcard for deeper names", async () => {
+    // a.b.example.com with *.example.com proxied, but b.example.com has a
+    // record: the wildcard cannot match names below that more-specific level.
+    cf.list.mockImplementation(async (_t: string, path: string) => {
+      if (path.includes("name=a.b.example.com")) return []; // no exact records at the queried name
+      if (path.includes("name=b.example.com")) return [{ name: "b.example.com", type: "TXT", proxied: false }];
+      if (path.includes("name=*.b.example.com")) return []; // no deeper wildcard
+      if (path.includes("name=*.example.com")) return [{ name: "*.example.com", type: "A", proxied: true }];
+      return [];
+    });
+    await expect(
+      preflightCloudflareOriginCa({ apiToken: "tok", zoneId: "zone_1", hostname: "a.b.example.com" }),
+    ).rejects.toMatchObject({ code: "TLS_DNS_NOT_PROXIED" });
+  });
+
+  it("P2: the DEEPEST applicable wildcard governs — a proxied shallower one is not consulted", async () => {
+    // a.b.example.com: *.b.example.com exists DNS-only, *.example.com proxied.
+    // The deeper wildcard is the authoritative match; no fall-through.
+    cf.list.mockImplementation(async (_t: string, path: string) => {
+      if (path.includes("name=a.b.example.com")) return [];
+      if (path.includes("name=*.b.example.com")) return [{ name: "*.b.example.com", type: "A", proxied: false }];
+      if (path.includes("name=*.example.com")) return [{ name: "*.example.com", type: "A", proxied: true }];
+      return [];
+    });
+    await expect(
+      preflightCloudflareOriginCa({ apiToken: "tok", zoneId: "zone_1", hostname: "a.b.example.com" }),
+    ).rejects.toMatchObject({ code: "TLS_DNS_NOT_PROXIED" });
+    // The shallower wildcard was never queried (deepest governed first).
+    expect(cf.list).not.toHaveBeenCalledWith("tok", expect.stringContaining("name=*.example.com"));
+  });
+
+  it("a non-address record at the queried name also blocks wildcard matching", async () => {
+    cf.list.mockImplementation(async (_t: string, path: string) => {
+      if (path.includes("name=site.example.com")) return [{ name: "site.example.com", type: "TXT", proxied: true }];
+      if (path.includes("name=*.example.com")) return [{ name: "*.example.com", type: "A", proxied: true }];
+      return [];
+    });
+    await expect(
+      preflightCloudflareOriginCa({ apiToken: "tok", zoneId: "zone_1", hostname: "site.example.com" }),
+    ).rejects.toMatchObject({ code: "TLS_DNS_NOT_PROXIED" });
   });
 
   it("refuses a hostname with no proxied record anywhere (TLS_DNS_NOT_PROXIED)", async () => {
@@ -207,6 +264,49 @@ describe("configuration-rule overrides (effective mode provability)", () => {
       if (path.startsWith("/zones/zone_1/settings/ssl")) return strict;
       if (path.includes("/rulesets/")) throw new AppError("rulesets read failed", 502, "CLOUDFLARE_API_ERROR");
       return zoneOk();
+    });
+    cf.list.mockImplementation(async (_t: string, path: string) => {
+      if (path.includes("/pagerules")) return []; // page rules read fine (empty)
+      if (path.includes("name=site.example.com")) return [{ name: "site.example.com", type: "A", proxied: true }];
+      return [];
+    });
+    await expect(
+      preflightCloudflareOriginCa({ apiToken: "tok", zoneId: "zone_1", hostname: "site.example.com" }),
+    ).rejects.toMatchObject({ code: "TLS_CONFIGURATION_UNRESOLVED" });
+  });
+
+  it("P2: an ACTIVE Page Rule with an ssl action is UNRESOLVED — legacy overrides count too", async () => {
+    cf.list.mockImplementation(async (_t: string, path: string) => {
+      if (path.includes("/pagerules"))
+        return [{ status: "active", actions: [{ id: "ssl", value: "strict" }] }];
+      if (path.includes("name=site.example.com")) return [{ name: "site.example.com", type: "A", proxied: true }];
+      return [];
+    });
+    await expect(
+      preflightCloudflareOriginCa({ apiToken: "tok", zoneId: "zone_1", hostname: "site.example.com" }),
+    ).rejects.toMatchObject({ code: "TLS_CONFIGURATION_UNRESOLVED" });
+  });
+
+  it("Page Rules WITHOUT an ssl action are irrelevant", async () => {
+    cf.list.mockImplementation(async (_t: string, path: string) => {
+      if (path.includes("/pagerules"))
+        return [
+          { status: "active", actions: [{ id: "cache_level", value: "aggressive" }] },
+          { status: "disabled", actions: [{ id: "ssl", value: "off" }] },
+        ];
+      if (path.includes("name=site.example.com")) return [{ name: "site.example.com", type: "A", proxied: true }];
+      return [];
+    });
+    await expect(
+      preflightCloudflareOriginCa({ apiToken: "tok", zoneId: "zone_1", hostname: "site.example.com" }),
+    ).resolves.toMatchObject({ zoneName: "example.com" });
+  });
+
+  it("an unreadable Page Rules list leaves the effective mode unproven — refused", async () => {
+    cf.list.mockImplementation(async (_t: string, path: string) => {
+      if (path.includes("/pagerules")) throw new AppError("pagerules read failed", 502, "CLOUDFLARE_API_ERROR");
+      if (path.includes("name=site.example.com")) return [{ name: "site.example.com", type: "A", proxied: true }];
+      return [];
     });
     await expect(
       preflightCloudflareOriginCa({ apiToken: "tok", zoneId: "zone_1", hostname: "site.example.com" }),

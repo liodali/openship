@@ -205,16 +205,30 @@ const retire = vi.fn(async () => {});
 const queueTasks: Array<() => Promise<unknown>> = [];
 /** Set by queue-deferral tests: tasks queue without executing until flushed. */
 let deferQueue = false;
+/** Production semantics for deferred tasks: the caller's promise resolves
+ *  only when its task eventually runs (an early resolve would let queued
+ *  operations continue on state their task has not produced yet). */
+const deferred: Array<() => void> = [];
 const runQueuedTasksNow = async (): Promise<void> => {
   deferQueue = false;
-  while (queueTasks.length > 0) await queueTasks.shift()!();
+  // Deferred wrappers run their task EXACTLY ONCE (queueTasks is the
+  // enqueue record; execution happens here, awaited).
+  for (const run of deferred.splice(0)) await run();
 };
 vi.mock("./engine/modules/discovery/discovery-sweep", () => ({
   sweepServerDiscovery: sweep,
   runInServerQueue: vi.fn((_serverId: string, task: () => Promise<unknown>) => {
     queueTasks.push(task);
     if (!deferQueue) return task();
-    return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      deferred.push(async () => {
+        try {
+          resolve(await task());
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
   }),
 }));
 vi.mock("./engine/modules/discovery/discovery-reconciler", () => ({ retireBindingRoute: retire }));
@@ -259,6 +273,7 @@ beforeEach(() => {
   state.domainPolicy = undefined;
   state.serverTlsDefault = undefined;
   queueTasks.length = 0;
+  deferred.length = 0;
   deferQueue = false;
 });
 
@@ -692,6 +707,29 @@ describe("createDiscoveryOperations", () => {
         ops.setServiceTls(ctx, "srv_1", { serviceKey: "id:my-app", provider: "letsencrypt", cloudflare: { credentialId: "x", zoneId: "z" } }),
       ).rejects.toBeDefined();
       expect(domainRepo.setTlsPolicy).not.toHaveBeenCalled();
+    });
+
+    it("P2: the binding is read INSIDE the queue — a queued scan that renames the service configures the NEW hostname", async () => {
+      const ops = createDiscoveryOperations({ authorize } as never);
+      deferQueue = true; // the PUT task queues behind a not-yet-run scan
+      const pending = ops.setServiceTls(ctx, "srv_1", { serviceKey: "id:my-app", provider: "letsencrypt" });
+      await vi.waitFor(() => expect(queueTasks.length).toBe(1));
+      // The queued scan REPLACES the declaration: same key, new hostname.
+      state.bindings.set("id:my-app", binding({ hostname: "renamed.example.com" }));
+      state.domains.set("renamed.example.com", { ...DOMAIN_ROW, hostname: "renamed.example.com", sslStatus: "none" });
+      await runQueuedTasksNow();
+      await pending;
+      // The policy write and the RESPONSE target the CURRENT (post-scan)
+      // identity — not the pre-queue snapshot.
+      expect(domainRepo.ensureServerDomain).toHaveBeenCalledWith(
+        expect.objectContaining({ hostname: "renamed.example.com" }),
+      );
+      expect(domainRepo.setTlsPolicy).toHaveBeenCalled();
+      const written = domainRepo.setTlsPolicy.mock.calls[0][0];
+      const view = await ops.getServiceTls(ctx, "srv_1", { serviceKey: "id:my-app" });
+      expect(view.data.hostname).toBe("renamed.example.com");
+      expect(discoveryRepo.findDomainForBinding).toHaveBeenCalledWith("srv_1", "renamed.example.com");
+      void written;
     });
   });
 });
