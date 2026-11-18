@@ -478,9 +478,16 @@ export function createDiscoveryOperations(authorization: Authorization): Platfor
               validityDays: policyInput.cloudflare.validityDays,
             })
           : { provider: "letsencrypt" as const };
-      const binding = await requireBinding(serverId, key);
+
+      // The binding is read INSIDE the server queue — the same rule forget
+      // follows. A queued scan can change the hostname before this task runs;
+      // reading outside would configure the OLD domain row while the service
+      // moved on. The response is built from the RESOLVED (post-scan) identity.
+      let resolvedHostname: string | null = null;
 
       await runInServerQueue(serverId, async () => {
+        const binding = await requireBinding(serverId, key);
+        resolvedHostname = binding.hostname;
         // Eligible server-owned metadata only — never a route, never issuance.
         const { domain: domainRow } = await repos.domain.ensureServerDomain({
           serverId,
@@ -537,12 +544,14 @@ export function createDiscoveryOperations(authorization: Authorization): Platfor
         });
       });
 
-      // Re-read post-write for the response view.
-      const domainRow = await repos.discovery.findDomainForBinding(serverId, binding.hostname);
+      // Re-read post-write for the response view — from the RESOLVED
+      // identity, not a pre-queue snapshot that a concurrent scan may have
+      // invalidated.
+      const domainRow = await repos.discovery.findDomainForBinding(serverId, resolvedHostname!);
       const policy = domainRow ? await repos.domain.getTlsPolicy(domainRow.id) : null;
       return {
         context: ctx,
-        data: tlsPolicyView(binding.hostname, policy, domainRow ? { sslStatus: domainRow.sslStatus } : null),
+        data: tlsPolicyView(resolvedHostname!, policy, domainRow ? { sslStatus: domainRow.sslStatus } : null),
       };
     },
 

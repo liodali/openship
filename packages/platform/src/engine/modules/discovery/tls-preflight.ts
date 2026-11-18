@@ -50,18 +50,6 @@ export function hostnameInZone(hostname: string, zoneName: string): boolean {
   return host === zone || host.endsWith(`.${zone}`);
 }
 
-/** The wildcard DNS names that could cover `hostname`, nearest ancestor first
- *  (`a.b.example.com` → `*.b.example.com`, `*.example.com`). */
-export function wildcardCandidates(hostname: string): string[] {
-  const labels = hostname.toLowerCase().replace(/\.$/, "").split(".");
-  const out: string[] = [];
-  // Stop before consuming the last two labels: a TLD is not a zone apex.
-  for (let i = 1; i <= labels.length - 2; i++) {
-    out.push(`*.${labels.slice(i).join(".")}`);
-  }
-  return out;
-}
-
 /**
  * Run every preflight read for one hostname/zone pair. Returns the VERIFIED
  * zone name (never trust a submitted name — the zone's own record is the
@@ -100,28 +88,51 @@ export async function preflightCloudflareOriginCa(input: {
     );
   }
 
-  // 3. Effective proxied hostname: exact records first, then wildcard records
-  //    at ancestor levels (a proxied wildcard DNS record proves the hostname's
-  //    traffic rides Cloudflare without enabling any wildcard certificate).
+  // 3. Effective proxied hostname — with Cloudflare's DNS precedence rules:
+  //    an exact record at the queried name (ANY type) blocks wildcard matching
+  //    entirely, and a record at an intervening level (between the wildcard's
+  //    base and the queried name) blocks the wildcard for names below it. The
+  //    DEEPEST wildcard record that still applies governs; shallower ones are
+  //    never consulted past it. A proxied wildcard proves traffic rides
+  //    Cloudflare — it does NOT enable any wildcard certificate.
   const isAddressRecord = (record: CloudflareDnsRecord) =>
     record.type === "A" || record.type === "AAAA" || record.type === "CNAME";
+  const listRecords = async (name: string): Promise<CloudflareDnsRecord[]> =>
+    cloudflareList<CloudflareDnsRecord>(
+      input.apiToken,
+      `/zones/${encodeURIComponent(input.zoneId)}/dns_records?name=${encodeURIComponent(name)}`,
+    );
   let proxied = false;
   try {
-    const exact = await cloudflareList<CloudflareDnsRecord>(
-      input.apiToken,
-      `/zones/${encodeURIComponent(input.zoneId)}/dns_records?name=${encodeURIComponent(hostname)}`,
-    );
-    proxied = exact.some((record) => isAddressRecord(record) && record.proxied === true);
-    if (!proxied) {
-      for (const candidate of wildcardCandidates(hostname)) {
-        const wildcardRecords = await cloudflareList<CloudflareDnsRecord>(
-          input.apiToken,
-          `/zones/${encodeURIComponent(input.zoneId)}/dns_records?name=${encodeURIComponent(candidate)}`,
-        );
-        if (wildcardRecords.some((record) => isAddressRecord(record) && record.proxied === true)) {
-          proxied = true;
-          break;
+    // Exact records at the queried name govern outright: a proxied one proves
+    // proxying; any exact record (even DNS-only, even non-address) BLOCKS every
+    // wildcard — so a DNS-only exact record wins over a proxied ancestor
+    // wildcard and the hostname is simply not proxied.
+    const exact = await listRecords(hostname);
+    if (exact.length > 0) {
+      proxied = exact.some((record) => isAddressRecord(record) && record.proxied === true);
+    } else {
+      // No exact records: wildcard coverage applies — but only from the
+      // DEEPEST candidate whose intermediate levels are record-free, and its
+      // proxied status governs (no fall-through to shallower wildcards).
+      const labels = hostname.split(".");
+      for (let i = 1; i <= labels.length - 2 && !proxied; i++) {
+        const candidateBase = labels.slice(i).join(".");
+        // Blocking check for THIS candidate: any record at an intervening name
+        // (between the candidate base and the queried name) stops the wildcard
+        // from matching deeper names. Nearest candidate has none.
+        let blocked = false;
+        for (let j = 1; j < i && !blocked; j++) {
+          const intervening = labels.slice(j).join(".");
+          blocked = (await listRecords(intervening)).length > 0;
         }
+        if (blocked) continue;
+        const wildcardRecords = await listRecords(`*.${candidateBase}`);
+        if (wildcardRecords.length === 0) continue; // no record here: try the next shallower candidate
+        // The deepest applicable wildcard governs — proxied status decides,
+        // and shallower candidates are never consulted.
+        proxied = wildcardRecords.some((record) => isAddressRecord(record) && record.proxied === true);
+        break;
       }
     }
   } catch (error) {
@@ -184,6 +195,33 @@ export async function preflightCloudflareOriginCa(input: {
         `Cloudflare configuration rules for zone ${zone.name} could not be read; the effective SSL mode for ${hostname} is unproven.`,
       );
     }
+  }
+
+  // 5b. Page Rules: the LEGACY override path — a Page Rule can also set the
+  //     SSL mode per URL pattern, so Configuration Rules alone do not
+  //     establish the effective mode. URL-pattern matching is deliberately
+  //     NOT simulated here: any ACTIVE Page Rule carrying an ssl action makes
+  //     the effective mode for this hostname unprovable and is reported
+  //     unresolved (the operator resolves or scopes it). Rules without an ssl
+  //     action are irrelevant. An unreadable list is unresolved too.
+  try {
+    const pageRules = await cloudflareList<{ status: string; actions: Array<{ id: string }> }>(
+      input.apiToken,
+      `/zones/${encodeURIComponent(input.zoneId)}/pagerules`,
+    );
+    const overridesSsl = pageRules.some(
+      (rule) => rule.status === "active" && (rule.actions ?? []).some((action) => action.id === "ssl"),
+    );
+    if (overridesSsl) {
+      throw new TlsConfigurationUnresolvedError(
+        `Cloudflare zone ${zone.name} has Page Rules overriding SSL settings; the effective mode for ${hostname} cannot be proven from the zone default. Resolve or scope those Page Rules first.`,
+      );
+    }
+  } catch (error) {
+    if (error instanceof TlsConfigurationUnresolvedError) throw error;
+    throw new TlsConfigurationUnresolvedError(
+      `Cloudflare Page Rules for zone ${zone.name} could not be read; the effective SSL mode for ${hostname} is unproven.`,
+    );
   }
 
   return { zoneName: zone.name };
