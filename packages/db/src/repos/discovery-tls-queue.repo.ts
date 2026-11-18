@@ -167,28 +167,79 @@ export function createDiscoveryTlsQueueRepo(db: Database) {
       });
     },
 
-    /** Terminal success. Frees the dedup slot for future renewal work. */
-    async completeOperation(id: string, outcome: "issued" | "reused" | "superseded", now = new Date()): Promise<void> {
-      await db
+    /**
+     * Extend a held lease (long-running work: an ACME run can outlive the
+     * original lease window). Returns false when the lease was already lost —
+     * another worker reclaimed the row and owns it now.
+     */
+    async renewOperationLease(id: string, leasedBy: string, leasedUntil: Date, now = new Date()): Promise<boolean> {
+      const renewed = await db
+        .update(operation)
+        .set({ leasedUntil, updatedAt: now })
+        .where(and(eq(operation.id, id), eq(operation.state, "running"), eq(operation.leasedBy, leasedBy)))
+        .returning();
+      return renewed.length > 0;
+    },
+
+    /**
+     * Terminal success. LEASE-FENCED: only the worker that still owns the
+     * lease may complete the row — a stale worker whose operation was
+     * reclaimed (expired lease) must never overwrite the new owner's state.
+     * Frees the dedup slot for future renewal work. Returns whether THIS
+     * caller's write won.
+     */
+    async completeOperation(id: string, outcome: "issued" | "reused" | "superseded", now = new Date(), leasedBy?: string): Promise<boolean> {
+      const completed = await db
         .update(operation)
         .set({ state: "complete", outcome, reason: null, leasedBy: null, leasedUntil: null, updatedAt: now })
-        .where(and(eq(operation.id, id), inArray(operation.state, ["running", "waiting", "deferred", "error"])));
+        .where(
+          and(
+            eq(operation.id, id),
+            inArray(operation.state, ["running", "waiting", "deferred", "error"]),
+            // FENCE: absent for supersede/admin paths, required for workers.
+            ...(leasedBy ? [eq(operation.leasedBy, leasedBy)] : []),
+          ),
+        )
+        .returning();
+      return completed.length > 0;
     },
 
-    /** Durable wait: intent kept, retried at `retryAt`. */
-    async deferOperation(id: string, reason: string, retryAt: Date, now = new Date()): Promise<void> {
-      await db
+    /**
+     * Durable wait: intent kept, retried at `retryAt`. LEASE-FENCED like
+     * completeOperation — returns false when the lease was lost mid-flight.
+     */
+    async deferOperation(id: string, reason: string, retryAt: Date, now = new Date(), leasedBy?: string): Promise<boolean> {
+      const deferred = await db
         .update(operation)
         .set({ state: "deferred", reason: reason.slice(0, 500), nextAttemptAt: retryAt, leasedBy: null, leasedUntil: null, updatedAt: now })
-        .where(and(eq(operation.id, id), eq(operation.state, "running")));
+        .where(
+          and(
+            eq(operation.id, id),
+            eq(operation.state, "running"),
+            ...(leasedBy ? [eq(operation.leasedBy, leasedBy)] : []),
+          ),
+        )
+        .returning();
+      return deferred.length > 0;
     },
 
-    /** Actionable failure: still active (retryable), with backoff. */
-    async failOperation(id: string, reason: string, retryAt: Date, now = new Date()): Promise<void> {
-      await db
+    /**
+     * Actionable failure: still active (retryable), with backoff.
+     * LEASE-FENCED like completeOperation.
+     */
+    async failOperation(id: string, reason: string, retryAt: Date, now = new Date(), leasedBy?: string): Promise<boolean> {
+      const failed = await db
         .update(operation)
         .set({ state: "error", reason: reason.slice(0, 500), nextAttemptAt: retryAt, leasedBy: null, leasedUntil: null, updatedAt: now })
-        .where(and(eq(operation.id, id), eq(operation.state, "running")));
+        .where(
+          and(
+            eq(operation.id, id),
+            eq(operation.state, "running"),
+            ...(leasedBy ? [eq(operation.leasedBy, leasedBy)] : []),
+          ),
+        )
+        .returning();
+      return failed.length > 0;
     },
 
     /**

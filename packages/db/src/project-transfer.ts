@@ -56,6 +56,8 @@ export const PROJECT_TRANSFER_UNSUPPORTED_TABLES: Readonly<Record<string, string
     "Projects with Actions deployment approvals require a whole-instance export to preserve their workflow and deployment ownership.",
   cluster_database:
     "Projects with cluster databases cannot be transferred individually yet. Use a whole-instance export to preserve cluster and database ownership.",
+  discovery_tls_operation:
+    "Discovered-service certificate operations are server-scoped work tied to the source Edge, not project data. A whole-instance export re-enqueues TLS work on the destination; skip these rows on a project transfer.",
 };
 
 /** Configuration tied to the source approver/runtime must be reviewed on a new owner. */

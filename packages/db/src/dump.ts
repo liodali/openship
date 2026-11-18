@@ -489,6 +489,18 @@ const TABLES: ReadonlyArray<TableSpec> = [
     hasOrganizationId: false,
   },
   {
+    // The durable TLS operation queue (paced issuance). Instance-scope only,
+    // exactly like discovery_binding/discovery_settings: operations reference
+    // a server Edge and its policy generation, so a project/org promotion to
+    // ANOTHER control plane must not carry them — the destination enqueues its
+    // own work against its own Edge. Certificates and policy metadata travel
+    // server-scoped owners already; the operation rows are instance-local work.
+    sqlName: "discovery_tls_operation",
+    table: schema.discoveryTlsOperation,
+    scopes: [{ in: "instance", via: "all-rows" }],
+    hasOrganizationId: false,
+  },
+  {
     sqlName: "mail_servers",
     table: schema.mailServers,
     scopes: [{ in: "instance", via: "all-rows" }],

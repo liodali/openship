@@ -47,6 +47,20 @@ const WORKER_ID = `tlsq_${process.pid}_${randomUUID().slice(0, 8)}`;
 let draining = false;
 
 /**
+ * Instance-wide pacing state: the timestamp of the last issuance START across
+ * ALL drains in this process. NOT local to a drain invocation — two drains
+ * (an ensure kick racing a sweep tick) must not both start at the same
+ * instant. Reset only by tests (a fake clock owns its own timeline).
+ */
+let lastStartAtMs: number | null = null;
+
+/** Test hook: a fresh fake clock owns its own timeline; stale pacing from a
+ *  previous timeline must not leak sleeps into the next test. */
+export function resetDiscoveryTlsQueuePacingForTests(): void {
+  lastStartAtMs = null;
+}
+
+/**
  * Drain due TLS work. Reentrancy-guarded: concurrent kicks (ensure, sweep
  * tick, boot) collapse into one loop; the next kick after this returns finds
  * the guard released. Never throws — every failure lands on its operation row
@@ -60,7 +74,6 @@ export async function drainDiscoveryTlsQueue(clock: TlsQueueClock = wallClock): 
       new Date(clock.now().getTime() - DISCOVERY_TLS_QUEUE.completeRetentionMs),
     ).catch(() => {});
 
-    let lastStartAt: number | null = null;
     for (;;) {
       const claimed = await repos.discoveryTlsQueue.claimDueOperations({
         now: clock.now(),
@@ -71,18 +84,21 @@ export async function drainDiscoveryTlsQueue(clock: TlsQueueClock = wallClock): 
       if (claimed.length === 0) return;
 
       // Pacing: space the STARTS one second apart — the plan's instance-wide
-      // start-rate cap. Sleeping BEFORE each start (never after the last)
-      // keeps an idle drain free of trailing waits. (A null sentinel, not 0:
-      // an injected clock may legitimately start at epoch zero.)
+      // start-rate cap. The anchor is MODULE-level, so concurrent/nested drains
+      // pace against the same timeline instead of each starting freely. Sleep
+      // BEFORE each start (never after the last); clamp for a clock that moved
+      // backwards (a stale anchor from another timeline must not sleep long).
       const runs: Promise<void>[] = [];
       for (const operation of claimed) {
-        if (lastStartAt !== null) {
-          const sinceLast = clock.now().getTime() - lastStartAt;
+        if (lastStartAtMs !== null) {
+          const sinceLast = clock.now().getTime() - lastStartAtMs;
           if (sinceLast < DISCOVERY_TLS_QUEUE.startSpacingMs) {
-            await clock.sleep(DISCOVERY_TLS_QUEUE.startSpacingMs - sinceLast);
+            await clock.sleep(
+              Math.min(DISCOVERY_TLS_QUEUE.startSpacingMs, DISCOVERY_TLS_QUEUE.startSpacingMs - Math.max(0, sinceLast)),
+            );
           }
         }
-        lastStartAt = clock.now().getTime();
+        lastStartAtMs = clock.now().getTime();
         runs.push(executeOperation(operation, clock));
       }
       await Promise.allSettled(runs);
@@ -99,9 +115,30 @@ export function kickDiscoveryTlsQueue(clock?: TlsQueueClock): void {
   void drainDiscoveryTlsQueue(clock).catch(() => {});
 }
 
-/** Execute one claimed operation through the shared TLS entrypoint. */
+/** Execute one claimed operation through the shared TLS entrypoint.
+ *
+ * Every terminal write is LEASE-FENCED with this worker's identity, and the
+ * lease is renewed on an interval while the work runs — an ACME run can
+ * outlive the original lease window, and a lapsed lease would let another
+ * worker reclaim the row mid-execution. A fenced write that returns false
+ * means the operation was reclaimed: this attempt's result is stale and must
+ * not overwrite the new owner's state (the reclaiming worker redoes it).
+ */
 async function executeOperation(operation: DiscoveryTlsOperation, clock: TlsQueueClock): Promise<void> {
   const now = () => clock.now();
+  // Renew the lease at half its window while the work runs; cleared on every
+  // exit path so a short execution never leaves a timer behind.
+  const leaseRenewal = setInterval(() => {
+    void repos.discoveryTlsQueue
+      .renewOperationLease(
+        operation.id,
+        WORKER_ID,
+        new Date(clock.now().getTime() + DISCOVERY_TLS_QUEUE.leaseMs),
+        clock.now(),
+      )
+      .catch(() => {});
+  }, DISCOVERY_TLS_QUEUE.leaseMs / 2);
+  leaseRenewal.unref?.();
   try {
     // Stale-generation check: a policy change supersedes this work outright —
     // it must never issue for the old intent (stop/disable/purge/change
@@ -117,11 +154,12 @@ async function executeOperation(operation: DiscoveryTlsOperation, clock: TlsQueu
         `The domain record for ${operation.hostname} disappeared while this work waited; deferring.`,
         retryAt(operation.attempts, now()),
         now(),
+        WORKER_ID,
       );
       return;
     }
     if (currentGeneration > operation.policyGeneration) {
-      await repos.discoveryTlsQueue.completeOperation(operation.id, "superseded", now());
+      await repos.discoveryTlsQueue.completeOperation(operation.id, "superseded", now(), WORKER_ID);
       return;
     }
 
@@ -137,6 +175,7 @@ async function executeOperation(operation: DiscoveryTlsOperation, clock: TlsQueu
           : `${operation.hostname} requests the shared wildcard certificate ${operation.sourceHostname}; wildcard issuance waits for the shared-certificate dispatch (no exact-host fallback).`,
         retryAt(operation.attempts, now()),
         now(),
+        WORKER_ID,
       );
       return;
     }
@@ -149,13 +188,14 @@ async function executeOperation(operation: DiscoveryTlsOperation, clock: TlsQueu
       serverId: operation.serverId,
     });
     if (result.verified) {
-      await repos.discoveryTlsQueue.completeOperation(operation.id, "issued", now());
+      await repos.discoveryTlsQueue.completeOperation(operation.id, "issued", now(), WORKER_ID);
     } else {
       await repos.discoveryTlsQueue.deferOperation(
         operation.id,
         result.detail ?? "The certificate is not usable yet; the next attempt retries.",
         retryAt(operation.attempts, now()),
         now(),
+        WORKER_ID,
       );
     }
   } catch (error) {
@@ -167,15 +207,20 @@ async function executeOperation(operation: DiscoveryTlsOperation, clock: TlsQueu
         error.message,
         retryAt(operation.attempts, now()),
         now(),
+        WORKER_ID,
       );
       return;
     }
     // Actionable failure: recorded on the row (sanitized), retried with
     // backoff. AppError already carries a safe message; anything else is
-    // reduced to a generic reason — never a provider body or stack.
+    // reduced to a generic reason — never a provider body or stack. A lost
+    // lease (reclaimed meanwhile) discards this attempt's outcome silently:
+    // the new owner redoes the work from a fresh claim.
     const reason =
       error instanceof AppError ? error.message : "Certificate issuance failed; the next attempt retries.";
     reportCaughtError(error, "platform/engine/modules/discovery/discovery-tls-queue");
-    await repos.discoveryTlsQueue.failOperation(operation.id, reason, retryAt(operation.attempts, now()), now());
+    await repos.discoveryTlsQueue.failOperation(operation.id, reason, retryAt(operation.attempts, now()), now(), WORKER_ID);
+  } finally {
+    clearInterval(leaseRenewal);
   }
 }

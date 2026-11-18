@@ -46,6 +46,7 @@ import type { ExecutionContext } from "./context";
 import type { OperationResult } from "./deployments";
 import { runInServerQueue, sweepServerDiscovery } from "./engine/modules/discovery/discovery-sweep";
 import { kickDiscoveryTlsQueue } from "./engine/modules/discovery/discovery-tls-queue";
+import { certComfortablyValid, manageDomainSsl } from "./engine/lib/domain-ssl";
 import {
   retireBindingRoute,
   type DiscoveryEdgeTarget,
@@ -268,23 +269,43 @@ export function createDiscoveryOperations(authorization: Authorization): Platfor
         );
       }
 
-      // Skip: valid INSTALLED material for the DESIRED provider/source. A
-      // valid certificate of an OLD provider during a pending switch is a
-      // fallback, not proof — so Cloudflare/wildcard intent never skips until
-      // its dispatch records the installed provider. Due-renewal scheduling
-      // stays the scheduler's job; near-expiry material still skips.
+      // Skip: valid INSTALLED material for the DESIRED provider/source — proven
+      // in two steps, never trusted from database metadata alone:
+      //  1. Provider/source provenance: the domain's recorded installed provider
+      //     must agree (an old provider's certificate during a pending switch is
+      //     a fallback, not proof); wildcard intent never skips.
+      //  2. The material itself: a read-only verify against the serving Edge —
+      //     sslStatus/expiry columns describe bookkeeping, and a row updated by
+      //     a Cloudflare-era issuance can look healthy while the installed
+      //     certificate is anything but. An unusable or UNPROVABLE state (edge
+      //     unreachable, verify error) queues durable work instead of skipping.
+      // Due-renewal scheduling stays the scheduler's job; due-soon material
+      // still skips (certComfortablyValid uses the same threshold everywhere).
       if (
         source === "exact" &&
         provider === "letsencrypt" &&
+        (policy?.tlsActiveProvider == null || policy.tlsActiveProvider === "letsencrypt") &&
         domainRow.sslStatus === "active" &&
         domainRow.verified &&
         domainRow.sslExpiresAt &&
         domainRow.sslExpiresAt.getTime() > Date.now()
       ) {
-        return {
-          context: ctx,
-          data: { outcome: "skipped", reason: "already_valid", hostname: binding.hostname, source },
-        };
+        try {
+          const installed = await manageDomainSsl(binding.hostname, {
+            action: "verify",
+            allowUnverified: true,
+            serverId,
+          });
+          if (installed.verified && certComfortablyValid(installed)) {
+            return {
+              context: ctx,
+              data: { outcome: "skipped", reason: "already_valid", hostname: binding.hostname, source },
+            };
+          }
+        } catch {
+          // Unprovable (edge unreachable etc.): fall through and queue — the
+          // durable drain re-checks eligibility before any order opens.
+        }
       }
 
       // A stopped/unobservable/suppressed backend defers its durable
