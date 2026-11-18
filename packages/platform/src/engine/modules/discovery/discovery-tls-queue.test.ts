@@ -15,14 +15,41 @@ const queue = vi.hoisted(() => ({
   currentPolicyGeneration: vi.fn(async (_serverId?: string, _hostname?: string): Promise<number | null> => 3),
 }));
 
-vi.mock("@repo/db", () => ({ repos: { discoveryTlsQueue: queue } }));
+const otherRepos = vi.hoisted(() => ({
+  getTlsPolicy: vi.fn(async (): Promise<Record<string, unknown> | undefined> => ({
+    tlsProvider: "cloudflare-origin-ca",
+    tlsCfCredentialId: "cred_cf",
+    tlsCfZoneId: "zone_1",
+    tlsValidityDays: 90,
+    tlsPolicyGeneration: 3,
+  })),
+  credentialFind: vi.fn(async () => ({ id: "cred_cf", provider: "cloudflare" })),
+}));
+
+vi.mock("@repo/db", () => ({
+  repos: {
+    discoveryTlsQueue: queue,
+    domain: { getTlsPolicy: otherRepos.getTlsPolicy },
+    credential: { findById: otherRepos.credentialFind },
+  },
+}));
 
 const manageDomainSsl = vi.fn(async () => ({ verified: true } as { verified: boolean } & Record<string, unknown>));
 
 vi.mock("../../lib/domain-ssl", () => ({
   manageDomainSsl,
+  assertDiscoveryBackendFresh: vi.fn(async () => {}),
+  sslIssueLockKey: vi.fn((hostname: string) => `lock:${hostname}`),
   DiscoveryBackendUnavailableError: class DiscoveryBackendUnavailableError extends AppError {},
 }));
+vi.mock("../../lib/provision-lock", () => ({
+  createProvisionLock: vi.fn((_key: string) => ({ run: (fn: () => Promise<unknown>) => fn() })),
+}));
+vi.mock("../credentials/credential.service", () => ({
+  readCredentialSecrets: vi.fn(() => ({ apiToken: "tok_cf" })),
+}));
+const ensureOriginCaIssued = vi.fn();
+vi.mock("./origin-ca-issuance", () => ({ ensureOriginCaIssued: ensureOriginCaIssued }));
 
 const { drainDiscoveryTlsQueue, resetDiscoveryTlsQueuePacingForTests } = await import("./discovery-tls-queue");
 
@@ -58,6 +85,8 @@ function operation(over: Record<string, unknown> = {}) {
     source: "exact",
     provider: "letsencrypt",
     serverId: "srv_1",
+    domainId: "dom_1",
+    organizationId: "org_1",
     policyGeneration: 3,
     attempts: 1,
     ...over,
@@ -70,6 +99,20 @@ beforeEach(() => {
   queue.currentPolicyGeneration.mockResolvedValue(3);
   queue.claimDueOperations.mockResolvedValue([]);
   manageDomainSsl.mockResolvedValue({ verified: true });
+  otherRepos.getTlsPolicy.mockResolvedValue({
+    tlsProvider: "cloudflare-origin-ca",
+    tlsCfCredentialId: "cred_cf",
+    tlsCfZoneId: "zone_1",
+    tlsValidityDays: 90,
+    tlsPolicyGeneration: 3,
+  });
+  otherRepos.credentialFind.mockResolvedValue({ id: "cred_cf", provider: "cloudflare" });
+  ensureOriginCaIssued.mockResolvedValue({
+    outcome: "issued",
+    certificateId: "ca_1",
+    fingerprint: "ab",
+    expiresAt: new Date("2030-01-01"),
+  });
 });
 
 describe("pacing and claiming", () => {
@@ -184,15 +227,69 @@ describe("execution dispatch", () => {
     expect(queue.completeOperation).toHaveBeenCalledWith(op.id, "superseded", expect.any(Date), expect.any(String));
   });
 
-  it("durably defers Cloudflare intent — no ACME fallback — with the provider's reason", async () => {
+  it("dispatches Cloudflare Origin CA through the resumable issuance — configured policy in, issued out", async () => {
     const { clock } = fakeClock();
     const op = operation({ provider: "cloudflare-origin-ca" });
     queue.claimDueOperations.mockResolvedValueOnce([op]).mockResolvedValue([]);
     await drainDiscoveryTlsQueue(clock);
+    // NO ACME for Origin CA — the dedicated issuance flow ran instead.
     expect(manageDomainSsl).not.toHaveBeenCalled();
+    expect(ensureOriginCaIssued).toHaveBeenCalledWith(
+      expect.objectContaining({
+        domainId: op.domainId,
+        hostname: "app.example.com",
+        zoneId: "zone_1",
+        apiToken: "tok_cf",
+        validityDays: 90,
+      }),
+    );
+    // Issued but NOT installed: visible deferred state, not a false complete.
+    expect(queue.completeOperation).not.toHaveBeenCalled();
     expect(queue.deferOperation).toHaveBeenCalledWith(
       op.id,
-      expect.stringContaining("waits for the provider dispatch"),
+      expect.stringContaining("Edge installation dispatch is the next step"),
+      expect.any(Date),
+      expect.any(Date),
+      expect.any(String),
+    );
+  });
+
+  it("a REUSED healthy Origin CA certificate completes the operation (it is serving)", async () => {
+    const { clock } = fakeClock();
+    ensureOriginCaIssued.mockResolvedValue({ outcome: "reused", fingerprint: "ab", expiresAt: new Date("2030-01-01") });
+    const op = operation({ provider: "cloudflare-origin-ca" });
+    queue.claimDueOperations.mockResolvedValueOnce([op]).mockResolvedValue([]);
+    await drainDiscoveryTlsQueue(clock);
+    expect(queue.completeOperation).toHaveBeenCalledWith(op.id, "reused", expect.any(Date), expect.any(String));
+  });
+
+  it("a Cloudflare policy WITHOUT its configuration defers configuration-required — no issuance", async () => {
+    const { clock } = fakeClock();
+    otherRepos.getTlsPolicy.mockResolvedValue({
+      tlsProvider: "cloudflare-origin-ca", tlsCfCredentialId: null, tlsCfZoneId: null, tlsPolicyGeneration: 3,
+    });
+    const op = operation({ provider: "cloudflare-origin-ca" });
+    queue.claimDueOperations.mockResolvedValueOnce([op]).mockResolvedValue([]);
+    await drainDiscoveryTlsQueue(clock);
+    expect(ensureOriginCaIssued).not.toHaveBeenCalled();
+    expect(queue.deferOperation).toHaveBeenCalledWith(
+      op.id,
+      expect.stringContaining("no Cloudflare credential/zone"),
+      expect.any(Date),
+      expect.any(Date),
+      expect.any(String),
+    );
+  });
+
+  it("an ambiguous Origin CA outcome stays durably deferred with the recovery reason", async () => {
+    const { clock } = fakeClock();
+    ensureOriginCaIssued.mockResolvedValue({ outcome: "unknown", reason: "certificate creation outcome is unknown (recovery attempt 1); no duplicate is created" });
+    const op = operation({ provider: "cloudflare-origin-ca" });
+    queue.claimDueOperations.mockResolvedValueOnce([op]).mockResolvedValue([]);
+    await drainDiscoveryTlsQueue(clock);
+    expect(queue.deferOperation).toHaveBeenCalledWith(
+      op.id,
+      expect.stringContaining("no duplicate is created"),
       expect.any(Date),
       expect.any(Date),
       expect.any(String),
