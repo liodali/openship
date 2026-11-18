@@ -6,7 +6,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * dedup + shared gates apply) instead of calling TLS execution directly.
  */
 const h = vi.hoisted(() => ({
-  ensureOperation: vi.fn(async () => ({ operation: { id: "dtop_renew" }, created: true })),
+  ensureOperation: vi.fn(async (input: { initialReason?: string }) => ({
+    operation: { id: "dtop_renew", state: input.initialReason ? "deferred" : "waiting", reason: input.initialReason ?? null },
+    created: true,
+  })),
   kick: vi.fn(),
   recordSslDeferred: vi.fn(async () => {}),
   updateSsl: vi.fn(async () => {}),
@@ -96,7 +99,34 @@ describe("ssl:renew × durable TLS queue (server domains)", () => {
     expect(h.recordSslDeferred).toHaveBeenCalledWith("dom_srv_renew", "queued for paced TLS issuance");
     expect(h.updateSsl).not.toHaveBeenCalled();
     expect(h.manageDomainSsl).not.toHaveBeenCalled();
-    expect(result.details[0]).toMatchObject({ domain: "app.example.com", status: "renewed" });
+    // ACCEPTED, not completed: "renewed" stays reserved for confirmed work.
+    expect(result.details[0]).toMatchObject({ domain: "app.example.com", status: "queued" });
+    expect(result).toMatchObject({ renewed: 0, queued: 1, failed: 0 });
+  });
+
+  it("P2: a stopped backend reports DEFERRED — never a false 'renewed' success", async () => {
+    h.getBindingForDomain.mockResolvedValue({
+      serviceKey: "id:my-app",
+      observationStatus: "observed",
+      containerRunning: false,
+      tlsDeclaredWildcard: null,
+    });
+    const result = await renewExpiringCerts();
+    expect(result.details[0]).toMatchObject({ domain: "app.example.com", status: "deferred" });
+    expect(result.renewed).toBe(0); // no certificate work confirmed
+    expect(result.queued).toBe(1); // accepted durable work
+    expect(h.manageDomainSsl).not.toHaveBeenCalled();
+  });
+
+  it("a pre-existing DEFERRED operation reports deferred on re-renewal too", async () => {
+    h.ensureOperation.mockResolvedValue({
+      operation: { id: "dtop_renew", state: "deferred", reason: "waiting for a running backend" },
+      created: false,
+    });
+    const result = await renewExpiringCerts();
+    expect(result.details[0]).toMatchObject({ status: "deferred" });
+    expect(result.renewed).toBe(0);
+    expect(result.queued).toBe(1);
   });
 
   it("enqueues a stopped-backend renewal too — the durable operation defers it", async () => {

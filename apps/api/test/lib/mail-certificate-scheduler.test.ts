@@ -274,7 +274,7 @@ describe("shared mail certificate scheduler", () => {
         throw new AppError("Manage expired", 402, "MANAGEMENT_PLAN_REQUIRED");
     });
     expect(await renewExpiringCerts()).toEqual({
-      renewed: 1, failed: 0, total: 1,
+      renewed: 1, queued: 0, failed: 0, total: 1,
       details: [{ domain: "customer.example.test", status: "renewed" }],
     });
     expect(h.manage).toHaveBeenCalledExactlyOnceWith("customer.example.test", {
