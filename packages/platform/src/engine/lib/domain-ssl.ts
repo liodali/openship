@@ -541,6 +541,44 @@ async function assertDiscoveryBackendFresh(
   }
 }
 
+/**
+ * Re-read the CURRENT persisted TLS policy and wildcard intent under the
+ * final issuance lock. The dispatch gate in manageAuthorizedDomainSsl runs on
+ * a domain snapshot loaded BEFORE this hostname queued behind the
+ * per-hostname and per-box ACME locks — a policy can switch to Cloudflare
+ * Origin CA (or declare a wildcard source) while an ACME provision/renew
+ * waits. The guard must hold at the MOMENT the order opens, not at enqueue:
+ * this mirrors assertDiscoveryBackendFresh's under-lock recheck for provider
+ * intent, on both the provision and the renew path. Defers through the same
+ * durable vocabulary — material and retry state retained, nothing counted as
+ * failed, the (future) provider dispatch owns the domain from here.
+ */
+async function assertTlsPolicyStillAcmeEligible(
+  owner: Extract<SslOwner, { kind: "server" }>,
+  domainId: string,
+  hostname: string,
+): Promise<void> {
+  const current = await repos.domain.findById(domainId);
+  // Row gone while this job waited: the order has no owner to serve. The
+  // post-issuance persist would miss too — defer rather than issue into limbo.
+  if (!current) {
+    throw new DiscoveryBackendUnavailableError(
+      `The domain record for ${hostname} disappeared while issuance was queued; the order is deferred.`,
+    );
+  }
+  if (current.tlsProvider === "cloudflare-origin-ca") {
+    throw new DiscoveryBackendUnavailableError(
+      `The TLS policy for ${hostname} switched to Cloudflare Origin CA while this issuance waited; no Let's Encrypt order is opened. The domain waits for its provider dispatch.`,
+    );
+  }
+  const binding = await repos.discovery.getBindingForDomain(owner.serverId, hostname);
+  if (binding?.tlsDeclaredWildcard != null) {
+    throw new DiscoveryBackendUnavailableError(
+      `${hostname} requests the shared wildcard certificate ${binding.tlsDeclaredWildcard} (declared while this issuance waited); an exact-host certificate is never ordered as a fallback.`,
+    );
+  }
+}
+
 /** Release transports and the SSH hold after success, recovery, or failure. */
 async function withSslProvider<T>(
   owner: SslOwner,
@@ -978,6 +1016,29 @@ async function manageAuthorizedDomainSsl(
     return notLocalResult(domainRecord.hostname);
   }
 
+  // Interim managed-provider dispatch gate (docs/cloudflare-origin-ca-discovery-plan.md):
+  // until provider/source dispatch exists, this entrypoint is ACME-only. A
+  // server-scoped discovery domain whose desired provider is Cloudflare Origin
+  // CA — or whose binding declares an explicit wildcard certificate source —
+  // must never open an exact Let's Encrypt order: no ACME fallback for Origin
+  // CA, and no exact-host fallback for a wildcard source. Defer with the
+  // durable discovery-defer vocabulary (certificate material and retry state
+  // retained, the queue rotates, nothing is counted as renewed or failed).
+  // `verify` stays exempt: read-only inspection of installed material.
+  if (opts.action !== "verify" && owner.kind === "server") {
+    if (domainRecord.tlsProvider === "cloudflare-origin-ca") {
+      throw new DiscoveryBackendUnavailableError(
+        `Cloudflare Origin CA issuance for ${domainRecord.hostname} is not dispatched yet; the domain waits for its provider configuration instead of falling back to Let's Encrypt.`,
+      );
+    }
+    const declarationBinding = await repos.discovery.getBindingForDomain(owner.serverId, domainRecord.hostname);
+    if (declarationBinding?.tlsDeclaredWildcard != null) {
+      throw new DiscoveryBackendUnavailableError(
+        `${domainRecord.hostname} requests the shared wildcard certificate ${declarationBinding.tlsDeclaredWildcard}; wildcard source issuance is not dispatched yet, and an exact-host certificate is never ordered as a fallback.`,
+      );
+    }
+  }
+
   // Provision and Verify share the same read-before-issue gate and locks.
   // Stale SSL metadata must not open a new order when a usable cert is already
   // on the serving host, or require DNS credentials merely to rediscover it.
@@ -1024,6 +1085,7 @@ async function manageAuthorizedDomainSsl(
         return createProvisionLock(acmeIssueLockKey(lockScope)).run(async () => {
           if (owner.kind === "server") {
             await assertDiscoveryBackendFresh(owner, domainRecord.hostname);
+            await assertTlsPolicyStillAcmeEligible(owner, domainRecord.id, domainRecord.hostname);
           }
           return executeSslAction(ssl, domainRecord.hostname, opts.action, provOpts);
         });
@@ -1145,6 +1207,7 @@ async function provisionAuthorizedDomainCert(
           return createProvisionLock(acmeIssueLockKey(lockScope)).run(async () => {
             if (owner.kind === "server") {
               await assertDiscoveryBackendFresh(owner, domainRecord.hostname);
+              await assertTlsPolicyStillAcmeEligible(owner, domainRecord.id, domainRecord.hostname);
             }
             return ssl.provisionCert(domainRecord.hostname, {
               onLog: opts.onLog,

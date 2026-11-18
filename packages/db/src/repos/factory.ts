@@ -84,7 +84,14 @@ export {
 } from "./deployment.repo";
 export { createDomainRepo, type Domain, type NewDomain } from "./domain.repo";
 export { createDomainDnsChallengeRepo, type DomainDnsChallenge } from "./domain-dns-challenge.repo";
-export { createDiscoveryRepo, type DiscoverySettings, type DiscoveryBinding, type DiscoveryObservation } from "./discovery.repo";
+export {
+  createDiscoveryRepo,
+  type DiscoverySettings,
+  type DiscoveryBinding,
+  type DiscoveryObservation,
+  type DiscoveryTlsDeclarationIntent,
+  type DiscoveryTlsDeclarationOutcome,
+} from "./discovery.repo";
 export {
   createDnsCredentialRepo,
   type DnsCredential,

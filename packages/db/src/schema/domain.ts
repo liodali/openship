@@ -8,7 +8,7 @@ import {
   uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import type { DiscoveryTlsProvider, DiscoveryTlsProviderSource } from "@repo/core";
+import type { DiscoveryTlsProvider, DiscoveryTlsProviderSource, DiscoveryTlsPolicyOrigin } from "@repo/core";
 import { project } from "./project";
 import { service } from "./service";
 import { webhookSource } from "./webhook-source";
@@ -165,6 +165,17 @@ export const domain = pgTable(
     tlsProvider: text("tls_provider").$type<DiscoveryTlsProvider>(),
     /** Whether the persisted provider came from the server default or an explicit override (UI/audit). */
     tlsProviderSource: text("tls_provider_source").$type<DiscoveryTlsProviderSource>(),
+    /**
+     * DURABLE provenance of the explicit policy: `admin` (API/UI write) or
+     * `declaration` (container label/env write). Null while the policy is
+     * default-resolved (or absent). Recorded by every policy writer — never
+     * inferred from value agreement — so a disagreeing declaration can only
+     * evolve a policy the declaration itself owns; an admin-selected policy
+     * (including admin credential/zone configuration under a declared provider)
+     * conflicts instead of being overwritten. Pre-0234 explicit rows backfill
+     * to `admin`: the policy API was their only writer.
+     */
+    tlsPolicyOrigin: text("tls_policy_origin").$type<DiscoveryTlsPolicyOrigin>(),
     /**
      * The provider whose certificate is actually INSTALLED and managed. Lags
      * tlsProvider while a staged provider switch is pending; null before any

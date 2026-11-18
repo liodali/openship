@@ -30,6 +30,31 @@ export function isDiscoveryTlsProvider(value: unknown): value is DiscoveryTlsPro
 }
 
 /**
+ * Stable error code for a disagreement between a container's TLS declaration
+ * (openship.tls.provider / OPENSHIP_TLS_PROVIDER) and the domain's EXPLICIT
+ * per-domain policy. A conflict never changes working certificate material and
+ * never blocks routing: the declaration is refused until the operator updates
+ * or removes it (or the policy), and periodic scans never undo a UI choice.
+ */
+export const DISCOVERY_TLS_POLICY_CONFLICT = "tls-policy-conflict";
+
+/**
+ * DURABLE provenance of an explicit managed TLS policy — who made the choice
+ * that is currently persisted. Internal persistence vocabulary, not a wire
+ * field: the published `selectionSource` stays `default | explicit`.
+ *  - `admin`: an operator wrote it through the API/UI policy path. Only another
+ *    admin write may change it; a disagreeing container declaration conflicts.
+ *  - `declaration`: a container declaration wrote it. A newer declaration may
+ *    evolve it (labels are an explicit selection path).
+ * Provenance is RECORDED, never inferred from value agreement: an admin
+ * credential/zone configuration under a declared provider still transfers
+ * ownership to the admin, so a later label change cannot silently replace an
+ * admin-selected policy (or clear its credentials).
+ */
+export const DISCOVERY_TLS_POLICY_ORIGINS = ["admin", "declaration"] as const;
+export type DiscoveryTlsPolicyOrigin = (typeof DISCOVERY_TLS_POLICY_ORIGINS)[number];
+
+/**
  * How a domain's persisted provider was chosen:
  *  - `default`: resolved from the server default at enrollment; a later server
  *    default change never rewrites it.

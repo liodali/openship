@@ -136,6 +136,16 @@ export const DiscoveryServiceSchema = Type.Object({
   desiredGeneration: Type.Number(),
   appliedGeneration: Type.Number(),
   updatedAt: nullableString,
+  /**
+   * Container-declared managed TLS intent (docs/cloudflare-origin-ca-discovery-plan.md).
+   * Optional for backward compatibility with existing list consumers; null =
+   * no declaration (the domain's persisted policy / server default applies).
+   */
+  tlsDeclaredProvider: Type.Optional(nullableString),
+  /** Normalized wildcard certificate source pattern requested by the container; null = exact-host intent. */
+  tlsDeclaredWildcard: Type.Optional(nullableString),
+  /** `tls-policy-conflict` detail when the declaration disagrees with the explicit per-domain policy; null = none. Never blocks routing. */
+  tlsPolicyConflict: Type.Optional(nullableString),
   /** The server-scoped domain backing the TLS lifecycle (missing until first apply). */
   tls: Type.Union([
     Type.Object({

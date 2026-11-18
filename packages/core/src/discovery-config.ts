@@ -28,6 +28,8 @@
  */
 
 import { ValidationError } from "./errors";
+import { isDiscoveryTlsProvider, type DiscoveryTlsProvider } from "./discovery-tls";
+import { isMultiPartPublicSuffix } from "./utils";
 
 // ─── Configuration surface ───────────────────────────────────────────────────
 
@@ -38,6 +40,8 @@ export const DISCOVERY_ENV = {
   domain: "OPENSHIP_DOMAIN",
   port: "OPENSHIP_PORT",
   network: "OPENSHIP_NETWORK",
+  tlsProvider: "OPENSHIP_TLS_PROVIDER",
+  tlsWildcard: "OPENSHIP_TLS_WILDCARD",
 } as const;
 
 /** Docker labels equivalent to {@link DISCOVERY_ENV}. Overlapping keys must agree. */
@@ -47,6 +51,8 @@ export const DISCOVERY_LABEL = {
   domain: "openship.domain",
   port: "openship.port",
   network: "openship.network",
+  tlsProvider: "openship.tls.provider",
+  tlsWildcard: "openship.tls.wildcard",
 } as const;
 
 /**
@@ -163,6 +169,22 @@ export interface DiscoveryDeclaration {
   network?: string;
   /** Docker network id, when known. */
   networkId?: string;
+  /**
+   * Managed TLS provider this declaration requests (normalized to one of the
+   * two canonical IDs). Absent = no request: the domain keeps its persisted
+   * policy, or resolves the server default on first enrollment. A declaration
+   * never carries credentials, zones or certificate material.
+   */
+  tlsProvider?: DiscoveryTlsProvider;
+  /**
+   * Normalized shared-wildcard certificate SOURCE pattern (e.g.
+   * `*.sub1.example.com`) — a coverage request, never a wildcard route:
+   * {@link hostname} stays the exact site hostname. Absent = exact-host
+   * certificate intent. Validated to cover `hostname` with exactly one
+   * complete leftmost wildcard label; resolving it to an authorized shared
+   * certificate resource is a later reconciliation step.
+   */
+  tlsWildcard?: string;
 }
 
 /** Why a container is not a discovery candidate, machine-readable for status UI. */
@@ -197,7 +219,10 @@ export type DiscoveryErrorCode =
   | "networks-unknown"
   | "network-missing"
   | "network-unusable"
-  | "network-ambiguous";
+  | "network-ambiguous"
+  | "invalid-tls-provider"
+  | "invalid-tls-wildcard"
+  | "tls-wildcard-coverage";
 
 /** Result of parsing one container: either a declaration or an explained rejection. */
 export type DiscoveryParseResult =
@@ -265,6 +290,27 @@ function parsePort(raw: string): number | string {
   const port = Number(value);
   if (port < 1 || port > 65535) return `must be between 1 and 65535, got ${port}`;
   return port;
+}
+
+/**
+ * Normalize one declared wildcard certificate pattern: trim, lowercase, and
+ * fold ONE trailing DNS root dot (`*.example.com.` is legal DNS spelling).
+ * Returns the normalized form, or null when the SHAPE is invalid: exactly one
+ * complete leftmost wildcard label (`*.`) over a real multi-label public
+ * hostname — the same shape gate as {@link DISCOVERY_ENV.domain}, minus the
+ * wildcard prefix. Partial-label (`*x.`), nested (`*.*.`), non-leftmost
+ * (`a.*.`), single-label (`*.com`) and public-suffix (`*.co.uk`) bases are all
+ * refused; a public suffix is never a registrable certificate base.
+ */
+function normalizeTlsWildcard(raw: string): string | null {
+  const value = raw.trim().toLowerCase().replace(/\.$/, "");
+  if (!value.startsWith("*.")) return null;
+  const base = value.slice(2);
+  if (base.includes("*")) return null;
+  if (value.length > HOSTNAME_MAX_LENGTH) return null;
+  if (!HOSTNAME_PATTERN.test(base)) return null;
+  if (isMultiPartPublicSuffix(base)) return null;
+  return value;
 }
 
 /** Collect one config field from env and labels; disagreement is a conflict. */
@@ -431,6 +477,65 @@ export function parseDiscoveryDeclaration(input: DiscoveryCandidateInput): Disco
     return invalid("invalid-port", `${DISCOVERY_ENV.port} ${port}.`);
   }
 
+  // Managed TLS declarations (docs/cloudflare-origin-ca-discovery-plan.md,
+  // "Discovery TLS labels and wildcard certificate sources"). Both optional:
+  // without them the domain keeps its persisted policy / resolves the server
+  // default. Env and label must AGREE (mergeField — never a precedence game).
+  const tlsProviderField = mergeField(
+    "tlsProvider",
+    envPairs.get(DISCOVERY_ENV.tlsProvider),
+    labels[DISCOVERY_LABEL.tlsProvider],
+  );
+  if (tlsProviderField.error) return { eligible: false, rejection: { kind: "invalid", ...tlsProviderField.error, serviceKey } };
+  let tlsProvider: DiscoveryTlsProvider | undefined;
+  if (tlsProviderField.value != null) {
+    // Case-normalized like hostnames; the canonical IDs remain exactly the two
+    // managed values — `cloudflare` or any other shorthand is NOT accepted.
+    const normalizedProvider = tlsProviderField.value.trim().toLowerCase();
+    if (!isDiscoveryTlsProvider(normalizedProvider)) {
+      return invalid(
+        "invalid-tls-provider",
+        `${DISCOVERY_ENV.tlsProvider}/${DISCOVERY_LABEL.tlsProvider} ${JSON.stringify(tlsProviderField.value)} is not a managed TLS provider. Use "letsencrypt" or "cloudflare-origin-ca".`,
+      );
+    }
+    tlsProvider = normalizedProvider;
+  }
+
+  const tlsWildcardField = mergeField(
+    "tlsWildcard",
+    envPairs.get(DISCOVERY_ENV.tlsWildcard),
+    labels[DISCOVERY_LABEL.tlsWildcard],
+  );
+  if (tlsWildcardField.error) return { eligible: false, rejection: { kind: "invalid", ...tlsWildcardField.error, serviceKey } };
+  let tlsWildcard: string | undefined;
+  if (tlsWildcardField.value != null) {
+    const normalizedWildcard = normalizeTlsWildcard(tlsWildcardField.value);
+    if (!normalizedWildcard) {
+      return invalid(
+        "invalid-tls-wildcard",
+        `${DISCOVERY_ENV.tlsWildcard}/${DISCOVERY_LABEL.tlsWildcard} ${JSON.stringify(tlsWildcardField.value)} is not a valid wildcard pattern. Use one complete leftmost wildcard label over a real hostname, e.g. "*.sub1.example.com".`,
+      );
+    }
+    // Coverage: the pattern names a certificate SOURCE for this exact site —
+    // it must cover the declared hostname with exactly ONE label below the
+    // base. The base itself, deeper names and sibling suffixes are refused.
+    const base = normalizedWildcard.slice(2);
+    const suffix = `.${base}`;
+    if (hostname === base) {
+      return invalid(
+        "tls-wildcard-coverage",
+        `${normalizedWildcard} does not cover its own base ${hostname}. A wildcard certificate serves the base only through a separate exact-host reference; remove ${DISCOVERY_LABEL.tlsWildcard} for this site.`,
+      );
+    }
+    if (!hostname.endsWith(suffix) || hostname.slice(0, -suffix.length).includes(".")) {
+      return invalid(
+        "tls-wildcard-coverage",
+        `${normalizedWildcard} does not cover ${hostname}: a wildcard covers exactly one label below its base (not deeper names or sibling suffixes).`,
+      );
+    }
+    tlsWildcard = normalizedWildcard;
+  }
+
   const declaration = { ...identity, hostname, port };
 
   // Upstream resolution (docs "Upstream resolution and rootless networking"):
@@ -568,6 +673,8 @@ export function parseDiscoveryDeclaration(input: DiscoveryCandidateInput): Disco
       upstreams,
       ...(networkName ? { network: networkName } : {}),
       ...(networkId ? { networkId } : {}),
+      ...(tlsProvider ? { tlsProvider } : {}),
+      ...(tlsWildcard ? { tlsWildcard } : {}),
     },
   };
 }
@@ -595,10 +702,14 @@ export function findDuplicateDiscoveryIdentities(
 // ─── Config hash ─────────────────────────────────────────────────────────────
 
 /**
- * Deterministic change fingerprint of a declaration's desired config (hostname,
- * port, network). The reconciler stores this on the binding: a rescan that hashes
- * the same proves the container config is unchanged, while a different hash says
- * "the operator recreated the container with new config — re-apply desired state".
+ * Deterministic change fingerprint of a declaration's desired ROUTING config
+ * (hostname, port, network). The reconciler stores this on the binding: a rescan
+ * that hashes the same proves the routing config is unchanged, while a different
+ * hash says "the operator recreated the container with new config — re-apply
+ * desired state". TLS declaration intent (tlsProvider/tlsWildcard) is deliberately
+ * NOT hashed here: it is versioned separately on the binding's declaration
+ * columns, so a TLS-only change bumps the desired generation without disturbing
+ * the resolved-upstream retention that keys on this hash.
  * Dependency-free FNV-1a is plenty: this is change detection between two scans of
  * the same identity, not a security primitive.
  */

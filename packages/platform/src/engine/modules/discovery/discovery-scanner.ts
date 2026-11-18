@@ -25,6 +25,7 @@ import {
   discoveryConfigHash,
   parseDiscoveryDeclaration,
   type DiscoveryContainerView,
+  type DiscoveryTlsProvider,
 } from "@repo/core";
 import { repos } from "@repo/db";
 import { safeErrorMessage } from "@repo/core";
@@ -64,6 +65,10 @@ export interface DiscoveryScanSummary {
   withdrawn: string[];
   /** Blocked from reconciliation, with the sanitized reason. */
   blocked: Array<{ serviceKey: string; reason: string }>;
+  /** TLS declarations disagreeing with an EXPLICIT per-domain policy
+   *  (tls-policy-conflict). Visibility only — routes and working certificates
+   *  are untouched; the operator updates/removes the declaration to resolve. */
+  tlsPolicyConflicts: Array<{ serviceKey: string; reason: string }>;
   /** Per-container or whole-scan failures that did NOT mutate state. */
   errors: Array<{ containerId?: string; message: string }>;
   /** False when the scan could not read the host at all (state retained). */
@@ -100,6 +105,7 @@ export async function scanServerDiscovery(
     missing: [],
     withdrawn: [],
     blocked: [],
+    tlsPolicyConflicts: [],
     errors: [],
     ok: false,
   };
@@ -191,6 +197,8 @@ export async function scanServerDiscovery(
       hostIp?: string | null;
       configHash: string;
       running: boolean;
+      tlsProvider?: DiscoveryTlsProvider;
+      tlsWildcard?: string;
     };
     const existing = await repos.discovery.listByServer(serverId);
     const previousByKey = new Map(existing.map((row) => [row.serviceKey, row]));
@@ -245,6 +253,8 @@ export async function scanServerDiscovery(
           : {}),
         configHash: discoveryConfigHash(declaration),
         running: view.running,
+        tlsProvider: declaration.tlsProvider,
+        tlsWildcard: declaration.tlsWildcard,
       };
       const group = candidatesByKey.get(declaration.serviceKey) ?? { running: [], stopped: [] };
       (view.running ? group.running : group.stopped).push(candidate);
@@ -268,6 +278,8 @@ export async function scanServerDiscovery(
       configHash: d.configHash,
       composeProject: d.view.labels["com.docker.compose.project"] ?? null,
       composeService: d.view.labels["com.docker.compose.service"] ?? null,
+      tlsProvider: d.tlsProvider ?? null,
+      tlsWildcard: d.tlsWildcard ?? null,
     });
 
     // Identity conflicts: only LIVE (running) candidates of one key block each
@@ -310,6 +322,22 @@ export async function scanServerDiscovery(
         // start) both require an apply — an applied binding whose container IP
         // changed must re-apply or it keeps routing to the old upstream.
         if (desiredChanged || requeued) summary.desiredChanged.push(binding.serviceKey);
+
+        // Reconcile the TLS declaration intent against the domain's persisted
+        // policy (unique identities only — a duplicate-identity group never
+        // picks one replica's declaration). Ownership is the policy's DURABLE
+        // provenance (admin vs declaration), so this is crash-safe: a restart
+        // between the observation commit and this call resumes identically on
+        // the next pass. A conflict changes nothing but the binding's marker —
+        // routes keep working.
+        const tlsOutcome = await repos.discovery.applyTlsDeclaration(
+          serverId,
+          serviceKey,
+          { provider: d.tlsProvider ?? null, wildcard: d.tlsWildcard ?? null },
+        );
+        if (tlsOutcome.outcome === "conflict") {
+          summary.tlsPolicyConflicts.push({ serviceKey, reason: tlsOutcome.reason });
+        }
 
         const other = await repos.discovery.findConflictingDomainOwner(serverId, d.hostname);
         if (other) {

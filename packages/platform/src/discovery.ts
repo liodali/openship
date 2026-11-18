@@ -98,6 +98,9 @@ export function createDiscoveryOperations(authorization: Authorization): Platfor
       desiredGeneration: row.desiredGeneration,
       appliedGeneration: row.appliedGeneration,
       updatedAt: row.updatedAt ? row.updatedAt.toISOString() : null,
+      tlsDeclaredProvider: row.tlsDeclaredProvider ?? null,
+      tlsDeclaredWildcard: row.tlsDeclaredWildcard ?? null,
+      tlsPolicyConflict: row.tlsPolicyConflict ?? null,
       tls: {
         hostname: domainRow?.hostname ?? row.hostname,
         verified: domainRow?.verified ?? false,

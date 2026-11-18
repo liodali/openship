@@ -116,8 +116,37 @@ export const discoveryBinding = pgTable(
      */
     networkName: text("network_name"),
     networkId: text("network_id"),
-    /** Fingerprint of {hostname, port, network} — see `discoveryConfigHash`. */
+    /** Fingerprint of {hostname, port, network} — see `discoveryConfigHash`.
+     *  Routing-only on purpose: TLS declaration intent is versioned through the
+     *  tls_declared_* columns below, and a TLS-only change bumps the desired
+     *  generation without re-fingerprinting the routing config. */
     configHash: text("config_hash").notNull(),
+
+    // ── Managed TLS declaration intent (docs/cloudflare-origin-ca-discovery-plan.md) ──
+    /**
+     * Provider requested by the container's `openship.tls.provider` label /
+     * `OPENSHIP_TLS_PROVIDER` env, normalized to a canonical managed ID.
+     * NULL = no request: the domain keeps its persisted policy (or resolves the
+     * server default on first enrollment). Removing a declaration never reverts
+     * an already-persisted provider. A declaration never carries credentials.
+     */
+    tlsDeclaredProvider: text("tls_declared_provider").$type<DiscoveryTlsProvider>(),
+    /**
+     * Normalized shared-wildcard certificate SOURCE pattern requested by
+     * `openship.tls.wildcard` / `OPENSHIP_TLS_WILDCARD` (e.g. `*.sub1.example.com`),
+     * validated by the parser to cover the binding's exact hostname. NULL =
+     * exact-host certificate intent. A coverage request, never a wildcard route;
+     * resolution to an authorized shared certificate resource is a later step.
+     */
+    tlsDeclaredWildcard: text("tls_declared_wildcard"),
+    /**
+     * `tls-policy-conflict` detail when the declaration disagrees with the
+     * domain's EXPLICIT per-domain TLS policy; NULL = no conflict. Visibility
+     * only — a TLS conflict never blocks route reconciliation and never changes
+     * working certificate material. Cleared when the declaration is removed or
+     * agrees again (or an explicit policy change resolves it).
+     */
+    tlsPolicyConflict: text("tls_policy_conflict"),
 
     // ── Resolved upstream (persisted separately from authored config) ────
     /** network-ip (bridge direct IP) | published-port (observed host binding). */

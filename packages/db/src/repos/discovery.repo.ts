@@ -1,6 +1,9 @@
 import { and, eq, gt, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import {
+  DISCOVERY_ENV,
+  DISCOVERY_LABEL,
   DISCOVERY_TLS_DEFAULT_PROVIDER,
+  DISCOVERY_TLS_POLICY_CONFLICT,
   ValidationError,
   isDiscoveryTlsProvider,
   type DiscoveryTlsProvider,
@@ -32,7 +35,37 @@ export interface DiscoveryObservation {
   configHash: string;
   composeProject?: string | null;
   composeService?: string | null;
+  /** Normalized TLS provider declaration (openship.tls.provider), when present. */
+  tlsProvider?: DiscoveryTlsProvider | null;
+  /** Normalized wildcard certificate source declaration (openship.tls.wildcard), when present. */
+  tlsWildcard?: string | null;
 }
+
+/**
+ * One binding's persisted TLS declaration intent — the normalized parser output
+ * the reconciler applies to the domain's managed TLS policy. `provider: null`
+ * means the container requests nothing (the persisted policy is authoritative);
+ * `wildcard` is carried for the shared-certificate resolution step and never
+ * changes the provider policy by itself.
+ */
+export interface DiscoveryTlsDeclarationIntent {
+  provider: DiscoveryTlsProvider | null;
+  wildcard: string | null;
+}
+
+/** Outcome of reconciling a declaration against the persisted per-domain policy. */
+export type DiscoveryTlsDeclarationOutcome =
+  /** No provider declared: the persisted policy stays, any stale conflict clears. */
+  | { outcome: "no-declaration" }
+  /** The binding's server-scoped domain row does not exist yet (first apply). */
+  | { outcome: "no-domain" }
+  /** The policy already matches the declaration (idempotent; generation stays). */
+  | { outcome: "agreed" }
+  /** The declaration became the domain's explicit policy; generation bumped. */
+  | { outcome: "applied"; generation: number }
+  /** The declaration disagrees with an EXPLICIT policy the declaration does not
+   *  own: nothing changed except the binding's conflict marker. */
+  | { outcome: "conflict"; reason: string };
 
 type SettingsPatch = Partial<
   Pick<DiscoverySettings, "enabled" | "workspaceId" | "sweepIntervalSeconds">
@@ -172,8 +205,10 @@ export function createDiscoveryRepo(db: Database) {
     /**
      * Upsert one scanned container's observation. Returns the binding row plus
      * two flags the reconciler acts on:
-     *  - `desiredChanged`: the DECLARED config changed (hash differs) — bump
-     *    generation, reset retries, apply from scratch;
+     *  - `desiredChanged`: the DECLARED config changed (routing hash differs,
+     *    or the TLS declaration intent differs) — bump generation, reset
+     *    retries, apply from scratch. TLS-only changes qualify on their own:
+     *    no unrelated IP/port change is required to version them;
      *  - `requeued`: the RUNTIME TARGET changed (container id, IP on the
      *    selected network, or running→stopped/started→running) while config is
      *    unchanged — the route must be re-applied (new upstream, or upstream
@@ -190,6 +225,8 @@ export function createDiscoveryRepo(db: Database) {
           networkName: observation.networkName,
           networkId: observation.networkId ?? null,
           configHash: observation.configHash,
+          tlsDeclaredProvider: observation.tlsProvider ?? null,
+          tlsDeclaredWildcard: observation.tlsWildcard ?? null,
         };
         const [existing] = await tx
           .select()
@@ -220,7 +257,14 @@ export function createDiscoveryRepo(db: Database) {
             .returning();
           return { binding: row!, desiredChanged: true, requeued: false };
         }
-        const desiredChanged = existing.configHash !== observation.configHash;
+        // TLS declaration intent is desired state too: a provider/wildcard
+        // label change versions the binding exactly like a routing change,
+        // without touching the routing-only config hash (which the resolved
+        // upstream retention keys on).
+        const tlsDeclarationChanged =
+          (existing.tlsDeclaredProvider ?? null) !== (observation.tlsProvider ?? null) ||
+          (existing.tlsDeclaredWildcard ?? null) !== (observation.tlsWildcard ?? null);
+        const desiredChanged = existing.configHash !== observation.configHash || tlsDeclarationChanged;
         const requeued =
           !desiredChanged &&
           existing.applyState !== "blocked" &&
@@ -751,6 +795,139 @@ export function createDiscoveryRepo(db: Database) {
           eq(binding.hostname, hostname.toLowerCase()),
           eq(binding.suppressed, false),
         ),
+      });
+    },
+
+    // ── Managed TLS declarations (docs/cloudflare-origin-ca-discovery-plan.md) ──
+
+    /**
+     * Reconcile one binding's persisted TLS declaration intent against its
+     * server-scoped domain's managed TLS policy. ONE transaction, binding row
+     * locked before the domain row (the same order {@link observe} + this method
+     * always use; the UI policy writer locks the domain first and only READS the
+     * binding, so the orders never cross).
+     *
+     * Rules (plan: "Selection and authorization"):
+     *  - No provider declared → the persisted policy is untouched (removing a
+     *    label never reverts an enrolled provider); a stale conflict clears.
+     *  - Policy not explicit (server-default resolved) → the declaration becomes
+     *    the explicit policy, provenance `declaration`. A Cloudflare request
+     *    carries NO credential/zone — the domain waits for admin configuration
+     *    (configuration_required); Let's Encrypt clears Cloudflare references.
+     *  - Explicit policy matching the declaration → agreement, no generation
+     *    bump, provenance unchanged (an admin-owned policy stays admin-owned).
+     *  - Explicit policy differing from the declaration → `tls-policy-conflict`
+     *    UNLESS its durable provenance is `declaration`: then the new declaration
+     *    evolves the policy (labels are an explicit selection path). Ownership is
+     *    RECORDED provenance, never inferred from the previous label value — an
+     *    admin write (even credential/zone configuration under the declared
+     *    provider) makes the policy admin-owned, and a later label change cannot
+     *    replace it or clear its credentials.
+     *
+     * CRASH-SAFE BY CONSTRUCTION: the outcome is a pure function of DURABLE
+     * state (the binding's persisted declaration + the policy's persisted
+     * provenance). No scan-local input (like a pre-observe declaration snapshot)
+     * participates, so a restart between the observation commit and this
+     * reconciliation resumes identically from the next scan or reconcile pass —
+     * an interrupted declaration transition can never strand a false conflict.
+     *
+     * Never touches the ssl_* columns, manualSsl, certificate material, routes, or
+     * tlsActiveProvider — a conflict changes nothing but the visibility marker.
+     */
+    async applyTlsDeclaration(
+      serverId: string,
+      serviceKey: string,
+      declaration: DiscoveryTlsDeclarationIntent,
+    ): Promise<DiscoveryTlsDeclarationOutcome> {
+      return db.transaction(async (tx) => {
+        const [bindingRow] = await tx
+          .select()
+          .from(binding)
+          .where(and(eq(binding.serverId, serverId), eq(binding.serviceKey, serviceKey)))
+          .for("update");
+        if (!bindingRow) return { outcome: "no-domain" };
+
+        const clearConflict = async () => {
+          if (bindingRow.tlsPolicyConflict != null) {
+            await tx
+              .update(binding)
+              .set({ tlsPolicyConflict: null, updatedAt: new Date() })
+              .where(eq(binding.id, bindingRow.id));
+          }
+        };
+
+        if (!declaration.provider) {
+          await clearConflict();
+          return { outcome: "no-declaration" };
+        }
+
+        const [domainRow] = await tx
+          .select()
+          .from(domain)
+          .where(and(eq(domain.serverId, serverId), eq(domain.hostname, bindingRow.hostname)))
+          .for("update");
+        if (!domainRow || domainRow.ownerType !== "server") {
+          // Not enrolled yet (first apply creates the row), or the hostname
+          // belongs to another owner — nothing this declaration may touch.
+          await clearConflict();
+          return { outcome: "no-domain" };
+        }
+
+        if (domainRow.tlsProvider === declaration.provider) {
+          // Agreement. A default-resolved policy the label now confirms becomes
+          // explicit with declaration provenance, WITHOUT a generation bump —
+          // identical intent never invalidates pending work (mirrors
+          // setTlsPolicy's no-op path). An already-explicit policy keeps its
+          // recorded provenance: agreement never transfers ownership.
+          await clearConflict();
+          if (domainRow.tlsProviderSource !== "explicit") {
+            await tx
+              .update(domain)
+              .set({ tlsProviderSource: "explicit", tlsPolicyOrigin: "declaration", updatedAt: new Date() })
+              .where(eq(domain.id, domainRow.id));
+          }
+          return { outcome: "agreed" };
+        }
+
+        // Only a policy the DECLARATION owns may be evolved by a declaration.
+        // Explicit + admin provenance (or legacy explicit rows of unknown
+        // provenance, conservatively admin) conflicts. Default-resolved policies
+        // are not explicit yet and always accept the declaration.
+        const declarationOwned =
+          domainRow.tlsProviderSource === "explicit" && domainRow.tlsPolicyOrigin === "declaration";
+        if (domainRow.tlsProviderSource === "explicit" && !declarationOwned) {
+          const reason =
+            `${DISCOVERY_TLS_POLICY_CONFLICT}: ${DISCOVERY_LABEL.tlsProvider}/${DISCOVERY_ENV.tlsProvider} requests ` +
+            `"${declaration.provider}" but the explicit TLS policy for ${domainRow.hostname} is "${domainRow.tlsProvider}". ` +
+            `Update or remove the container declaration so they agree; the working certificate is unchanged.`;
+          await tx
+            .update(binding)
+            .set({ tlsPolicyConflict: reason.slice(0, 500), updatedAt: new Date() })
+            .where(eq(binding.id, bindingRow.id));
+          return { outcome: "conflict", reason };
+        }
+
+        // Default-resolved policy, or a declaration-owned explicit policy the
+        // new declaration evolves. Declarations never carry credentials/zones:
+        // every Cloudflare reference clears (a fresh Cloudflare request waits
+        // for admin configuration; Let's Encrypt must not keep stale refs).
+        const generation = domainRow.tlsPolicyGeneration + 1;
+        await tx
+          .update(domain)
+          .set({
+            tlsProvider: declaration.provider,
+            tlsProviderSource: "explicit",
+            tlsPolicyOrigin: "declaration",
+            tlsPolicyGeneration: generation,
+            tlsCfCredentialId: null,
+            tlsCfZoneId: null,
+            tlsCfZoneName: null,
+            tlsValidityDays: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(domain.id, domainRow.id));
+        await clearConflict();
+        return { outcome: "applied", generation };
       });
     },
   };

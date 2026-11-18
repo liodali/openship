@@ -36,7 +36,7 @@
  * adapter's own `routing.registerRoute`; no project wrapper is faked (docs:
  * "must not call a wrapper that demands an active deployment").
  */
-import { safeErrorMessage } from "@repo/core";
+import { safeErrorMessage, type DiscoveryTlsProvider } from "@repo/core";
 import { reportCaughtError } from "@repo/core/diagnostics";
 import { repos, type DiscoveryBinding } from "@repo/db";
 import { edgeProxyFor, type RoutingProvider, type Platform, type RuntimeAdapter } from "@repo/adapters";
@@ -179,6 +179,25 @@ export function unavailableRouteFor(hostname: string) {
 }
 
 /**
+ * Apply the binding's persisted TLS declaration intent to its server-scoped
+ * domain's policy, right after the domain row is ensured. Idempotent and
+ * crash-safe: ownership is the policy's DURABLE provenance, not a scan-local
+ * snapshot, so this pass converges to the same outcome as the scanner's
+ * reconciliation — it enrolls fresh rows (default-resolved policy → the
+ * declaration wins), evolves declaration-owned policies, and surfaces a
+ * conflict when an admin-owned policy disagrees. A conflict only records the
+ * binding's marker — the route apply proceeds and working certificate material
+ * is untouched.
+ */
+async function reconcileTlsDeclaration(serverId: string, binding: DiscoveryBinding): Promise<void> {
+  await repos.discovery.applyTlsDeclaration(
+    serverId,
+    binding.serviceKey,
+    { provider: binding.tlsDeclaredProvider ?? null, wildcard: binding.tlsDeclaredWildcard ?? null },
+  );
+}
+
+/**
  * Release or re-pin this binding's host-port claims to exactly `desired`.
  * Runs under the target lock when the Edge context can support it (no target
  * identity or inventory = nothing this owner could have claimed, so it is a
@@ -211,12 +230,22 @@ async function convergeDiscoveryClaims(
  * through the server-domain flow — whose fresh-inspection ACME gate refuses
  * (as a defer, not a failure) if the container stopped in between. ACME success
  * also establishes hostname verification for the server-scoped domain.
+ *
+ * DISPATCH GATE: until provider/source dispatch exists, the shared scheduler is
+ * ACME-only. A desired Cloudflare Origin CA policy or an explicit wildcard
+ * source must NEVER fall through to exact Let's Encrypt issuance (plan: no
+ * ACME fallback for Origin CA, and no exact-host order as a wildcard fallback).
+ * Those requests stay deferred — the persisted policy/declaration is the
+ * durable intent the dispatch step will consume.
  */
 async function scheduleServerDomainCert(
   serverId: string,
   organizationId: string,
   binding: DiscoveryBinding,
+  desiredProvider: DiscoveryTlsProvider | null,
 ): Promise<void> {
+  if (desiredProvider === "cloudflare-origin-ca") return;
+  if (binding.tlsDeclaredWildcard != null) return;
   try {
     await manageDomainSsl(binding.hostname, {
       action: "provision",
@@ -295,6 +324,7 @@ export async function reconcileServerDiscovery(
             hostname: binding.hostname,
             targetPort: binding.port,
           });
+          await reconcileTlsDeclaration(serverId, binding);
           await routing.registerRoute(unavailableRouteFor(binding.hostname));
           const retained = await repos.discovery.markWithdrawn(serverId, binding.serviceKey);
           if (retained) summary.retained.push(binding.serviceKey);
@@ -331,6 +361,7 @@ export async function reconcileServerDiscovery(
               hostname: binding.hostname,
               targetPort: binding.port,
             });
+            await reconcileTlsDeclaration(serverId, binding);
             await routing.registerRoute(unavailableRouteFor(binding.hostname));
             const retained = await repos.discovery.markApplied(serverId, binding.serviceKey, binding.desiredGeneration);
             if (retained) summary.retained.push(binding.serviceKey);
@@ -368,11 +399,16 @@ export async function reconcileServerDiscovery(
         // The server-scoped domain row backs the TLS lifecycle (verification
         // flows, the renewal sweep, the cert scheduling below). Created here,
         // on apply — never by container configuration alone.
-        await repos.domain.ensureServerDomain({
+        const { domain: domainRow } = await repos.domain.ensureServerDomain({
           serverId,
           hostname: binding.hostname,
           targetPort: binding.port,
         });
+        await reconcileTlsDeclaration(serverId, binding);
+        // Read the desired provider AFTER reconciliation: the declaration may
+        // just have changed it, and the cert scheduler gates on the persisted
+        // policy — never on a stale pre-reconciliation snapshot.
+        const tlsPolicy = await repos.domain.getTlsPolicy(domainRow.id);
 
         if (binding.upstreamStrategy === "published-port") {
           // Loopback published route: prove workload ownership through the
@@ -443,8 +479,9 @@ export async function reconcileServerDiscovery(
         else summary.skipped += 1;
         // Immediate certificate reconciliation for the freshly (re-)applied
         // upstream. Deferred inside: the ACME gate re-inspects the container
-        // fresh and defers (never fails the route) when it stopped meanwhile.
-        void scheduleServerDomainCert(serverId, organizationId, binding)
+        // fresh and defers (never fails the route) when it stopped meanwhile;
+        // Cloudflare/wildcard intent defers until provider dispatch exists.
+        void scheduleServerDomainCert(serverId, organizationId, binding, tlsPolicy?.tlsProvider ?? null)
       } catch (error) {
         reportCaughtError(error, "platform/engine/modules/discovery/discovery-reconciler");
         const reason = safeErrorMessage(error);
