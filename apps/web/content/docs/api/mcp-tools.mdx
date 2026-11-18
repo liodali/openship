@@ -5,7 +5,7 @@ description: Generated tool descriptions, API mappings, availability, and intent
 
 This catalog is generated from the route metadata used by MCP discovery. Run `tools/list` against your instance for its current input schemas and the tools available to your credential. See [MCP setup](/docs/mcp), [protocol and arguments](/docs/api/mcp), and the [cluster/scaling workflow](/docs/guides/mcp-clusters-and-scaling).
 
-The current API has **576 unique tools**. Permission tags below describe the route's initial authority; shared operations also enforce workspace, resource, source-access and instance-admin requirements. Self-hosted tools are unavailable on the hosted Cloud controller.
+The current API has **577 unique tools**. Permission tags below describe the route's initial authority; shared operations also enforce workspace, resource, source-access and instance-admin requirements. Self-hosted tools are unavailable on the hosted Cloud controller.
 
 ## Tools
 
@@ -234,6 +234,7 @@ The current API has **576 unique tools**. Permission tags below describe the rou
 | `get_discovery_servers_by_id_discovery_services_by_serviceKey`<br />`GET /api/discovery/servers/:id/discovery/services/:serviceKey` | Read ONE discovered service by its stable identity (e.g. "id:my-app"), with its route state and TLS status — a constant-size read instead of the full server status. The service key travels URL-encoded as one path segment, including its colon and slash characters. | `server:read` |
 | `post_discovery_servers_by_id_discovery_rescan`<br />`POST /api/discovery/servers/:id/discovery/rescan` | Run a fresh discovery scan, route reconciliation, and route repair for this server right now, through the serialized per-server sweep queue. | `server:write` |
 | `post_discovery_servers_by_id_discovery_services_by_serviceKey_su`<br />`POST /api/discovery/servers/:id/discovery/services/:serviceKey/suppress` | Opt a discovered service out: it stays visible, its live route is removed outright, and no route is reconciled until re-accepted. Certificate material is retained. | `server:write` |
+| `post_discovery_servers_by_id_discovery_services_by_serviceKey_tl`<br />`POST /api/discovery/servers/:id/discovery/services/:serviceKey/tls/ensure` | Idempotently request TLS work for ONE discovered service: skips when valid material for the desired provider is already installed, otherwise persists a durable paced issuance operation and returns its stable operation id (queued/already_queued) or a deferred state with the reason. Never waits for issuance and never bypasses preflight. | `server:write` |
 | `post_discovery_servers_by_id_discovery_services_by_serviceKey_un`<br />`POST /api/discovery/servers/:id/discovery/services/:serviceKey/unsuppress` | Re-accept a suppressed discovered service; the next scan re-applies its route. | `server:write` |
 | `put_discovery_servers_by_id_discovery`<br />`PUT /api/discovery/servers/:id/discovery` | Enable or disable server discovery. Disable schedules retirement of every applied route (they are removed, certificates retained) and expires the event watchers. | `server:admin` |
 
