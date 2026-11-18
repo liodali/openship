@@ -33,12 +33,16 @@ import {
   DiscoveryRescanSchema,
   DiscoveryServiceActionInputSchema,
   DiscoveryTlsEnsureInputSchema,
+  DiscoveryTlsSettingsInputSchema,
+  DiscoveryDomainTlsPolicyInputSchema,
   NotFoundError,
   parseInput,
+  type DiscoveryDomainTlsPolicy,
   type DiscoveryRescan,
   type DiscoveryService,
   type DiscoveryStatus,
   type DiscoveryTlsEnsureResponse,
+  type DiscoveryTlsSettings,
 } from "@repo/contracts";
 import { repos, type DiscoveryBinding, type DiscoveryTlsOperation } from "@repo/db";
 import type { Authorization } from "./authorization";
@@ -46,7 +50,9 @@ import type { ExecutionContext } from "./context";
 import type { OperationResult } from "./deployments";
 import { runInServerQueue, sweepServerDiscovery } from "./engine/modules/discovery/discovery-sweep";
 import { kickDiscoveryTlsQueue } from "./engine/modules/discovery/discovery-tls-queue";
+import { preflightCloudflareOriginCa } from "./engine/modules/discovery/tls-preflight";
 import { certComfortablyValid, manageDomainSsl } from "./engine/lib/domain-ssl";
+import { readCredentialSecrets } from "./engine/modules/credentials/credential.service";
 import {
   retireBindingRoute,
   type DiscoveryEdgeTarget,
@@ -58,6 +64,10 @@ export interface PlatformDiscoveryOperations {
   getService(ctx: ExecutionContext, serverId: string, input: unknown): Promise<OperationResult<DiscoveryService>>;
   rescan(ctx: ExecutionContext, serverId: string): Promise<OperationResult<DiscoveryRescan>>;
   ensureServiceTls(ctx: ExecutionContext, serverId: string, input: unknown): Promise<OperationResult<DiscoveryTlsEnsureResponse>>;
+  getServerTlsSettings(ctx: ExecutionContext, serverId: string): Promise<OperationResult<DiscoveryTlsSettings>>;
+  configureServerTls(ctx: ExecutionContext, serverId: string, input: unknown): Promise<OperationResult<DiscoveryTlsSettings>>;
+  getServiceTls(ctx: ExecutionContext, serverId: string, input: unknown): Promise<OperationResult<DiscoveryDomainTlsPolicy>>;
+  setServiceTls(ctx: ExecutionContext, serverId: string, input: unknown): Promise<OperationResult<DiscoveryDomainTlsPolicy>>;
   suppress(ctx: ExecutionContext, serverId: string, input: unknown): Promise<OperationResult<DiscoveryService>>;
   unsuppress(ctx: ExecutionContext, serverId: string, input: unknown): Promise<OperationResult<DiscoveryService>>;
   forget(ctx: ExecutionContext, serverId: string, input: unknown): Promise<OperationResult<{ forgotten: boolean }>>;
@@ -154,6 +164,54 @@ export function createDiscoveryOperations(authorization: Authorization): Platfor
       services: bindings.map((row) =>
         toService(row, domains.get(row.hostname.toLowerCase()), tlsOperations.get(row.hostname.toLowerCase()) ?? null),
       ),
+    };
+  }
+
+  /**
+   * Build the published per-domain policy view. State derives from durable
+   * facts only — desired vs installed provider, recorded material state —
+   * never from guesses about what a provider "probably" did.
+   */
+  function tlsPolicyView(
+    hostname: string,
+    policy: {
+      tlsProvider: DiscoveryDomainTlsPolicy["provider"] | null;
+      tlsProviderSource: DiscoveryDomainTlsPolicy["selectionSource"] | null;
+      tlsActiveProvider: DiscoveryDomainTlsPolicy["activeProvider"] | null;
+      tlsPolicyGeneration?: number;
+      tlsCfCredentialId: string | null;
+      tlsCfZoneId: string | null;
+      tlsCfZoneName: string | null;
+      tlsValidityDays: number | null;
+    } | null,
+    material: { sslStatus: string | null } | null,
+  ): DiscoveryDomainTlsPolicy {
+    const provider = policy?.tlsProvider ?? DISCOVERY_TLS_DEFAULT_PROVIDER;
+    const cloudflare =
+      provider === "cloudflare-origin-ca" && policy?.tlsCfCredentialId && policy?.tlsCfZoneId
+        ? {
+            credentialId: policy.tlsCfCredentialId,
+            zoneId: policy.tlsCfZoneId,
+            zoneName: policy.tlsCfZoneName ?? null,
+            validityDays: policy.tlsValidityDays ?? null,
+          }
+        : null;
+    const state: DiscoveryDomainTlsPolicy["state"] =
+      provider === "cloudflare-origin-ca" && !cloudflare
+        ? "configuration_required"
+        : policy?.tlsActiveProvider === provider && material?.sslStatus === "active"
+          ? "active"
+          : material?.sslStatus === "error"
+            ? "error"
+            : "pending";
+    return {
+      hostname,
+      provider,
+      activeProvider: policy?.tlsActiveProvider ?? null,
+      selectionSource: policy?.tlsProviderSource ?? "default",
+      state,
+      cloudflare,
+      error: material?.sslStatus === "error" ? "The last certificate attempt failed; see the service's TLS status." : null,
     };
   }
 
@@ -344,6 +402,148 @@ export function createDiscoveryOperations(authorization: Authorization): Platfor
               ? { outcome: "deferred", hostname: binding.hostname, operationId: operation.id, reason: operation.reason ?? "waiting for a runnable backend" }
               : { outcome: "already_queued", hostname: binding.hostname, operationId: operation.id };
       return { context: ctx, data };
+    },
+
+    /** The server's managed TLS default (new enrollments only). Read-only. */
+    async getServerTlsSettings(ctx, serverId): Promise<OperationResult<DiscoveryTlsSettings>> {
+      await authorizeServer(ctx, serverId, "read");
+      return { context: ctx, data: await repos.discovery.getTlsSettings(serverId) };
+    },
+
+    /**
+     * Set the server's managed TLS default for NEWLY enrolled domains only.
+     * Changing it never switches an existing domain's persisted provider, and
+     * no Cloudflare credential or zone is stored at server scope — per-domain
+     * configuration is the only path to Cloudflare authority (plan §5).
+     */
+    async configureServerTls(ctx, serverId, input): Promise<OperationResult<DiscoveryTlsSettings>> {
+      await authorizeServer(ctx, serverId, "admin");
+      const { defaultProvider } = parseInput(DiscoveryTlsSettingsInputSchema, input ?? {});
+      return { context: ctx, data: await repos.discovery.configureTls(serverId, defaultProvider) };
+    },
+
+    /** Read ONE discovered service's managed TLS policy (non-secret view). */
+    async getServiceTls(ctx, serverId, input): Promise<OperationResult<DiscoveryDomainTlsPolicy>> {
+      await authorizeServer(ctx, serverId, "read");
+      const { serviceKey } = parseInput(DiscoveryServiceActionInputSchema, input ?? {});
+      const binding = await requireBinding(serverId, serviceKey);
+      const domainRow = await repos.discovery.findDomainForBinding(serverId, binding.hostname);
+      // GET creates nothing: a not-yet-enrolled binding shows the resolved
+      // server default with no Cloudflare configuration (plan §5).
+      if (!domainRow) {
+        const settings = await repos.discovery.getTlsSettings(serverId);
+        return {
+          context: ctx,
+          data: {
+            hostname: binding.hostname,
+            provider: settings.defaultProvider,
+            activeProvider: null,
+            selectionSource: "default",
+            state: "pending",
+            cloudflare: null,
+            error: null,
+          },
+        };
+      }
+      const policy = await repos.domain.getTlsPolicy(domainRow.id);
+      return { context: ctx, data: tlsPolicyView(binding.hostname, policy, { sslStatus: domainRow.sslStatus }) };
+    },
+
+    /**
+     * Set ONE discovered service's managed TLS policy (plan §5). Whole flow
+     * inside the server queue: enroll the eligible domain metadata (no route
+     * activation, no issuance), then for Cloudflare selections run the
+     * READ-ONLY preflight (zone membership, proxied DNS, Full (strict), rule
+     * overrides) BEFORE any policy write — an invalid preflight leaves the
+     * previous desired/active policy AND the working certificate intact.
+     * Credential use is authorized by construction: org-scoped lookup for the
+     * authorized context plus Cloudflare provider check, and setTlsPolicy
+     * re-verifies same-organization ownership under its write lock.
+     */
+    async setServiceTls(ctx, serverId, input): Promise<OperationResult<DiscoveryDomainTlsPolicy>> {
+      await authorizeServer(ctx, serverId, "admin");
+      // The policy schema is STRICT (additionalProperties: false) and so is the
+      // service-key schema: parse the body WITHOUT the routing-only serviceKey
+      // field, and the key from its own field alone.
+      const { serviceKey, ...policyBody } = (input ?? {}) as Record<string, unknown>;
+      const policyInput = parseInput(DiscoveryDomainTlsPolicyInputSchema, policyBody);
+      const key = parseInput(DiscoveryServiceActionInputSchema, { serviceKey }).serviceKey;
+      const selection =
+        policyInput.provider === "cloudflare-origin-ca"
+          ? ({
+              provider: "cloudflare-origin-ca" as const,
+              credentialId: policyInput.cloudflare.credentialId,
+              zoneId: policyInput.cloudflare.zoneId,
+              zoneName: policyInput.cloudflare.zoneName,
+              validityDays: policyInput.cloudflare.validityDays,
+            })
+          : { provider: "letsencrypt" as const };
+      const binding = await requireBinding(serverId, key);
+
+      await runInServerQueue(serverId, async () => {
+        // Eligible server-owned metadata only — never a route, never issuance.
+        const { domain: domainRow } = await repos.domain.ensureServerDomain({
+          serverId,
+          hostname: binding.hostname,
+          targetPort: binding.port,
+        });
+        const current = await repos.domain.getTlsPolicy(domainRow.id);
+
+        // Identical re-submission short-circuits BEFORE Cloudflare I/O: a
+        // repeated PUT is a no-op (plan §5), not an API-traffic generator.
+        const identical =
+          selection.provider === current?.tlsProvider &&
+          (selection.provider !== "cloudflare-origin-ca" ||
+            (selection.credentialId === current?.tlsCfCredentialId &&
+              selection.zoneId === current?.tlsCfZoneId &&
+              (selection.validityDays ?? null) === (current?.tlsValidityDays ?? null)));
+        if (identical && current?.tlsProviderSource === "explicit" && current?.tlsPolicyOrigin === "admin") {
+          return;
+        }
+
+        // Cloudflare preflight with the credential's decrypted token. Lookup is
+        // organization-scoped (another org's credential id is simply not found),
+        // provider-checked, and setTlsPolicy re-verifies ownership under the
+        // write lock. Failures throw BEFORE the write: previous desired/active
+        // policy and the working certificate stay intact (plan §5).
+        if (selection.provider === "cloudflare-origin-ca") {
+          const credential = await repos.credential.findById(ctx.organizationId, selection.credentialId);
+          if (!credential) throw new NotFoundError("Credential", selection.credentialId);
+          if (credential.provider !== "cloudflare")
+            throw new AppError(
+              `Credential ${selection.credentialId} is a ${credential.provider} credential; Cloudflare Origin CA requires a cloudflare credential.`,
+              400,
+              "TLS_CREDENTIAL_PROVIDER_INVALID",
+            );
+          const apiToken = readCredentialSecrets(credential).apiToken;
+          if (!apiToken)
+            throw new AppError(
+              `Credential ${selection.credentialId} has no stored API token; re-enter it through the credentials flow.`,
+              409,
+              "TLS_CREDENTIAL_TOKEN_MISSING",
+            );
+          const verified = await preflightCloudflareOriginCa({
+            apiToken,
+            zoneId: selection.zoneId,
+            hostname: binding.hostname,
+          });
+          selection.zoneName = verified.zoneName; // verified through Cloudflare, never trusted from input
+        }
+
+        await repos.domain.setTlsPolicy({
+          domainId: domainRow.id,
+          policy: selection,
+          expectedGeneration: current?.tlsPolicyGeneration,
+        });
+      });
+
+      // Re-read post-write for the response view.
+      const domainRow = await repos.discovery.findDomainForBinding(serverId, binding.hostname);
+      const policy = domainRow ? await repos.domain.getTlsPolicy(domainRow.id) : null;
+      return {
+        context: ctx,
+        data: tlsPolicyView(binding.hostname, policy, domainRow ? { sslStatus: domainRow.sslStatus } : null),
+      };
     },
 
     async suppress(ctx, serverId, input): Promise<OperationResult<DiscoveryService>> {

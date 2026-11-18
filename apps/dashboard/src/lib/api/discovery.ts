@@ -84,6 +84,33 @@ export const discoveryApi = {
       {},
       { timeout: 30_000, dedupe: false },
     ),
+  /** Server managed TLS defaults (new enrollments only). */
+  tlsSettings: (serverId: string, opts?: { signal?: AbortSignal }) =>
+    api.get<import("@repo/contracts").DiscoveryTlsSettings>(
+      `discovery/servers/${encodeURIComponent(serverId)}/discovery/tls`,
+      opts,
+    ),
+  configureTlsSettings: (serverId: string, input: import("@repo/contracts").DiscoveryTlsSettingsInput) =>
+    api.put<import("@repo/contracts").DiscoveryTlsSettings>(
+      `discovery/servers/${encodeURIComponent(serverId)}/discovery/tls`,
+      input,
+    ),
+  /** Per-domain managed TLS policy (non-secret view) and its configuration. */
+  serviceTls: (serverId: string, serviceKey: string, opts?: { signal?: AbortSignal }) =>
+    api.get<import("@repo/contracts").DiscoveryDomainTlsPolicy>(
+      `discovery/servers/${encodeURIComponent(serverId)}/discovery/services/${encodeURIComponent(serviceKey)}/tls`,
+      opts,
+    ),
+  configureServiceTls: (
+    serverId: string,
+    serviceKey: string,
+    input: import("@repo/contracts").DiscoveryDomainTlsPolicyInput,
+  ) =>
+    api.put<import("@repo/contracts").DiscoveryDomainTlsPolicy>(
+      `discovery/servers/${encodeURIComponent(serverId)}/discovery/services/${encodeURIComponent(serviceKey)}/tls`,
+      input,
+      { timeout: 30_000, dedupe: false },
+    ),
 };
 
 export type { DiscoveryConfigureInput, DiscoveryRescan, DiscoveryService, DiscoveryStatus };

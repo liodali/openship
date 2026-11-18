@@ -39,6 +39,32 @@ export async function ensureDiscoveryServiceTls(c: Context) {
   return c.json(data, data.outcome === "skipped" ? 200 : 202);
 }
 
+/** Server managed TLS defaults (the default provider for NEW enrollments). */
+export async function getServerTlsSettings(c: Context) {
+  return c.json(await operationData(c, operations().getServerTlsSettings(operationContext(c), param(c, "id"))));
+}
+
+export async function configureServerTls(c: Context) {
+  return c.json(await operationData(c, operations().configureServerTls(operationContext(c), param(c, "id"), await c.req.json())));
+}
+
+/** Per-domain managed TLS policy (the service key arrives URL-encoded). */
+export async function getServiceTls(c: Context) {
+  return c.json(await operationData(c, operations().getServiceTls(operationContext(c), param(c, "id"), { serviceKey: param(c, "serviceKey") })));
+}
+
+export async function setServiceTls(c: Context) {
+  return c.json(
+    await operationData(
+      c,
+      operations().setServiceTls(operationContext(c), param(c, "id"), {
+        serviceKey: param(c, "serviceKey"),
+        ...(await c.req.json()),
+      }),
+    ),
+  );
+}
+
 /** The service key arrives URL-encoded in the path (`id:my-app`). */
 export async function suppressDiscoveryService(c: Context) {
   return c.json(await operationData(c, operations().suppress(operationContext(c), param(c, "id"), { serviceKey: param(c, "serviceKey") })));

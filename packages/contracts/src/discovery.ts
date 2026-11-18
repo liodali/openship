@@ -76,6 +76,44 @@ export const DiscoveryTlsProviderSourceSchema = Type.Union([
 ]);
 export type DiscoveryTlsProviderSource = Static<typeof DiscoveryTlsProviderSourceSchema>;
 
+/** The domain's Cloudflare Origin CA configuration as STORED (non-secret). */
+export const DiscoveryDomainTlsCloudflareViewSchema = Type.Object({
+  credentialId: Type.String(),
+  zoneId: Type.String(),
+  /** Recorded only after verification through Cloudflare (never a submitted name). */
+  zoneName: nullableString,
+  validityDays: Type.Union([Type.Number(), Type.Null()]),
+});
+export type DiscoveryDomainTlsCloudflareView = Static<typeof DiscoveryDomainTlsCloudflareViewSchema>;
+
+/**
+ * The per-domain managed TLS policy view (GET .../services/:serviceKey/tls).
+ * `provider` is DESIRED policy; `activeProvider` describes installed managed
+ * TLS and may be null before installation. `state` is derived policy progress:
+ *  - configuration_required: Cloudflare desired without this domain's
+ *    credential/zone — no issuance, no implicit fallback.
+ *  - pending: policy set, managed installation not confirmed.
+ *  - active: the desired provider's certificate is installed and serving.
+ *  - error: the last certificate attempt failed.
+ * These states do NOT redefine the established domain sslStatus values; the
+ * ssl_* fields keep describing certificate material.
+ */
+export const DiscoveryDomainTlsPolicySchema = Type.Object({
+  hostname: Type.String(),
+  provider: DiscoveryTlsProviderSchema,
+  activeProvider: Type.Union([DiscoveryTlsProviderSchema, Type.Null()]),
+  selectionSource: DiscoveryTlsProviderSourceSchema,
+  state: Type.Union([
+    Type.Literal("configuration_required"),
+    Type.Literal("pending"),
+    Type.Literal("active"),
+    Type.Literal("error"),
+  ]),
+  cloudflare: Type.Union([DiscoveryDomainTlsCloudflareViewSchema, Type.Null()]),
+  error: nullableString,
+});
+export type DiscoveryDomainTlsPolicy = Static<typeof DiscoveryDomainTlsPolicySchema>;
+
 /** The initial server default, as a schema (for tests and generated clients). */
 export const DISCOVERY_TLS_DEFAULT_PROVIDER_SCHEMA = Type.Literal(DISCOVERY_TLS_DEFAULT_PROVIDER);
 
