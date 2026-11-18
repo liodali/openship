@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { AppError } from "@repo/core";
 
 // ── Mocks (top-level handles) ────────────────────────────────────────────────
 
@@ -22,6 +23,8 @@ const state = {
   domainSsl: undefined as { sslStatus: string; verified: boolean; sslExpiresAt: Date | null } | undefined,
   /** Persisted per-domain TLS policy for getTlsPolicy (undefined = default). */
   domainPolicy: undefined as Record<string, unknown> | undefined,
+  /** Server TLS default provider (configureServerTls path). */
+  serverTlsDefault: undefined as string | undefined,
 };
 
 /** The one domain fixture every lookup path shares — batch and single alike. */
@@ -35,6 +38,11 @@ const DOMAIN_ROW = {
 
 const discoveryRepo = {
   getSettings: vi.fn(async () => state.settings),
+  getTlsSettings: vi.fn(async () => ({ defaultProvider: state.serverTlsDefault ?? "letsencrypt" })),
+  configureTls: vi.fn(async (_serverId: string, defaultProvider: string) => {
+    state.serverTlsDefault = defaultProvider;
+    return { defaultProvider };
+  }),
   configure: vi.fn(async (_serverId: string, patch: { enabled: boolean }) => {
     state.configured.push(patch);
     state.settings = { ...state.settings, enabled: patch.enabled };
@@ -122,6 +130,7 @@ const domainRepo = {
     serverId: "srv_1",
     tlsProvider: state.domainPolicy?.tlsProvider ?? "letsencrypt",
     tlsProviderSource: state.domainPolicy?.tlsProviderSource ?? "default",
+    tlsPolicyOrigin: state.domainPolicy?.tlsPolicyOrigin ?? null,
     tlsActiveProvider: state.domainPolicy?.tlsActiveProvider ?? null,
     tlsPolicyGeneration: state.domainPolicy?.tlsPolicyGeneration ?? 1,
     tlsCfCredentialId: state.domainPolicy?.tlsCfCredentialId ?? null,
@@ -129,14 +138,49 @@ const domainRepo = {
     tlsCfZoneName: state.domainPolicy?.tlsCfZoneName ?? null,
     tlsValidityDays: state.domainPolicy?.tlsValidityDays ?? null,
   })),
+  setTlsPolicy: vi.fn(async (input: {
+    domainId: string;
+    policy: { provider: string; credentialId?: string; zoneId?: string; zoneName?: string; validityDays?: number };
+  }) => {
+    state.domainPolicy = {
+      tlsProvider: input.policy.provider,
+      tlsProviderSource: "explicit",
+      tlsPolicyOrigin: "admin",
+      tlsPolicyGeneration: ((state.domainPolicy?.tlsPolicyGeneration as number | undefined) ?? 1) + 1,
+      tlsCfCredentialId: input.policy.provider === "cloudflare-origin-ca" ? input.policy.credentialId ?? null : null,
+      tlsCfZoneId: input.policy.provider === "cloudflare-origin-ca" ? input.policy.zoneId ?? null : null,
+      tlsCfZoneName: input.policy.provider === "cloudflare-origin-ca" ? input.policy.zoneName ?? null : null,
+      tlsValidityDays: input.policy.provider === "cloudflare-origin-ca" ? input.policy.validityDays ?? null : null,
+    };
+    return { id: input.domainId, hostname: "app.example.com", sslStatus: "none", ...state.domainPolicy };
+  }),
 };
 
 vi.mock("@repo/db", () => ({
-  repos: { discovery: discoveryRepo, discoveryTlsQueue: tlsQueueRepo, domain: domainRepo },
+  repos: { discovery: discoveryRepo, discoveryTlsQueue: tlsQueueRepo, domain: domainRepo, credential: credentialRepo },
 }));
+
+/** Org-scoped credential lookups (the CF policy path's token source). */
+const credentialRepo = {
+  findById: vi.fn(async (_orgId: string, id: string) =>
+    id === "cred_cf"
+      ? { id: "cred_cf", organizationId: "org_1", provider: "cloudflare", name: "zone token", secretsEnc: "enc1:x" }
+      : id === "cred_registry"
+        ? { id: "cred_registry", organizationId: "org_1", provider: "docker-registry", name: "ghcr", secretsEnc: "enc1:x" }
+        : undefined,
+  ),
+};
 
 const kick = vi.fn();
 vi.mock("./engine/modules/discovery/discovery-tls-queue", () => ({ kickDiscoveryTlsQueue: kick }));
+
+/** The Cloudflare preflight: READ-ONLY checks before any policy write. */
+const preflight = vi.fn(async () => ({ zoneName: "example.com" }));
+vi.mock("./engine/modules/discovery/tls-preflight", () => ({ preflightCloudflareOriginCa: preflight }));
+
+/** Credential decryption (never exercised directly in unit tests). */
+const readSecrets = vi.fn(() => ({ apiToken: "tok_test" }));
+vi.mock("./engine/modules/credentials/credential.service", () => ({ readCredentialSecrets: readSecrets }));
 
 /** The shared TLS entrypoint: the skip path validates INSTALLED material
  *  through a read-only verify (never trusting database bookkeeping alone). */
@@ -213,6 +257,7 @@ beforeEach(() => {
   state.tlsOperations = new Map();
   state.domainSsl = undefined;
   state.domainPolicy = undefined;
+  state.serverTlsDefault = undefined;
   queueTasks.length = 0;
   deferQueue = false;
 });
@@ -507,5 +552,146 @@ describe("createDiscoveryOperations", () => {
     const list = await ops.status(ctx, "srv_1");
     expect(single.data.tlsOperation).toMatchObject({ state: "waiting", source: "exact", provider: "letsencrypt", attempts: 0 });
     expect(list.data.services[0].tlsOperation?.operationId).toBe(single.data.tlsOperation?.operationId);
+  });
+
+  describe("TLS configuration APIs (plan §5)", () => {
+    it("server settings: read for readers, admin-only write, unknown providers are validation errors", async () => {
+      const ops = createDiscoveryOperations({ authorize } as never);
+      const got = await ops.getServerTlsSettings(ctx, "srv_1");
+      expect(authorize).toHaveBeenCalledWith(ctx, { resourceType: "server", resourceId: "srv_1", action: "read" });
+      expect(got.data).toEqual({ defaultProvider: "letsencrypt" });
+      authorize.mockClear();
+      const put = await ops.configureServerTls(ctx, "srv_1", { defaultProvider: "cloudflare-origin-ca" });
+      expect(authorize).toHaveBeenCalledWith(ctx, { resourceType: "server", resourceId: "srv_1", action: "admin" });
+      expect(put.data).toEqual({ defaultProvider: "cloudflare-origin-ca" });
+      await expect(ops.configureServerTls(ctx, "srv_1", { defaultProvider: "zero_ssl" })).rejects.toBeDefined();
+      await expect(ops.configureServerTls(ctx, "srv_1", { defaultProvider: "letsencrypt", extra: true })).rejects.toBeDefined();
+    });
+
+    it("per-domain GET: no domain row resolves the server default without creating anything", async () => {
+      const ops = createDiscoveryOperations({ authorize } as never);
+      state.domains.clear(); // binding not enrolled yet
+      const { data } = await ops.getServiceTls(ctx, "srv_1", { serviceKey: "id:my-app" });
+      expect(data).toEqual({
+        hostname: "app.example.com",
+        provider: "letsencrypt",
+        activeProvider: null,
+        selectionSource: "default",
+        state: "pending",
+        cloudflare: null,
+        error: null,
+      });
+    });
+
+    it("per-domain GET: Cloudflare desired without credential/zone is configuration_required; LE has no cloudflare block", async () => {
+      const ops = createDiscoveryOperations({ authorize } as never);
+      state.domainPolicy = { tlsProvider: "cloudflare-origin-ca", tlsCfCredentialId: null, tlsCfZoneId: null };
+      const missing = await ops.getServiceTls(ctx, "srv_1", { serviceKey: "id:my-app" });
+      expect(missing.data.state).toBe("configuration_required");
+      expect(missing.data.cloudflare).toBeNull();
+      state.domainPolicy = { tlsProvider: "letsencrypt" };
+      const le = await ops.getServiceTls(ctx, "srv_1", { serviceKey: "id:my-app" });
+      expect(le.data).toMatchObject({ provider: "letsencrypt", state: "pending", cloudflare: null });
+    });
+
+    it("per-domain GET: an installed matching provider with active material is ACTIVE", async () => {
+      const ops = createDiscoveryOperations({ authorize } as never);
+      state.domainPolicy = { tlsProvider: "letsencrypt", tlsActiveProvider: "letsencrypt" };
+      state.domains.set("app.example.com", { ...DOMAIN_ROW, sslStatus: "active" });
+      const { data } = await ops.getServiceTls(ctx, "srv_1", { serviceKey: "id:my-app" });
+      expect(data).toMatchObject({ provider: "letsencrypt", activeProvider: "letsencrypt", state: "active" });
+    });
+
+    it("PUT letsencrypt: persists through setTlsPolicy — no Cloudflare I/O at all", async () => {
+      const ops = createDiscoveryOperations({ authorize } as never);
+      const { data } = await ops.setServiceTls(ctx, "srv_1", { serviceKey: "id:my-app", provider: "letsencrypt" });
+      expect(authorize).toHaveBeenCalledWith(ctx, { resourceType: "server", resourceId: "srv_1", action: "admin" });
+      expect(domainRepo.setTlsPolicy).toHaveBeenCalledWith(expect.objectContaining({ policy: { provider: "letsencrypt" } }));
+      expect(preflight).not.toHaveBeenCalled();
+      expect(data).toMatchObject({ provider: "letsencrypt", selectionSource: "explicit" });
+    });
+
+    it("PUT cloudflare: org-scoped credential lookup, provider check, decrypt, preflight, verified zone name", async () => {
+      const ops = createDiscoveryOperations({ authorize } as never);
+      const { data } = await ops.setServiceTls(ctx, "srv_1", {
+        serviceKey: "id:my-app",
+        provider: "cloudflare-origin-ca",
+        cloudflare: { credentialId: "cred_cf", zoneId: "zone_123", validityDays: 90 },
+      });
+      expect(credentialRepo.findById).toHaveBeenCalledWith("org_1", "cred_cf");
+      expect(readSecrets).toHaveBeenCalledWith(expect.objectContaining({ provider: "cloudflare" }));
+      expect(preflight).toHaveBeenCalledWith({ apiToken: "tok_test", zoneId: "zone_123", hostname: "app.example.com" });
+      // The zone NAME comes from Cloudflare (verified), never the input — and
+      // the input carries no zoneName field at all in the strict contract.
+      expect(domainRepo.setTlsPolicy).toHaveBeenCalledWith(
+        expect.objectContaining({ policy: expect.objectContaining({ zoneName: "example.com", validityDays: 90 }) }),
+      );
+      expect(data).toMatchObject({
+        provider: "cloudflare-origin-ca",
+        cloudflare: { credentialId: "cred_cf", zoneId: "zone_123", zoneName: "example.com", validityDays: 90 },
+      });
+    });
+
+    it("PUT cloudflare: an unknown or non-cloudflare credential is refused BEFORE preflight", async () => {
+      const ops = createDiscoveryOperations({ authorize } as never);
+      await expect(
+        ops.setServiceTls(ctx, "srv_1", {
+          serviceKey: "id:my-app",
+          provider: "cloudflare-origin-ca",
+          cloudflare: { credentialId: "cred_ghost", zoneId: "zone_1" },
+        }),
+      ).rejects.toMatchObject({ statusCode: 404 });
+      expect(preflight).not.toHaveBeenCalled();
+      await expect(
+        ops.setServiceTls(ctx, "srv_1", {
+          serviceKey: "id:my-app",
+          provider: "cloudflare-origin-ca",
+          cloudflare: { credentialId: "cred_registry", zoneId: "zone_1" },
+        }),
+      ).rejects.toMatchObject({ code: "TLS_CREDENTIAL_PROVIDER_INVALID" });
+      expect(preflight).not.toHaveBeenCalled();
+    });
+
+    it("P2: a failed preflight leaves the previous policy INTACT — nothing is written", async () => {
+      const ops = createDiscoveryOperations({ authorize } as never);
+      state.domainPolicy = { tlsProvider: "letsencrypt", tlsProviderSource: "explicit", tlsPolicyOrigin: "admin", tlsPolicyGeneration: 3 };
+      preflight.mockRejectedValueOnce(new AppError("not proxied", 409, "TLS_DNS_NOT_PROXIED"));
+      await expect(
+        ops.setServiceTls(ctx, "srv_1", {
+          serviceKey: "id:my-app",
+          provider: "cloudflare-origin-ca",
+          cloudflare: { credentialId: "cred_cf", zoneId: "zone_123" },
+        }),
+      ).rejects.toMatchObject({ code: "TLS_DNS_NOT_PROXIED" });
+      expect(domainRepo.setTlsPolicy).not.toHaveBeenCalled(); // working certificate + policy untouched
+      const view = await ops.getServiceTls(ctx, "srv_1", { serviceKey: "id:my-app" });
+      expect(view.data).toMatchObject({ provider: "letsencrypt", selectionSource: "explicit" });
+    });
+
+    it("an identical admin re-submission is a no-op — no Cloudflare I/O, no generation bump", async () => {
+      const ops = createDiscoveryOperations({ authorize } as never);
+      state.domainPolicy = {
+        tlsProvider: "cloudflare-origin-ca", tlsProviderSource: "explicit", tlsPolicyOrigin: "admin",
+        tlsPolicyGeneration: 5, tlsCfCredentialId: "cred_cf", tlsCfZoneId: "zone_123", tlsValidityDays: null,
+      };
+      await ops.setServiceTls(ctx, "srv_1", {
+        serviceKey: "id:my-app",
+        provider: "cloudflare-origin-ca",
+        cloudflare: { credentialId: "cred_cf", zoneId: "zone_123" },
+      });
+      expect(preflight).not.toHaveBeenCalled(); // no-op, not an API traffic generator
+      expect(domainRepo.setTlsPolicy).not.toHaveBeenCalled();
+    });
+
+    it("a strict discriminated body: Cloudflare without its block (or LE with one) fails validation", async () => {
+      const ops = createDiscoveryOperations({ authorize } as never);
+      await expect(
+        ops.setServiceTls(ctx, "srv_1", { serviceKey: "id:my-app", provider: "cloudflare-origin-ca" }),
+      ).rejects.toBeDefined();
+      await expect(
+        ops.setServiceTls(ctx, "srv_1", { serviceKey: "id:my-app", provider: "letsencrypt", cloudflare: { credentialId: "x", zoneId: "z" } }),
+      ).rejects.toBeDefined();
+      expect(domainRepo.setTlsPolicy).not.toHaveBeenCalled();
+    });
   });
 });
