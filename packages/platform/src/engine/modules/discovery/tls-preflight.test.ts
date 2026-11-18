@@ -127,8 +127,11 @@ describe("proxied DNS (effective hostname)", () => {
     await expect(
       preflightCloudflareOriginCa({ apiToken: "tok", zoneId: "zone_1", hostname: "site.example.com" }),
     ).rejects.toMatchObject({ code: "TLS_DNS_NOT_PROXIED" });
-    // The wildcard was never consulted as cover: only the exact-name query ran.
-    expect(cf.list).toHaveBeenCalledTimes(1);
+    // The wildcard was never consulted as cover: only the queried name was
+    // probed (NS delegation check + exact query) — no ancestor wildcard call.
+    expect(cf.list).toHaveBeenCalledTimes(2);
+    expect(cf.list).toHaveBeenCalledWith("tok", expect.stringContaining("name=site.example.com"));
+    expect(cf.list).not.toHaveBeenCalledWith("tok", expect.stringContaining("name=*.example.com"));
   });
 
   it("accepts a proxied ancestor wildcard when NO exact record exists at the hostname", async () => {
@@ -182,6 +185,47 @@ describe("proxied DNS (effective hostname)", () => {
     await expect(
       preflightCloudflareOriginCa({ apiToken: "tok", zoneId: "zone_1", hostname: "site.example.com" }),
     ).rejects.toMatchObject({ code: "TLS_DNS_NOT_PROXIED" });
+  });
+
+  it("P2: an NS delegation at the wildcard's BASE blocks wildcard proxy evidence", async () => {
+    // b.example.com is delegated elsewhere; *.b.example.com lives in THIS
+    // zone but DNS answers below the delegation come from the child — the
+    // wildcard cannot prove proxying for site.b.example.com.
+    cf.list.mockImplementation(async (_t: string, path: string) => {
+      if (path.includes("name=b.example.com")) return [{ name: "b.example.com", type: "NS", proxied: false }];
+      if (path.includes("name=site.b.example.com")) return []; // no exact records
+      if (path.includes("name=*.b.example.com")) return [{ name: "*.b.example.com", type: "A", proxied: true }];
+      return [];
+    });
+    await expect(
+      preflightCloudflareOriginCa({ apiToken: "tok", zoneId: "zone_1", hostname: "site.b.example.com" }),
+    ).rejects.toMatchObject({ code: "TLS_DNS_DELEGATION" });
+  });
+
+  it("P2: an NS delegation at an intervening level blocks EXACT records below it too", async () => {
+    // Even a proxied A record at the queried name is inside the delegated
+    // child zone — not proxy evidence through THIS zone.
+    cf.list.mockImplementation(async (_t: string, path: string) => {
+      if (path.includes("name=b.example.com")) return [{ name: "b.example.com", type: "NS", proxied: false }];
+      if (path.includes("name=a.b.example.com")) return [{ name: "a.b.example.com", type: "A", proxied: true }];
+      return [];
+    });
+    await expect(
+      preflightCloudflareOriginCa({ apiToken: "tok", zoneId: "zone_1", hostname: "a.b.example.com" }),
+    ).rejects.toMatchObject({ code: "TLS_DNS_DELEGATION" });
+  });
+
+  it("NS records at the APEX are the zone's own — not a delegation boundary", async () => {
+    // site.example.com: path names are [site.example.com] only; the apex
+    // (example.com) NS records never make an appearance and would be normal.
+    cf.list.mockImplementation(async (_t: string, path: string) => {
+      if (path.includes("name=site.example.com&type")) return []; // NS probe at the hostname: none
+      if (path.includes("name=site.example.com")) return [{ name: "site.example.com", type: "A", proxied: true }];
+      return [];
+    });
+    await expect(
+      preflightCloudflareOriginCa({ apiToken: "tok", zoneId: "zone_1", hostname: "site.example.com" }),
+    ).resolves.toMatchObject({ zoneName: "example.com" });
   });
 
   it("refuses a hostname with no proxied record anywhere (TLS_DNS_NOT_PROXIED)", async () => {
