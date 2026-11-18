@@ -175,3 +175,60 @@ describe("supersede and prune", () => {
     expect(await repo.currentPolicyGeneration(SERVER, "app.example.com")).toBe(7);
   });
 });
+
+describe("lease fencing (P2: stale workers cannot overwrite reclaimed jobs)", () => {
+  it("a stale worker's complete/defer/fail is REFUSED once another worker reclaimed the row", async () => {
+    const { operation } = await repo.ensureOperation(input());
+    const start = new Date("2026-01-01T00:00:00Z");
+    await repo.claimDueOperations({ now: start, limit: 5, leasedBy: "worker-a", leaseUntil: new Date(start.getTime() + 300_000) });
+    // Worker A stalls past its lease; worker B reclaims.
+    const later = new Date(start.getTime() + 600_000);
+    await repo.claimDueOperations({ now: later, limit: 5, leasedBy: "worker-b", leaseUntil: new Date(later.getTime() + 300_000) });
+
+    // A's terminal writes (stale lease) all refuse.
+    expect(await repo.completeOperation(operation.id, "issued", new Date(later.getTime() + 1000), "worker-a")).toBe(false);
+    expect(await repo.deferOperation(operation.id, "stale defer", new Date(later.getTime() + 60_000), new Date(later.getTime() + 1000), "worker-a")).toBe(false);
+    expect(await repo.failOperation(operation.id, "stale failure", new Date(later.getTime() + 60_000), new Date(later.getTime() + 1000), "worker-a")).toBe(false);
+    // The row is untouched: still running, leased by B, no fake outcome.
+    const row = (await db.query.discoveryTlsOperation.findFirst({ where: eq(schema.discoveryTlsOperation.id, operation.id) }))!;
+    expect(row.state).toBe("running");
+    expect(row.leasedBy).toBe("worker-b");
+    expect(row.reason).toBeNull();
+
+    // B's writes succeed — the current lease owner.
+    expect(await repo.completeOperation(operation.id, "issued", new Date(later.getTime() + 2000), "worker-b")).toBe(true);
+    const done = (await db.query.discoveryTlsOperation.findFirst({ where: eq(schema.discoveryTlsOperation.id, operation.id) }))!;
+    expect(done.state).toBe("complete");
+    expect(done.outcome).toBe("issued");
+  });
+
+  it("an unfenced completion (the supersede/admin path) still works without a lease identity", async () => {
+    const { operation } = await repo.ensureOperation(input());
+    const now = new Date("2026-01-01T00:00:00Z");
+    await repo.claimDueOperations({ now, limit: 5, leasedBy: "worker-a", leaseUntil: new Date(now.getTime() + 300_000) });
+    expect(await repo.completeOperation(operation.id, "superseded", now)).toBe(true);
+  });
+
+  it("renewOperationLease extends a held lease and refuses a lost one", async () => {
+    const { operation } = await repo.ensureOperation(input());
+    const start = new Date("2026-01-01T00:00:00Z");
+    await repo.claimDueOperations({ now: start, limit: 5, leasedBy: "worker-a", leaseUntil: new Date(start.getTime() + 300_000) });
+    expect(
+      await repo.renewOperationLease(operation.id, "worker-a", new Date(start.getTime() + 600_000), new Date(start.getTime() + 100_000)),
+    ).toBe(true);
+    let row = (await db.query.discoveryTlsOperation.findFirst({ where: eq(schema.discoveryTlsOperation.id, operation.id) }))!;
+    expect(row.leasedUntil?.getTime()).toBe(start.getTime() + 600_000);
+    // Another worker cannot extend a lease it does not hold.
+    expect(
+      await repo.renewOperationLease(operation.id, "worker-b", new Date(start.getTime() + 900_000), new Date(start.getTime() + 100_000)),
+    ).toBe(false);
+    // After A's lease lapses and B reclaims, A's renewal refuses.
+    const later = new Date(start.getTime() + 700_000);
+    await repo.claimDueOperations({ now: later, limit: 5, leasedBy: "worker-b", leaseUntil: new Date(later.getTime() + 300_000) });
+    expect(
+      await repo.renewOperationLease(operation.id, "worker-a", new Date(later.getTime() + 600_000), later),
+    ).toBe(false);
+    row = (await db.query.discoveryTlsOperation.findFirst({ where: eq(schema.discoveryTlsOperation.id, operation.id) }))!;
+    expect(row.leasedBy).toBe("worker-b");
+  });
+});

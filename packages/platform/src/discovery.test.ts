@@ -138,6 +138,17 @@ vi.mock("@repo/db", () => ({
 const kick = vi.fn();
 vi.mock("./engine/modules/discovery/discovery-tls-queue", () => ({ kickDiscoveryTlsQueue: kick }));
 
+/** The shared TLS entrypoint: the skip path validates INSTALLED material
+ *  through a read-only verify (never trusting database bookkeeping alone). */
+const tlsVerify = vi.fn(async () =>
+  ({ verified: true, expiresAt: new Date(Date.now() + 60 * 86_400_000).toISOString() } as { verified: boolean; expiresAt?: string; reason?: string; detail?: string }),
+);
+vi.mock("./engine/lib/domain-ssl", () => ({
+  manageDomainSsl: (...args: unknown[]) => tlsVerify(...(args as [])),
+  certComfortablyValid: (result: { verified?: boolean; expiresAt?: string | null }) =>
+    !!result.verified && !!result.expiresAt && new Date(result.expiresAt).getTime() > Date.now(),
+}));
+
 const sweep = vi.fn(async () => ({
   serverId: "srv_1",
   failed: [],
@@ -392,12 +403,38 @@ describe("createDiscoveryOperations", () => {
     const ensure = (input?: unknown) =>
       createDiscoveryOperations({ authorize } as never).ensureServiceTls(ctx, "srv_1", input ?? { serviceKey: "id:my-app" });
 
-    it("authorizes server WRITE and skips when valid letsencrypt material is installed", async () => {
+    it("authorizes server WRITE and skips when valid letsencrypt material is INSTALLED (verified, not just recorded)", async () => {
       state.domainSsl = { sslStatus: "active", verified: true, sslExpiresAt: new Date(Date.now() + 30 * 86_400_000) };
       const { data } = await ensure();
       expect(authorize).toHaveBeenCalledWith(ctx, { resourceType: "server", resourceId: "srv_1", action: "write" });
+      // The skip PROVED the installed material through a read-only Edge verify.
+      expect(tlsVerify).toHaveBeenCalledWith("app.example.com", expect.objectContaining({ action: "verify", serverId: "srv_1" }));
       expect(data).toEqual({ outcome: "skipped", reason: "already_valid", hostname: "app.example.com", source: "exact" });
       expect(tlsQueueRepo.ensureOperation).not.toHaveBeenCalled(); // skip creates no job
+    });
+
+    it("P2: an old Cloudflare certificate (recorded installed provider) never skips a Let's Encrypt ensure", async () => {
+      state.domainSsl = { sslStatus: "active", verified: true, sslExpiresAt: new Date(Date.now() + 30 * 86_400_000) };
+      state.domainPolicy = { tlsActiveProvider: "cloudflare-origin-ca" };
+      const { data } = await ensure();
+      // The provenance guard short-circuits: no verify, no skip — durable work.
+      expect(tlsVerify).not.toHaveBeenCalled();
+      expect(data).toMatchObject({ outcome: "queued" });
+    });
+
+    it("P2: healthy bookkeeping with missing/unusable installed material queues instead of skipping", async () => {
+      state.domainSsl = { sslStatus: "active", verified: true, sslExpiresAt: new Date(Date.now() + 30 * 86_400_000) };
+      tlsVerify.mockResolvedValueOnce({ verified: false, reason: "missing" });
+      const { data } = await ensure();
+      expect(tlsVerify).toHaveBeenCalled();
+      expect(data).toMatchObject({ outcome: "queued" }); // the row lied; the Edge decides
+    });
+
+    it("an UNPROVABLE skip (edge unreachable during verify) queues instead", async () => {
+      state.domainSsl = { sslStatus: "active", verified: true, sslExpiresAt: new Date(Date.now() + 30 * 86_400_000) };
+      tlsVerify.mockRejectedValueOnce(new Error("edge unreachable"));
+      const { data } = await ensure();
+      expect(data).toMatchObject({ outcome: "queued" }); // fall through to durable work
     });
 
     it("queues durable work with a stable operation id and kicks the drain", async () => {

@@ -24,12 +24,17 @@ vi.mock("../../lib/domain-ssl", () => ({
   DiscoveryBackendUnavailableError: class DiscoveryBackendUnavailableError extends AppError {},
 }));
 
-const { drainDiscoveryTlsQueue } = await import("./discovery-tls-queue");
+const { drainDiscoveryTlsQueue, resetDiscoveryTlsQueuePacingForTests } = await import("./discovery-tls-queue");
 
 /** Deterministic clock: manual time, recorded (never awaited) sleeps. */
 function fakeClock(startMs = 0) {
   let t = startMs;
   const sleeps: number[] = [];
+  const advance = (ms: number) => {
+    t += ms;
+  };
+  // Cross-drain tests reach the CURRENT clock through this module-level hook.
+  fakeClockHelpers = { advance };
   return {
     clock: {
       now: () => new Date(t),
@@ -38,12 +43,12 @@ function fakeClock(startMs = 0) {
         t += ms;
       },
     },
-    advance: (ms: number) => {
-      t += ms;
-    },
+    advance,
     sleeps,
   };
 }
+/** The CURRENT fake clock's time control (set by every fakeClock() call). */
+let fakeClockHelpers: { advance: (ms: number) => void } = { advance: () => {} };
 
 function operation(over: Record<string, unknown> = {}) {
   return {
@@ -61,6 +66,7 @@ function operation(over: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  resetDiscoveryTlsQueuePacingForTests();
   queue.currentPolicyGeneration.mockResolvedValue(3);
   queue.claimDueOperations.mockResolvedValue([]);
   manageDomainSsl.mockResolvedValue({ verified: true });
@@ -103,6 +109,22 @@ describe("pacing and claiming", () => {
     expect(sleeps).toEqual([]);
     expect(manageDomainSsl).toHaveBeenCalledTimes(1);
   });
+
+  it("P2: pacing persists ACROSS drains — a second drain cannot start at the same instant", async () => {
+    const { clock, sleeps } = fakeClock();
+    // Drain one: starts one job.
+    queue.claimDueOperations.mockResolvedValueOnce([operation()]).mockResolvedValueOnce([]).mockResolvedValue([]);
+    await drainDiscoveryTlsQueue(clock);
+    expect(sleeps).toEqual([]);
+    // A second drain (an ensure kick racing the sweep tick) starts its job
+    // against the SAME module-level anchor: its first start sleeps the full
+    // spacing — the old per-drain local reset would have started immediately.
+    queue.claimDueOperations.mockResolvedValueOnce([operation()]).mockResolvedValue([]);
+    fakeClockHelpers.advance(200); // well inside the spacing window
+    await drainDiscoveryTlsQueue(clock);
+    expect(sleeps).toEqual([800]);
+    expect(manageDomainSsl).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("execution dispatch", () => {
@@ -116,7 +138,7 @@ describe("execution dispatch", () => {
       allowUnverified: true,
       serverId: "srv_1",
     });
-    expect(queue.completeOperation).toHaveBeenCalledWith(op.id, "issued", expect.any(Date));
+    expect(queue.completeOperation).toHaveBeenCalledWith(op.id, "issued", expect.any(Date), expect.any(String));
   });
 
   it("defers an unusable result instead of failing it", async () => {
@@ -125,7 +147,7 @@ describe("execution dispatch", () => {
     const op = operation();
     queue.claimDueOperations.mockResolvedValueOnce([op]).mockResolvedValue([]);
     await drainDiscoveryTlsQueue(clock);
-    expect(queue.deferOperation).toHaveBeenCalledWith(op.id, "challenge pending", expect.any(Date), expect.any(Date));
+    expect(queue.deferOperation).toHaveBeenCalledWith(op.id, "challenge pending", expect.any(Date), expect.any(Date), expect.any(String));
     expect(queue.completeOperation).not.toHaveBeenCalled();
   });
 
@@ -136,7 +158,7 @@ describe("execution dispatch", () => {
     const op = operation();
     queue.claimDueOperations.mockResolvedValueOnce([op]).mockResolvedValue([]);
     await drainDiscoveryTlsQueue(clock);
-    expect(queue.deferOperation).toHaveBeenCalledWith(op.id, "backend not running", expect.any(Date), expect.any(Date));
+    expect(queue.deferOperation).toHaveBeenCalledWith(op.id, "backend not running", expect.any(Date), expect.any(Date), expect.any(String));
     expect(queue.failOperation).not.toHaveBeenCalled();
   });
 
@@ -147,7 +169,7 @@ describe("execution dispatch", () => {
     const op = operation({ attempts: 3 });
     queue.claimDueOperations.mockResolvedValueOnce([op]).mockResolvedValue([]);
     await drainDiscoveryTlsQueue(clock);
-    expect(queue.failOperation).toHaveBeenCalledWith(op.id, "edge write failed", expect.any(Date), expect.any(Date));
+    expect(queue.failOperation).toHaveBeenCalledWith(op.id, "edge write failed", expect.any(Date), expect.any(Date), expect.any(String));
     const retryAt = queue.failOperation.mock.calls[0][2] as Date;
     expect(retryAt.getTime() - clock.now().getTime()).toBe(4 * 60_000);
   });
@@ -159,7 +181,7 @@ describe("execution dispatch", () => {
     queue.claimDueOperations.mockResolvedValueOnce([op]).mockResolvedValue([]);
     await drainDiscoveryTlsQueue(clock);
     expect(manageDomainSsl).not.toHaveBeenCalled();
-    expect(queue.completeOperation).toHaveBeenCalledWith(op.id, "superseded", expect.any(Date));
+    expect(queue.completeOperation).toHaveBeenCalledWith(op.id, "superseded", expect.any(Date), expect.any(String));
   });
 
   it("durably defers Cloudflare intent — no ACME fallback — with the provider's reason", async () => {
@@ -173,6 +195,7 @@ describe("execution dispatch", () => {
       expect.stringContaining("waits for the provider dispatch"),
       expect.any(Date),
       expect.any(Date),
+      expect.any(String),
     );
   });
 
@@ -187,6 +210,7 @@ describe("execution dispatch", () => {
       expect.stringContaining("wildcard"),
       expect.any(Date),
       expect.any(Date),
+      expect.any(String),
     );
   });
 

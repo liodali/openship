@@ -5,7 +5,7 @@
  * Outcome/status mapping: skipped → 200; queued/already_queued/deferred → 202.
  */
 import "../mail/_setup-env";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Hono } from "hono";
 import { inArray } from "drizzle-orm";
 import { db, schema, repos } from "@repo/db";
@@ -14,6 +14,25 @@ import { discoveryRoutes } from "../../../src/modules/discovery/discovery.routes
 import { handleApiError } from "../../../src/middleware/error-handler";
 
 const app = new Hono().onError(handleApiError).route("/api/discovery", discoveryRoutes);
+
+/** The skip contract PROVES installed material through a read-only Edge
+ *  verify; the fake lab server has no real Edge, so the kernel's verify is
+ *  mocked at the platform boundary (a failing verify must fall through to a
+ *  durable queue — covered by the platform ops tests). */
+vi.mock("@repo/platform/engine/lib/domain-ssl", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@repo/platform/engine/lib/domain-ssl")>();
+  return {
+    ...actual,
+    manageDomainSsl: vi.fn(async (hostname: string, opts: { action: string }) =>
+      opts.action === "verify"
+        ? // Skip path: prove healthy installed material.
+          { domain: hostname, verified: true, issuer: "letsencrypt", expiresAt: new Date(Date.now() + 60 * 86_400_000).toISOString() }
+        : // Provision path: unusable result → the worker defers the durable
+          // operation (still ACTIVE — retries hit the same operation id).
+          { domain: hostname, verified: false, detail: "lab edge cannot issue" },
+    ),
+  };
+});
 
 let seq = 0;
 const uid = (p: string) => `${p}_tls_ensure_${seq++}`;
@@ -93,9 +112,16 @@ describe("POST /api/discovery/servers/:id/discovery/services/:serviceKey/tls/ens
     expect(body).toMatchObject({ outcome: "queued", hostname: `${lab.serverId}.example.com` });
     expect(typeof body.operationId).toBe("string");
 
+    // The kicked drain settles the operation into its durable DEFERRED state
+    // (the mocked lab edge cannot issue) — still ACTIVE, still the same row.
+    await vi.waitFor(async () => {
+      const [row] = await db.select().from(schema.discoveryTlsOperation);
+      expect(row?.state).toBe("deferred");
+    });
+
     const retry = await app.request(url(lab), { method: "POST", ...authed(lab) });
     expect(retry.status).toBe(202);
-    await expect(retry.json()).resolves.toMatchObject({ outcome: "already_queued", operationId: body.operationId });
+    await expect(retry.json()).resolves.toMatchObject({ outcome: "deferred", operationId: body.operationId });
 
     // Exactly ONE durable operation row exists — a client retry never doubles.
     const rows = await db.select().from(schema.discoveryTlsOperation);
