@@ -70,6 +70,41 @@ describe("discovery upstream reachability", () => {
     expect(probe).not.toHaveBeenCalled();
   });
 
+  it("refuses a live TLS declaration that differs from the persisted binding", async () => {
+    // Same routing config (hash matches), but the container was recreated with
+    // a Cloudflare label the binding has never observed: applying or scheduling
+    // certificate work against the stale letsencrypt intent is forbidden.
+    const { binding, runtime, probe, view } = fixture();
+    view.env.push("OPENSHIP_TLS_PROVIDER=cloudflare-origin-ca");
+    await expect(resolveReachableDiscoveryUpstream(binding, runtime, probe)).rejects.toThrow("TLS declaration changed");
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it("refuses a live wildcard source the binding has never observed", async () => {
+    const { binding, runtime, probe, view } = fixture();
+    view.env.push("OPENSHIP_TLS_WILDCARD=*.example.com");
+    await expect(resolveReachableDiscoveryUpstream(binding, runtime, probe)).rejects.toThrow("TLS declaration changed");
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it("accepts a live TLS declaration that matches the persisted binding", async () => {
+    const { binding, runtime, probe, view } = fixture();
+    view.env.push("OPENSHIP_TLS_PROVIDER=cloudflare-origin-ca");
+    Object.assign(binding, { tlsDeclaredProvider: "cloudflare-origin-ca", tlsDeclaredWildcard: null });
+    const result = await resolveReachableDiscoveryUpstream(binding, runtime, probe);
+    expect(result.targetUrl).toBe("http://172.20.0.5:3000");
+  });
+
+  it("re-checks TLS intent after the probe as well", async () => {
+    const { binding, runtime, probe, view } = fixture();
+    Object.assign(binding, { tlsDeclaredProvider: "letsencrypt", tlsDeclaredWildcard: null });
+    view.env.push("OPENSHIP_TLS_PROVIDER=letsencrypt");
+    const selected = await resolveReachableDiscoveryUpstream(binding, runtime, probe);
+    // The container is recreated mid-probe with a different provider.
+    view.env = view.env.map((e) => e === "OPENSHIP_TLS_PROVIDER=letsencrypt" ? "OPENSHIP_TLS_PROVIDER=cloudflare-origin-ca" : e);
+    await expect(assertDiscoveryUpstreamCurrent(binding, selected, runtime)).rejects.toThrow("TLS declaration changed");
+  });
+
   it("checks port ownership again after a successful probe", async () => {
     const { binding, runtime, probe, view } = fixture(true);
     const selected = await resolveReachableDiscoveryUpstream(binding, runtime, probe);

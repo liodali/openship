@@ -51,10 +51,12 @@ const discoveryRepo = {
     },
   ),
   recordScan: vi.fn(async () => {}),
+  applyTlsDeclaration: vi.fn(async (): Promise<{ outcome: string; reason?: string }> => ({ outcome: "no-declaration" })),
 };
 
 const domainRepo = {
   ensureServerDomain: vi.fn(async () => ({ domain: { id: "dom_x" }, created: true })),
+  getTlsPolicy: vi.fn(async () => ({ tlsProvider: "letsencrypt" })),
 };
 
 vi.mock("@repo/db", () => ({
@@ -111,7 +113,12 @@ function liveView(row: Record<string, unknown>) {
   return {
     containerId: String(row.containerId), running: true, status: "running", labels: {},
     env: ["OPENSHIP_DISCOVERY=true", "OPENSHIP_SERVICE_ID=my-app",
-      `OPENSHIP_DOMAIN=${row.hostname}`, `OPENSHIP_PORT=${row.port}`],
+      `OPENSHIP_DOMAIN=${row.hostname}`, `OPENSHIP_PORT=${row.port}`,
+      // The live container declares what the binding persisted — a fresh
+      // inspection must agree with the recorded TLS intent (the stale guard).
+      ...(row.tlsDeclaredProvider ? [`OPENSHIP_TLS_PROVIDER=${row.tlsDeclaredProvider}`] : []),
+      ...(row.tlsDeclaredWildcard ? [`OPENSHIP_TLS_WILDCARD=${row.tlsDeclaredWildcard}`] : []),
+    ],
     networks: [{ name: "frontend", id: "net_fe", ipAddress: "172.20.0.5" }],
     publishedPorts: row.hostPort
       ? [{ containerPort: 3000, hostPort: Number(row.hostPort), hostIp: row.hostIp as string | null }]
@@ -187,6 +194,87 @@ describe("reconcileServerDiscovery", () => {
     expect(summary.applied).toEqual(["id:my-app"]);
     expect(state.applied).toEqual([{ serviceKey: "id:my-app", generation: 1 }]);
     // Immediate certificate reconciliation for the freshly applied upstream.
+    expect(manageDomainSsl).toHaveBeenCalledWith(
+      "app.example.com",
+      expect.objectContaining({ action: "provision", allowUnverified: true, serverId: SERVER() }),
+    );
+  });
+
+  it("applies the binding's TLS declaration intent right after enrolling the domain", async () => {
+    state.dueApply = [binding({ tlsDeclaredProvider: "cloudflare-origin-ca", tlsDeclaredWildcard: "*.example.com" })];
+    const summary = await reconcileServerDiscovery(SERVER(), "org_1", { edge: edge() });
+    expect(summary.applied).toEqual(["id:my-app"]);
+    expect(domainRepo.ensureServerDomain).toHaveBeenCalled();
+    // Reconciliation is a pure function of durable state (declaration + policy
+    // provenance) — no scan-local previous-declaration input.
+    expect(discoveryRepo.applyTlsDeclaration).toHaveBeenCalledWith(
+      SERVER(),
+      "id:my-app",
+      { provider: "cloudflare-origin-ca", wildcard: "*.example.com" },
+    );
+  });
+
+  it("reconciles TLS intent on the retained unavailable-vhost path as well", async () => {
+    state.dueApply = [
+      binding({
+        applyState: "applied", appliedGeneration: 2, observationStatus: "missing",
+        containerId: null, ipAddress: null, containerRunning: false,
+        tlsDeclaredProvider: "letsencrypt", tlsDeclaredWildcard: null,
+      }),
+    ];
+    const summary = await reconcileServerDiscovery(SERVER(), "org_1", { edge: edge() });
+    expect(summary.retained).toEqual(["id:my-app"]);
+    expect(discoveryRepo.applyTlsDeclaration).toHaveBeenCalledWith(
+      SERVER(),
+      "id:my-app",
+      { provider: "letsencrypt", wildcard: null },
+    );
+  });
+
+  it("a TLS policy conflict never fails the route apply", async () => {
+    discoveryRepo.applyTlsDeclaration.mockResolvedValueOnce({
+      outcome: "conflict",
+      reason: "tls-policy-conflict: declaration disagrees with the explicit policy",
+    });
+    state.dueApply = [binding({ tlsDeclaredProvider: "letsencrypt" })];
+    const target = edge();
+    const summary = await reconcileServerDiscovery(SERVER(), "org_1", { edge: target });
+    expect(summary.applied).toEqual(["id:my-app"]); // the route keeps working
+    expect(summary.failed).toEqual([]);
+    expect(target.routing.registerRoute).toHaveBeenCalled();
+  });
+
+  it("defers certificate work for a Cloudflare policy — never falls through to ACME", async () => {
+    domainRepo.getTlsPolicy.mockResolvedValueOnce({ tlsProvider: "cloudflare-origin-ca" });
+    state.dueApply = [binding({ tlsDeclaredProvider: "cloudflare-origin-ca" })];
+    const target = edge();
+    const summary = await reconcileServerDiscovery(SERVER(), "org_1", { edge: target });
+    expect(summary.applied).toEqual(["id:my-app"]); // the route still applies
+    expect(manageDomainSsl).not.toHaveBeenCalled(); // no unintended exact LE order
+  });
+
+  it("defers certificate work for an explicit wildcard source — no exact-host fallback", async () => {
+    state.dueApply = [binding({ tlsDeclaredProvider: "letsencrypt", tlsDeclaredWildcard: "*.example.com" })];
+    const summary = await reconcileServerDiscovery(SERVER(), "org_1", { edge: edge() });
+    expect(summary.applied).toEqual(["id:my-app"]);
+    expect(manageDomainSsl).not.toHaveBeenCalled();
+  });
+
+  it("gates certificate work on the POST-reconciliation policy, not the declaration", async () => {
+    // Declaration says letsencrypt, but the persisted (admin-owned) policy is
+    // Cloudflare — the conflict leaves the policy authoritative, and ACME must
+    // not issue against it.
+    domainRepo.getTlsPolicy.mockResolvedValueOnce({ tlsProvider: "cloudflare-origin-ca" });
+    discoveryRepo.applyTlsDeclaration.mockResolvedValueOnce({ outcome: "conflict", reason: "tls-policy-conflict" });
+    state.dueApply = [binding({ tlsDeclaredProvider: "letsencrypt" })];
+    const summary = await reconcileServerDiscovery(SERVER(), "org_1", { edge: edge() });
+    expect(summary.applied).toEqual(["id:my-app"]);
+    expect(manageDomainSsl).not.toHaveBeenCalled();
+  });
+
+  it("still schedules ACME for an exact Let's Encrypt policy without a wildcard source", async () => {
+    state.dueApply = [binding({ tlsDeclaredProvider: "letsencrypt", tlsDeclaredWildcard: null })];
+    await reconcileServerDiscovery(SERVER(), "org_1", { edge: edge() });
     expect(manageDomainSsl).toHaveBeenCalledWith(
       "app.example.com",
       expect.objectContaining({ action: "provision", allowUnverified: true, serverId: SERVER() }),

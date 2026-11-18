@@ -27,6 +27,9 @@ type BindingRow = {
   ipAddress?: string | null;
   hostPort?: number | null;
   hostIp?: string | null;
+  tlsDeclaredProvider?: "letsencrypt" | "cloudflare-origin-ca" | null;
+  tlsDeclaredWildcard?: string | null;
+  tlsPolicyConflict?: string | null;
 };
 
 const SERVER = "srv_scan";
@@ -89,10 +92,15 @@ const discoveryRepo = {
         ipAddress?: string | null;
         hostPort?: number | null;
         hostIp?: string | null;
+        tlsProvider?: "letsencrypt" | "cloudflare-origin-ca" | null;
+        tlsWildcard?: string | null;
       },
     ) => {
       const existing = state.bindings.get(obs.serviceKey);
-      const desiredChanged = existing?.configHash !== obs.configHash;
+      const tlsDeclarationChanged =
+        (existing?.tlsDeclaredProvider ?? null) !== (obs.tlsProvider ?? null) ||
+        (existing?.tlsDeclaredWildcard ?? null) !== (obs.tlsWildcard ?? null);
+      const desiredChanged = existing?.configHash !== obs.configHash || tlsDeclarationChanged;
       if (!existing) {
         const row: BindingRow = {
           serviceKey: obs.serviceKey,
@@ -114,6 +122,9 @@ const discoveryRepo = {
           appliedGeneration: 0,
           suppressed: false,
           withdrawalPending: false,
+          tlsDeclaredProvider: obs.tlsProvider ?? null,
+          tlsDeclaredWildcard: obs.tlsWildcard ?? null,
+          tlsPolicyConflict: null,
         };
         state.bindings.set(obs.serviceKey, row);
         return { binding: row, desiredChanged: true, requeued: false };
@@ -135,6 +146,8 @@ const discoveryRepo = {
         ipAddress: obs.ipAddress,
         hostPort: obs.hostPort,
         hostIp: obs.hostIp,
+        tlsDeclaredProvider: obs.tlsProvider ?? null,
+        tlsDeclaredWildcard: obs.tlsWildcard ?? null,
         observationStatus: "observed",
         ...(existing.applyState !== "blocked" && (desiredChanged || requeued)
           ? {
@@ -182,6 +195,13 @@ const discoveryRepo = {
   }),
   findConflictingDomainOwner: vi.fn(async (_serverId: string, hostname: string) =>
     state.domains.find((d) => d.hostname === hostname.toLowerCase() && d.serverId !== SERVER),
+  ),
+  applyTlsDeclaration: vi.fn(
+    async (
+      _serverId: string,
+      _serviceKey: string,
+      _declaration: { provider: string | null; wildcard: string | null },
+    ): Promise<{ outcome: string; reason?: string }> => ({ outcome: "no-declaration" }),
   ),
 };
 
@@ -755,6 +775,98 @@ describe("discovery scanner", () => {
     expect(binding.desiredGeneration).toBe(2);
     expect(binding.applyState).toBe("pending");
     expect(binding.configHash).toBe(discoveryConfigHash({ hostname: "other.example.com", port: 4000, network: "frontend" }));
+  });
+});
+
+describe("discovery scanner TLS declarations", () => {
+  function tlsView(provider: string, wildcard?: string, containerId = "ctr_a"): DiscoveryContainerView {
+    return view({
+      containerId,
+      env: [
+        "OPENSHIP_DISCOVERY=true",
+        "OPENSHIP_SERVICE_ID=my-app",
+        "OPENSHIP_DOMAIN=app.example.com",
+        "OPENSHIP_PORT=3000",
+        `OPENSHIP_TLS_PROVIDER=${provider}`,
+        ...(wildcard ? [`OPENSHIP_TLS_WILDCARD=${wildcard}`] : []),
+      ],
+    });
+  }
+
+  it("persists declaration intent and versions TLS-only changes", async () => {
+    resetDb(true);
+    discoveryRepo.applyTlsDeclaration.mockClear();
+    const first = await scanServerDiscovery(SERVER, "org_1", { runtime: runtime([tlsView("letsencrypt")]) });
+    expect(first.tlsPolicyConflicts).toEqual([]);
+    const binding = state.bindings.get("id:my-app")!;
+    expect(binding.tlsDeclaredProvider).toBe("letsencrypt");
+    expect(binding.tlsDeclaredWildcard).toBeNull();
+    expect(discoveryRepo.applyTlsDeclaration).toHaveBeenCalledWith(
+      SERVER,
+      "id:my-app",
+      { provider: "letsencrypt", wildcard: null },
+    );
+
+    // Recreated container, TLS-only change: same routing config, new provider
+    // and a wildcard source. The binding versions; reconciliation needs only
+    // the durable declaration (ownership is the policy's recorded provenance).
+    const second = await scanServerDiscovery(SERVER, "org_1", {
+      runtime: runtime([tlsView("cloudflare-origin-ca", "*.example.com", "ctr_b")]),
+    });
+    expect(second.desiredChanged).toEqual(["id:my-app"]);
+    const updated = state.bindings.get("id:my-app")!;
+    expect(updated.desiredGeneration).toBe(2);
+    expect(updated.tlsDeclaredProvider).toBe("cloudflare-origin-ca");
+    expect(updated.tlsDeclaredWildcard).toBe("*.example.com");
+    expect(discoveryRepo.applyTlsDeclaration).toHaveBeenLastCalledWith(
+      SERVER,
+      "id:my-app",
+      { provider: "cloudflare-origin-ca", wildcard: "*.example.com" },
+    );
+  });
+
+  it("reports tls-policy-conflict without blocking the binding or its route", async () => {
+    resetDb(true);
+    discoveryRepo.applyTlsDeclaration.mockClear();
+    discoveryRepo.applyTlsDeclaration.mockResolvedValueOnce({
+      outcome: "conflict",
+      reason: "tls-policy-conflict: declaration disagrees with the explicit policy",
+    });
+    const summary = await scanServerDiscovery(SERVER, "org_1", { runtime: runtime([tlsView("letsencrypt")]) });
+    expect(summary.ok).toBe(true);
+    expect(summary.tlsPolicyConflicts).toEqual([
+      { serviceKey: "id:my-app", reason: expect.stringContaining("tls-policy-conflict") },
+    ]);
+    expect(summary.blocked).toEqual([]);
+    expect(state.bindings.get("id:my-app")!.applyState).toBe("pending"); // routes keep reconciling
+  });
+
+  it("never reconciles the declaration of a duplicate live identity", async () => {
+    resetDb(true);
+    discoveryRepo.applyTlsDeclaration.mockClear();
+    const a = tlsView("letsencrypt", undefined, "ctr_a");
+    const b = tlsView("cloudflare-origin-ca", undefined, "ctr_b");
+    const summary = await scanServerDiscovery(SERVER, "org_1", { runtime: runtime([a, b]) });
+    expect(summary.blocked).toHaveLength(1);
+    expect(discoveryRepo.applyTlsDeclaration).not.toHaveBeenCalled();
+  });
+
+  it("invalid TLS declarations surface as parser rejections, never as intent", async () => {
+    resetDb(true);
+    const bad = view({
+      env: [
+        "OPENSHIP_DISCOVERY=true",
+        "OPENSHIP_SERVICE_ID=my-app",
+        "OPENSHIP_DOMAIN=app.example.com",
+        "OPENSHIP_PORT=3000",
+        "OPENSHIP_TLS_PROVIDER=cloudflare", // shorthand is not a managed ID
+      ],
+    });
+    const summary = await scanServerDiscovery(SERVER, "org_1", { runtime: runtime([bad]) });
+    expect(summary.eligible).toBe(0);
+    expect(summary.invalid).toHaveLength(1);
+    expect(summary.invalid[0]).toMatchObject({ serviceKey: "id:my-app", code: "invalid-tls-provider" });
+    expect(state.bindings.size).toBe(0);
   });
 });
 

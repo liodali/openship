@@ -33,6 +33,10 @@ const state = {
   sslPatches: [] as Array<Record<string, unknown>>,
   failures: [] as string[],
   discoveryEnabled: true,
+  /** When set, the under-lock findById re-read returns THIS row instead. */
+  policyRow: null as Record<string, unknown> | null,
+  /** Sequential binding responses; empty = current binding (see mock). */
+  bindingQueue: [] as Array<Record<string, unknown> | null>,
 };
 
 const provisionCert = vi.fn(async () => ({
@@ -51,6 +55,9 @@ vi.mock("@repo/db", () => ({
   repos: {
     domain: {
       findByHostname: vi.fn(async () => state.domainRow),
+      // The UNDER-LOCK policy re-read: defaults to the same row the snapshot
+      // came from; race tests point it at a policy that changed while queued.
+      findById: vi.fn(async () => state.policyRow ?? state.domainRow),
       markServerDomainVerified: vi.fn(async () => {
         state.markedVerified += 1;
       }),
@@ -65,8 +72,11 @@ vi.mock("@repo/db", () => ({
       get: vi.fn(async () => state.server),
     },
     discovery: {
-      getBindingForDomain: vi.fn(async () => state.binding),
-      getSettings: vi.fn(async () => state.discoveryEnabled ? { enabled: true } : { enabled: false }),
+      // Sequential responses for the binding reads (pre-lock dispatch gate →
+      // under-lock backend check → under-lock policy check): shift the queue
+      // while non-empty, else the current binding.
+      getBindingForDomain: vi.fn(async () => state.bindingQueue.shift() ?? state.binding),
+      getSettings: vi.fn(async () => (state.discoveryEnabled ? { enabled: true } : { enabled: false })),
     },
   },
 }));
@@ -114,6 +124,9 @@ beforeEach(() => {
   state.failures = [];
   state.domainRow.verified = false;
   state.domainRow.sslStatus = "none";
+  delete state.domainRow.tlsProvider;
+  state.policyRow = null;
+  state.bindingQueue = [];
   state.binding = {
     serviceKey: "id:my-app",
     containerId: "ctr_1",
@@ -233,5 +246,111 @@ describe("server-scoped domain TLS (ownerType='server')", () => {
       }),
     ).rejects.toThrow(AppError);
     expect(provisionCert).not.toHaveBeenCalled();
+  });
+
+  // ── Interim provider/source dispatch gate (ACME-only until dispatch exists) ──
+
+  it("defers a Cloudflare Origin CA policy — never falls back to an exact Let's Encrypt order", async () => {
+    state.domainRow.tlsProvider = "cloudflare-origin-ca";
+    await expect(
+      manageDomainSsl("app.example.com", { action: "provision", allowUnverified: true, serverId: "srv_tls" }),
+    ).rejects.toThrow(DiscoveryBackendUnavailableError);
+    expect(provisionCert).not.toHaveBeenCalled();
+    expect(state.markedVerified).toBe(0);
+    expect(state.failures).toEqual([]); // a dispatch deferral is not an SSL failure
+  });
+
+  it("defers the renew action for a Cloudflare policy too — no ACME for the old provider's material", async () => {
+    state.domainRow.tlsProvider = "cloudflare-origin-ca";
+    state.domainRow.sslStatus = "active";
+    await expect(
+      manageDomainSsl("app.example.com", { action: "renew", allowUnverified: true, serverId: "srv_tls" }),
+    ).rejects.toThrow(DiscoveryBackendUnavailableError);
+    expect(provisionCert).not.toHaveBeenCalled();
+    expect(state.failures).toEqual([]);
+  });
+
+  it("defers an explicit wildcard source — an exact-host certificate is never the fallback", async () => {
+    state.domainRow.tlsProvider = "letsencrypt";
+    state.binding = { ...state.binding!, tlsDeclaredWildcard: "*.example.com" };
+    await expect(
+      manageDomainSsl("app.example.com", { action: "provision", allowUnverified: true, serverId: "srv_tls" }),
+    ).rejects.toThrow(DiscoveryBackendUnavailableError);
+    expect(provisionCert).not.toHaveBeenCalled();
+    expect(state.failures).toEqual([]);
+  });
+
+  // ── Under-lock re-read: the policy can change while an ACME job waits ──
+
+  it("re-reads the policy INSIDE the issuance lock — a provider switch while provision waited defers", async () => {
+    // The pre-lock dispatch gate sees an eligible exact Let's Encrypt policy…
+    state.domainRow.tlsProvider = "letsencrypt";
+    // …but the under-lock re-read finds the operator switched the domain to
+    // Cloudflare Origin CA while this job queued behind the hostname/box locks.
+    state.policyRow = { ...state.domainRow, tlsProvider: "cloudflare-origin-ca" };
+    await expect(
+      manageDomainSsl("app.example.com", { action: "provision", allowUnverified: true, serverId: "srv_tls" }),
+    ).rejects.toThrow(DiscoveryBackendUnavailableError);
+    expect(provisionCert).not.toHaveBeenCalled(); // no exact ACME order for the old provider
+    expect(state.markedVerified).toBe(0);
+    expect(state.failures).toEqual([]); // durable defer, not a certificate failure
+  });
+
+  it("re-reads the policy inside the lock for RENEW too — a switch while waiting defers the order", async () => {
+    state.domainRow.tlsProvider = "letsencrypt";
+    state.domainRow.sslStatus = "active";
+    state.domainRow.verified = true;
+    state.policyRow = { ...state.domainRow, tlsProvider: "cloudflare-origin-ca" };
+    await expect(
+      manageDomainSsl("app.example.com", { action: "renew", allowUnverified: true, serverId: "srv_tls" }),
+    ).rejects.toThrow(DiscoveryBackendUnavailableError);
+    expect(provisionCert).not.toHaveBeenCalled();
+    expect(state.failures).toEqual([]);
+  });
+
+  it("a wildcard declared while the job waited defers under the lock — no exact fallback", async () => {
+    state.domainRow.tlsProvider = "letsencrypt";
+    // Pre-lock gate: plain binding, no wildcard. Backend check under the lock:
+    // still plain. Policy check under the lock: the wildcard arrived meanwhile.
+    state.bindingQueue = [
+      state.binding!,
+      state.binding!,
+      { ...state.binding!, tlsDeclaredWildcard: "*.example.com" },
+    ];
+    await expect(
+      manageDomainSsl("app.example.com", { action: "provision", allowUnverified: true, serverId: "srv_tls" }),
+    ).rejects.toThrow(DiscoveryBackendUnavailableError);
+    expect(provisionCert).not.toHaveBeenCalled();
+    expect(state.failures).toEqual([]);
+  });
+
+  it("a policy that stayed Lets Encrypt issues normally — the re-read is not a blanket block", async () => {
+    state.domainRow.tlsProvider = "letsencrypt";
+    state.policyRow = { ...state.domainRow }; // same policy under the lock
+    const result = await manageDomainSsl("app.example.com", {
+      action: "provision",
+      allowUnverified: true,
+      serverId: "srv_tls",
+    });
+    expect(result.verified).toBe(true);
+    expect(provisionCert).toHaveBeenCalled();
+  });
+
+  it("keeps verify exempt — read-only inspection of installed material still works", async () => {
+    state.domainRow.tlsProvider = "cloudflare-origin-ca";
+    await manageDomainSsl("app.example.com", { action: "verify", allowUnverified: true, serverId: "srv_tls" });
+    expect(verifyCert).toHaveBeenCalledWith("app.example.com");
+    expect(provisionCert).not.toHaveBeenCalled();
+  });
+
+  it("still issues for an exact Let's Encrypt policy without a wildcard source", async () => {
+    state.domainRow.tlsProvider = "letsencrypt";
+    const result = await manageDomainSsl("app.example.com", {
+      action: "provision",
+      allowUnverified: true,
+      serverId: "srv_tls",
+    });
+    expect(result.verified).toBe(true);
+    expect(provisionCert).toHaveBeenCalled();
   });
 });
