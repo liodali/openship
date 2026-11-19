@@ -59,7 +59,7 @@ export interface OriginCaIssuanceInput {
 
 export type OriginCaIssuanceOutcome =
   | { outcome: "reused"; fingerprint: string; expiresAt: Date }
-  | { outcome: "issued"; fingerprint: string; expiresAt: Date; certificateId: string }
+  | { outcome: "issued"; issuanceId: string; fingerprint: string; expiresAt: Date; certificateId: string }
   | { outcome: "unknown"; reason: string };
 
 /** The requested hostnames for the CSR: the exact hostname (wildcard sources
@@ -99,6 +99,7 @@ export async function ensureOriginCaIssued(input: OriginCaIssuanceInput): Promis
         validateOriginCaCertificate(live.certificatePem, { hostname, publicKeyPem: publicKeyFor(live) });
         return {
           outcome: "issued",
+          issuanceId: live.id,
           certificateId: live.certificateId,
           fingerprint: live.fingerprint,
           expiresAt: live.expiresOn,
@@ -256,6 +257,7 @@ async function recoverPendingCreate(
       if (!recorded) break; // lost the live slot to a supersede — stop
       return {
         outcome: "issued",
+        issuanceId,
         certificateId: candidate.id,
         fingerprint: validated.fingerprint,
         expiresAt: validated.expiresAt,
@@ -349,6 +351,7 @@ async function createWithRecoveryOnAmbiguity(
   });
   return {
     outcome: "issued",
+    issuanceId,
     certificateId: summary.id,
     fingerprint: validated.fingerprint,
     expiresAt: validated.expiresAt,

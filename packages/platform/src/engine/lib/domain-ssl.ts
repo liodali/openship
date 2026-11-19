@@ -1282,6 +1282,75 @@ export async function installDomainCert(
   });
 }
 
+/**
+ * Install an Origin CA certificate (candidate inventory) on the SERVER edge
+ * that serves a discovered domain — the discovery counterpart of
+ * installDomainCert, with the phases the queue's install dispatch needs:
+ *
+ *  1. AUTHORIZATION, fresh: the domain row is re-resolved NOW (owner must be
+ *     the server the operation claims; the row must still exist). This is the
+ *     immediate-before-install owner recheck, not the one from enqueue time.
+ *  2. BACKEND FRESHNESS: the same fresh-inspection gate ACME uses — a stopped
+ *     or unobservable discovered backend refuses installation (defer, not
+ *     fail).
+ *  3. CRASH RECOVERY: if the edge ALREADY serves a certificate with the
+ *     expected fingerprint, installation is SKIPPED — a crash between install
+ *     and the database commit must not reinstall (or reissue); it goes
+ *     straight to activation commit. The fingerprint comparison is the proof
+ *     that the served certificate is exactly our candidate (SHA-256).
+ *  4. INSTALLATION through the shared provider path with its snapshot +
+ *     rollback protection: a failed install restores the previous cert pair
+ *     and reload — working TLS is preserved, the caller defers, nothing in
+ *     the database advanced.
+ *
+ * MUST be called while holding sslIssueLockKey(hostname) — the queue's
+ * dispatch holds it across issuance + installation; acquiring it here again
+ * would deadlock on the non-reentrant keyed mutex.
+ */
+export async function installDiscoveryServerCert(
+  hostname: string,
+  cert: ManualCert,
+  opts: {
+    /** Must match the domain row's serverId (ownership scope). */
+    serverId: string;
+    /** The candidate's SHA-256 fingerprint — the crash-recovery comparison. */
+    expectedFingerprint: string;
+  },
+): Promise<{ outcome: "installed" | "recovered"; result: SslResult }> {
+  const { domainRecord, owner } = await resolveAuthorizedDomain(hostname, {
+    action: "provision",
+    allowUnverified: true, // discovery verification is issuance-shaped; the queue owns eligibility
+    serverId: opts.serverId,
+  });
+  if (owner.kind !== "server") {
+    throw new ForbiddenError("Discovery certificate installation is restricted to server-owned domains.");
+  }
+  // Running-backend gate: same fresh-inspection contract as issuance.
+  await assertDiscoveryBackendFresh(owner, hostname);
+
+  return withSslProvider(owner, async ({ ssl }) => {
+    // Crash recovery BEFORE any disk write: is our certificate already served?
+    const current = await ssl.verifyCert(hostname);
+    if (current.verified && current.fingerprint && current.fingerprint === opts.expectedFingerprint) {
+      return { outcome: "recovered", result: current };
+    }
+    // Install (validate → snapshot → stage → activate, with rollback on any
+    // failure — the provider restores the previous pair and reload).
+    const result = await ssl.installCert(hostname, cert);
+    if (!result.verified) {
+      throw new AppError(
+        `The certificate for ${hostname} could not be installed; the previous certificate remains on the edge.`,
+        502,
+        "DISCOVERY_CERT_INSTALL_FAILED",
+      );
+    }
+    // Serving the first Origin CA certificate IS the server-domain verification
+    // evidence (same rule as ACME: first successful issuance verifies).
+    await repos.domain.markServerDomainVerified(domainRecord.id).catch(() => {});
+    return { outcome: "installed", result };
+  });
+}
+
 /** Preparing/finalizing an ACME order does not mutate the runtime. Retain the
  * provider only for that bounded request, never while waiting for manual DNS. */
 export async function withDomainDnsCertificateProvider<T>(

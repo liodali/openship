@@ -188,7 +188,12 @@ export function createDiscoveryTlsQueueRepo(db: Database) {
      * Frees the dedup slot for future renewal work. Returns whether THIS
      * caller's write won.
      */
-    async completeOperation(id: string, outcome: "issued" | "reused" | "superseded", now = new Date(), leasedBy?: string): Promise<boolean> {
+    async completeOperation(
+      id: string,
+      outcome: "issued" | "reused" | "superseded" | "installed" | "recovered",
+      now = new Date(),
+      leasedBy?: string,
+    ): Promise<boolean> {
       const completed = await db
         .update(operation)
         .set({ state: "complete", outcome, reason: null, leasedBy: null, leasedUntil: null, updatedAt: now })

@@ -749,6 +749,14 @@ export interface SslResult {
   expiresAt: string;
   issuer: string;
   /**
+   * SHA-256 fingerprint of the SERVED certificate (X509Certificate.fingerprint256
+   * form — colon-separated hex), when a real certificate was read. This is what
+   * lets callers prove "the edge is serving EXACTLY this certificate" without
+   * re-reading PEMs: crash-recovery between an install and its database commit
+   * compares this against the intended fingerprint instead of reinstalling.
+   */
+  fingerprint?: string;
+  /**
    * True only when a real certificate was read and parsed (expiresAt is then
    * valid). When false, `reason` explains why — which lets the persistence
    * layer tell "no cert yet" apart from "transient read failure" and avoid

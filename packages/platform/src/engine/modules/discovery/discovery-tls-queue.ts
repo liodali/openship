@@ -29,6 +29,8 @@ import {
 } from "../../lib/domain-ssl";
 import { createProvisionLock } from "../../lib/provision-lock";
 import { ensureOriginCaIssued } from "./origin-ca-issuance";
+import { installDiscoveryServerCert } from "../../lib/domain-ssl";
+import { decryptSecretField } from "../../lib/credential-encryption";
 import { readCredentialSecrets } from "../credentials/credential.service";
 import type { DiscoveryTlsOperation } from "@repo/db";
 
@@ -310,12 +312,60 @@ async function dispatchOriginCaIssuance(operation: DiscoveryTlsOperation, clock:
         return;
       }
       if (result.outcome === "issued") {
-        // The validated certificate is stored as candidate inventory; the
-        // Edge installation/activation dispatch advances active state.
-        await repos.discoveryTlsQueue.deferOperation(
+        // INSTALLATION PHASE — same dispatch, same per-hostname lock, fresh
+        // gates: policy generation and running-backend are re-checked right
+        // here (not at enqueue), then the shared installer puts the candidate
+        // on the server's edge with its rollback protection.
+        const generationBeforeInstall = await repos.discoveryTlsQueue.currentPolicyGeneration(
+          operation.serverId,
+          operation.hostname,
+        );
+        if (generationBeforeInstall === null) {
+          await defer(operation.id, `The domain record for ${operation.hostname} disappeared before installation; deferring.`, operation.attempts, now(), WORKER_ID);
+          return;
+        }
+        if (generationBeforeInstall > operation.policyGeneration) {
+          await repos.discoveryTlsQueue.completeOperation(operation.id, "superseded", now(), WORKER_ID);
+          return;
+        }
+        // The candidate inventory carries the PUBLIC certificate and the
+        // SEALED private key — unsealed exactly once, here, for the install.
+        const candidate = await repos.discoveryTlsIssuance.findLiveIssuance(operation.domainId);
+        if (
+          !candidate ||
+          candidate.state !== "candidate" ||
+          !candidate.certificatePem ||
+          !candidate.fingerprint ||
+          !candidate.keyEnc
+        ) {
+          await defer(operation.id, `The issued certificate inventory for ${operation.hostname} is incomplete; the next attempt retries.`, operation.attempts, now(), WORKER_ID);
+          return;
+        }
+        const keyPem = decryptSecretField(candidate.keyEnc);
+        if (!keyPem) {
+          // DEFINITIVE (not ambiguous): an unsealable key can never install.
+          await repos.discoveryTlsIssuance.markFailed(result.issuanceId, "the issued private key could not be unsealed for installation");
+          await defer(operation.id, `The pending private key for ${operation.hostname} could not be unsealed; the issuance was retired and a fresh one follows.`, operation.attempts, now(), WORKER_ID);
+          return;
+        }
+        const install = await installDiscoveryServerCert(
+          operation.hostname,
+          { certPem: candidate.certificatePem, keyPem },
+          { serverId: operation.serverId, expectedFingerprint: candidate.fingerprint },
+        );
+        if (!install.result.verified) {
+          await defer(operation.id, `The certificate for ${operation.hostname} is not serving yet; the previous certificate remains on the edge.`, operation.attempts, now(), WORKER_ID);
+          return;
+        }
+        // Durable activation commit: domain inventory (active provider, cert
+        // id, fingerprint, expiry) + the issuance row flips active — and the
+        // pending key material is wiped in the same transaction. A crash
+        // BEFORE this point recovers through the installer's fingerprint read
+        // (no reinstall, no reissue); a crash AFTER leaves a consistent state.
+        await repos.discoveryTlsIssuance.markActive({ issuanceId: result.issuanceId, domainId: operation.domainId });
+        await repos.discoveryTlsQueue.completeOperation(
           operation.id,
-          `Origin CA certificate issued (${result.certificateId}, expires ${result.expiresAt.toISOString().slice(0, 10)}); Edge installation dispatch is the next step.`,
-          retryAt(operation.attempts, now()),
+          install.outcome === "recovered" ? "recovered" : "installed",
           now(),
           WORKER_ID,
         );

@@ -3417,6 +3417,7 @@ ${serveLocation}
       domain,
       expiresAt,
       issuer: candidate.cert.renewable ? candidate.cert.issuer : "manual",
+      fingerprint: candidate.cert.fingerprint,
       verified: true,
       reason: "issued",
     };
@@ -3715,6 +3716,7 @@ ${serveLocation}
       domain,
       expiresAt: candidate.cert.expiresAt,
       issuer: candidate.cert.issuer || "certbot",
+      fingerprint: candidate.cert.fingerprint,
       verified: true,
     };
   }

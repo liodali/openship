@@ -139,7 +139,17 @@ export function createDiscoveryTlsIssuanceRepo(db: Database) {
           .where(eq(domain.id, input.domainId));
         await tx
           .update(issuance)
-          .set({ state: "active", updatedAt: now })
+          .set({
+            state: "active",
+            // Pending key material is wiped in the SAME transaction that makes
+            // the row active: the private key now lives only on the server's
+            // edge (installed alongside the certificate); the instance keeps
+            // no sealed copy after durable success. Rotation creates a NEW
+            // issuance with a NEW key, so nothing active ever needs this.
+            keyEnc: "",
+            reason: null,
+            updatedAt: now,
+          })
           .where(eq(issuance.id, input.issuanceId));
       });
     },
