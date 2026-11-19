@@ -157,7 +157,13 @@ describe("markActive (fenced activation commit)", () => {
       tlsActiveProvider: "cloudflare-origin-ca",
       sslStatus: "active",
       sslIssuer: "cloudflare-origin-ca",
-      verified: true, // both paths converge: recovery can never leave the domain unverified
+      // Verification lifecycle converges too — a newly discovered domain must
+      // not stay status "pending" with no verifiedAt while serving actively.
+      verified: true,
+      verifiedAt: expect.any(Date),
+      status: "active",
+      verifyAttempts: 0,
+      lastVerifyError: null,
     });
     expect(domainRow?.sslExpiresAt?.getTime()).toBe(new Date("2031-06-01").getTime());
     const activeRow = await repo.findIssuanceById(issuance.id);

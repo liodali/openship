@@ -91,12 +91,14 @@ vi.mock("@repo/db", () => ({
 // ── Platform / lock / env isolation ─────────────────────────────────────────
 
 const activateCert = vi.fn(async () => {});
+const takeoverRenewalOwnership = vi.fn(async () => {});
 const sslProvider = {
   certificateManagement: "certbot" as const,
   provisionCert,
   verifyCert,
   installCert,
   activateCert,
+  takeoverRenewalOwnership,
 };
 
 vi.mock("../config/env", () => ({
@@ -136,6 +138,7 @@ beforeEach(() => {
     fingerprint: "aa:bb:cc:dd",
   });
   activateCert.mockClear();
+  takeoverRenewalOwnership.mockClear();
   provisionCert.mockClear();
   state.markedVerified = 0;
   state.sslPatches = [];
@@ -404,6 +407,13 @@ describe("server-scoped domain TLS (ownerType='server')", () => {
     );
     expect(install.outcome).toBe("recovered"); // crash between staging and reload
     expect(installCert).not.toHaveBeenCalled(); // no reinstall
+    // The interrupted renewal-ownership takeover completes FIRST (mirrors
+    // writeCert's stage → remove renewal record → activate): Certbot must
+    // never be left able to replace the Origin CA certificate.
+    expect(takeoverRenewalOwnership).toHaveBeenCalledWith("app.example.com");
+    expect(takeoverRenewalOwnership.mock.invocationCallOrder[0]).toBeLessThan(
+      activateCert.mock.invocationCallOrder[0]!,
+    );
     // The matching pair is EXPLICITLY activated: a staged-but-unloaded cert
     // must not be committed as active (verifyCert reads files, not the edge).
     expect(activateCert).toHaveBeenCalledWith("app.example.com");
