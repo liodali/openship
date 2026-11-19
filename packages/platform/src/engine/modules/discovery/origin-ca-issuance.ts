@@ -41,6 +41,10 @@ import type { OriginCaValidityDays } from "@repo/core";
 
 /** Bounded recovery attempts before a pending_create becomes a visible failure. */
 const MAX_RECOVERY_ATTEMPTS = 5;
+/** After the conclusive-attempt budget is exhausted, recovery READS continue
+ *  on a slow cadence (the intent still blocks creation) — a certificate that
+ *  only surfaced at the provider later must remain adoptable. */
+const RECOVERY_RECHECK_INTERVAL_MS = 30 * 60_000;
 
 export interface OriginCaIssuanceInput {
   domainId: string;
@@ -163,16 +167,21 @@ async function recoverPendingCreate(
   const row = await repos.discoveryTlsIssuance.findIssuanceById(issuanceId);
   if (!row) return { outcome: "unknown", reason: "the pending issuance row disappeared" };
 
-  // BOUND FIRST: an intent whose recovery attempts are exhausted stays
-  // pending_create — it keeps BLOCKING fresh creation (the original create
-  // may still have landed at the provider). Only a decisive finding (match,
-  // revoked match, policy supersede, unreadable key) or an operator can
-  // retire it. No provider I/O happens past this point for this row.
+  // BUDGET: attempts count CONCLUSIVE sweeps (provider looked at, no match
+  // found). Once exhausted, the intent still keeps BLOCKING fresh creation —
+  // the original create may have landed — but recovery READS continue on a
+  // slow cadence (throttled by the row's last mutation) so a certificate
+  // that surfaced later can still be adopted. Only a decisive finding (match,
+  // revoked match, policy supersede, unreadable key) or an operator retires
+  // the row.
   if (row.attempts >= MAX_RECOVERY_ATTEMPTS) {
-    return {
-      outcome: "unknown",
-      reason: `certificate creation outcome stayed unknown after ${row.attempts} recovery attempts; the unresolved issuance keeps blocking fresh creation until it is matched or superseded`,
-    };
+    const sinceLastProgress = Date.now() - new Date(row.updatedAt).getTime();
+    if (Number.isFinite(sinceLastProgress) && sinceLastProgress < RECOVERY_RECHECK_INTERVAL_MS) {
+      return {
+        outcome: "unknown",
+        reason: `certificate creation outcome stayed unknown after ${row.attempts} recovery attempts; the unresolved issuance keeps blocking fresh creation; recovery re-checks on a slow cadence`,
+      };
+    }
   }
   // Cheap local check BEFORE any provider I/O: an intent whose key cannot be
   // unsealed (e.g. restored from a cross-instance dump that stripped it) can
@@ -192,14 +201,14 @@ async function recoverPendingCreate(
   try {
     summaries = await listOriginCaCertificates(apiToken, row.zoneId);
   } catch (error) {
-    // Unreadable provider: pending state stays visible; retryable later.
+    // TRANSIENT provider failure: NOT a recovery attempt — it consumed no
+    // conclusive budget (the provider was never actually looked at), so five
+    // Cloudflare outages must never permanently blind recovery.
     reportCaughtError(error, "platform/engine/modules/discovery/origin-ca-issuance");
-    const attempts = await repos.discoveryTlsIssuance.recordRecoveryAttempt(
-      issuanceId,
-      "provider list failed during recovery; will retry",
-      new Date(),
-    );
-    return { outcome: "unknown", reason: `provider unreadable during recovery (attempt ${attempts})` };
+    return {
+      outcome: "unknown",
+      reason: "provider unreadable during recovery; retrying without consuming the recovery budget",
+    };
   }
 
   const intended = csrHostnames(hostname);
@@ -221,21 +230,22 @@ async function recoverPendingCreate(
       continue; // a single unreadable candidate is skipped, not fatal
     }
     if (!summary.certificate) continue;
-    // A decisive match that turns out REVOKED is a definitive dead end: the
-    // intent can never complete, so retire it (freeing the slot for a
-    // legitimate replacement) instead of sweeping forever.
-    if (summary.revokedAt) {
-      await repos.discoveryTlsIssuance.markFailed(issuanceId, "the matching certificate is revoked; a fresh issuance follows");
-      return {
-        outcome: "unknown",
-        reason: "the matching certificate is revoked; the issuance was retired",
-      };
-    }
     try {
       const validated = validateOriginCaCertificate(summary.certificate, {
         hostname,
         publicKeyPem: keyPem,
       });
+      // DECISIVE: hostname + key + trust all agree — this is OUR certificate.
+      // Only NOW does revocation retire the intent: a same-hostname
+      // certificate that belongs to ANOTHER key must never free the live
+      // slot (it says nothing about our original create).
+      if (summary.revokedAt) {
+        await repos.discoveryTlsIssuance.markFailed(issuanceId, "the matching certificate is revoked; a fresh issuance follows");
+        return {
+          outcome: "unknown",
+          reason: "the matching certificate is revoked; the issuance was retired",
+        };
+      }
       // DECISIVE match: hostname + key + validity all agree with our intent.
       const recorded = await repos.discoveryTlsIssuance.recordCandidate(issuanceId, {
         certificateId: candidate.id,
@@ -255,8 +265,9 @@ async function recoverPendingCreate(
     }
   }
 
-  // Inconclusive: bounded visible attempts. The row REMAINS pending_create —
-  // unresolved recovery must never free the live slot for a blind re-create.
+  // Inconclusive CONCLUSIVE sweep: bounded visible attempts. The row REMAINS
+  // pending_create — unresolved recovery must never free the live slot for a
+  // blind re-create; past the budget the row re-checks on the slow cadence.
   const attempts = await repos.discoveryTlsIssuance.recordRecoveryAttempt(
     issuanceId,
     "recovery could not match a created certificate to this intent yet",
