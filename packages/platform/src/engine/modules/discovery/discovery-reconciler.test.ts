@@ -55,7 +55,10 @@ const discoveryRepo = {
 };
 
 const domainRepo = {
-  ensureServerDomain: vi.fn(async () => ({ domain: { id: "dom_x" }, created: true })),
+  ensureServerDomain: vi.fn(async () => ({
+    domain: { id: "dom_x", tlsProvider: null, tlsActiveProvider: null, sslExpiresAt: null },
+    created: true,
+  })),
   getTlsPolicy: vi.fn(async () => ({ tlsProvider: "letsencrypt", tlsPolicyGeneration: 1 })),
 };
 
@@ -569,6 +572,60 @@ describe("reconcileServerDiscovery", () => {
     const summary = await reconcileServerDiscovery(SERVER(), "org_1", { edge: target });
     expect(summary.failed[0].reason).toContain("serving Edge cannot probe");
     expect(target.routing.registerRoute).not.toHaveBeenCalled();
+  });
+
+  it("ENQUEUES Cloudflare work when the provider is desired but the domain has no active material yet", async () => {
+    domainRepo.getTlsPolicy.mockResolvedValueOnce({ tlsProvider: "cloudflare-origin-ca", tlsPolicyGeneration: 2 });
+    state.dueApply = [binding({ tlsDeclaredProvider: "cloudflare-origin-ca" })];
+    await reconcileServerDiscovery(SERVER(), "org_1", { edge: edge() });
+    await vi.waitFor(() => expect(tlsQueueRepo.ensureOperation).toHaveBeenCalled());
+    expect(tlsQueueRepo.ensureOperation).toHaveBeenCalledWith(
+      expect.objectContaining({ hostname: "app.example.com", source: "exact", provider: "cloudflare-origin-ca" }),
+    );
+  });
+
+  it("a SATISFIED Cloudflare domain (active provider + comfortable expiry) does not churn operations", async () => {
+    domainRepo.getTlsPolicy.mockResolvedValueOnce({
+      tlsProvider: "cloudflare-origin-ca",
+      tlsValidityDays: 365 as const,
+      tlsPolicyGeneration: 2,
+    } as never);
+    domainRepo.ensureServerDomain.mockResolvedValueOnce({
+      domain: {
+        id: "dom_x",
+        tlsProvider: "cloudflare-origin-ca",
+        tlsActiveProvider: "cloudflare-origin-ca",
+        sslExpiresAt: new Date(Date.now() + 300 * 86_400_000), // well outside the rotation horizon
+      },
+      created: false,
+    } as never);
+    state.dueApply = [binding({ tlsDeclaredProvider: "cloudflare-origin-ca" })];
+    await reconcileServerDiscovery(SERVER(), "org_1", { edge: edge() });
+    // nothing to reconcile: the queue is not churned by every scan
+    expect(tlsQueueRepo.ensureOperation).not.toHaveBeenCalled();
+  });
+
+  it("a Cloudflare domain whose active inventory is NEAR EXPIRY enqueues rotation", async () => {
+    domainRepo.getTlsPolicy.mockResolvedValueOnce({
+      tlsProvider: "cloudflare-origin-ca",
+      tlsValidityDays: 365 as const,
+      tlsPolicyGeneration: 2,
+    } as never);
+    domainRepo.ensureServerDomain.mockResolvedValueOnce({
+      domain: {
+        id: "dom_x",
+        tlsProvider: "cloudflare-origin-ca",
+        tlsActiveProvider: "cloudflare-origin-ca",
+        sslExpiresAt: new Date(Date.now() + 10 * 86_400_000), // inside the horizon
+      },
+      created: false,
+    } as never);
+    state.dueApply = [binding({ tlsDeclaredProvider: "cloudflare-origin-ca" })];
+    await reconcileServerDiscovery(SERVER(), "org_1", { edge: edge() });
+    await vi.waitFor(() => expect(tlsQueueRepo.ensureOperation).toHaveBeenCalled());
+    expect(tlsQueueRepo.ensureOperation).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: "cloudflare-origin-ca" }),
+    );
   });
 });
 

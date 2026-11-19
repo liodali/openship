@@ -24,6 +24,8 @@ const otherRepos = vi.hoisted(() => ({
     tlsPolicyGeneration: 3,
   })),
   credentialFind: vi.fn(async () => ({ id: "cred_cf", provider: "cloudflare" })),
+  domainFindById: vi.fn(async (): Promise<Record<string, unknown> | undefined> => undefined),
+  countByCertificateId: vi.fn(async (): Promise<number> => 0),
 }));
 
 const issuanceInventory = vi.hoisted(() => ({
@@ -31,12 +33,17 @@ const issuanceInventory = vi.hoisted(() => ({
   markActive: vi.fn(async (): Promise<{ activated: boolean; reason?: string }> => ({ activated: true })),
   markSuperseded: vi.fn(async (): Promise<void> => {}),
   markFailed: vi.fn(async (): Promise<void> => {}),
+  findByCertificateId: vi.fn(async (_id?: string): Promise<Record<string, unknown> | undefined> => undefined),
 }));
 
 vi.mock("@repo/db", () => ({
   repos: {
     discoveryTlsQueue: queue,
-    domain: { getTlsPolicy: otherRepos.getTlsPolicy },
+    domain: {
+      getTlsPolicy: otherRepos.getTlsPolicy,
+      findById: otherRepos.domainFindById,
+      countByCertificateId: otherRepos.countByCertificateId,
+    },
     credential: { findById: otherRepos.credentialFind },
     discoveryTlsIssuance: issuanceInventory,
   },
@@ -45,11 +52,13 @@ vi.mock("@repo/db", () => ({
 const manageDomainSsl = vi.fn(async () => ({ verified: true } as { verified: boolean } & Record<string, unknown>));
 
 const installDiscoveryServerCert = vi.fn();
+const readServerDomainCert = vi.fn();
 vi.mock("../../lib/domain-ssl", () => ({
   manageDomainSsl,
   assertDiscoveryBackendFresh: vi.fn(async () => {}),
   sslIssueLockKey: vi.fn((hostname: string) => `lock:${hostname}`),
   installDiscoveryServerCert: (...args: unknown[]) => installDiscoveryServerCert(...args),
+  readServerDomainCert: (hostname: string, opts: { serverId: string }) => readServerDomainCert(hostname, opts),
   DiscoveryBackendUnavailableError: class DiscoveryBackendUnavailableError extends AppError {},
 }));
 vi.mock("../../lib/credential-encryption", () => ({
@@ -66,6 +75,13 @@ vi.mock("../credentials/credential.service", () => ({
 }));
 const ensureOriginCaIssued = vi.fn();
 vi.mock("./origin-ca-issuance", () => ({ ensureOriginCaIssued: ensureOriginCaIssued }));
+const revokeOriginCaCertificate = vi.fn(async (_token: string, _id: string): Promise<void> => {});
+vi.mock("./origin-ca-client", () => ({
+  createOriginCaCertificate: vi.fn(),
+  getOriginCaCertificate: vi.fn(),
+  listOriginCaCertificates: vi.fn(),
+  revokeOriginCaCertificate: (token: string, id: string) => revokeOriginCaCertificate(token, id),
+}));
 
 const { drainDiscoveryTlsQueue, resetDiscoveryTlsQueuePacingForTests } = await import("./discovery-tls-queue");
 
@@ -123,6 +139,11 @@ beforeEach(() => {
     tlsPolicyGeneration: 3,
   });
   otherRepos.credentialFind.mockResolvedValue({ id: "cred_cf", provider: "cloudflare" });
+  otherRepos.domainFindById.mockResolvedValue(undefined);
+  otherRepos.countByCertificateId.mockResolvedValue(0);
+  readServerDomainCert.mockResolvedValue({ domain: "app.example.com", verified: false, reason: "missing" });
+  revokeOriginCaCertificate.mockResolvedValue(undefined);
+  issuanceInventory.findByCertificateId.mockResolvedValue(undefined);
   ensureOriginCaIssued.mockResolvedValue({
     outcome: "issued",
     issuanceId: "dti_1",
@@ -446,6 +467,101 @@ describe("execution dispatch", () => {
       expect.any(Date),
       expect.any(String),
     );
+  });
+
+  it("EDGE repair: active inventory whose edge fingerprint is missing forces a fresh issuance", async () => {
+    const { clock } = fakeClock();
+    otherRepos.domainFindById.mockResolvedValue({
+      id: "dom_1",
+      tlsCertificateId: "ca_old",
+      tlsActiveProvider: "cloudflare-origin-ca",
+      tlsCertificateFingerprint: "old:fp",
+    });
+    readServerDomainCert.mockResolvedValue({ domain: "app.example.com", verified: false, reason: "missing" });
+  revokeOriginCaCertificate.mockResolvedValue(undefined);
+  issuanceInventory.findByCertificateId.mockResolvedValue(undefined);
+    const op = operation({ provider: "cloudflare-origin-ca" });
+    queue.claimDueOperations.mockResolvedValueOnce([op]).mockResolvedValue([]);
+    await drainDiscoveryTlsQueue(clock);
+    // The database metadata alone is not trusted: the repair flag reaches the
+    // issuance flow, bypassing the reuse short-circuit.
+    expect(ensureOriginCaIssued).toHaveBeenCalledWith(
+      expect.objectContaining({ activeMaterialHealthy: false }),
+    );
+  });
+
+  it("EDGE repair: a MISMATCHED served fingerprint also forces repair", async () => {
+    const { clock } = fakeClock();
+    otherRepos.domainFindById.mockResolvedValue({
+      id: "dom_1",
+      tlsCertificateId: "ca_old",
+      tlsActiveProvider: "cloudflare-origin-ca",
+      tlsCertificateFingerprint: "old:fp",
+    });
+    readServerDomainCert.mockResolvedValue({
+      domain: "app.example.com", verified: true, fingerprint: "somebody:elses", issuer: "manual",
+    });
+    const op = operation({ provider: "cloudflare-origin-ca" });
+    queue.claimDueOperations.mockResolvedValueOnce([op]).mockResolvedValue([]);
+    await drainDiscoveryTlsQueue(clock);
+    expect(ensureOriginCaIssued).toHaveBeenCalledWith(
+      expect.objectContaining({ activeMaterialHealthy: false }),
+    );
+  });
+
+  it("a transient edge read failure does NOT trigger repair (the reuse decision stands)", async () => {
+    const { clock } = fakeClock();
+    otherRepos.domainFindById.mockResolvedValue({
+      id: "dom_1",
+      tlsCertificateId: "ca_old",
+      tlsActiveProvider: "cloudflare-origin-ca",
+      tlsCertificateFingerprint: "old:fp",
+    });
+    readServerDomainCert.mockResolvedValue({ domain: "app.example.com", verified: false, reason: "read_error" });
+    const op = operation({ provider: "cloudflare-origin-ca" });
+    queue.claimDueOperations.mockResolvedValueOnce([op]).mockResolvedValue([]);
+    await drainDiscoveryTlsQueue(clock);
+    expect(ensureOriginCaIssued).toHaveBeenCalledWith(
+      expect.objectContaining({ activeMaterialHealthy: true }),
+    );
+  });
+
+  it("ROTATION cleanup: the replaced certificate is revoked when exclusively managed and unused", async () => {
+    const { clock } = fakeClock();
+    // The domain previously held a DIFFERENT, exclusively managed certificate.
+    otherRepos.domainFindById
+      .mockResolvedValueOnce({ id: "dom_1", tlsCertificateId: "ca_previous" }) // pre-activation inventory
+      .mockResolvedValueOnce({ id: "dom_1", tlsCertificateId: "ca_previous" }); // post-issue read in dispatch
+    issuanceInventory.findByCertificateId.mockImplementation(
+      async (id?: string): Promise<Record<string, unknown> | undefined> =>
+        id === "ca_previous" ? { id: "dti_old", certificateId: "ca_previous" } : undefined,
+    );
+    const op = operation({ provider: "cloudflare-origin-ca" });
+    queue.claimDueOperations.mockResolvedValueOnce([op]).mockResolvedValue([]);
+    await drainDiscoveryTlsQueue(clock);
+    expect(revokeOriginCaCertificate).toHaveBeenCalledWith("tok_cf", "ca_previous");
+    expect(queue.completeOperation).toHaveBeenCalledWith(op.id, "installed", expect.any(Date), expect.any(String));
+  });
+
+  it("CLEANUP restraint: a certificate another domain still uses is NOT revoked", async () => {
+    const { clock } = fakeClock();
+    otherRepos.domainFindById.mockResolvedValue({ id: "dom_1", tlsCertificateId: "ca_shared" });
+    issuanceInventory.findByCertificateId.mockResolvedValue({ id: "dti_old", certificateId: "ca_shared" });
+    otherRepos.countByCertificateId.mockResolvedValue(1); // another domain references it
+    const op = operation({ provider: "cloudflare-origin-ca" });
+    queue.claimDueOperations.mockResolvedValueOnce([op]).mockResolvedValue([]);
+    await drainDiscoveryTlsQueue(clock);
+    expect(revokeOriginCaCertificate).not.toHaveBeenCalled();
+  });
+
+  it("CLEANUP restraint: an unmanaged (adopted/uploaded) certificate is NOT revoked", async () => {
+    const { clock } = fakeClock();
+    otherRepos.domainFindById.mockResolvedValue({ id: "dom_1", tlsCertificateId: "ca_uploaded" });
+    issuanceInventory.findByCertificateId.mockResolvedValue(undefined); // no issuance row → unmanaged
+    const op = operation({ provider: "cloudflare-origin-ca" });
+    queue.claimDueOperations.mockResolvedValueOnce([op]).mockResolvedValue([]);
+    await drainDiscoveryTlsQueue(clock);
+    expect(revokeOriginCaCertificate).not.toHaveBeenCalled();
   });
 
   it("an ambiguous Origin CA outcome stays durably deferred with the recovery reason", async () => {

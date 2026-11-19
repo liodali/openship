@@ -364,6 +364,65 @@ describe("recovery of a pending_create", () => {
 });
 
 describe("reuse of healthy active inventory", () => {
+  it("an interrupted ROTATION resumes the candidate INSTEAD of reusing the still-active certificate", async () => {
+    // Old cert still active on the domain + a live candidate from the
+    // rotation issuance: the candidate must win (resume), not the reuse.
+    domainRepo.findById.mockResolvedValue({
+      tlsCertificateId: "ca_old",
+      tlsActiveProvider: "cloudflare-origin-ca",
+      tlsCertificateFingerprint: "old:fp",
+      sslExpiresAt: new Date(Date.now() + 300 * 86_400_000),
+    });
+    issuanceRepo.findLiveIssuance.mockResolvedValue({
+      id: "dti_rotation",
+      state: "candidate",
+      certificatePem: CERT_PEM,
+      certificateId: "ca_new",
+      fingerprint: "new:fp",
+      expiresOn: new Date(Date.now() + 300 * 86_400_000),
+      keyEnc: "enc1:x",
+      hostname: "site.example.com",
+    });
+    const result = await ensureOriginCaIssued(INPUT);
+    expect(result).toMatchObject({ outcome: "issued", issuanceId: "dti_rotation", certificateId: "ca_new" });
+  });
+
+  it("NEAR-EXPIRY active inventory is ROTATED, not reused", async () => {
+    // 90-day cert with 10 days left: inside the rotation horizon.
+    domainRepo.findById.mockResolvedValue({
+      tlsCertificateId: "ca_aging",
+      tlsActiveProvider: "cloudflare-origin-ca",
+      tlsCertificateFingerprint: "old:fp",
+      sslExpiresAt: new Date(Date.now() + 10 * 86_400_000),
+    });
+    const result = await ensureOriginCaIssued(INPUT); // validityDays: 90 → horizon 14d
+    expect(result.outcome).toBe("issued"); // fresh issuance ran
+    expect(issuanceRepo.startIssuance).toHaveBeenCalled();
+  });
+
+  it("comfortable inventory (outside the horizon) is reused with zero provider requests", async () => {
+    domainRepo.findById.mockResolvedValue({
+      tlsCertificateId: "ca_fresh",
+      tlsActiveProvider: "cloudflare-origin-ca",
+      tlsCertificateFingerprint: "new:fp",
+      sslExpiresAt: new Date(Date.now() + 300 * 86_400_000),
+    });
+    const result = await ensureOriginCaIssued(INPUT);
+    expect(result.outcome).toBe("reused");
+  });
+
+  it("UNHEALTHY edge material (the worker's repair flag) bypasses reuse entirely", async () => {
+    domainRepo.findById.mockResolvedValue({
+      tlsCertificateId: "ca_lost",
+      tlsActiveProvider: "cloudflare-origin-ca",
+      tlsCertificateFingerprint: "lost:fp",
+      sslExpiresAt: new Date(Date.now() + 300 * 86_400_000),
+    });
+    const result = await ensureOriginCaIssued({ ...INPUT, activeMaterialHealthy: false });
+    expect(result.outcome).toBe("issued"); // repair: fresh issuance replaces the lost material
+    expect(issuanceRepo.startIssuance).toHaveBeenCalled();
+  });
+
   it("returns reused with ZERO provider requests when the domain records active matching material", async () => {
     domainRepo.findById.mockResolvedValue({
       tlsCertificateId: "ca_live",
