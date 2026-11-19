@@ -28,7 +28,8 @@ const otherRepos = vi.hoisted(() => ({
 
 const issuanceInventory = vi.hoisted(() => ({
   findLiveIssuance: vi.fn(async (): Promise<Record<string, unknown> | undefined> => undefined),
-  markActive: vi.fn(async (): Promise<void> => {}),
+  markActive: vi.fn(async (): Promise<{ activated: boolean; reason?: string }> => ({ activated: true })),
+  markSuperseded: vi.fn(async (): Promise<void> => {}),
   markFailed: vi.fn(async (): Promise<void> => {}),
 }));
 
@@ -137,7 +138,8 @@ beforeEach(() => {
     fingerprint: "ab:cd",
     keyEnc: "enc1:sealed",
   });
-  issuanceInventory.markActive.mockResolvedValue(undefined);
+  issuanceInventory.markActive.mockResolvedValue({ activated: true });
+  issuanceInventory.markSuperseded.mockResolvedValue(undefined);
   issuanceInventory.markFailed.mockResolvedValue(undefined);
   installDiscoveryServerCert.mockResolvedValue({
     outcome: "installed",
@@ -279,8 +281,14 @@ describe("execution dispatch", () => {
       { certPem: "-----BEGIN CERTIFICATE-----", keyPem: "UNSEALED-PRIVATE-KEY" },
       { serverId: op.serverId, expectedFingerprint: "ab:cd" },
     );
-    // Durable activation: domain inventory + issuance flip (key wiped inside).
-    expect(issuanceInventory.markActive).toHaveBeenCalledWith({ issuanceId: "dti_1", domainId: op.domainId });
+    // Durable activation — FENCED with the issued intent.
+    expect(issuanceInventory.markActive).toHaveBeenCalledWith({
+      issuanceId: "dti_1",
+      domainId: op.domainId,
+      expectedServerId: op.serverId,
+      expectedTlsProvider: "cloudflare-origin-ca",
+      expectedPolicyGeneration: op.policyGeneration,
+    });
     // Honest completion naming the install outcome.
     expect(queue.completeOperation).toHaveBeenCalledWith(op.id, "installed", expect.any(Date), expect.any(String));
     expect(queue.deferOperation).not.toHaveBeenCalled();
@@ -296,8 +304,34 @@ describe("execution dispatch", () => {
     queue.claimDueOperations.mockResolvedValueOnce([op]).mockResolvedValue([]);
     await drainDiscoveryTlsQueue(clock);
     expect(installDiscoveryServerCert).toHaveBeenCalled(); // the fingerprint CHECK ran
-    expect(issuanceInventory.markActive).toHaveBeenCalledWith({ issuanceId: "dti_1", domainId: op.domainId });
+    expect(issuanceInventory.markActive).toHaveBeenCalledWith(
+      expect.objectContaining({ issuanceId: "dti_1", domainId: op.domainId }),
+    );
     expect(queue.completeOperation).toHaveBeenCalledWith(op.id, "recovered", expect.any(Date), expect.any(String));
+  });
+
+  it("a policy change DURING installation is caught by the activation fence — nothing commits", async () => {
+    const { clock } = fakeClock();
+    // The generation passed the pre-install check, but the FENCED transaction
+    // (last word, under the write lock) sees the row has moved on.
+    issuanceInventory.markActive.mockResolvedValue({
+      activated: false,
+      reason: "the TLS policy generation moved to 9 while installation ran",
+    });
+    const op = operation({ provider: "cloudflare-origin-ca" });
+    queue.claimDueOperations.mockResolvedValueOnce([op]).mockResolvedValue([]);
+    await drainDiscoveryTlsQueue(clock);
+    // The fence arguments carry the intent the certificate was issued FOR.
+    expect(issuanceInventory.markActive).toHaveBeenCalledWith({
+      issuanceId: "dti_1",
+      domainId: op.domainId,
+      expectedServerId: op.serverId,
+      expectedTlsProvider: "cloudflare-origin-ca",
+      expectedPolicyGeneration: op.policyGeneration,
+    });
+    // Superseded intent retired; the stale activation never lands.
+    expect(issuanceInventory.markSuperseded).toHaveBeenCalledWith("dti_1");
+    expect(queue.completeOperation).toHaveBeenCalledWith(op.id, "superseded", expect.any(Date), expect.any(String));
   });
 
   it("a policy change between issuance and install supersedes the operation", async () => {

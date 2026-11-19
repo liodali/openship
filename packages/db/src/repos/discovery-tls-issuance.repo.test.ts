@@ -128,8 +128,19 @@ describe("candidate state machine", () => {
   });
 });
 
-describe("markActive (activation commit)", () => {
-  it("commits the domain inventory (id + fingerprint + active provider + expiry) and flips the row active", async () => {
+describe("markActive (fenced activation commit)", () => {
+  function fence(over: Record<string, unknown> = {}) {
+    return {
+      issuanceId: "",
+      domainId: DOMAIN,
+      expectedServerId: SERVER,
+      expectedTlsProvider: "cloudflare-origin-ca",
+      expectedPolicyGeneration: 2,
+      ...over,
+    };
+  }
+
+  it("commits the domain inventory (id + fingerprint + active provider + expiry + VERIFIED) and wipes pending key material", async () => {
     const { issuance } = await repo.startIssuance(startInput());
     await repo.recordCandidate(issuance.id, {
       certificateId: "ca_live",
@@ -137,7 +148,8 @@ describe("markActive (activation commit)", () => {
       fingerprint: "11:22:33",
       expiresOn: new Date("2031-06-01"),
     });
-    await repo.markActive({ issuanceId: issuance.id, domainId: DOMAIN });
+    const activation = await repo.markActive(fence({ issuanceId: issuance.id }));
+    expect(activation.activated).toBe(true);
     const domainRow = await db.query.domain.findFirst({ where: eq(schema.domain.id, DOMAIN) });
     expect(domainRow).toMatchObject({
       tlsCertificateId: "ca_live",
@@ -145,6 +157,7 @@ describe("markActive (activation commit)", () => {
       tlsActiveProvider: "cloudflare-origin-ca",
       sslStatus: "active",
       sslIssuer: "cloudflare-origin-ca",
+      verified: true, // both paths converge: recovery can never leave the domain unverified
     });
     expect(domainRow?.sslExpiresAt?.getTime()).toBe(new Date("2031-06-01").getTime());
     const activeRow = await repo.findIssuanceById(issuance.id);
@@ -157,12 +170,64 @@ describe("markActive (activation commit)", () => {
     expect(fresh.created).toBe(true);
   });
 
+  it("a policy generation that moved during installation fences the commit — NOTHING writes", async () => {
+    const { issuance } = await repo.startIssuance(startInput());
+    await repo.recordCandidate(issuance.id, {
+      certificateId: "ca_stale",
+      certificatePem: "pem",
+      fingerprint: "aa",
+      expiresOn: new Date("2031-01-01"),
+    });
+    const before = await db.query.domain.findFirst({ where: eq(schema.domain.id, DOMAIN) });
+    const activation = await repo.markActive(fence({ issuanceId: issuance.id, expectedPolicyGeneration: 1 }));
+    expect(activation).toMatchObject({ activated: false, reason: expect.stringContaining("generation") });
+    // Domain untouched — nothing NEW was written by this refused activation…
+    const domainRow = await db.query.domain.findFirst({ where: eq(schema.domain.id, DOMAIN) });
+    expect(domainRow?.tlsCertificateId).toBe(before?.tlsCertificateId ?? null);
+    expect(domainRow?.tlsCertificateFingerprint).toBe(before?.tlsCertificateFingerprint ?? null);
+    // …and the pending key is NOT wiped (the intent is retired instead).
+    const row = await repo.findIssuanceById(issuance.id);
+    expect(row?.state).toBe("candidate");
+    expect(row?.keyEnc).not.toBe("");
+  });
+
+  it("a provider or ownership change fences the commit too", async () => {
+    const { issuance } = await repo.startIssuance(startInput());
+    await repo.recordCandidate(issuance.id, {
+      certificateId: "ca_x",
+      certificatePem: "pem",
+      fingerprint: "bb",
+      expiresOn: new Date("2031-01-01"),
+    });
+    const providerSwitch = await repo.markActive(fence({ issuanceId: issuance.id, expectedTlsProvider: "letsencrypt" }));
+    expect(providerSwitch.activated).toBe(false);
+    const ownershipMove = await repo.markActive(fence({ issuanceId: issuance.id, expectedServerId: "srv_other" }));
+    expect(ownershipMove.activated).toBe(false);
+    // …and neither refusal retired the issuance (the caller decides).
+    expect((await repo.findIssuanceById(issuance.id))?.state).toBe("candidate");
+  });
+
+  it("markSuperseded retires a CANDIDATE too (a fenced refusal frees the live slot)", async () => {
+    const { issuance } = await repo.startIssuance(startInput());
+    await repo.recordCandidate(issuance.id, {
+      certificateId: "ca_old",
+      certificatePem: "pem",
+      fingerprint: "cc",
+      expiresOn: new Date("2031-01-01"),
+    });
+    await repo.markSuperseded(issuance.id);
+    expect((await repo.findIssuanceById(issuance.id))?.state).toBe("failed");
+    // The slot is free: the next generation issues its own material.
+    const fresh = await repo.startIssuance(startInput());
+    expect(fresh.created).toBe(true);
+  });
+
   it("does nothing for a row without a candidate (crash-safe no-op)", async () => {
     // The domain may already carry inventory from an earlier test's activation;
     // the point is that THIS call changes nothing new.
     const { issuance } = await repo.startIssuance(startInput());
     const before = await db.query.domain.findFirst({ where: eq(schema.domain.id, DOMAIN) });
-    await repo.markActive({ issuanceId: issuance.id, domainId: DOMAIN });
+    await repo.markActive({ issuanceId: issuance.id, domainId: DOMAIN, expectedServerId: SERVER, expectedTlsProvider: "cloudflare-origin-ca", expectedPolicyGeneration: 2 });
     const domainRow = await db.query.domain.findFirst({ where: eq(schema.domain.id, DOMAIN) });
     expect(domainRow?.tlsCertificateId).toBe(before?.tlsCertificateId ?? null);
     expect(domainRow?.tlsCertificateFingerprint).toBe(before?.tlsCertificateFingerprint ?? null);

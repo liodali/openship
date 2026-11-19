@@ -90,11 +90,13 @@ vi.mock("@repo/db", () => ({
 
 // ── Platform / lock / env isolation ─────────────────────────────────────────
 
+const activateCert = vi.fn(async () => {});
 const sslProvider = {
   certificateManagement: "certbot" as const,
   provisionCert,
   verifyCert,
   installCert,
+  activateCert,
 };
 
 vi.mock("../config/env", () => ({
@@ -133,6 +135,7 @@ beforeEach(() => {
     expiresAt: new Date(Date.now() + 90 * 86_400_000).toISOString(),
     fingerprint: "aa:bb:cc:dd",
   });
+  activateCert.mockClear();
   provisionCert.mockClear();
   state.markedVerified = 0;
   state.sslPatches = [];
@@ -369,7 +372,7 @@ describe("server-scoped domain TLS (ownerType='server')", () => {
     expect(provisionCert).toHaveBeenCalled();
   });
 
-  it("installs an Origin CA candidate on the server edge and marks the domain verified", async () => {
+  it("installs an Origin CA candidate on the server edge; verification converges via the activation commit", async () => {
     const install = await installDiscoveryServerCert(
       "app.example.com",
       { certPem: "-----BEGIN CERTIFICATE-----", keyPem: "-----BEGIN PRIVATE KEY-----" },
@@ -380,11 +383,13 @@ describe("server-scoped domain TLS (ownerType='server')", () => {
       "app.example.com",
       { certPem: "-----BEGIN CERTIFICATE-----", keyPem: "-----BEGIN PRIVATE KEY-----" },
     );
-    // Serving the first certificate IS the server-domain verification.
-    expect(state.markedVerified).toBe(1);
+    // Verification is committed WITH the active inventory (markActive) so
+    // both install paths converge — the installer does not write it alone
+    // (a swallowed write here could leave the domain permanently unverified).
+    expect(state.markedVerified).toBe(0);
   });
 
-  it("SKIPS installation when the edge already serves the expected fingerprint (crash recovery)", async () => {
+  it("SKIPS installation when the staged cert matches but EXPLICITLY ACTIVATES it (files are not proof)", async () => {
     verifyCert.mockResolvedValueOnce({
       domain: "app.example.com",
       verified: true,
@@ -397,9 +402,30 @@ describe("server-scoped domain TLS (ownerType='server')", () => {
       { certPem: "x", keyPem: "y" },
       { serverId: "srv_tls", expectedFingerprint: "aa:bb:cc:dd" },
     );
-    expect(install.outcome).toBe("recovered"); // crash between install and commit
+    expect(install.outcome).toBe("recovered"); // crash between staging and reload
     expect(installCert).not.toHaveBeenCalled(); // no reinstall
-    expect(state.markedVerified).toBe(0); // activation commit happens outside
+    // The matching pair is EXPLICITLY activated: a staged-but-unloaded cert
+    // must not be committed as active (verifyCert reads files, not the edge).
+    expect(activateCert).toHaveBeenCalledWith("app.example.com");
+  });
+
+  it("a provider WITHOUT activation cannot recover — it installs fully instead", async () => {
+    // Remove activateCert from the provider for this test only.
+    const original = sslProvider.activateCert;
+    const providerWithout = sslProvider as { activateCert?: typeof activateCert };
+    delete providerWithout.activateCert;
+    try {
+      const install = await installDiscoveryServerCert(
+        "app.example.com",
+        { certPem: "-----BEGIN CERTIFICATE-----", keyPem: "-----BEGIN PRIVATE KEY-----" },
+        { serverId: "srv_tls", expectedFingerprint: "aa:bb:cc:dd" },
+      );
+      expect(install.outcome).toBe("installed"); // full install, not a trust-files recovery
+      expect(installCert).toHaveBeenCalled();
+      expect(activateCert).not.toHaveBeenCalled();
+    } finally {
+      providerWithout.activateCert = original;
+    }
   });
 
   it("a DIFFERENT served fingerprint does not recover — it installs", async () => {

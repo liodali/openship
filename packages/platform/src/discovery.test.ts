@@ -158,6 +158,10 @@ const domainRepo = {
 
 vi.mock("@repo/db", () => ({
   repos: { discovery: discoveryRepo, discoveryTlsQueue: tlsQueueRepo, domain: domainRepo, credential: credentialRepo },
+  // Advisory-lock primitives used by the per-hostname provision lock (policy
+  // mutations serialize with TLS-queue installation); in-process stubs here.
+  withAdvisoryLock: vi.fn(async (_key: string, fn: () => Promise<unknown>) => fn()),
+  tryAcquireAdvisoryLock: vi.fn(async () => ({ release: async () => {} })),
 }));
 
 /** Org-scoped credential lookups (the CF policy path's token source). */
@@ -191,6 +195,7 @@ vi.mock("./engine/lib/domain-ssl", () => ({
   manageDomainSsl: (...args: unknown[]) => tlsVerify(...(args as [])),
   certComfortablyValid: (result: { verified?: boolean; expiresAt?: string | null }) =>
     !!result.verified && !!result.expiresAt && new Date(result.expiresAt).getTime() > Date.now(),
+  sslIssueLockKey: (hostname: string) => `lock:${hostname}`,
 }));
 
 const sweep = vi.fn(async () => ({
