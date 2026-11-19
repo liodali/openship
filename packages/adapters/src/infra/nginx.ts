@@ -3048,6 +3048,19 @@ ${serveLocation}
     return this.withConfigLock(() => this.activateRouteCert(domain));
   }
 
+  /**
+   * Complete the renewal-ownership takeover of an already-staged manual
+   * install: remove the certbot renewal record that writeCert removes AFTER
+   * staging (see writeCert — "A manual certificate also takes over Certbot's
+   * renewal ownership"). Crash recovery between those two steps must finish
+   * this removal before trusting the staged pair, or certbot's next run
+   * replaces the manual certificate.
+   */
+  async takeoverRenewalOwnership(domain: string): Promise<void> {
+    assertValidDomain(domain);
+    await this.withConfigLock(() => this._rm(this.renewalConfPath(domain)));
+  }
+
   private async activateRouteCert(domain: string): Promise<void> {
     assertValidDomain(domain);
     // Rewrite the config with SSL now that certs exist

@@ -1342,6 +1342,11 @@ export async function installDiscoveryServerCert(
     const current = await ssl.verifyCert(hostname);
     const onDiskMatches = current.verified && current.fingerprint && current.fingerprint === opts.expectedFingerprint;
     if (onDiskMatches && ssl.activateCert) {
+      // Complete the interrupted renewal-ownership takeover BEFORE activating
+      // (mirrors writeCert's stage → remove renewal record → activate): a
+      // crash between staging and the removal otherwise leaves Certbot able
+      // to REPLACE the Origin CA certificate on its next run.
+      await ssl.takeoverRenewalOwnership?.(hostname);
       await ssl.activateCert(hostname);
       return { outcome: "recovered", result: current };
     }

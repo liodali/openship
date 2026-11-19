@@ -176,7 +176,17 @@ export function createDiscoveryTlsIssuanceRepo(db: Database) {
             sslStatus: "active",
             sslExpiresAt: row.expiresOn,
             sslIssuer: "cloudflare-origin-ca",
+            // Verification lifecycle, the same fields markServerDomainVerified
+            // writes — committed WITH the inventory so both the fresh-install
+            // and crash-recovery paths converge identically (a newly discovered
+            // domain must not stay status "pending"/verifiedAt-less while
+            // serving an active certificate).
             verified: true,
+            verifiedAt: now,
+            status: "active",
+            verifyAttempts: 0,
+            lastVerifyError: null,
+            lastCheckedAt: now,
             updatedAt: now,
           })
           .where(eq(domain.id, input.domainId));

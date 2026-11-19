@@ -186,6 +186,17 @@ export interface SslProvider {
   installCert(domain: string, cert: ManualCert): Promise<SslResult>;
 
   /**
+   * Complete the renewal-ownership takeover of a previously staged manual
+   * install: remove the ACME renewal record the installer was about to
+   * remove. Powers crash recovery — a crash between staging a manual pair
+   * and this removal otherwise leaves Certbot able to REPLACE the manual
+   * certificate on its next run, silently discarding the installed material.
+   * Idempotent; providers whose installs never touch an ACME renewer may
+   * omit it.
+   */
+  takeoverRenewalOwnership?(domain: string): Promise<void>;
+
+  /**
    * Read-only verification: report whether a valid cert is currently present
    * for the domain (and its expiry/issuer) WITHOUT running certbot. Powers the
    * "Recheck SSL" action and lets a redeploy confirm an existing cert instead
