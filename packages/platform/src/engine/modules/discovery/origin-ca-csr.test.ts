@@ -96,4 +96,46 @@ describe("Origin CA CSR construction", () => {
     expect(fixtureKey).toContain("-----BEGIN PRIVATE KEY-----");
     expect(createPublicKey(fixtureKey).export({ type: "spki", format: "pem" })).toContain("BEGIN PUBLIC KEY");
   });
+
+  // INDEPENDENT PARSER: OpenSSL is the reference implementation for CSR
+  // parsing — it loads the public key, verifies the self-signature, and reads
+  // the subject/SAN with zero shared code with our encoder. If the DER is
+  // malformed (nested SPKI, missing Extension wrapper, broken BIT STRING),
+  // these commands fail before any assertion below can pass.
+  it("parses with OpenSSL: public key loads, self-signature verifies, CN + SAN read back", async () => {
+    const { mkdtemp, writeFile, rm } = await import("node:fs/promises");
+    const { execFile } = await import("node:child_process");
+    const { promisify } = await import("node:util");
+    const run = promisify(execFile);
+    const dir = await mkdtemp("origin-ca-csr-");
+    try {
+      for (const hostname of ["site.example.com", "app.multi-label.example.org"]) {
+        const key = generateOriginCaKey();
+        const csrPath = `${dir}/req.csr`;
+        await writeFile(csrPath, csrToPem(buildOriginCaCsr({ hostname, privateKeyPem: key.privateKeyPem })));
+        // 1. The CSR parses and its self-signature verifies (implies the
+        //    public key LOADS — an invalid SPKI makes openssl abort here).
+        const verifyOut = await run("openssl", ["req", "-in", csrPath, "-noout", "-verify"]);
+        expect(verifyOut.stdout).toContain("Certificate request self-signature verify OK");
+        // 2. The subject CN carries the hostname.
+        const subjectOut = await run("openssl", ["req", "-in", csrPath, "-noout", "-subject"]);
+        expect(subjectOut.stdout).toContain(`CN=${hostname}`);
+        // 3. The requested extension is a readable SAN with the dNSName.
+        const textOut = await run("openssl", ["req", "-in", csrPath, "-noout", "-text"]);
+        expect(textOut.stdout).toContain("Subject Alternative Name");
+        expect(textOut.stdout).toContain(`DNS:${hostname}`);
+        // 4. The CSR's public key equals our generated public key (the SPKI
+        //    carried the RAW key, not a nested structure).
+        const pubPath = `${dir}/pub.pem`;
+        await run("openssl", ["req", "-in", csrPath, "-noout", "-pubkey", "-out", pubPath]);
+        const pubFromCsr = (await import("node:fs")).readFileSync(pubPath, "utf8");
+        expect(pubFromCsr).toContain("-----BEGIN PUBLIC KEY-----");
+        const fromCsr = createHash("sha256").update(createPublicKey(pubFromCsr).export({ type: "spki", format: "der" })).digest("hex");
+        const generated = createHash("sha256").update(createPublicKey(key.publicKeyPem).export({ type: "spki", format: "der" })).digest("hex");
+        expect(fromCsr).toBe(generated);
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });

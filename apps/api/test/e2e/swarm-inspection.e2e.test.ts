@@ -247,7 +247,7 @@ describeDockerE2E("Swarm inspection and ownership on independent Docker daemons"
       config: { replicas: 2, imageRepository: "registry:5000/openship/swarm-e2e" },
       builder: async () => builder,
       resolveRegistryAuth: async () => undefined,
-      gatewayImage: "openresty/openresty:1.27.1.2-0-alpine",
+      gatewayImage: "openresty/openresty:1.31.8.1-alpine",
     };
     let runtime = new SwarmRuntime(runtimeOptions);
     const logger = new BuildLogger(() => {});

@@ -41,12 +41,23 @@ const client = vi.hoisted(() => ({
   get: vi.fn(),
   list: vi.fn(),
 }));
-vi.mock("./origin-ca-client", () => ({
-  createOriginCaCertificate: client.create,
-  getOriginCaCertificate: client.get,
-  listOriginCaCertificates: client.list,
-  revokeOriginCaCertificate: vi.fn(),
-}));
+vi.mock("./origin-ca-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./origin-ca-client")>();
+  // The mocked transport functions still pass their results through the REAL
+  // normalizer — the wire speaks snake_case and the orchestrator must see
+  // exactly what production sees (revoked_at → revokedAt, expires_on → …).
+  return {
+    createOriginCaCertificate: async (...args: Parameters<typeof actual.createOriginCaCertificate>) =>
+      actual.normalizeOriginCaCertificate((await client.create(...args)) as never),
+    getOriginCaCertificate: async (...args: Parameters<typeof actual.getOriginCaCertificate>) =>
+      actual.normalizeOriginCaCertificate((await client.get(...args)) as never),
+    listOriginCaCertificates: async (...args: Parameters<typeof actual.listOriginCaCertificates>) => {
+      const rows = (await client.list(...args)) as never[];
+      return rows.map((raw) => actual.normalizeOriginCaCertificate(raw as never));
+    },
+    revokeOriginCaCertificate: vi.fn(),
+  };
+});
 
 /** Validation is mocked to PASS by default (the orchestrator generates its key
  *  internally, so fixture certs cannot pair); recovery tests restore the REAL
@@ -168,12 +179,13 @@ describe("recovery of a pending_create", () => {
   it("a matching hostname+key certificate is ADOPTED without a create request", async () => {
     issuanceRepo.findLiveIssuance.mockResolvedValue(pending);
     issuanceRepo.findIssuanceById.mockResolvedValue(pending);
-    client.list.mockResolvedValue([{ id: "ca_orphan", hostnames: ["site.example.com"], createdAt: "2026-01-01" }]);
+    client.list.mockResolvedValue([{ id: "ca_orphan", hostnames: ["site.example.com"], created_on: "2026-01-01" }]);
     client.get.mockResolvedValue({ id: "ca_orphan", certificate: CERT_PEM, hostnames: ["site.example.com"] });
     const result = await ensureOriginCaIssued(INPUT);
     expect(result).toMatchObject({ outcome: "issued", certificateId: "ca_orphan" });
     expect(client.create).not.toHaveBeenCalled(); // recovery never re-creates
-    expect(client.list).toHaveBeenCalled();
+    // The sweep reads the PERSISTED zone (the list endpoint requires it).
+    expect(client.list).toHaveBeenCalledWith("tok", "zone_1");
     expect(client.get).toHaveBeenCalledWith("tok", "ca_orphan");
     expect(issuanceRepo.recordCandidate).toHaveBeenCalledWith("dti_pending", expect.objectContaining({ certificateId: "ca_orphan" }));
   });
@@ -206,16 +218,72 @@ describe("recovery of a pending_create", () => {
     expect(issuanceRepo.markFailed).not.toHaveBeenCalled();
   });
 
-  it("recovery exhausted without a match marks the issuance FAILED (visible, bounded)", async () => {
-    issuanceRepo.findLiveIssuance.mockResolvedValue({ ...pending, attempts: 4 });
-    issuanceRepo.findIssuanceById.mockResolvedValue({ ...pending, attempts: 4 });
-    issuanceRepo.recordRecoveryAttempt.mockResolvedValue(5); // hits the bound
-    await ensureOriginCaIssued(INPUT);
+  it("an EXHAUSTED unresolved recovery keeps blocking fresh creation — no provider I/O, no re-create", async () => {
+    // attempts already at the bound: the outcome is still unknown, so the row
+    // STAYS pending_create (the original create may have landed at the
+    // provider). The slot must not free for a blind duplicate.
+    issuanceRepo.findLiveIssuance.mockResolvedValue({ ...pending, attempts: 5 });
+    issuanceRepo.findIssuanceById.mockResolvedValue({ ...pending, attempts: 5 });
+    const result = await ensureOriginCaIssued(INPUT);
+    expect(result.outcome).toBe("unknown");
+    expect(client.list).not.toHaveBeenCalled(); // bounded: no sweep past the bound
     expect(client.create).not.toHaveBeenCalled();
+    expect(issuanceRepo.recordCandidate).not.toHaveBeenCalled();
+    expect(issuanceRepo.markFailed).not.toHaveBeenCalled(); // NOT retired
+    expect(result).toMatchObject({ outcome: "unknown", reason: expect.stringContaining("keeps blocking fresh creation") });
+  });
+
+  it("an unreadable sealed intent is DEFINITIVE (not ambiguous): retired so a fresh issuance can follow", async () => {
+    // Unlike an unknown outcome, an unsealable key can never complete.
+    issuanceRepo.findLiveIssuance.mockResolvedValue(pending);
+    issuanceRepo.findIssuanceById.mockResolvedValue(pending);
+    encryption.decryptSecretField.mockReturnValue(undefined); // e.g. cross-instance restore with "" sentinel
+    const result = await ensureOriginCaIssued(INPUT);
+    expect(result.outcome).toBe("unknown");
+    expect(client.list).not.toHaveBeenCalled(); // no sweep possible without the key
     expect(issuanceRepo.markFailed).toHaveBeenCalledWith(
       "dti_pending",
-      expect.stringContaining("stayed unknown after 5 recovery attempts"),
+      expect.stringContaining("could not be unsealed"),
     );
+  });
+
+  it("a decisive match that is REVOKED retires the issuance (replacement is legitimate, not a duplicate)", async () => {
+    validate.impl = null;
+    const actualValidator = await importOriginalValidator();
+    // The GET response is a REAL chained cert (validation passes under the
+    // test anchors) — only its revoked_at makes it a dead end.
+    const revokedMatch = {
+      id: "ca_revoked",
+      hostnames: ["site.example.com"],
+      revoked_at: "2026-06-01T00:00:00Z", // snake_case, as the wire sends it
+      certificate: CERT_PEM,
+    };
+    issuanceRepo.findLiveIssuance.mockResolvedValue(pending);
+    issuanceRepo.findIssuanceById.mockResolvedValue(pending);
+    encryption.decryptSecretField.mockReturnValue(KEY_PEM); // pairs with CERT_PEM
+    client.list.mockResolvedValue([{ id: "ca_revoked", hostnames: ["site.example.com"] }]);
+    client.get.mockResolvedValue(revokedMatch);
+    const result = await ensureOriginCaIssued(INPUT);
+    expect(result.outcome).toBe("unknown");
+    expect(issuanceRepo.markFailed).toHaveBeenCalledWith(
+      "dti_pending",
+      expect.stringContaining("matching certificate is revoked"),
+    );
+    void actualValidator;
+  });
+
+  it("REVOKED certificates are skipped in the sweep — a later valid match is still adopted", async () => {
+    issuanceRepo.findLiveIssuance.mockResolvedValue(pending);
+    issuanceRepo.findIssuanceById.mockResolvedValue(pending);
+    encryption.decryptSecretField.mockReturnValue(KEY_PEM);
+    client.list.mockResolvedValue([
+      { id: "ca_revoked_first", hostnames: ["site.example.com"], revoked_at: "2026-06-01T00:00:00Z" },
+      { id: "ca_valid_second", hostnames: ["site.example.com"] },
+    ]);
+    client.get.mockResolvedValue({ id: "ca_valid_second", certificate: CERT_PEM, hostnames: ["site.example.com"] });
+    const result = await ensureOriginCaIssued(INPUT);
+    expect(result).toMatchObject({ outcome: "issued", certificateId: "ca_valid_second" });
+    expect(client.get).not.toHaveBeenCalledWith("tok", "ca_revoked_first"); // filtered before GET
   });
 });
 
