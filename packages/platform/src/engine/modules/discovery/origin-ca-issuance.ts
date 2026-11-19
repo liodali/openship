@@ -144,12 +144,15 @@ function publicKeyFor(live: { keyEnc: string }): string {
 }
 
 /**
- * RECOVERY for a pending_create row (plan step 4): list certificates the token
- * can see, filter to matching hostname sets created after the intent, GET each
- * candidate and compare the certificate's public key against our pending key
- * (the decisive, unforgeable match). A definitive match is adopted; an
- * inconclusive sweep records ONE bounded recovery attempt and returns unknown
- * — no create request is issued from here.
+ * RECOVERY for a pending_create row (plan step 4): list certificates the
+ * token can see IN THE PERSISTED ZONE (the list endpoint requires it), filter
+ * to matching hostname sets, GET each candidate and compare the certificate's
+ * public key against our pending key (the decisive, unforgeable match). A
+ * definitive match is adopted; a revoked match is definitive too — the intent
+ * is retired so a legitimate replacement can be issued. An inconclusive sweep
+ * records ONE bounded recovery attempt and returns unknown — no create request
+ * is issued from here, and an EXHAUSTED intent keeps occupying the live slot:
+ * unresolved outcomes must never free the way for a blind re-create.
  */
 async function recoverPendingCreate(
   issuanceId: string,
@@ -160,9 +163,34 @@ async function recoverPendingCreate(
   const row = await repos.discoveryTlsIssuance.findIssuanceById(issuanceId);
   if (!row) return { outcome: "unknown", reason: "the pending issuance row disappeared" };
 
+  // BOUND FIRST: an intent whose recovery attempts are exhausted stays
+  // pending_create — it keeps BLOCKING fresh creation (the original create
+  // may still have landed at the provider). Only a decisive finding (match,
+  // revoked match, policy supersede, unreadable key) or an operator can
+  // retire it. No provider I/O happens past this point for this row.
+  if (row.attempts >= MAX_RECOVERY_ATTEMPTS) {
+    return {
+      outcome: "unknown",
+      reason: `certificate creation outcome stayed unknown after ${row.attempts} recovery attempts; the unresolved issuance keeps blocking fresh creation until it is matched or superseded`,
+    };
+  }
+  // Cheap local check BEFORE any provider I/O: an intent whose key cannot be
+  // unsealed (e.g. restored from a cross-instance dump that stripped it) can
+  // never complete — retire it now; a fresh issuance follows next cycle.
+  let keyPem: string;
+  try {
+    keyPem = publicKeyFor(row);
+  } catch (error) {
+    await repos.discoveryTlsIssuance.markFailed(issuanceId, error instanceof Error ? error.message : "key unseal failed");
+    return { outcome: "unknown", reason: "the pending private key could not be unsealed; the issuance was retired" };
+  }
+  if (!row.zoneId) {
+    return { outcome: "unknown", reason: "the pending issuance has no persisted zone to sweep" };
+  }
+
   let summaries: OriginCaCertificateSummary[];
   try {
-    summaries = await listOriginCaCertificates(apiToken);
+    summaries = await listOriginCaCertificates(apiToken, row.zoneId);
   } catch (error) {
     // Unreadable provider: pending state stays visible; retryable later.
     reportCaughtError(error, "platform/engine/modules/discovery/origin-ca-issuance");
@@ -183,14 +211,6 @@ async function recoverPendingCreate(
       summary.hostnames.every((name) => intended.includes(name.toLowerCase())),
   );
 
-  let keyPem: string;
-  try {
-    keyPem = publicKeyFor(row);
-  } catch (error) {
-    await repos.discoveryTlsIssuance.markFailed(issuanceId, error instanceof Error ? error.message : "key unseal failed");
-    return { outcome: "unknown", reason: "the pending private key could not be unsealed" };
-  }
-
   for (const candidate of candidates) {
     if (!candidate.id) continue;
     let summary: OriginCaCertificateSummary;
@@ -201,6 +221,16 @@ async function recoverPendingCreate(
       continue; // a single unreadable candidate is skipped, not fatal
     }
     if (!summary.certificate) continue;
+    // A decisive match that turns out REVOKED is a definitive dead end: the
+    // intent can never complete, so retire it (freeing the slot for a
+    // legitimate replacement) instead of sweeping forever.
+    if (summary.revokedAt) {
+      await repos.discoveryTlsIssuance.markFailed(issuanceId, "the matching certificate is revoked; a fresh issuance follows");
+      return {
+        outcome: "unknown",
+        reason: "the matching certificate is revoked; the issuance was retired",
+      };
+    }
     try {
       const validated = validateOriginCaCertificate(summary.certificate, {
         hostname,
@@ -225,20 +255,13 @@ async function recoverPendingCreate(
     }
   }
 
-  // Inconclusive: bounded visible attempts, then a visible failure — never a
-  // blind re-create.
+  // Inconclusive: bounded visible attempts. The row REMAINS pending_create —
+  // unresolved recovery must never free the live slot for a blind re-create.
   const attempts = await repos.discoveryTlsIssuance.recordRecoveryAttempt(
     issuanceId,
     "recovery could not match a created certificate to this intent yet",
     new Date(),
   );
-  if (attempts >= MAX_RECOVERY_ATTEMPTS) {
-    await repos.discoveryTlsIssuance.markFailed(
-      issuanceId,
-      `Certificate creation outcome stayed unknown after ${attempts} recovery attempts; create a new issuance to try again.`,
-    );
-    return { outcome: "unknown", reason: "recovery exhausted without a match; issuance marked failed" };
-  }
   return {
     outcome: "unknown",
     reason: `certificate creation outcome is unknown (recovery attempt ${attempts}); no duplicate is created`,

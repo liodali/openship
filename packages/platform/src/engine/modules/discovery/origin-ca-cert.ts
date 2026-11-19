@@ -1,17 +1,15 @@
 /**
  * Origin CA certificate validation (plan §3 step 5): a returned certificate is
  * TRUSTED only after structural validation — hostname match, public-key match
- * against the private key we generated, live validity window, and a Cloudflare
- * Origin CA issuer structure. The issuer DISPLAY string alone is not proof of
- * anything; it is checked only as a structural sanity gate alongside the
- * parse itself (a malformed/non-certificate body must be rejected, not stored).
- *
- * Chain validation against Cloudflare's published Origin CA trust roots is a
- * tracked follow-up (the edge's own validation and this structural gate bound
- * the risk until then); every other acceptance criterion here is decisive.
+ * against the private key we generated, live validity window, and SIGNATURE
+ * VERIFICATION against the trusted Cloudflare Origin CA roots. The issuer
+ * display string is NOT consulted at all: anyone can write "Cloudflare Origin
+ * CA" in an issuer field, so trust comes exclusively from the verified chain
+ * (origin-ca-trust.ts), never from certificate text.
  */
 import { createHash, createPublicKey, X509Certificate, type KeyObject } from "node:crypto";
 import { AppError } from "@repo/core";
+import { verifyOriginCaChain } from "./origin-ca-trust";
 
 export interface ValidatedOriginCaCertificate {
   fingerprint: string;
@@ -35,12 +33,23 @@ function spkiFingerprint(key: KeyObject | string): string {
 export function validateOriginCaCertificate(
   certificatePem: string,
   expected: { hostname: string; publicKeyPem: string },
+  /** Overridable for tests: real roots by default (bundled Cloudflare Origin CA anchors). */
+  options: { trustAnchors?: readonly string[] } = {},
 ): ValidatedOriginCaCertificate {
   let cert: X509Certificate;
   try {
     cert = new X509Certificate(certificatePem);
   } catch {
     throw new OriginCaCertificateInvalidError("the response is not a parsable X.509 certificate");
+  }
+
+  // TRUST: the certificate's signature path must terminate at a trusted
+  // Cloudflare Origin CA root. This runs FIRST — an untrusted certificate has
+  // no business being compared, matched, or stored regardless of its fields.
+  if (!verifyOriginCaChain(certificatePem, options.trustAnchors)) {
+    throw new OriginCaCertificateInvalidError(
+      "the certificate is not issued by a trusted Cloudflare Origin CA root (issuer text is not proof)",
+    );
   }
 
   // Hostname: SAN/CN must cover the hostname we asked for (the CSR's exact name).
@@ -68,16 +77,6 @@ export function validateOriginCaCertificate(
   }
   if (validFrom > now) throw new OriginCaCertificateInvalidError("the certificate is not yet valid");
   if (validTo <= now) throw new OriginCaCertificateInvalidError("the certificate is already expired");
-
-  // Structural issuer gate: Origin CA certificates name Cloudflare's Origin CA
-  // organization as issuer. Combined with the parse, this rejects an arbitrary
-  // certificate body masquerading as an Origin CA response (it is a sanity
-  // gate — chain trust is validated separately at installation, and the edge
-  // validates the chain again per connection).
-  const issuer = cert.issuer;
-  if (!/Cloudflare|Origin CA/i.test(issuer)) {
-    throw new OriginCaCertificateInvalidError(`the certificate issuer is not a Cloudflare Origin CA issuer (${issuer.replaceAll("\n", ", ")})`);
-  }
 
   const hostnames = (cert.subjectAltName ?? "")
     .split(",")

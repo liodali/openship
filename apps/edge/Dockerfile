@@ -13,7 +13,13 @@
 # nginx.conf + the openship Lua are BAKED here (complete, no runtime edits), so
 # the api never installs OpenResty or Lua in docker mode.
 # ─────────────────────────────────────────────────────────────────────────────
-FROM openresty/openresty:1.27.1.1-alpine
+# nginx-core CVE bump (2026-11): 1.27.1.1 → 1.31.8.1 (nginx 1.27.1 → 1.31.8),
+# picking up the nginx 1.31.2–1.31.8 security batch. The 2026-11-18 nginx
+# 1.31.9/1.30.7 advisory (HTTP/2 RCEs CVE-2026-123007 / CVE-2026-123633 et al.)
+# is NOT covered yet: OpenResty 1.31.9.1 is committed upstream but unpublished
+# at the time of this bump — move this pin to 1.31.9.1-alpine the moment that
+# image exists (openresty tracks nginx mainline only; there is no 1.30.x line).
+FROM openresty/openresty:1.31.8.1-alpine
 
 # certbot → managed TLS via http-01 STANDALONE: certbot binds a loopback alt-port
 # (49180) transiently and the edge proxies /.well-known/acme-challenge/ to it

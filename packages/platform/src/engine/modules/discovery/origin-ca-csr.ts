@@ -105,6 +105,26 @@ function derContextTag(tagNumber: number, ...content: Uint8Array[]): Uint8Array 
   return der(0xa0 | tagNumber, ...content);
 }
 
+/** Minimal bounded DER TLV reader — just enough to strip the SPKI shell. */
+function readDerTlv(
+  bytes: Uint8Array,
+  offset: number,
+): { tag: number; contentStart: number; contentEnd: number; next: number } {
+  const tag = bytes[offset]!;
+  let pos = offset + 1;
+  let length = bytes[pos]!;
+  pos += 1;
+  if (length & 0x80) {
+    const count = length & 0x7f;
+    length = 0;
+    for (let i = 0; i < count; i++) {
+      length = (length << 8) | bytes[pos]!;
+      pos += 1;
+    }
+  }
+  return { tag, contentStart: pos, contentEnd: pos + length, next: pos + length };
+}
+
 const OID_SHA256_RSA = "1.2.840.113549.1.1.11";
 const OID_COMMON_NAME = "2.5.4.3";
 const OID_EXTENSION_REQUEST = "1.2.840.113549.1.9.14";
@@ -124,6 +144,20 @@ function spkiDerFromPem(publicKeyPem: string): Uint8Array {
   return new Uint8Array(Buffer.from(body, "base64"));
 }
 
+/** The RAW RSA public key DER (SEQUENCE { INTEGER n, INTEGER e }). The SPKI
+ *  PEM wraps key || algorithm — the CSR's BIT STRING must carry ONLY the key
+ *  itself, NOT the enclosing SPKI (nesting the SPKI here produces an invalid
+ *  public key that OpenSSL refuses to load). */
+function rawPublicKeyFromSpkiDer(spki: Uint8Array): Uint8Array {
+  const spkiTlv = readDerTlv(spki, 0); // SEQUENCE — the outer SPKI shell
+  if (spkiTlv.tag !== 0x30) throw new Error("Unexpected public key structure");
+  const algId = readDerTlv(spki, spkiTlv.contentStart); // child 1: AlgorithmIdentifier
+  const bitString = readDerTlv(spki, algId.next); // child 2: BIT STRING
+  if (bitString.tag !== 0x03) throw new Error("Unexpected public key structure");
+  if (spki[bitString.contentStart] !== 0) throw new Error("Unexpected public key padding");
+  return spki.slice(bitString.contentStart + 1, bitString.contentEnd);
+}
+
 /**
  * Build a DER-encoded PKCS#10 CSR for `hostname` signed by `privateKeyPem`.
  * Subject: CN=<hostname> (O=Openship Discovery). Requested extension: SAN
@@ -137,16 +171,21 @@ export function buildOriginCaCsr(input: { hostname: string; privateKeyPem: strin
   const publicKeyPem = createPublicKey(input.privateKeyPem).export({ type: "spki", format: "pem" }).toString();
   const publicKeyInfo = derSequence(
     derSequence(derOid(OID_RSA_ENCRYPTION), der(0x05)),
-    derBitString(spkiDerFromPem(publicKeyPem)),
+    derBitString(rawPublicKeyFromSpkiDer(spkiDerFromPem(publicKeyPem))),
   );
   const subject = derSequence(derSet(derSequence(derOid(OID_COMMON_NAME), derUtf8String(hostname))));
+  // Extension = SEQUENCE { extnID OID, extnValue OCTET STRING { SAN DER } };
+  // the extnValue CONTAINS the DER of a SEQUENCE OF GeneralNames (the dNSName
+  // is the context tag [2] IMPLICIT IA5String).
   const sanExtension = derSequence(
     derOid(OID_SUBJECT_ALT_NAME),
-    der(0x04, derSequence(der(0x82, new TextEncoder().encode(hostname)))),
+    derOctetString(derSequence(der(0x82, new TextEncoder().encode(hostname)))),
   );
+  // extensionRequest's SET value is a SEQUENCE OF Extension — the Extension
+  // itself must be WRAPPED in that sequence.
   const attributes = derContextTag(
     0,
-    derSequence(derOid(OID_EXTENSION_REQUEST), derSet(sanExtension)),
+    derSequence(derOid(OID_EXTENSION_REQUEST), derSet(derSequence(sanExtension))),
   );
   const certificationRequestInfo = derSequence(
     derInteger(0),

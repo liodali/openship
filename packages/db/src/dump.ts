@@ -1221,6 +1221,12 @@ export const ENCRYPTED_COLUMNS: ReadonlyArray<EncryptedColumnSpec> = [
   // it is undecryptable off-instance and must be lifted into the passphrase bundle.
   { table: "server_github_auth", column: "tokenEncrypted" },
   { table: "server_github_auth", column: "serverKeyPrivateEncrypted" },
+  // Origin CA issuance intent: the pending PRIVATE KEY for a certificate
+  // request, sealed with the enc1 envelope. Undecryptable off-instance (same
+  // BETTER_AUTH_SECRET-derived key as credential secrets) — cross-host moves
+  // strip it to the "" sentinel; the issuance row then self-heals (the
+  // recovery path retires an unreadable intent and re-issues).
+  { table: "discovery_tls_issuance", column: "keyEnc" },
   // NOT NULL with no default, so the restore-side redaction writes the "" sentinel
   // when no bundle is supplied — same shape as env_var.value.
   { table: "github_deploy_key", column: "privateKeyEncrypted" },
