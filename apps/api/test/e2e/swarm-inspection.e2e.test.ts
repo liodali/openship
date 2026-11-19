@@ -247,6 +247,11 @@ describeDockerE2E("Swarm inspection and ownership on independent Docker daemons"
       config: { replicas: 2, imageRepository: "registry:5000/openship/swarm-e2e" },
       builder: async () => builder,
       resolveRegistryAuth: async () => undefined,
+      // Latest PUBLISHED openresty (nginx 1.31.8). The edge's own nginx 1.31.9
+      // CVE fix is a from-source build (apps/edge/Dockerfile, openresty#1166)
+      // and can't be pulled here; production swarm gateways use the openship-edge
+      // image via resolveEdgeImage() and DO carry the fix. Move this to
+      // 1.31.9.1-alpine once the official image publishes.
       gatewayImage: "openresty/openresty:1.31.8.1-alpine",
     };
     let runtime = new SwarmRuntime(runtimeOptions);

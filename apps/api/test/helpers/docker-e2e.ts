@@ -22,8 +22,16 @@
  */
 
 import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { describe } from "vitest";
 import { DockerRuntime, resolveLocalDockerSocketPath } from "@repo/adapters";
+
+const execFileAsync = promisify(execFile);
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "../../../..");
 
 /** CI sets this. It converts "no daemon" from a skip into a failure. */
 export const DOCKER_E2E_REQUIRED = process.env.RUN_DOCKER_E2E === "1";
@@ -78,4 +86,42 @@ export async function requireDocker(): Promise<void> {
       `Start a daemon, or select its \`docker context\` / set DOCKER_HOST if it ` +
       `isn't at the default socket.`,
   );
+}
+
+/**
+ * The OpenResty the edge ACTUALLY ships, for the real-image E2E suites — read
+ * from the Dockerfile so a base bump can never leave them testing a version
+ * nothing ships.
+ *
+ * Two regimes, detected from the file itself:
+ *  - Normal: the first FROM is the pullable base image; return it verbatim.
+ *  - Interim from-source build (nginx 1.31.9 CVE fixes, openresty#1166 — the
+ *    official 1.31.9.1 image is unpublished): the first FROM is the alpine
+ *    BUILDER, and the openresty the edge ships is compiled in the
+ *    `openresty-build` stage. Build THAT stage (`docker build --target`,
+ *    layer-cached across runs) and return its tag, so the suites still test
+ *    the shipping nginx. When the Dockerfile returns to a single pullable
+ *    FROM, this falls back to reading it — no test edit needed.
+ */
+export async function edgeBaseImage(): Promise<string> {
+  const dockerfile = await readFile(join(REPO_ROOT, "apps", "edge", "Dockerfile"), "utf8");
+  if (/^FROM\s+\S+\s+AS\s+openresty-build\b/mi.test(dockerfile)) {
+    const tag = "openship-edge-e2e:openresty-build";
+    await execFileAsync(
+      "docker",
+      [
+        "build", "--target", "openresty-build",
+        "-t", tag,
+        "-f", join(REPO_ROOT, "apps", "edge", "Dockerfile"),
+        REPO_ROOT,
+      ],
+      // A cold compile of OpenSSL + PCRE2 + OpenResty takes minutes; cached
+      // rebuilds are seconds. The output is voluminous (make -j).
+      { timeout: 30 * 60_000, maxBuffer: 64 * 1024 * 1024 },
+    );
+    return tag;
+  }
+  const from = dockerfile.match(/^FROM\s+(\S+)/m)?.[1];
+  if (!from) throw new Error("apps/edge/Dockerfile has no FROM line");
+  return from;
 }
