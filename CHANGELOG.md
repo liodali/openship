@@ -29,6 +29,8 @@ Runtime security notices use the signed feed published from `security-advisories
   keep the source draining indefinitely. Restore stream access when the controller resumes,
   and link server preparation to its build view while deployment reads remain available.
 
+## 0.9.12-fork.4
+
 ### Security
 
 - Edge: build OpenResty 1.31.9.1 (nginx 1.31.9) from the pinned, sha256-verified upstream
