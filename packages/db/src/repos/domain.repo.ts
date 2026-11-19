@@ -694,6 +694,16 @@ export function createDomainRepo(db: Database) {
      * success flips the row verified + active without any TXT check. No project
      * admission locks — server domains have no project lifecycle.
      */
+    /** How many OTHER domains reference a certificate (replacement cleanup's
+     *  "unused" check — 0 means the certificate is safely revocable). */
+    async countByCertificateId(certificateId: string, excludeDomainId?: string): Promise<number> {
+      const rows = await db
+        .select({ id: domain.id })
+        .from(domain)
+        .where(and(eq(domain.tlsCertificateId, certificateId), ne(domain.id, excludeDomainId ?? "")));
+      return rows.length;
+    },
+
     async markServerDomainVerified(id: string) {
       const now = new Date();
       await db

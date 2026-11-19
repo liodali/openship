@@ -25,10 +25,12 @@ import {
   assertDiscoveryBackendFresh,
   DiscoveryBackendUnavailableError,
   manageDomainSsl,
+  readServerDomainCert,
   sslIssueLockKey,
 } from "../../lib/domain-ssl";
 import { createProvisionLock } from "../../lib/provision-lock";
 import { ensureOriginCaIssued } from "./origin-ca-issuance";
+import { revokeOriginCaCertificate } from "./origin-ca-client";
 import { installDiscoveryServerCert } from "../../lib/domain-ssl";
 import { decryptSecretField } from "../../lib/credential-encryption";
 import { readCredentialSecrets } from "../credentials/credential.service";
@@ -299,6 +301,23 @@ async function dispatchOriginCaIssuance(operation: DiscoveryTlsOperation, clock:
       );
 
 
+      // EDGE health for the reuse decision: active inventory in the DATABASE
+      // can lie (a rebuilt server lost the cert files). When the domain
+      // records active Origin CA material, the edge fingerprint decides:
+      // matching → reuse/rotate by expiry; missing/mismatched → repair (a
+      // fresh issuance, no reuse). A transient read failure NEVER triggers
+      // repair — the reuse decision simply stands this cycle.
+      let activeMaterialHealthy = true;
+      const inventory = await repos.domain.findById(operation.domainId);
+      if (inventory?.tlsCertificateId && inventory.tlsActiveProvider === "cloudflare-origin-ca") {
+        const edge = await readServerDomainCert(operation.hostname, { serverId: operation.serverId });
+        if (edge.verified && edge.fingerprint) {
+          activeMaterialHealthy = edge.fingerprint === inventory.tlsCertificateFingerprint;
+        } else if (edge.reason !== "read_error") {
+          activeMaterialHealthy = false; // missing or unusable on the edge → repair
+        }
+      }
+
       const result = await ensureOriginCaIssued({
         domainId: operation.domainId,
         operationId: operation.id,
@@ -307,6 +326,7 @@ async function dispatchOriginCaIssuance(operation: DiscoveryTlsOperation, clock:
         apiToken,
         organizationId: operation.organizationId,
         validityDays: (policy.tlsValidityDays ?? undefined) as import("@repo/core").OriginCaValidityDays | undefined,
+        activeMaterialHealthy,
       });
       if (result.outcome === "reused") {
         await repos.discoveryTlsQueue.completeOperation(operation.id, "reused", now(), WORKER_ID);
@@ -365,6 +385,9 @@ async function dispatchOriginCaIssuance(operation: DiscoveryTlsOperation, clock:
         // match the intent this certificate was issued for. A refusal commits
         // NOTHING (the pending key is not wiped either): the intent is retired
         // as superseded and the next generation issues its own material.
+        // Capture the PREVIOUS active certificate (for cleanup) before the
+        // activation commit overwrites the domain inventory.
+        const previousCertificateId = (await repos.domain.findById(operation.domainId))?.tlsCertificateId ?? null;
         const activation = await repos.discoveryTlsIssuance.markActive({
           issuanceId: result.issuanceId,
           domainId: operation.domainId,
@@ -376,6 +399,22 @@ async function dispatchOriginCaIssuance(operation: DiscoveryTlsOperation, clock:
           await repos.discoveryTlsIssuance.markSuperseded(result.issuanceId);
           await repos.discoveryTlsQueue.completeOperation(operation.id, "superseded", now(), WORKER_ID);
           return;
+        }
+        // CLEANUP: a REPLACED certificate is revoked when it is EXCLUSIVELY
+        // ours (an issuance row proves we issued it — uploaded/adopted certs
+        // are never touched) and no OTHER domain still references it.
+        // Best-effort: a provider outage here never fails the durable success
+        // already committed; the certificate simply expires naturally.
+        if (previousCertificateId && previousCertificateId !== result.certificateId) {
+          const managed = await repos.discoveryTlsIssuance.findByCertificateId(previousCertificateId);
+          if (managed) {
+            const foreignUsage = await repos.domain.countByCertificateId(previousCertificateId, operation.domainId);
+            if (foreignUsage === 0) {
+              await revokeOriginCaCertificate(apiToken, previousCertificateId).catch((error) => {
+                reportCaughtError(error, "platform/engine/modules/discovery/discovery-tls-queue");
+              });
+            }
+          }
         }
         await repos.discoveryTlsQueue.completeOperation(
           operation.id,

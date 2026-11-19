@@ -37,7 +37,7 @@ import {
 import { validateOriginCaCertificate } from "./origin-ca-cert";
 import { DISCOVERY_TLS_ORIGIN_CA_DEFAULT_VALIDITY_DAYS } from "@repo/core";
 import { createPublicKey } from "node:crypto";
-import type { OriginCaValidityDays } from "@repo/core";
+import { SYSTEM, type OriginCaValidityDays } from "@repo/core";
 
 /** Bounded recovery attempts before a pending_create becomes a visible failure. */
 const MAX_RECOVERY_ATTEMPTS = 5;
@@ -55,6 +55,24 @@ export interface OriginCaIssuanceInput {
   organizationId: string;
   /** One of Cloudflare's discrete durations (validated at policy-write time). */
   validityDays?: OriginCaValidityDays;
+  /**
+   * Whether the domain's recorded ACTIVE inventory is believed healthy. The
+   * worker checks the EDGE (fingerprint actually on disk) before calling —
+   * database metadata alone can lie after a server rebuild. False (or an
+   * expiry inside the rotation horizon) skips the reuse short-circuit so a
+   * fresh issuance repairs/rotates. Default true (the ensure API's shape).
+   */
+  activeMaterialHealthy?: boolean;
+}
+
+/**
+ * Rotation horizon: active material inside this window is replaced instead of
+ * reused. Scaled to the requested validity — a 7-day certificate must rotate
+ * days before expiry, a 5-year one follows the ordinary renewal horizon.
+ */
+function rotateHorizonMs(validityDays: OriginCaValidityDays): number {
+  const days = Math.max(1, Math.min(SYSTEM.DOMAINS.SSL_RENEW_BEFORE_DAYS, validityDays / 2));
+  return days * 86_400_000;
 }
 
 export type OriginCaIssuanceOutcome =
@@ -72,23 +90,11 @@ export async function ensureOriginCaIssued(input: OriginCaIssuanceInput): Promis
   const hostname = input.hostname.toLowerCase().replace(/\.$/, "");
   const validityDays: OriginCaValidityDays = input.validityDays ?? DISCOVERY_TLS_ORIGIN_CA_DEFAULT_VALIDITY_DAYS;
 
-  // 1. REUSE: the domain's recorded ACTIVE inventory — healthy and matching —
-  //    short-circuits without ANY provider request (plan step 1).
+  // 1. RESUME: a live issuance row owns this domain's in-flight work — BEFORE
+  //    any reuse check, so an interrupted ROTATION (old certificate still
+  //    active, new candidate in flight) resumes the candidate instead of
+  //    short-circuiting on the old material.
   const domainRow = await repos.domain.findById(input.domainId);
-  if (
-    domainRow?.tlsCertificateId &&
-    domainRow.tlsActiveProvider === "cloudflare-origin-ca" &&
-    domainRow.sslExpiresAt &&
-    domainRow.sslExpiresAt.getTime() > Date.now()
-  ) {
-    return {
-      outcome: "reused",
-      fingerprint: domainRow.tlsCertificateFingerprint ?? "unknown",
-      expiresAt: domainRow.sslExpiresAt,
-    };
-  }
-
-  // 2. RESUME: a live issuance row owns this domain's in-flight work.
   const live = await repos.discoveryTlsIssuance.findLiveIssuance(input.domainId);
   if (live) {
     if (live.state === "candidate" && live.certificatePem && live.certificateId && live.fingerprint && live.expiresOn) {
@@ -114,6 +120,25 @@ export async function ensureOriginCaIssued(input: OriginCaIssuanceInput): Promis
       // pending_create: ambiguity recovery — never a fresh create from here.
       return recoverPendingCreate(live.id, input.apiToken, hostname, validityDays);
     }
+  }
+
+  // 2b. REUSE: recorded ACTIVE inventory — exclusively healthy — short-circuits
+  //    without ANY provider request (plan step 1). Healthy means: active
+  //    provider is Origin CA, the caller found the material healthy ON THE
+  //    EDGE, and the expiry is OUTSIDE the rotation horizon (a near-expiry
+  //    certificate must be REPLACED, not reused forever).
+  if (
+    input.activeMaterialHealthy !== false &&
+    domainRow?.tlsCertificateId &&
+    domainRow.tlsActiveProvider === "cloudflare-origin-ca" &&
+    domainRow.sslExpiresAt &&
+    domainRow.sslExpiresAt.getTime() > Date.now() + rotateHorizonMs(input.validityDays ?? 365)
+  ) {
+    return {
+      outcome: "reused",
+      fingerprint: domainRow.tlsCertificateFingerprint ?? "unknown",
+      expiresAt: domainRow.sslExpiresAt,
+    };
   }
 
   // 3. FRESH: generate, persist the sealed intent, THEN request.

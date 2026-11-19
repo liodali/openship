@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, notExists, sql } from "drizzle-orm";
 import type { Database } from "../client";
 import { discoveryTlsIssuance as issuance, domain } from "../schema";
 
@@ -222,6 +222,45 @@ export function createDiscoveryTlsIssuanceRepo(db: Database) {
         .update(issuance)
         .set({ state: "failed", reason: "superseded by a policy change", updatedAt: now })
         .where(and(eq(issuance.id, id), inArray(issuance.state, [...LIVE_STATES])));
+    },
+
+    /**
+     * ACTIVATED issuances whose certificate is no longer referenced by ANY
+     * domain row — certificates this instance exclusively issued and later
+     * REPLACED (by rotation or a provider switch). Bounded; the caller
+     * revokes them best-effort and marks them back. Never returns
+     * pending/candidate rows: their certificates may still be adopted by
+     * recovery.
+     */
+    async findStaleIssuedForServer(serverId: string, limit = 5) {
+      const rows = await db
+        .select({ id: issuance.id, certificateId: issuance.certificateId, domainId: issuance.domainId })
+        .from(issuance)
+        .innerJoin(domain, eq(issuance.domainId, domain.id))
+        .where(
+          and(
+            eq(domain.serverId, serverId),
+            eq(issuance.state, "active"),
+            isNotNull(issuance.certificateId),
+            // Not referenced by any domain's active inventory any more:
+            notExists(
+              db
+                .select({ one: sql`1` })
+                .from(domain)
+                .where(eq(domain.tlsCertificateId, issuance.certificateId)),
+            ),
+          ),
+        )
+        .limit(limit);
+      return rows;
+    },
+
+    /** GC bookkeeping: record that a replaced certificate was revoked. */
+    async markRevokedAfterReplacement(id: string, now = new Date()): Promise<void> {
+      await db
+        .update(issuance)
+        .set({ reason: "certificate revoked after replacement", updatedAt: now })
+        .where(eq(issuance.id, id));
     },
 
     /** Lookup by provider certificate id (recovery + revoke paths). */

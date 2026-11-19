@@ -36,7 +36,8 @@
  * adapter's own `routing.registerRoute`; no project wrapper is faked (docs:
  * "must not call a wrapper that demands an active deployment").
  */
-import { safeErrorMessage, type DiscoveryTlsProvider } from "@repo/core";
+import { safeErrorMessage, type DiscoveryTlsProvider, SYSTEM
+} from "@repo/core";
 import { reportCaughtError } from "@repo/core/diagnostics";
 import { repos, type DiscoveryBinding } from "@repo/db";
 import { kickDiscoveryTlsQueue } from "./discovery-tls-queue";
@@ -244,7 +245,6 @@ async function scheduleServerDomainCert(
   binding: DiscoveryBinding,
   desiredProvider: DiscoveryTlsProvider | null,
 ): Promise<void> {
-  if (desiredProvider === "cloudflare-origin-ca") return;
   if (binding.tlsDeclaredWildcard != null) return;
   // Durable queue, not inline issuance: the sweep persists the desired TLS
   // work and returns — container/application readiness never waits for a
@@ -258,6 +258,22 @@ async function scheduleServerDomainCert(
       targetPort: binding.port,
     });
     const policy = await repos.domain.getTlsPolicy(domainRow.id);
+    // PROVIDER-SWITCH / ROTATION gate: an EXACT desired provider whose active
+    // inventory already satisfies the domain (same active provider, comfortably
+    // valid) has nothing to reconcile — enqueueing would churn operations that
+    // only ever complete "reused". Anything else (provider flipped, no active
+    // material yet, expiry inside the renewal horizon, inventory missing) is
+    // real work for the durable queue.
+    if (
+      desiredProvider === "cloudflare-origin-ca" &&
+      domainRow.tlsProvider === "cloudflare-origin-ca" &&
+      domainRow.tlsActiveProvider === "cloudflare-origin-ca" &&
+      domainRow.sslExpiresAt &&
+      domainRow.sslExpiresAt.getTime() >
+        Date.now() + Math.max(1, Math.min(SYSTEM.DOMAINS.SSL_RENEW_BEFORE_DAYS, (policy?.tlsValidityDays ?? 365) / 2)) * 86_400_000
+    ) {
+      return;
+    }
     const { created } = await repos.discoveryTlsQueue.ensureOperation({
       hostname: binding.hostname,
       sourceHostname: binding.hostname.toLowerCase(),

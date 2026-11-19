@@ -21,7 +21,7 @@
  * (`discovery-watch.ts`) renews from the sweep itself, so it also arms here.
  */
 
-import { diagnostics as errorDiagnostics } from "@repo/core/diagnostics";
+import { diagnostics as errorDiagnostics, reportCaughtError } from "@repo/core/diagnostics";
 import { safeErrorMessage } from "@repo/core";
 import { repos } from "@repo/db";
 import { scheduleSystemJob, type JobSummary } from "../../lib/system-jobs";
@@ -33,18 +33,22 @@ import {
 } from "./discovery-reconciler";
 import { repairDiscoveryRoutes, type DiscoveryRepairSummary } from "./discovery-repair";
 import { kickDiscoveryTlsQueue } from "./discovery-tls-queue";
+import { revokeOriginCaCertificate } from "./origin-ca-client";
+import { readCredentialSecrets } from "../credentials/credential.service";
 import { renewDiscoveryWatchers } from "./discovery-watch";
 
 export const DISCOVERY_SWEEP_JOB = "discovery:sweep";
 
 /** Per-stage summaries for one server's sweep. */
 export interface DiscoveryServerSweepSummary {
+  /** Replaced Origin CA certificates revoked after successful replacement. */
+  revokedCertificates?: number;
   serverId: string;
   scan?: DiscoveryScanSummary;
   reconcile?: DiscoveryReconcileSummary;
   repair?: DiscoveryRepairSummary;
   /** Stages that threw (their key is absent from the summary). */
-  failed: Array<"scan" | "reconcile" | "repair">;
+  failed: Array<"scan" | "reconcile" | "repair" | "certificate-cleanup">;
 }
 
 /**
@@ -148,6 +152,33 @@ async function runServerSweep(
       `[discovery-sweep] repair failed for ${serverId}: ${safeErrorMessage(error)}`,
     );
     summary.failed.push("repair");
+  }
+
+  // CERTIFICATE CLEANUP: activated Origin CA certificates this instance
+  // exclusively issued whose id is no longer referenced by ANY domain —
+  // they were replaced (rotation, or a provider switch to Let's Encrypt,
+  // whose completion path knows nothing about Cloudflare revocation).
+  // Bounded per sweep; strictly best-effort: a revocation failure leaves the
+  // certificate to expire naturally and never fails the sweep.
+  try {
+    const stale = await repos.discoveryTlsIssuance.findStaleIssuedForServer(serverId, 5);
+    let revoked = 0;
+    for (const row of stale) {
+      if (!row.certificateId) continue;
+      const policy = await repos.domain.getTlsPolicy(row.domainId);
+      const credential = policy?.tlsCfCredentialId
+        ? await repos.credential.findById(organizationId, policy.tlsCfCredentialId)
+        : undefined;
+      const apiToken = credential?.provider === "cloudflare" ? readCredentialSecrets(credential).apiToken : undefined;
+      if (!apiToken) continue; // credential gone/changed: the certificate expires naturally
+      await revokeOriginCaCertificate(apiToken, row.certificateId);
+      await repos.discoveryTlsIssuance.markRevokedAfterReplacement(row.id);
+      revoked += 1;
+    }
+    if (revoked > 0) summary.revokedCertificates = revoked;
+  } catch (error) {
+    reportCaughtError(error, "platform/engine/modules/discovery/discovery-sweep");
+    summary.failed.push("certificate-cleanup");
   }
 
   return summary;

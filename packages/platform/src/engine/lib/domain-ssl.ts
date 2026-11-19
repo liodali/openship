@@ -1283,6 +1283,28 @@ export async function installDomainCert(
 }
 
 /**
+ * Read the certificate currently on the SERVER edge for a discovered domain
+ * (read-only, no lock): the rotation/repair decision's source of truth. The
+ * database's active inventory can lie after a server rebuild — the edge is
+ * what actually answers TLS. Returns the provider's SslResult (verified,
+ * fingerprint, reason taxonomy: "missing"/"invalid"/"read_error").
+ */
+export async function readServerDomainCert(
+  hostname: string,
+  opts: { serverId: string },
+): Promise<SslResult> {
+  const { owner } = await resolveAuthorizedDomain(hostname, {
+    action: "verify",
+    allowUnverified: true,
+    serverId: opts.serverId,
+  });
+  if (owner.kind !== "server") {
+    throw new ForbiddenError("Server-domain certificate reads are restricted to server-owned domains.");
+  }
+  return withSslProvider(owner, ({ ssl }) => ssl.verifyCert(hostname));
+}
+
+/**
  * Install an Origin CA certificate (candidate inventory) on the SERVER edge
  * that serves a discovered domain — the discovery counterpart of
  * installDomainCert, with the phases the queue's install dispatch needs:
