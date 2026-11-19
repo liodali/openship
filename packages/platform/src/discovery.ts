@@ -51,7 +51,8 @@ import type { OperationResult } from "./deployments";
 import { runInServerQueue, sweepServerDiscovery } from "./engine/modules/discovery/discovery-sweep";
 import { kickDiscoveryTlsQueue } from "./engine/modules/discovery/discovery-tls-queue";
 import { preflightCloudflareOriginCa } from "./engine/modules/discovery/tls-preflight";
-import { certComfortablyValid, manageDomainSsl } from "./engine/lib/domain-ssl";
+import { certComfortablyValid, manageDomainSsl, sslIssueLockKey } from "./engine/lib/domain-ssl";
+import { createProvisionLock } from "./engine/lib/provision-lock";
 import { readCredentialSecrets } from "./engine/modules/credentials/credential.service";
 import {
   retireBindingRoute,
@@ -488,6 +489,13 @@ export function createDiscoveryOperations(authorization: Authorization): Platfor
       await runInServerQueue(serverId, async () => {
         const binding = await requireBinding(serverId, key);
         resolvedHostname = binding.hostname;
+        // Serialize with TLS-queue installation: a policy change waits for an
+        // in-flight issuance/installation on this hostname to finish, and an
+        // installation start waits for the policy change to land (the SAME
+        // per-hostname mutex the queue's dispatch holds). The activation
+        // commit additionally FENCES on generation/ownership — this lock
+        // narrows the race window; the fence closes it.
+        await createProvisionLock(sslIssueLockKey(binding.hostname)).run(async () => {
         // Eligible server-owned metadata only — never a route, never issuance.
         const { domain: domainRow } = await repos.domain.ensureServerDomain({
           serverId,
@@ -541,6 +549,7 @@ export function createDiscoveryOperations(authorization: Authorization): Platfor
           domainId: domainRow.id,
           policy: selection,
           expectedGeneration: current?.tlsPolicyGeneration,
+        });
         });
       });
 

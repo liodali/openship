@@ -1293,15 +1293,18 @@ export async function installDomainCert(
  *  2. BACKEND FRESHNESS: the same fresh-inspection gate ACME uses — a stopped
  *     or unobservable discovered backend refuses installation (defer, not
  *     fail).
- *  3. CRASH RECOVERY: if the edge ALREADY serves a certificate with the
- *     expected fingerprint, installation is SKIPPED — a crash between install
- *     and the database commit must not reinstall (or reissue); it goes
- *     straight to activation commit. The fingerprint comparison is the proof
- *     that the served certificate is exactly our candidate (SHA-256).
+ *  3. CRASH RECOVERY: if the on-disk certificate already matches the
+ *     expected fingerprint, installation is SKIPPED — but files are not
+ *     proof of activation (a crash between staging and reload leaves the
+ *     staged pair unloaded), so recovery EXPLICITLY activates the matching
+ *     certificate before reporting success. The fingerprint comparison is
+ *     the proof that the pair is exactly our candidate (SHA-256).
  *  4. INSTALLATION through the shared provider path with its snapshot +
  *     rollback protection: a failed install restores the previous cert pair
  *     and reload — working TLS is preserved, the caller defers, nothing in
- *     the database advanced.
+ *     the database advanced. Domain verification converges through the
+ *     activation commit (markActive sets verified with the inventory), so
+ *     both the fresh and recovery paths end identically.
  *
  * MUST be called while holding sslIssueLockKey(hostname) — the queue's
  * dispatch holds it across issuance + installation; acquiring it here again
@@ -1317,7 +1320,7 @@ export async function installDiscoveryServerCert(
     expectedFingerprint: string;
   },
 ): Promise<{ outcome: "installed" | "recovered"; result: SslResult }> {
-  const { domainRecord, owner } = await resolveAuthorizedDomain(hostname, {
+  const { owner } = await resolveAuthorizedDomain(hostname, {
     action: "provision",
     allowUnverified: true, // discovery verification is issuance-shaped; the queue owns eligibility
     serverId: opts.serverId,
@@ -1329,9 +1332,17 @@ export async function installDiscoveryServerCert(
   await assertDiscoveryBackendFresh(owner, hostname);
 
   return withSslProvider(owner, async ({ ssl }) => {
-    // Crash recovery BEFORE any disk write: is our certificate already served?
+    // Crash recovery BEFORE any disk write: does the on-disk pair match our
+    // candidate? Files alone are NOT proof of activation — a crash between
+    // staging and reload leaves the new files on disk while the edge still
+    // serves the old certificate. Recovery therefore EXPLICITLY activates
+    // (re-registers the route + reloads; idempotent) so the matching cert is
+    // genuinely live before the caller commits. A provider without
+    // activation cannot prove liveness — fall through to a full install.
     const current = await ssl.verifyCert(hostname);
-    if (current.verified && current.fingerprint && current.fingerprint === opts.expectedFingerprint) {
+    const onDiskMatches = current.verified && current.fingerprint && current.fingerprint === opts.expectedFingerprint;
+    if (onDiskMatches && ssl.activateCert) {
+      await ssl.activateCert(hostname);
       return { outcome: "recovered", result: current };
     }
     // Install (validate → snapshot → stage → activate, with rollback on any
@@ -1344,9 +1355,14 @@ export async function installDiscoveryServerCert(
         "DISCOVERY_CERT_INSTALL_FAILED",
       );
     }
-    // Serving the first Origin CA certificate IS the server-domain verification
-    // evidence (same rule as ACME: first successful issuance verifies).
-    await repos.domain.markServerDomainVerified(domainRecord.id).catch(() => {});
+    // Belt and braces: what was staged must be exactly the candidate.
+    if (result.fingerprint && result.fingerprint !== opts.expectedFingerprint) {
+      throw new AppError(
+        `The installed certificate for ${hostname} does not match the issued candidate; the previous certificate remains on the edge.`,
+        502,
+        "DISCOVERY_CERT_INSTALL_FAILED",
+      );
+    }
     return { outcome: "installed", result };
   });
 }

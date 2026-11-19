@@ -298,6 +298,7 @@ async function dispatchOriginCaIssuance(operation: DiscoveryTlsOperation, clock:
         operation.hostname,
       );
 
+
       const result = await ensureOriginCaIssued({
         domainId: operation.domainId,
         operationId: operation.id,
@@ -357,12 +358,25 @@ async function dispatchOriginCaIssuance(operation: DiscoveryTlsOperation, clock:
           await defer(operation.id, `The certificate for ${operation.hostname} is not serving yet; the previous certificate remains on the edge.`, operation.attempts, now(), WORKER_ID);
           return;
         }
-        // Durable activation commit: domain inventory (active provider, cert
-        // id, fingerprint, expiry) + the issuance row flips active — and the
-        // pending key material is wiped in the same transaction. A crash
-        // BEFORE this point recovers through the installer's fingerprint read
-        // (no reinstall, no reissue); a crash AFTER leaves a consistent state.
-        await repos.discoveryTlsIssuance.markActive({ issuanceId: result.issuanceId, domainId: operation.domainId });
+        // Durable activation commit — FENCED against a policy that moved on
+        // while the asynchronous installation ran: the transaction re-checks
+        // server ownership, provider, and generation under the write lock and
+        // writes the domain inventory (+ verified) only if all three still
+        // match the intent this certificate was issued for. A refusal commits
+        // NOTHING (the pending key is not wiped either): the intent is retired
+        // as superseded and the next generation issues its own material.
+        const activation = await repos.discoveryTlsIssuance.markActive({
+          issuanceId: result.issuanceId,
+          domainId: operation.domainId,
+          expectedServerId: operation.serverId,
+          expectedTlsProvider: "cloudflare-origin-ca",
+          expectedPolicyGeneration: operation.policyGeneration,
+        });
+        if (!activation.activated) {
+          await repos.discoveryTlsIssuance.markSuperseded(result.issuanceId);
+          await repos.discoveryTlsQueue.completeOperation(operation.id, "superseded", now(), WORKER_ID);
+          return;
+        }
         await repos.discoveryTlsQueue.completeOperation(
           operation.id,
           install.outcome === "recovered" ? "recovered" : "installed",

@@ -117,14 +117,56 @@ export function createDiscoveryTlsIssuanceRepo(db: Database) {
      * inspects the installed fingerprint and re-commits without another
      * provider request.
      */
-    async markActive(input: { issuanceId: string; domainId: string }, now = new Date()): Promise<void> {
-      await db.transaction(async (tx) => {
+    /**
+     * Durable activation: the domain's active inventory (certificate id,
+     * fingerprint, active provider, expiry, VERIFIED) and the issuance row
+     * flipping active — pending key material wiped in the same transaction.
+     *
+     * FENCED against a policy that moved on while the installation ran: the
+     * caller must present the intent the certificate was issued FOR, and the
+     * domain row is re-checked UNDER the write lock against server ownership,
+     * provider, and policy generation. A stale activation writes NOTHING (the
+     * key is not wiped either) and reports the reason; the caller retires the
+     * superseded intent. Both the fresh-install path and the crash-recovery
+     * path converge here — including `verified`, so recovery can never leave
+     * the domain permanently unverified.
+     */
+    async markActive(
+      input: {
+        issuanceId: string;
+        domainId: string;
+        /** Fence: the intent the installed certificate belongs to. */
+        expectedServerId: string;
+        expectedTlsProvider: string;
+        expectedPolicyGeneration: number;
+      },
+      now = new Date(),
+    ): Promise<{ activated: boolean; reason?: string }> {
+      return db.transaction(async (tx): Promise<{ activated: boolean; reason?: string }> => {
         const [row] = await tx
           .select()
           .from(issuance)
           .where(eq(issuance.id, input.issuanceId))
           .for("update");
-        if (!row?.certificateId || !row?.fingerprint) return;
+        if (!row?.certificateId || !row?.fingerprint) return { activated: false, reason: "the issuance row has no candidate material" };
+        const [domainRow] = await tx
+          .select()
+          .from(domain)
+          .where(eq(domain.id, input.domainId))
+          .for("update");
+        if (!domainRow) return { activated: false, reason: "the domain row disappeared while installation ran" };
+        if (domainRow.serverId !== input.expectedServerId) {
+          return { activated: false, reason: `the domain moved to server ${domainRow.serverId ?? "(none)"} while installation ran` };
+        }
+        if (domainRow.tlsProvider !== input.expectedTlsProvider) {
+          return { activated: false, reason: `the TLS policy switched to ${domainRow.tlsProvider ?? "(none)"} while installation ran` };
+        }
+        if (domainRow.tlsPolicyGeneration !== input.expectedPolicyGeneration) {
+          return {
+            activated: false,
+            reason: `the TLS policy generation moved to ${domainRow.tlsPolicyGeneration ?? "(none)"} while installation ran`,
+          };
+        }
         await tx
           .update(domain)
           .set({
@@ -134,6 +176,7 @@ export function createDiscoveryTlsIssuanceRepo(db: Database) {
             sslStatus: "active",
             sslExpiresAt: row.expiresOn,
             sslIssuer: "cloudflare-origin-ca",
+            verified: true,
             updatedAt: now,
           })
           .where(eq(domain.id, input.domainId));
@@ -151,6 +194,7 @@ export function createDiscoveryTlsIssuanceRepo(db: Database) {
             updatedAt: now,
           })
           .where(eq(issuance.id, input.issuanceId));
+        return { activated: true };
       });
     },
 
@@ -167,7 +211,7 @@ export function createDiscoveryTlsIssuanceRepo(db: Database) {
       await db
         .update(issuance)
         .set({ state: "failed", reason: "superseded by a policy change", updatedAt: now })
-        .where(and(eq(issuance.id, id), eq(issuance.state, "pending_create")));
+        .where(and(eq(issuance.id, id), inArray(issuance.state, [...LIVE_STATES])));
     },
 
     /** Lookup by provider certificate id (recovery + revoke paths). */
