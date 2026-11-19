@@ -8,7 +8,7 @@ import {
   CLOUDFLARE_ORIGIN_CA_RSA_ROOT,
   ORIGIN_CA_TRUST_ANCHORS,
 } from "./origin-ca-trust-roots";
-import { verifyOriginCaChain } from "./origin-ca-trust";
+import { plainKeyUsageBits, verifyOriginCaChain } from "./origin-ca-trust";
 
 /**
  * Origin CA certificate validation: signature trust against the Cloudflare
@@ -28,6 +28,10 @@ const NONCA_PEM = read("nonca-cert.pem"); // CA:FALSE cert signed by the test ro
 const NONCA_LEAF_PEM = read("leaf-signed-by-nonca.pem"); // signed BY that non-CA cert — OpenSSL rejects
 const EXPIRED_INTERMEDIATE_PEM = read("expired-intermediate.pem"); // live CA semantics, dead window
 const LEAF_UNDER_EXPIRED_PEM = read("leaf-under-expired-intermediate.pem"); // its child
+const EKU_CA_PEM = read("eku-only-ca.pem"); // CA with ONLY extendedKeyUsage=serverAuth (no plain keyUsage)
+const LEAF_UNDER_EKU_PEM = read("leaf-under-eku-only-ca.pem"); // its child — OpenSSL accepts this chain
+const NO_CERTSIGN_CA_PEM = read("no-certsign-ca.pem"); // CA:TRUE but plain KeyUsage lacks keyCertSign
+const LEAF_UNDER_NO_CERTSIGN_PEM = read("leaf-under-no-certsign-ca.pem"); // its child
 const SELF_SIGNED_PEM = read("self-signed-cert.pem"); // self-signed, same key
 const WRONG_HOST_PEM = read("wrong-host-cert.pem"); // chained, same key, SAN: elsewhere.example.com
 const KEY_PEM = read("test-key.pem"); // the fixture's own private key
@@ -83,6 +87,33 @@ describe("Origin CA chain verification", () => {
         `${FIXTURES_PATH}leaf-signed-by-nonca.pem`,
       ]),
     ).rejects.toThrow();
+  });
+
+  it("accepts a CA carrying ONLY extendedKeyUsage — EKU does not constrain CA signing (agrees with OpenSSL)", () => {
+    const blob = `${LEAF_UNDER_EKU_PEM}\n${EKU_CA_PEM}`;
+    expect(verifyOriginCaChain(blob, [ROOT_PEM])).toBe(true);
+    // node:crypto's keyUsage property exposes the EKU OID here, NOT keyCertSign —
+    // the plain KeyUsage bits must come from the raw DER.
+    const ekuCa = new X509Certificate(EKU_CA_PEM);
+    expect(ekuCa.keyUsage).toEqual(["1.3.6.1.5.5.7.3.1"]); // serverAuth OID, no plain usage names
+    expect(ekuCa.ca).toBe(true);
+  });
+
+  it("refuses a CA whose PLAIN KeyUsage lacks keyCertSign (agrees with OpenSSL)", () => {
+    const blob = `${LEAF_UNDER_NO_CERTSIGN_PEM}\n${NO_CERTSIGN_CA_PEM}`;
+    expect(verifyOriginCaChain(blob, [ROOT_PEM])).toBe(false);
+    // The DER reader sees what Node's properties cannot: node's keyUsage is
+    // undefined here and its `ca` flag is itself keyUsage-aware (OpenSSL ≥3
+    // binds CA-ness to keyCertSign when KeyUsage exists) — the raw KeyUsage
+    // bits are the version-independent discriminator.
+    const ca = new X509Certificate(NO_CERTSIGN_CA_PEM);
+    expect(ca.keyUsage).toBeUndefined();
+    const bits = plainKeyUsageBits(ca);
+    expect(bits).not.toBeNull();
+    expect((bits![1]! >> (7 - 5)) & 1).toBe(0); // keyCertSign (bit 5) UNSET
+    // Sanity: the same reader reads keyCertSign as SET on the real anchor.
+    const rootBits = plainKeyUsageBits(new X509Certificate(ROOT_PEM));
+    expect((rootBits![1]! >> (7 - 5)) & 1).toBe(1);
   });
 
   it("refuses an EXPIRED intermediate in the path", () => {

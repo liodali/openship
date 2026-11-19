@@ -65,13 +65,19 @@ vi.mock("./origin-ca-client", async (importOriginal) => {
  *  internally, so fixture certs cannot pair); recovery tests restore the REAL
  *  validator for one call — the decisive hostname+key match behavior is
  *  exhaustively covered by origin-ca-cert.test.ts. */
-const validate = vi.hoisted(() => ({ impl: null as null | (() => never) }));
+const validate = vi.hoisted(() => ({
+  impl: null as null | ((
+    pem: string,
+    expected: { hostname: string; publicKeyPem: string },
+    options?: { trustAnchors?: readonly string[] },
+  ) => unknown),
+}));
 vi.mock("./origin-ca-cert", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./origin-ca-cert")>();
   return {
     ...actual,
-    validateOriginCaCertificate: vi.fn(() => {
-      if (validate.impl) return validate.impl(); // test opt-in: real/throwing behavior
+    validateOriginCaCertificate: vi.fn((...args: Parameters<typeof actual.validateOriginCaCertificate>) => {
+      if (validate.impl) return validate.impl(...args); // ALWAYS forward — impls need pem + expected
       // Default stub: accept (the flow, not the crypto, is under test here —
       // the crypto is exhaustively covered by origin-ca-cert.test.ts).
       return { fingerprint: "aa:bb:cc", expiresAt: new Date(Date.now() + 90 * 86_400_000), hostnames: ["site.example.com"] };
@@ -81,7 +87,7 @@ vi.mock("./origin-ca-cert", async (importOriginal) => {
 
 import { CloudflareApiError } from "../../lib/cloudflare-api";
 import { ensureOriginCaIssued } from "./origin-ca-issuance";
-import { validateOriginCaCertificate } from "./origin-ca-cert";
+import { OriginCaCertificateInvalidError, validateOriginCaCertificate } from "./origin-ca-cert";
 import { generateOriginCaKey } from "./origin-ca-csr";
 
 const INPUT = {
@@ -194,7 +200,9 @@ describe("recovery of a pending_create", () => {
   });
 
   it("a hostname match with the WRONG KEY is skipped — the sweep stays inconclusive", async () => {
-    // REAL validation for this call: the decisive hostname+key match decides.
+    // The decisive hostname+key match decides: simulate the validator's
+    // exact rejection (the real validator's behavior is covered in
+    // origin-ca-cert.test.ts; the foreign-key test below exercises it for real).
     validate.impl = (() => {
       throw new (Error as ErrorConstructor)("the certificate's public key does not match the pending private key");
     }) as never;
@@ -306,11 +314,18 @@ describe("recovery of a pending_create", () => {
   });
 
   it("a REVOKED certificate with a FOREIGN key never retires the intent — key match comes first", async () => {
-    // REAL validation: hostname matches, key does NOT — so despite revoked_at
-    // and the same hostname, this certificate says nothing about OUR intent.
+    // REAL validation, arguments FORWARDED: the rejection must be the actual
+    // public-key comparison (not a parse failure of undefined arguments).
     const { validateOriginCaCertificate: realValidate } = await importOriginalValidator();
-    validate.impl = ((pem: string, expected: { hostname: string; publicKeyPem: string }) =>
-      realValidate(pem, expected, { trustAnchors: [TEST_ROOT_PEM] })) as never;
+    let keyRejection: unknown;
+    validate.impl = ((pem: string, expected: { hostname: string; publicKeyPem: string }) => {
+      try {
+        return realValidate(pem, expected, { trustAnchors: [TEST_ROOT_PEM] });
+      } catch (error) {
+        keyRejection = error;
+        throw error;
+      }
+    }) as never;
     issuanceRepo.findLiveIssuance.mockResolvedValue(pending);
     issuanceRepo.findIssuanceById.mockResolvedValue(pending);
     encryption.decryptSecretField.mockReturnValue(KEY_PEM); // OUR key — foreign cert will not pair
@@ -322,6 +337,10 @@ describe("recovery of a pending_create", () => {
       revoked_at: "2026-06-01T00:00:00Z",
     });
     const result = await ensureOriginCaIssued(INPUT);
+    // The sweep reached the REAL public-key comparison — the rejection is the
+    // key mismatch itself, not a stub artifact.
+    expect(keyRejection).toBeInstanceOf(OriginCaCertificateInvalidError);
+    expect((keyRejection as OriginCaCertificateInvalidError).message).toContain("public key does not match");
     // Inconclusive sweep — NOT retired: the live slot must stay occupied so
     // our own (possibly issued) certificate can still be recovered later.
     expect(result.outcome).toBe("unknown");
