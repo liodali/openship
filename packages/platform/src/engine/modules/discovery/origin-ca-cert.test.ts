@@ -24,6 +24,10 @@ const INTERMEDIATE_PEM = read("test-intermediate.pem"); // CA under the test roo
 const ROOT_PEM = read("test-root.pem"); // the test trust anchor
 const EXPIRED_PEM = read("expired-cert.pem"); // chained, same key — validity window 2024→2025
 const IMPOSTOR_PEM = read("other-issuer-cert.pem"); // signed by an UNRELATED CA, same key, "Cloudflare Origin CA" text
+const NONCA_PEM = read("nonca-cert.pem"); // CA:FALSE cert signed by the test root (looks like an issuer, is not)
+const NONCA_LEAF_PEM = read("leaf-signed-by-nonca.pem"); // signed BY that non-CA cert — OpenSSL rejects
+const EXPIRED_INTERMEDIATE_PEM = read("expired-intermediate.pem"); // live CA semantics, dead window
+const LEAF_UNDER_EXPIRED_PEM = read("leaf-under-expired-intermediate.pem"); // its child
 const SELF_SIGNED_PEM = read("self-signed-cert.pem"); // self-signed, same key
 const WRONG_HOST_PEM = read("wrong-host-cert.pem"); // chained, same key, SAN: elsewhere.example.com
 const KEY_PEM = read("test-key.pem"); // the fixture's own private key
@@ -60,6 +64,30 @@ describe("Origin CA chain verification", () => {
   it("rejects when no anchor is reachable (impostor CA, same display text)", () => {
     expect(verifyOriginCaChain(IMPOSTOR_PEM, [ROOT_PEM])).toBe(false);
     expect(verifyOriginCaChain(SELF_SIGNED_PEM, [ROOT_PEM])).toBe(false);
+  });
+
+  it("refuses a NON-CA certificate acting as an intermediate (agrees with OpenSSL's verdict)", async () => {
+    const blob = `${NONCA_LEAF_PEM}\n${NONCA_PEM}`; // child + its non-CA "issuer"
+    expect(verifyOriginCaChain(blob, [ROOT_PEM])).toBe(false);
+    // The two validators agree: OpenSSL rejects the same chain (key usage /
+    // basic constraints), so our verifier never accepts what the reference
+    // implementation calls an invalid CA certificate.
+    const { execFile } = await import("node:child_process");
+    const { promisify } = await import("node:util");
+    const FIXTURES_PATH = new URL("../../../../test/fixtures/", import.meta.url).pathname;
+    const run = promisify(execFile);
+    await expect(
+      run("openssl", [
+        "verify", "-CAfile", `${FIXTURES_PATH}test-root.pem`,
+        "-untrusted", `${FIXTURES_PATH}nonca-cert.pem`,
+        `${FIXTURES_PATH}leaf-signed-by-nonca.pem`,
+      ]),
+    ).rejects.toThrow();
+  });
+
+  it("refuses an EXPIRED intermediate in the path", () => {
+    const blob = `${LEAF_UNDER_EXPIRED_PEM}\n${EXPIRED_INTERMEDIATE_PEM}`;
+    expect(verifyOriginCaChain(blob, [ROOT_PEM])).toBe(false);
   });
 
   it("rejects unparsable or empty blobs", () => {

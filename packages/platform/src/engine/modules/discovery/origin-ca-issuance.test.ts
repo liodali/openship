@@ -10,6 +10,8 @@ import { fileURLToPath } from "node:url";
  */
 const CERT_PEM = readFileSync(new URL("../../../../test/fixtures/test-cert.pem", import.meta.url), "utf8");
 const KEY_PEM = readFileSync(new URL("../../../../test/fixtures/test-key.pem", import.meta.url), "utf8");
+const TEST_ROOT_PEM = readFileSync(new URL("../../../../test/fixtures/test-root.pem", import.meta.url), "utf8");
+const FOREIGN_KEY_CERT_PEM = readFileSync(new URL("../../../../test/fixtures/foreign-key-cert.pem", import.meta.url), "utf8"); // same hostname, DIFFERENT key pair
 
 const issuanceRepo = vi.hoisted(() => ({
   findLiveIssuance: vi.fn(async (): Promise<Record<string, unknown> | undefined> => undefined),
@@ -99,7 +101,7 @@ function validCreateResult() {
 
 async function importOriginalValidator() {
   const mod = await vi.importActual<typeof import("./origin-ca-cert")>("./origin-ca-cert");
-  return mod.validateOriginCaCertificate;
+  return mod;
 }
 
 beforeEach(() => {
@@ -174,6 +176,7 @@ describe("recovery of a pending_create", () => {
     keyEnc: "enc1:sealed",
     validityDays: 90,
     attempts: 0,
+    updatedAt: new Date(), // recent — the post-exhaustion throttle has not elapsed
   };
 
   it("a matching hostname+key certificate is ADOPTED without a create request", async () => {
@@ -216,21 +219,51 @@ describe("recovery of a pending_create", () => {
     expect(result).toMatchObject({ outcome: "unknown", reason: expect.stringContaining("provider unreadable") });
     expect(client.create).not.toHaveBeenCalled();
     expect(issuanceRepo.markFailed).not.toHaveBeenCalled();
+    // TRANSIENT failures consume NO conclusive budget.
+    expect(issuanceRepo.recordRecoveryAttempt).not.toHaveBeenCalled();
   });
 
-  it("an EXHAUSTED unresolved recovery keeps blocking fresh creation — no provider I/O, no re-create", async () => {
-    // attempts already at the bound: the outcome is still unknown, so the row
-    // STAYS pending_create (the original create may have landed at the
-    // provider). The slot must not free for a blind duplicate.
+  it("five consecutive provider outages never blind recovery — the sweep still runs afterwards", async () => {
+    issuanceRepo.findLiveIssuance.mockResolvedValue(pending);
+    issuanceRepo.findIssuanceById.mockResolvedValue(pending);
+    client.list.mockRejectedValue(new CloudflareApiError(503, "The API could not be reached. Try again."));
+    for (let i = 0; i < 5; i++) await ensureOriginCaIssued(INPUT);
+    // Every call still reached the provider — no attempt was ever recorded,
+    // so the budget is intact and the provider remains contactable.
+    expect(client.list).toHaveBeenCalledTimes(5);
+    expect(issuanceRepo.recordRecoveryAttempt).not.toHaveBeenCalled();
+    // And when the provider RETURNS, the issued certificate is recoverable.
+    client.list.mockResolvedValue([{ id: "ca_late", hostnames: ["site.example.com"] }]);
+    client.get.mockResolvedValue({ id: "ca_late", certificate: CERT_PEM, hostnames: ["site.example.com"] });
+    const recovered = await ensureOriginCaIssued(INPUT);
+    expect(recovered).toMatchObject({ outcome: "issued", certificateId: "ca_late" });
+  });
+
+  it("an EXHAUSTED unresolved recovery keeps blocking fresh creation — and still re-checks SLOWLY", async () => {
+    // attempts past the bound: the row STAYS pending_create (the original
+    // create may have landed at the provider) — no blind duplicate — but the
+    // recovery read is merely THROTTLED, not severed: within the recheck
+    // window nothing contacts the provider…
     issuanceRepo.findLiveIssuance.mockResolvedValue({ ...pending, attempts: 5 });
     issuanceRepo.findIssuanceById.mockResolvedValue({ ...pending, attempts: 5 });
-    const result = await ensureOriginCaIssued(INPUT);
-    expect(result.outcome).toBe("unknown");
-    expect(client.list).not.toHaveBeenCalled(); // bounded: no sweep past the bound
+    const throttled = await ensureOriginCaIssued(INPUT);
+    expect(throttled.outcome).toBe("unknown");
+    expect(client.list).not.toHaveBeenCalled(); // still inside the recheck window
     expect(client.create).not.toHaveBeenCalled();
-    expect(issuanceRepo.recordCandidate).not.toHaveBeenCalled();
     expect(issuanceRepo.markFailed).not.toHaveBeenCalled(); // NOT retired
-    expect(result).toMatchObject({ outcome: "unknown", reason: expect.stringContaining("keeps blocking fresh creation") });
+    expect(throttled).toMatchObject({ outcome: "unknown", reason: expect.stringContaining("keeps blocking fresh creation") });
+
+    // …once the window elapses, the sweep RUNS again (slower cadence) and can
+    // still adopt a certificate that only surfaced at the provider later.
+    const stale = { ...pending, attempts: 5, updatedAt: new Date(Date.now() - 31 * 60_000) };
+    issuanceRepo.findLiveIssuance.mockResolvedValue(stale);
+    issuanceRepo.findIssuanceById.mockResolvedValue(stale);
+    client.list.mockResolvedValue([{ id: "ca_late", hostnames: ["site.example.com"] }]);
+    client.get.mockResolvedValue({ id: "ca_late", certificate: CERT_PEM, hostnames: ["site.example.com"] });
+    const recovered = await ensureOriginCaIssued(INPUT);
+    expect(client.list).toHaveBeenCalledWith("tok", "zone_1"); // the slow re-check reached the provider
+    expect(recovered).toMatchObject({ outcome: "issued", certificateId: "ca_late" });
+    expect(client.create).not.toHaveBeenCalled(); // recovery, never a re-create
   });
 
   it("an unreadable sealed intent is DEFINITIVE (not ambiguous): retired so a fresh issuance can follow", async () => {
@@ -270,6 +303,30 @@ describe("recovery of a pending_create", () => {
       expect.stringContaining("matching certificate is revoked"),
     );
     void actualValidator;
+  });
+
+  it("a REVOKED certificate with a FOREIGN key never retires the intent — key match comes first", async () => {
+    // REAL validation: hostname matches, key does NOT — so despite revoked_at
+    // and the same hostname, this certificate says nothing about OUR intent.
+    const { validateOriginCaCertificate: realValidate } = await importOriginalValidator();
+    validate.impl = ((pem: string, expected: { hostname: string; publicKeyPem: string }) =>
+      realValidate(pem, expected, { trustAnchors: [TEST_ROOT_PEM] })) as never;
+    issuanceRepo.findLiveIssuance.mockResolvedValue(pending);
+    issuanceRepo.findIssuanceById.mockResolvedValue(pending);
+    encryption.decryptSecretField.mockReturnValue(KEY_PEM); // OUR key — foreign cert will not pair
+    client.list.mockResolvedValue([{ id: "ca_foreign_revoked", hostnames: ["site.example.com"] }]);
+    client.get.mockResolvedValue({
+      id: "ca_foreign_revoked",
+      certificate: FOREIGN_KEY_CERT_PEM,
+      hostnames: ["site.example.com"],
+      revoked_at: "2026-06-01T00:00:00Z",
+    });
+    const result = await ensureOriginCaIssued(INPUT);
+    // Inconclusive sweep — NOT retired: the live slot must stay occupied so
+    // our own (possibly issued) certificate can still be recovered later.
+    expect(result.outcome).toBe("unknown");
+    expect(issuanceRepo.markFailed).not.toHaveBeenCalled();
+    expect(issuanceRepo.recordRecoveryAttempt).toHaveBeenCalled();
   });
 
   it("REVOKED certificates are skipped in the sweep — a later valid match is still adopted", async () => {
