@@ -29,6 +29,14 @@ Runtime security notices use the signed feed published from `security-advisories
   keep the source draining indefinitely. Restore stream access when the controller resumes,
   and link server preparation to its build view while deployment reads remain available.
 
+### Security
+
+- Bump the edge base image from OpenResty 1.27.1.1 to 1.31.8.1 (nginx 1.27.1 → 1.31.8),
+  picking up the nginx 1.31.2–1.31.8 security fixes. The 2026-11-18 nginx advisory
+  (1.31.9 / 1.30.7 — HTTP/2 RCEs CVE-2026-123007 / CVE-2026-123633 and eight more) is not
+  covered yet: OpenResty 1.31.9.1 is committed upstream but unpublished, and OpenResty
+  tracks nginx mainline only. The pin moves to 1.31.9.1-alpine as soon as that image exists.
+
 ## 0.9.12-fork.3
 
 ### Discovery
