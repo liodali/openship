@@ -26,21 +26,36 @@ const otherRepos = vi.hoisted(() => ({
   credentialFind: vi.fn(async () => ({ id: "cred_cf", provider: "cloudflare" })),
 }));
 
+const issuanceInventory = vi.hoisted(() => ({
+  findLiveIssuance: vi.fn(async (): Promise<Record<string, unknown> | undefined> => undefined),
+  markActive: vi.fn(async (): Promise<void> => {}),
+  markFailed: vi.fn(async (): Promise<void> => {}),
+}));
+
 vi.mock("@repo/db", () => ({
   repos: {
     discoveryTlsQueue: queue,
     domain: { getTlsPolicy: otherRepos.getTlsPolicy },
     credential: { findById: otherRepos.credentialFind },
+    discoveryTlsIssuance: issuanceInventory,
   },
 }));
 
 const manageDomainSsl = vi.fn(async () => ({ verified: true } as { verified: boolean } & Record<string, unknown>));
 
+const installDiscoveryServerCert = vi.fn();
 vi.mock("../../lib/domain-ssl", () => ({
   manageDomainSsl,
   assertDiscoveryBackendFresh: vi.fn(async () => {}),
   sslIssueLockKey: vi.fn((hostname: string) => `lock:${hostname}`),
+  installDiscoveryServerCert: (...args: unknown[]) => installDiscoveryServerCert(...args),
   DiscoveryBackendUnavailableError: class DiscoveryBackendUnavailableError extends AppError {},
+}));
+vi.mock("../../lib/credential-encryption", () => ({
+  encryptSecretField: vi.fn((plain: string) => `enc1:sealed(${plain.length})`),
+  decryptSecretField: vi.fn((sealed: string | null | undefined) =>
+    sealed && sealed.startsWith("enc1:") ? "UNSEALED-PRIVATE-KEY" : undefined,
+  ),
 }));
 vi.mock("../../lib/provision-lock", () => ({
   createProvisionLock: vi.fn((_key: string) => ({ run: (fn: () => Promise<unknown>) => fn() })),
@@ -109,9 +124,24 @@ beforeEach(() => {
   otherRepos.credentialFind.mockResolvedValue({ id: "cred_cf", provider: "cloudflare" });
   ensureOriginCaIssued.mockResolvedValue({
     outcome: "issued",
+    issuanceId: "dti_1",
     certificateId: "ca_1",
-    fingerprint: "ab",
+    fingerprint: "ab:cd",
     expiresAt: new Date("2030-01-01"),
+  });
+  issuanceInventory.findLiveIssuance.mockResolvedValue({
+    id: "dti_1",
+    domainId: "dom_1",
+    state: "candidate",
+    certificatePem: "-----BEGIN CERTIFICATE-----",
+    fingerprint: "ab:cd",
+    keyEnc: "enc1:sealed",
+  });
+  issuanceInventory.markActive.mockResolvedValue(undefined);
+  issuanceInventory.markFailed.mockResolvedValue(undefined);
+  installDiscoveryServerCert.mockResolvedValue({
+    outcome: "installed",
+    result: { domain: "app.example.com", verified: true, issuer: "manual", expiresAt: new Date("2030-01-01").toISOString(), fingerprint: "ab:cd" },
   });
 });
 
@@ -227,7 +257,7 @@ describe("execution dispatch", () => {
     expect(queue.completeOperation).toHaveBeenCalledWith(op.id, "superseded", expect.any(Date), expect.any(String));
   });
 
-  it("dispatches Cloudflare Origin CA through the resumable issuance — configured policy in, issued out", async () => {
+  it("dispatches Cloudflare Origin CA: issuance then INSTALLATION, activation commit, honest completion", async () => {
     const { clock } = fakeClock();
     const op = operation({ provider: "cloudflare-origin-ca" });
     queue.claimDueOperations.mockResolvedValueOnce([op]).mockResolvedValue([]);
@@ -243,11 +273,114 @@ describe("execution dispatch", () => {
         validityDays: 90,
       }),
     );
-    // Issued but NOT installed: visible deferred state, not a false complete.
-    expect(queue.completeOperation).not.toHaveBeenCalled();
+    // Installation on the server edge: the candidate's PUBLIC cert + UNSEALED key.
+    expect(installDiscoveryServerCert).toHaveBeenCalledWith(
+      "app.example.com",
+      { certPem: "-----BEGIN CERTIFICATE-----", keyPem: "UNSEALED-PRIVATE-KEY" },
+      { serverId: op.serverId, expectedFingerprint: "ab:cd" },
+    );
+    // Durable activation: domain inventory + issuance flip (key wiped inside).
+    expect(issuanceInventory.markActive).toHaveBeenCalledWith({ issuanceId: "dti_1", domainId: op.domainId });
+    // Honest completion naming the install outcome.
+    expect(queue.completeOperation).toHaveBeenCalledWith(op.id, "installed", expect.any(Date), expect.any(String));
+    expect(queue.deferOperation).not.toHaveBeenCalled();
+  });
+
+  it("a crash between install and commit recovers through the served fingerprint — no reinstall", async () => {
+    const { clock } = fakeClock();
+    installDiscoveryServerCert.mockResolvedValue({
+      outcome: "recovered",
+      result: { domain: "app.example.com", verified: true, fingerprint: "ab:cd" },
+    });
+    const op = operation({ provider: "cloudflare-origin-ca" });
+    queue.claimDueOperations.mockResolvedValueOnce([op]).mockResolvedValue([]);
+    await drainDiscoveryTlsQueue(clock);
+    expect(installDiscoveryServerCert).toHaveBeenCalled(); // the fingerprint CHECK ran
+    expect(issuanceInventory.markActive).toHaveBeenCalledWith({ issuanceId: "dti_1", domainId: op.domainId });
+    expect(queue.completeOperation).toHaveBeenCalledWith(op.id, "recovered", expect.any(Date), expect.any(String));
+  });
+
+  it("a policy change between issuance and install supersedes the operation", async () => {
+    const { clock } = fakeClock();
+    queue.currentPolicyGeneration.mockResolvedValueOnce(3).mockResolvedValueOnce(9); // generation moved under us
+    const op = operation({ provider: "cloudflare-origin-ca" });
+    queue.claimDueOperations.mockResolvedValueOnce([op]).mockResolvedValue([]);
+    await drainDiscoveryTlsQueue(clock);
+    expect(installDiscoveryServerCert).not.toHaveBeenCalled();
+    expect(queue.completeOperation).toHaveBeenCalledWith(op.id, "superseded", expect.any(Date), expect.any(String));
+    expect(issuanceInventory.markActive).not.toHaveBeenCalled();
+  });
+
+  it("an installation failure defers with rollback preserved — nothing commits", async () => {
+    const { clock } = fakeClock();
+    installDiscoveryServerCert.mockRejectedValue(
+      new AppError("The certificate for app.example.com could not be installed; the previous certificate remains on the edge.", 502, "DISCOVERY_CERT_INSTALL_FAILED"),
+    );
+    const op = operation({ provider: "cloudflare-origin-ca" });
+    queue.claimDueOperations.mockResolvedValueOnce([op]).mockResolvedValue([]);
+    await drainDiscoveryTlsQueue(clock);
     expect(queue.deferOperation).toHaveBeenCalledWith(
       op.id,
-      expect.stringContaining("Edge installation dispatch is the next step"),
+      expect.stringContaining("could not be installed"),
+      expect.any(Date),
+      expect.any(Date),
+      expect.any(String),
+    );
+    expect(issuanceInventory.markActive).not.toHaveBeenCalled();
+    expect(queue.completeOperation).not.toHaveBeenCalled();
+  });
+
+  it("an unverified install result defers honestly (prior certificate preserved on the edge)", async () => {
+    const { clock } = fakeClock();
+    installDiscoveryServerCert.mockResolvedValue({
+      outcome: "installed",
+      result: { domain: "app.example.com", verified: false, reason: "reload_failed" },
+    });
+    const op = operation({ provider: "cloudflare-origin-ca" });
+    queue.claimDueOperations.mockResolvedValueOnce([op]).mockResolvedValue([]);
+    await drainDiscoveryTlsQueue(clock);
+    expect(queue.deferOperation).toHaveBeenCalledWith(
+      op.id,
+      expect.stringContaining("not serving yet"),
+      expect.any(Date),
+      expect.any(Date),
+      expect.any(String),
+    );
+    expect(issuanceInventory.markActive).not.toHaveBeenCalled();
+  });
+
+  it("incomplete candidate inventory defers instead of installing", async () => {
+    const { clock } = fakeClock();
+    issuanceInventory.findLiveIssuance.mockResolvedValue({ id: "dti_1", state: "candidate", certificatePem: null });
+    const op = operation({ provider: "cloudflare-origin-ca" });
+    queue.claimDueOperations.mockResolvedValueOnce([op]).mockResolvedValue([]);
+    await drainDiscoveryTlsQueue(clock);
+    expect(installDiscoveryServerCert).not.toHaveBeenCalled();
+    expect(queue.deferOperation).toHaveBeenCalledWith(
+      op.id,
+      expect.stringContaining("inventory"),
+      expect.any(Date),
+      expect.any(Date),
+      expect.any(String),
+    );
+  });
+
+  it("an unsealable pending key is DEFINITIVE: the issuance is retired and the operation defers", async () => {
+    const { clock } = fakeClock();
+    issuanceInventory.findLiveIssuance.mockResolvedValue({
+      id: "dti_1", state: "candidate", certificatePem: "pem", fingerprint: "ab:cd", keyEnc: "restored-sentinel",
+    });
+    const op = operation({ provider: "cloudflare-origin-ca" });
+    queue.claimDueOperations.mockResolvedValueOnce([op]).mockResolvedValue([]);
+    await drainDiscoveryTlsQueue(clock);
+    expect(installDiscoveryServerCert).not.toHaveBeenCalled();
+    expect(issuanceInventory.markFailed).toHaveBeenCalledWith(
+      "dti_1",
+      expect.stringContaining("could not be unsealed"),
+    );
+    expect(queue.deferOperation).toHaveBeenCalledWith(
+      op.id,
+      expect.stringContaining("fresh one follows"),
       expect.any(Date),
       expect.any(Date),
       expect.any(String),

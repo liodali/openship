@@ -147,7 +147,11 @@ describe("markActive (activation commit)", () => {
       sslIssuer: "cloudflare-origin-ca",
     });
     expect(domainRow?.sslExpiresAt?.getTime()).toBe(new Date("2031-06-01").getTime());
-    expect((await repo.findIssuanceById(issuance.id))?.state).toBe("active");
+    const activeRow = await repo.findIssuanceById(issuance.id);
+    expect(activeRow?.state).toBe("active");
+    // PENDING KEY MATERIAL IS GONE: the private key now lives only on the
+    // server's edge; the instance keeps no sealed copy after durable success.
+    expect(activeRow?.keyEnc).toBe("");
     // Activation frees the live slot.
     const fresh = await repo.startIssuance(startInput());
     expect(fresh.created).toBe(true);

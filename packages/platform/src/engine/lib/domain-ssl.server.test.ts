@@ -50,6 +50,13 @@ const verifyCert = vi.fn(async () => ({
   verified: false,
   reason: "missing" as const,
 }));
+const installCert = vi.fn(async () => ({
+  domain: "app.example.com",
+  verified: true,
+  issuer: "manual",
+  expiresAt: new Date(Date.now() + 90 * 86_400_000).toISOString(),
+  fingerprint: "aa:bb:cc:dd",
+}));
 
 vi.mock("@repo/db", () => ({
   repos: {
@@ -87,6 +94,7 @@ const sslProvider = {
   certificateManagement: "certbot" as const,
   provisionCert,
   verifyCert,
+  installCert,
 };
 
 vi.mock("../config/env", () => ({
@@ -113,11 +121,18 @@ vi.mock("../modules/dns/dns-credential.service", () => ({
   resolveDnsManager: vi.fn(async () => null),
 }));
 
-const { manageDomainSsl, DiscoveryBackendUnavailableError } = await import("./domain-ssl");
+const { manageDomainSsl, installDiscoveryServerCert, DiscoveryBackendUnavailableError } = await import("./domain-ssl");
 
 beforeEach(() => {
   vi.clearAllMocks();
   state.discoveryEnabled = true;
+  installCert.mockResolvedValue({
+    domain: "app.example.com",
+    verified: true,
+    issuer: "manual",
+    expiresAt: new Date(Date.now() + 90 * 86_400_000).toISOString(),
+    fingerprint: "aa:bb:cc:dd",
+  });
   provisionCert.mockClear();
   state.markedVerified = 0;
   state.sslPatches = [];
@@ -352,5 +367,90 @@ describe("server-scoped domain TLS (ownerType='server')", () => {
     });
     expect(result.verified).toBe(true);
     expect(provisionCert).toHaveBeenCalled();
+  });
+
+  it("installs an Origin CA candidate on the server edge and marks the domain verified", async () => {
+    const install = await installDiscoveryServerCert(
+      "app.example.com",
+      { certPem: "-----BEGIN CERTIFICATE-----", keyPem: "-----BEGIN PRIVATE KEY-----" },
+      { serverId: "srv_tls", expectedFingerprint: "aa:bb:cc:dd" },
+    );
+    expect(install.outcome).toBe("installed");
+    expect(installCert).toHaveBeenCalledWith(
+      "app.example.com",
+      { certPem: "-----BEGIN CERTIFICATE-----", keyPem: "-----BEGIN PRIVATE KEY-----" },
+    );
+    // Serving the first certificate IS the server-domain verification.
+    expect(state.markedVerified).toBe(1);
+  });
+
+  it("SKIPS installation when the edge already serves the expected fingerprint (crash recovery)", async () => {
+    verifyCert.mockResolvedValueOnce({
+      domain: "app.example.com",
+      verified: true,
+      issuer: "Cloudflare Origin CA",
+      expiresAt: new Date(Date.now() + 90 * 86_400_000).toISOString(),
+      fingerprint: "aa:bb:cc:dd",
+    } as never);
+    const install = await installDiscoveryServerCert(
+      "app.example.com",
+      { certPem: "x", keyPem: "y" },
+      { serverId: "srv_tls", expectedFingerprint: "aa:bb:cc:dd" },
+    );
+    expect(install.outcome).toBe("recovered"); // crash between install and commit
+    expect(installCert).not.toHaveBeenCalled(); // no reinstall
+    expect(state.markedVerified).toBe(0); // activation commit happens outside
+  });
+
+  it("a DIFFERENT served fingerprint does not recover — it installs", async () => {
+    verifyCert.mockResolvedValueOnce({
+      domain: "app.example.com",
+      verified: true,
+      issuer: "letsencrypt",
+      expiresAt: new Date(Date.now() + 30 * 86_400_000).toISOString(),
+      fingerprint: "ff:ee:dd:cc",
+    } as never);
+    const install = await installDiscoveryServerCert(
+      "app.example.com",
+      { certPem: "-----BEGIN CERTIFICATE-----", keyPem: "-----BEGIN PRIVATE KEY-----" },
+      { serverId: "srv_tls", expectedFingerprint: "aa:bb:cc:dd" },
+    );
+    expect(install.outcome).toBe("installed");
+    expect(installCert).toHaveBeenCalled();
+  });
+
+  it("an install failure surfaces as an error (rollback happens inside the provider)", async () => {
+    installCert.mockResolvedValueOnce({ domain: "app.example.com", verified: false, issuer: "", expiresAt: "", fingerprint: "" });
+    await expect(
+      installDiscoveryServerCert(
+        "app.example.com",
+        { certPem: "x", keyPem: "y" },
+        { serverId: "srv_tls", expectedFingerprint: "aa:bb:cc:dd" },
+      ),
+    ).rejects.toThrow(/could not be installed; the previous certificate remains/);
+    expect(state.markedVerified).toBe(0);
+  });
+
+  it("refuses to install for a domain owned by ANOTHER server", async () => {
+    await expect(
+      installDiscoveryServerCert(
+        "app.example.com",
+        { certPem: "x", keyPem: "y" },
+        { serverId: "srv_other", expectedFingerprint: "aa:bb:cc:dd" },
+      ),
+    ).rejects.toThrow();
+    expect(installCert).not.toHaveBeenCalled();
+  });
+
+  it("refuses to install when the discovered backend is not running (defer, not fail)", async () => {
+    state.binding = { ...state.binding!, containerRunning: false };
+    await expect(
+      installDiscoveryServerCert(
+        "app.example.com",
+        { certPem: "x", keyPem: "y" },
+        { serverId: "srv_tls", expectedFingerprint: "aa:bb:cc:dd" },
+      ),
+    ).rejects.toThrow(DiscoveryBackendUnavailableError);
+    expect(installCert).not.toHaveBeenCalled();
   });
 });

@@ -128,7 +128,7 @@ beforeEach(() => {
 describe("fresh issuance", () => {
   it("persists the encrypted intent BEFORE the create request, then records the validated candidate", async () => {
     const result = await ensureOriginCaIssued(INPUT);
-    expect(result).toMatchObject({ outcome: "issued", certificateId: "ca_cert_1" });
+    expect(result).toMatchObject({ outcome: "issued", issuanceId: "dti_new", certificateId: "ca_cert_1" });
     // ORDER: intent (startIssuance) strictly before create, candidate after.
     const intentOrder = issuanceRepo.startIssuance.mock.invocationCallOrder[0];
     const createOrder = client.create.mock.invocationCallOrder[0];
@@ -191,7 +191,7 @@ describe("recovery of a pending_create", () => {
     client.list.mockResolvedValue([{ id: "ca_orphan", hostnames: ["site.example.com"], created_on: "2026-01-01" }]);
     client.get.mockResolvedValue({ id: "ca_orphan", certificate: CERT_PEM, hostnames: ["site.example.com"] });
     const result = await ensureOriginCaIssued(INPUT);
-    expect(result).toMatchObject({ outcome: "issued", certificateId: "ca_orphan" });
+    expect(result).toMatchObject({ outcome: "issued", issuanceId: "dti_pending", certificateId: "ca_orphan" });
     expect(client.create).not.toHaveBeenCalled(); // recovery never re-creates
     // The sweep reads the PERSISTED zone (the list endpoint requires it).
     expect(client.list).toHaveBeenCalledWith("tok", "zone_1");
