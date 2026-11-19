@@ -73,7 +73,7 @@ import { normalizeEdgeResponse, type RoutingConfig } from "@repo/core";
 import { compileProjectRoutingFields } from "@repo/platform/engine/lib/project-routing-fields";
 import { buildDomainFanoutRegistrations } from "@repo/platform/engine/modules/deployments/compose/composite-route";
 import type Dockerode from "dockerode";
-import { describeDockerE2E, requireDocker } from "../helpers/docker-e2e";
+import { describeDockerE2E, requireDocker, edgeBaseImage } from "../helpers/docker-e2e";
 import { freePort } from "../helpers/free-port";
 import { EMBEDDED_LUA } from "../../../../packages/adapters/src/infra/lua-embedded";
 import { EDGE_CLIENT_MAX_BODY_SIZE } from "../../../../packages/adapters/src/infra/openresty-lua";
@@ -94,15 +94,6 @@ function heredoc(path: string, content: string): string {
   const delim = "OSH_EOF_r3k9";
   if (content.includes(delim)) throw new Error(`heredoc delimiter collides: ${path}`);
   return `cat > ${path} <<'${delim}'\n${content}\n${delim}\n`;
-}
-
-/** The image the edge is built FROM, read from the Dockerfile so a base bump cannot leave
- *  this testing a version nothing ships. */
-async function edgeBaseImage(): Promise<string> {
-  const dockerfile = await readFile(join(REPO_ROOT, "apps/edge/Dockerfile"), "utf8");
-  const from = dockerfile.match(/^FROM\s+(\S+)/m)?.[1];
-  if (!from) throw new Error("apps/edge/Dockerfile has no FROM line");
-  return from;
 }
 
 /**

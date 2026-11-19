@@ -42,7 +42,7 @@ import {
   type RouteConfig,
 } from "@repo/adapters";
 import type Dockerode from "dockerode";
-import { describeDockerE2E, requireDocker } from "../helpers/docker-e2e";
+import { describeDockerE2E, requireDocker, edgeBaseImage } from "../helpers/docker-e2e";
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "../../../..");
 const LUA_SRC = join(REPO_ROOT, "packages/adapters/src/infra/lua");
@@ -63,15 +63,6 @@ function heredoc(path: string, content: string): string {
   const delim = "OSH_EOF_c3d9";
   if (content.includes(delim)) throw new Error(`heredoc delimiter collides: ${path}`);
   return `cat > ${path} <<'${delim}'\n${content}\n${delim}\n`;
-}
-
-/** The image the edge is built FROM, read from the Dockerfile so a base bump can't leave
- *  this testing a version nothing ships. */
-async function edgeBaseImage(): Promise<string> {
-  const dockerfile = await readFile(join(REPO_ROOT, "apps/edge/Dockerfile"), "utf8");
-  const from = dockerfile.match(/^FROM\s+(\S+)/m)?.[1];
-  if (!from) throw new Error("apps/edge/Dockerfile has no FROM line");
-  return from;
 }
 
 /**

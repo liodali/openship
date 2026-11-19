@@ -29,6 +29,19 @@ Runtime security notices use the signed feed published from `security-advisories
   keep the source draining indefinitely. Restore stream access when the controller resumes,
   and link server preparation to its build view while deployment reads remain available.
 
+## 0.9.12-fork.4
+
+### Security
+
+- Edge: build OpenResty 1.31.9.1 (nginx 1.31.9) from the pinned, sha256-verified upstream
+  commit to pick up the 2026-11-18 nginx security release — ten CVEs including the HTTP/2
+  RCEs CVE-2026-123007 / CVE-2026-123633 ("nginx2root", public PoC + container-escape
+  chain). The official OpenResty 1.31.9.1 tag/image is not published yet
+  (openresty/openresty#1166), so the edge Dockerfile compiles it with the official
+  docker-openresty Alpine recipe until then; the real-image E2E suites build and test the
+  same stage. Reverts to a one-line `FROM openresty/openresty:1.31.9.1-alpine` when the
+  official image lands.
+
 ## 0.9.12-fork.3
 
 ### Discovery

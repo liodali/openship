@@ -3,7 +3,7 @@ import Docker from "dockerode";
 import { request as httpsRequest, Agent } from "node:https";
 import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
 import { PassThrough } from "node:stream";
-import { readFile, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { normalizeEdgeResponse } from "@repo/core";
@@ -19,7 +19,7 @@ import { bakedEdgeNginxConf } from "../../../../packages/adapters/src/infra/edge
 import { edgeDefaultCertPaths } from "../../../../packages/adapters/src/infra/openresty-lua";
 import { EMBEDDED_LUA } from "../../../../packages/adapters/src/infra/lua-embedded";
 import { makeTestCert } from "../../../../packages/adapters/src/system/proxy/test-certs";
-import { describeDockerE2E, requireDocker, dockerSocketPath } from "../helpers/docker-e2e";
+import { describeDockerE2E, requireDocker, dockerSocketPath, edgeBaseImage } from "../helpers/docker-e2e";
 
 // Isolated edge container with loopback-only test ports. The host-network opt-in
 // is for a separate development VM with SSH forwarding, never a production daemon.
@@ -139,11 +139,7 @@ describeDockerE2E("password-protected routes through the real edge", () => {
   beforeAll(async () => {
     await requireDocker();
     docker = new Docker({ socketPath: dockerSocketPath });
-    const dockerfile = await readFile(
-      new URL("../../../../apps/edge/Dockerfile", import.meta.url),
-      "utf8",
-    );
-    const image = dockerfile.match(/^FROM\s+(\S+)/m)![1];
+    const image = await edgeBaseImage();
     try {
       await docker.getImage(image).inspect();
     } catch {
