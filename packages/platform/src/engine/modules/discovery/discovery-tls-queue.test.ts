@@ -37,7 +37,7 @@ const issuanceInventory = vi.hoisted(() => ({
   markSuperseded: vi.fn(async (): Promise<void> => {}),
   markFailed: vi.fn(async (): Promise<void> => {}),
   findByCertificateId: vi.fn(async (_id?: string): Promise<Record<string, unknown> | undefined> => undefined),
-  findLiveIssuanceByHostname: vi.fn(async (): Promise<Record<string, unknown> | undefined> => undefined),
+  findLiveWildcardIssuance: vi.fn(async (): Promise<Record<string, unknown> | undefined> => undefined),
 }));
 
 vi.mock("@repo/db", () => ({
@@ -63,6 +63,7 @@ vi.mock("@repo/db", () => ({
 const manageDomainSsl = vi.fn(async () => ({ verified: true } as { verified: boolean } & Record<string, unknown>));
 
 const installDiscoveryServerCert = vi.fn();
+const installSharedWildcardCert = vi.fn();
 const readServerDomainCert = vi.fn();
 vi.mock("../../lib/domain-ssl", () => ({
   manageDomainSsl,
@@ -70,6 +71,7 @@ vi.mock("../../lib/domain-ssl", () => ({
   sslIssueLockKey: vi.fn((hostname: string) => `lock:${hostname}`),
   installDiscoveryServerCert: (...args: unknown[]) => installDiscoveryServerCert(...args),
   readServerDomainCert: (hostname: string, opts: { serverId: string }) => readServerDomainCert(hostname, opts),
+  installSharedWildcardCert: (child: string, wildcard: string, cert: { certPem: string; keyPem: string }, opts: { serverId: string; expectedFingerprint: string }) => installSharedWildcardCert(child, wildcard, cert, opts),
   DiscoveryBackendUnavailableError: class DiscoveryBackendUnavailableError extends AppError {},
 }));
 vi.mock("../../lib/credential-encryption", () => ({
@@ -163,7 +165,7 @@ beforeEach(() => {
   readServerDomainCert.mockResolvedValue({ domain: "app.example.com", verified: false, reason: "missing" });
   revokeOriginCaCertificate.mockResolvedValue(undefined);
   issuanceInventory.findByCertificateId.mockResolvedValue(undefined);
-  issuanceInventory.findLiveIssuanceByHostname.mockResolvedValue(undefined);
+  issuanceInventory.findLiveWildcardIssuance.mockResolvedValue(undefined);
   ensureWildcardOriginCaShared.mockResolvedValue({ outcome: "unknown", reason: "unused" });
   ensureOriginCaIssued.mockResolvedValue({
     outcome: "issued",
@@ -186,6 +188,10 @@ beforeEach(() => {
   installDiscoveryServerCert.mockResolvedValue({
     outcome: "installed",
     result: { domain: "app.example.com", verified: true, issuer: "manual", expiresAt: new Date("2030-01-01").toISOString(), fingerprint: "ab:cd" },
+  });
+  installSharedWildcardCert.mockResolvedValue({
+    outcome: "installed",
+    result: { domain: "*.example.com", verified: true, issuer: "manual", expiresAt: new Date("2030-01-01").toISOString(), fingerprint: "w:fp" },
   });
 });
 
@@ -501,7 +507,7 @@ describe("execution dispatch", () => {
     readServerDomainCert.mockResolvedValue({ domain: "app.example.com", verified: false, reason: "missing" });
   revokeOriginCaCertificate.mockResolvedValue(undefined);
   issuanceInventory.findByCertificateId.mockResolvedValue(undefined);
-  issuanceInventory.findLiveIssuanceByHostname.mockResolvedValue(undefined);
+  issuanceInventory.findLiveWildcardIssuance.mockResolvedValue(undefined);
   ensureWildcardOriginCaShared.mockResolvedValue({ outcome: "unknown", reason: "unused" });
     const op = operation({ provider: "cloudflare-origin-ca" });
     queue.claimDueOperations.mockResolvedValueOnce([op]).mockResolvedValue([]);
@@ -615,7 +621,7 @@ describe("execution dispatch", () => {
     ensureWildcardOriginCaShared.mockResolvedValue({
       outcome: "issued", issuanceId: "dti_w", certificateId: "ca_w", fingerprint: "w:fp", expiresAt: new Date("2030-01-01"),
     });
-    issuanceInventory.findLiveIssuanceByHostname.mockResolvedValue({
+    issuanceInventory.findLiveWildcardIssuance.mockResolvedValue({
       id: "dti_w", state: "candidate", certificatePem: "-----BEGIN CERTIFICATE-----", fingerprint: "w:fp", keyEnc: "enc1:sealed",
     });
     otherRepos.findDomainsForBindings.mockResolvedValue(new Map([
@@ -628,11 +634,14 @@ describe("execution dispatch", () => {
     expect(ensureWildcardOriginCaShared).toHaveBeenCalledWith(
       expect.objectContaining({ hostname: "*.example.com", domainId: wildcardOp.domainId, credentialId: "cred_cf" }),
     );
-    expect(installDiscoveryServerCert).toHaveBeenCalledWith(
+    // Authorized through the requesting child; material lands in the PATTERN dir.
+    expect(installSharedWildcardCert).toHaveBeenCalledWith(
+      "a.example.com",
       "*.example.com",
       { certPem: "-----BEGIN CERTIFICATE-----", keyPem: "UNSEALED-PRIVATE-KEY" },
       { serverId: wildcardOp.serverId, expectedFingerprint: "w:fp" },
     );
+    expect(installDiscoveryServerCert).not.toHaveBeenCalled();
     // EVERY sharing domain activates (fenced individually).
     expect(issuanceInventory.markActive).toHaveBeenCalledWith(
       expect.objectContaining({ issuanceId: "dti_w", domainId: "dom_1" }),

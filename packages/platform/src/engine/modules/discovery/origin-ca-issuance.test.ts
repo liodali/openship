@@ -24,7 +24,7 @@ const issuanceRepo = vi.hoisted(() => ({
   recordRecoveryAttempt: vi.fn(async () => 1),
   markFailed: vi.fn(async () => {}),
   findByCertificateId: vi.fn(async (): Promise<Record<string, unknown> | undefined> => undefined),
-  findLiveIssuanceByHostname: vi.fn(async (): Promise<Record<string, unknown> | undefined> => undefined),
+  findLiveWildcardIssuance: vi.fn(async (): Promise<Record<string, unknown> | undefined> => undefined),
 }));
 const domainRepo = vi.hoisted(() => ({
   findById: vi.fn(async (): Promise<Record<string, unknown> | undefined> => undefined),
@@ -117,7 +117,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   validate.impl = null;
   issuanceRepo.findByCertificateId.mockResolvedValue(undefined);
-  issuanceRepo.findLiveIssuanceByHostname.mockResolvedValue(undefined);
+  issuanceRepo.findLiveWildcardIssuance.mockResolvedValue(undefined);
   issuanceRepo.findLiveIssuance.mockResolvedValue(undefined);
   issuanceRepo.findIssuanceById.mockResolvedValue(undefined);
   domainRepo.findById.mockResolvedValue(undefined);
@@ -478,7 +478,7 @@ describe("reuse of healthy active inventory", () => {
 });
 
 describe("SHARED WILDCARD issuance", () => {
-  const WILDCARD_INPUT = { ...INPUT, hostname: "*.sub1.example.com" };
+  const WILDCARD_INPUT = { ...INPUT, serverId: "srv_1", hostname: "*.sub1.example.com" };
 
   it("the wildcard PATTERN is the issuance identity: resume a live shared row, never duplicate", async () => {
     const sharedRow = {
@@ -493,7 +493,7 @@ describe("SHARED WILDCARD issuance", () => {
       keyEnc: "enc1:sealed",
     };
     issuanceRepo.findLiveIssuance.mockResolvedValue(undefined);
-    issuanceRepo.findLiveIssuanceByHostname = vi.fn(async () => sharedRow);
+    issuanceRepo.findLiveWildcardIssuance.mockResolvedValueOnce(sharedRow);
     const result = await ensureWildcardOriginCaShared(WILDCARD_INPUT);
     expect(result).toMatchObject({ outcome: "issued", issuanceId: "dti_shared", certificateId: "ca_shared" });
     // NO new intent, NO provider create — sharing never duplicates.
@@ -504,6 +504,7 @@ describe("SHARED WILDCARD issuance", () => {
   it("REUSE: a healthy shared inventory short-circuits from the referenced row", async () => {
     issuanceRepo.findByCertificateId.mockResolvedValue({
       id: "dti_shared0",
+      state: "active",
       certificateId: "ca_shared",
       expiresOn: new Date(Date.now() + 300 * 86_400_000),
     });

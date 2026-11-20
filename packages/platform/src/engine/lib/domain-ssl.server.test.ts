@@ -44,6 +44,7 @@ const provisionCert = vi.fn(async () => ({
   domain: "app.example.com",
   verified: true,
   issuer: "letsencrypt",
+  renewable: true, // POSITIVE proof: issued by a public ACME CA
   expiresAt: new Date(Date.now() + 90 * 86_400_000).toISOString(),
 }));
 const verifyCert = vi.fn(async () => ({
