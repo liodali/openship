@@ -29,7 +29,7 @@ import {
   sslIssueLockKey,
 } from "../../lib/domain-ssl";
 import { createProvisionLock } from "../../lib/provision-lock";
-import { ensureOriginCaIssued } from "./origin-ca-issuance";
+import { ensureOriginCaIssued, ensureWildcardOriginCaShared } from "./origin-ca-issuance";
 import { revokeOriginCaCertificate } from "./origin-ca-client";
 import { installDiscoveryServerCert } from "../../lib/domain-ssl";
 import { decryptSecretField } from "../../lib/credential-encryption";
@@ -177,24 +177,21 @@ async function executeOperation(operation: DiscoveryTlsOperation, clock: TlsQueu
 
     // Dispatch gate mirror: exact Let's Encrypt through the shared entrypoint;
     // Cloudflare Origin CA through the dedicated resumable issuance flow (no
-    // ACME fallback in either direction). Wildcard sources stay durably
-    // deferred — the shared-certificate dispatch is a later step, and an
-    // exact-host certificate is never ordered as a fallback.
+    // ACME fallback in either direction). Shared wildcard sources dispatch
+    // through the Origin CA sharing flow; an exact-host certificate is never
+    // ordered as a wildcard fallback.
     if (operation.provider === "cloudflare-origin-ca") {
       if (operation.source !== "exact") {
-        await repos.discoveryTlsQueue.deferOperation(
-          operation.id,
-          `${operation.hostname} requests the shared wildcard certificate ${operation.sourceHostname}; wildcard issuance waits for the shared-certificate dispatch (no exact-host fallback).`,
-          retryAt(operation.attempts, now()),
-          now(),
-          WORKER_ID,
-        );
+        await dispatchWildcardOriginCa(operation, clock);
         return;
       }
       await dispatchOriginCaIssuance(operation, clock);
       return;
     }
     if (operation.source !== "exact") {
+      // A Let's Encrypt wildcard declaration is ACME DNS-01 work routed by the
+      // policy, not a Cloudflare shared resource; keep it on the durable queue
+      // with the shared-entrypoint gates (no exact-host fallback).
       await repos.discoveryTlsQueue.deferOperation(
         operation.id,
         `${operation.hostname} requests the shared wildcard certificate ${operation.sourceHostname}; wildcard issuance waits for the shared-certificate dispatch (no exact-host fallback).`,
@@ -257,6 +254,152 @@ async function executeOperation(operation: DiscoveryTlsOperation, clock: TlsQueu
  * generation check re-run UNDER the lock, then the resumable issuance
  * (reuse healthy active material — or resume/recover/create, ambiguity-safe).
  */
+/**
+ * The SHARED WILDCARD dispatch: one Origin CA certificate per declared
+ * pattern (`*.base`), issued once and shared by every unsuppressed binding
+ * declaring it. The edge resolves children through its parent-wildcard
+ * lookup, so the shared pair installs ONCE under `certDir/<wildcard>/`;
+ * each sharing domain's activation is fenced individually.
+ */
+async function dispatchWildcardOriginCa(operation: DiscoveryTlsOperation, clock: TlsQueueClock): Promise<void> {
+  // Lock the PATTERN, not the site: concurrent dispatches for different
+  // children sharing the wildcard serialize here instead of racing duplicate
+  // issuances.
+  await createProvisionLock(sslIssueLockKey(operation.sourceHostname)).run(async () => {
+    const now = () => clock.now();
+    try {
+      const currentGeneration = await repos.discoveryTlsQueue.currentPolicyGeneration(
+        operation.serverId,
+        operation.hostname,
+      );
+      if (currentGeneration === null) {
+        await defer(operation.id, `The domain record for ${operation.hostname} disappeared while this work waited; deferring.`, operation.attempts, now(), WORKER_ID);
+        return;
+      }
+      if (currentGeneration > operation.policyGeneration) {
+        await repos.discoveryTlsQueue.completeOperation(operation.id, "superseded", now(), WORKER_ID);
+        return;
+      }
+      const policy = await repos.domain.getTlsPolicy(operation.domainId);
+      if (!policy?.tlsCfCredentialId || !policy?.tlsCfZoneId) {
+        await defer(operation.id, `TLS configuration required: ${operation.hostname} has no Cloudflare credential/zone for this domain.`, operation.attempts, now(), WORKER_ID);
+        return;
+      }
+      const credential = await repos.credential.findById(operation.organizationId, policy.tlsCfCredentialId);
+      if (!credential || credential.provider !== "cloudflare") {
+        await defer(operation.id, `The domain's Cloudflare credential (${policy.tlsCfCredentialId}) is missing or is not a cloudflare credential.`, operation.attempts, now(), WORKER_ID);
+        return;
+      }
+      const apiToken = readCredentialSecrets(credential).apiToken;
+      if (!apiToken) {
+        await defer(operation.id, "The domain's Cloudflare credential has no stored API token; re-enter it through the credentials flow.", operation.attempts, now(), WORKER_ID);
+        return;
+      }
+      await assertDiscoveryBackendFresh(
+        { kind: "server", serverId: operation.serverId, organizationId: operation.organizationId, isLocal: false, workspaceId: null },
+        operation.hostname,
+      );
+
+      // Shared-material health on the EDGE: the pattern directory is what
+      // every child inherits. The audit-style comparison decides reuse vs
+      // repair — transient read failures never trigger a re-issue.
+      let activeMaterialHealthy = true;
+      let activeCertificateId: string | null = null;
+      const shared = await repos.domain.findOriginCaActiveDomainsForServer(operation.serverId, { limit: 25 });
+      const edge = await readServerDomainCert(operation.sourceHostname, { serverId: operation.serverId });
+      if (edge.verified && edge.fingerprint) {
+        const match = shared.find((row) => row.tlsCertificateFingerprint === edge.fingerprint);
+        if (match) activeCertificateId = match.tlsCertificateId;
+        else activeMaterialHealthy = false; // someone else's wildcard serves there — repair
+      } else if (edge.reason !== "read_error") {
+        activeMaterialHealthy = false; // the shared pattern is missing on the edge
+      }
+
+      const result = await ensureWildcardOriginCaShared({
+        domainId: operation.domainId,
+        operationId: operation.id,
+        hostname: operation.sourceHostname,
+        zoneId: policy.tlsCfZoneId,
+        apiToken,
+        organizationId: operation.organizationId,
+        validityDays: (policy.tlsValidityDays ?? undefined) as import("@repo/core").OriginCaValidityDays | undefined,
+        activeMaterialHealthy,
+        activeCertificateId,
+        credentialId: policy.tlsCfCredentialId,
+      });
+      if (result.outcome === "reused") {
+        // The shared pattern is healthy on the edge — commit THIS domain's
+        // inventory from the issuing row (sharing activation), then complete.
+        if (result.issuanceId) {
+          await repos.discoveryTlsIssuance.markActive({
+            issuanceId: result.issuanceId,
+            domainId: operation.domainId,
+            expectedServerId: operation.serverId,
+            expectedTlsProvider: "cloudflare-origin-ca",
+            expectedPolicyGeneration: operation.policyGeneration,
+          });
+        }
+        await repos.discoveryTlsQueue.completeOperation(operation.id, "reused", now(), WORKER_ID);
+        return;
+      }
+      if (result.outcome === "issued") {
+        // Install the shared pair under the PATTERN directory (children
+        // inherit it through the edge's parent-wildcard resolution).
+        const row = await repos.discoveryTlsIssuance.findLiveIssuanceByHostname(operation.sourceHostname);
+        if (!row || !row.certificatePem || !row.fingerprint || !row.keyEnc) {
+          await defer(operation.id, `The shared wildcard inventory for ${operation.sourceHostname} is incomplete; the next attempt retries.`, operation.attempts, now(), WORKER_ID);
+          return;
+        }
+        const keyPem = decryptSecretField(row.keyEnc);
+        if (!keyPem) {
+          await repos.discoveryTlsIssuance.markFailed(result.issuanceId, "the shared wildcard private key could not be unsealed for installation");
+          await defer(operation.id, `The pending private key for ${operation.sourceHostname} could not be unsealed; the issuance was retired and a fresh one follows.`, operation.attempts, now(), WORKER_ID);
+          return;
+        }
+        const install = await installDiscoveryServerCert(
+          operation.sourceHostname,
+          { certPem: row.certificatePem, keyPem },
+          { serverId: operation.serverId, expectedFingerprint: row.fingerprint },
+        );
+        if (!install.result.verified) {
+          await defer(operation.id, `The shared certificate for ${operation.sourceHostname} is not serving yet; the previous certificate remains on the edge.`, operation.attempts, now(), WORKER_ID);
+          return;
+        }
+        // Activation for EVERY unsuppressed sharing domain (fenced per domain;
+        // refusals are skipped — those domains' own operations handle them).
+        const sharingBindings = await repos.discovery.getBindingsForWildcard(operation.serverId, operation.sourceHostname);
+        const sharingHostnames = [...new Set([...sharingBindings.map((b) => b.hostname), operation.hostname.toLowerCase()])];
+        const sharingDomains = await repos.discovery.findDomainsForBindings(operation.serverId, sharingHostnames);
+        for (const domainRow of sharingDomains.values()) {
+          await repos.discoveryTlsIssuance
+            .markActive({
+              issuanceId: result.issuanceId,
+              domainId: domainRow.id,
+              expectedServerId: operation.serverId,
+              expectedTlsProvider: "cloudflare-origin-ca",
+              expectedPolicyGeneration: operation.policyGeneration,
+            })
+            .catch(() => {});
+        }
+        // The issuing row is now terminal-active; pending key material wiped.
+        await repos.discoveryTlsQueue.completeOperation(operation.id, "installed", now(), WORKER_ID);
+        return;
+      }
+      // unknown: ambiguity/recovery in progress — visible, bounded, no duplicate.
+      await defer(operation.id, result.reason, operation.attempts, now(), WORKER_ID);
+    } catch (error) {
+      if (error instanceof DiscoveryBackendUnavailableError) {
+        await defer(operation.id, error.message, operation.attempts, now(), WORKER_ID);
+        return;
+      }
+      const reason =
+        error instanceof AppError ? error.message : "Shared wildcard issuance failed; the next attempt retries.";
+      reportCaughtError(error, "platform/engine/modules/discovery/discovery-tls-queue");
+      await defer(operation.id, reason, operation.attempts, now(), WORKER_ID);
+    }
+  });
+}
+
 async function dispatchOriginCaIssuance(operation: DiscoveryTlsOperation, clock: TlsQueueClock): Promise<void> {
   await createProvisionLock(sslIssueLockKey(operation.hostname)).run(async () => {
     const now = () => clock.now();

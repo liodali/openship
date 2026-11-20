@@ -788,6 +788,21 @@ export function createDiscoveryRepo(db: Database) {
     },
 
     /** The live discovery binding behind a server-scoped domain (TLS gate). */
+    /** Every UNSUPPRESSED binding on this server declaring the SAME wildcard
+     *  certificate source — the sharing set for one wildcard issuance. */
+    getBindingsForWildcard(serverId: string, wildcard: string) {
+      return db
+        .select()
+        .from(binding)
+        .where(
+          and(
+            eq(binding.serverId, serverId),
+            eq(binding.tlsDeclaredWildcard, wildcard),
+            eq(binding.suppressed, false),
+          ),
+        );
+    },
+
     getBindingForDomain(serverId: string, hostname: string) {
       return db.query.discoveryBinding.findFirst({
         where: and(

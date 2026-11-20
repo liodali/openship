@@ -268,6 +268,11 @@ export const DiscoveryServiceSchema = Type.Object({
       sslStatus: Type.String(),
       sslExpiresAt: nullableString,
       sslIssuer: nullableString,
+      /** Desired managed-TLS provider and the provider whose certificate is
+       *  actually installed (null before first installation). Additive and
+       *  optional for existing consumers. */
+      tlsProvider: Type.Optional(Type.Union([DiscoveryTlsProviderSchema, Type.Null()])),
+      tlsActiveProvider: Type.Optional(Type.Union([DiscoveryTlsProviderSchema, Type.Null()])),
     }),
     Type.Null(),
   ]),

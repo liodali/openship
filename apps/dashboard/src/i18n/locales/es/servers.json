@@ -1298,7 +1298,14 @@
       "error": "Certificado fallido",
       "none": "Sin certificado",
       "provisioning": "Certificado en aprovisionamiento",
-      "expired": "Certificado caducado"
+      "expired": "Certificado caducado",
+      "providerLetsencrypt": "Let's Encrypt",
+      "providerCloudflareOriginCa": "Cloudflare Origin CA",
+      "opQueued": "en cola",
+      "opRunning": "en curso",
+      "opDeferred": "esperando",
+      "opError": "reintentando",
+      "waitingBackend": "esperando al backend"
     },
     "strategy": {
       "network-ip": "red de contenedor",

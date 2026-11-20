@@ -45,6 +45,7 @@ import {
   type DiscoveryTlsSettings,
 } from "@repo/contracts";
 import { repos, type DiscoveryBinding, type DiscoveryTlsOperation } from "@repo/db";
+import type { DiscoveryTlsProvider } from "@repo/core";
 import type { Authorization } from "./authorization";
 import type { ExecutionContext } from "./context";
 import type { OperationResult } from "./deployments";
@@ -93,7 +94,15 @@ export function createDiscoveryOperations(authorization: Authorization): Platfor
    *  today's defaults — hostname falls back to the binding's own declaration. */
   function toService(
     row: DiscoveryBinding,
-    domainRow: { hostname: string; verified: boolean | null; sslStatus: string | null; sslExpiresAt: Date | null; sslIssuer: string | null } | undefined | null,
+    domainRow: {
+      hostname: string;
+      verified: boolean | null;
+      sslStatus: string | null;
+      sslExpiresAt: Date | null;
+      sslIssuer: string | null;
+      tlsProvider?: DiscoveryTlsProvider | null;
+      tlsActiveProvider?: DiscoveryTlsProvider | null;
+    } | undefined | null,
     tlsOperation?: DiscoveryTlsOperation | null,
   ): DiscoveryService {
     return {
@@ -128,6 +137,8 @@ export function createDiscoveryOperations(authorization: Authorization): Platfor
         sslStatus: domainRow?.sslStatus ?? "none",
         sslExpiresAt: domainRow?.sslExpiresAt ? domainRow.sslExpiresAt.toISOString() : null,
         sslIssuer: domainRow?.sslIssuer ?? null,
+        tlsProvider: domainRow?.tlsProvider ?? null,
+        tlsActiveProvider: domainRow?.tlsActiveProvider ?? null,
       },
       tlsOperation: tlsOperation
         ? {

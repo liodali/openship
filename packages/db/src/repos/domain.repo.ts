@@ -709,6 +709,7 @@ export function createDomainRepo(db: Database) {
         .select({
           id: domain.id,
           hostname: domain.hostname,
+          tlsCertificateId: domain.tlsCertificateId,
           tlsCertificateFingerprint: domain.tlsCertificateFingerprint,
           sslExpiresAt: domain.sslExpiresAt,
         })

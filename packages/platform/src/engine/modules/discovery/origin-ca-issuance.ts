@@ -58,6 +58,9 @@ export interface OriginCaIssuanceInput {
   /** The issuing credential — persisted with the intent so cleanup revokes
    *  with the credential that ISSUED the certificate. */
   credentialId?: string | null;
+  /** WILDCARD sharing: the certificate id of the shared active inventory the
+   *  worker verified healthy on the edge (reuse short-circuit input). */
+  activeCertificateId?: string | null;
   /**
    * Whether the domain's recorded ACTIVE inventory is believed healthy. The
    * worker checks the EDGE (fingerprint actually on disk) before calling —
@@ -79,7 +82,7 @@ function rotateHorizonMs(validityDays: OriginCaValidityDays): number {
 }
 
 export type OriginCaIssuanceOutcome =
-  | { outcome: "reused"; fingerprint: string; expiresAt: Date }
+  | { outcome: "reused"; fingerprint: string; expiresAt: Date; issuanceId?: string }
   | { outcome: "issued"; issuanceId: string; fingerprint: string; expiresAt: Date; certificateId: string }
   | { outcome: "unknown"; reason: string };
 
@@ -317,7 +320,7 @@ async function recoverPendingCreate(
  * may have landed) leaves pending_create untouched so the NEXT attempt takes
  * the recovery path instead of creating a duplicate.
  */
-async function createWithRecoveryOnAmbiguity(
+export async function createWithRecoveryOnAmbiguity(
   issuanceId: string,
   input: {
     apiToken: string;
@@ -385,4 +388,87 @@ async function createWithRecoveryOnAmbiguity(
     fingerprint: validated.fingerprint,
     expiresAt: validated.expiresAt,
   };
+}
+
+/**
+ * SHARED WILDCARD issuance (plan "Discovery TLS labels and wildcard certificate
+ * sources"): every unsuppressed binding declaring `*.base` shares ONE
+ * certificate for that pattern. The wildcard pattern is the issuance identity
+ * — the inventory row's hostname IS the wildcard — and the edge resolves it
+ * for every child through its parent-wildcard lookup (`certDir/<wildcard>/`).
+ * Children never claim the base itself (a wildcard SAN does not cover it; the
+ * base is its own exact-host reference).
+ *
+ * Phases mirror the exact flow: RESUME a live wildcard row (any sharing
+ * domain's interrupted work is EVERYONE's), REUSE healthy shared inventory
+ * (the worker has already verified the edge fingerprint), FRESH otherwise.
+ */
+export async function ensureWildcardOriginCaShared(
+  input: OriginCaIssuanceInput,
+): Promise<OriginCaIssuanceOutcome> {
+  const wildcard = input.hostname.toLowerCase().replace(/\.$/, "");
+
+  // 1. RESUME: the live wildcard row (issued by ANY sharing domain) owns the
+  //    pattern's in-flight work — a duplicate issuance here would defeat the
+  //    entire sharing design.
+  const live = await repos.discoveryTlsIssuance.findLiveIssuanceByHostname(wildcard);
+  if (live) {
+    if (live.state === "candidate" && live.certificatePem && live.certificateId && live.fingerprint && live.expiresOn) {
+      try {
+        validateOriginCaCertificate(live.certificatePem, { hostname: wildcard, publicKeyPem: publicKeyFor(live) });
+        return {
+          outcome: "issued",
+          issuanceId: live.id,
+          certificateId: live.certificateId,
+          fingerprint: live.fingerprint,
+          expiresAt: live.expiresOn,
+        };
+      } catch (error) {
+        // Stale/unusable shared candidate: retire and fall through to fresh.
+        reportCaughtError(error, "platform/engine/modules/discovery/origin-ca-issuance");
+        await repos.discoveryTlsIssuance.markFailed(live.id, "stored wildcard candidate no longer usable");
+      }
+    } else {
+      // pending_create: ambiguity recovery — never a fresh create from here.
+      return recoverPendingCreate(live.id, input.apiToken, wildcard, input.validityDays ?? 365);
+    }
+  }
+
+  // 2. REUSE: the worker verified the edge already serves the shared wildcard
+  //    certificate and identified the active inventory row — new sharing
+  //    domains activate from that row; no provider request.
+  if (input.activeMaterialHealthy !== false && input.activeCertificateId) {
+    const issuing = await repos.discoveryTlsIssuance.findByCertificateId(input.activeCertificateId);
+    const expiresAt = issuing?.expiresOn ?? new Date(Date.now() + 86_400_000);
+    return {
+      outcome: "reused",
+      issuanceId: issuing?.id,
+      fingerprint: "shared",
+      expiresAt,
+    };
+  }
+
+  // 3. FRESH: the shared pattern's first issuance.
+  const key = generateOriginCaKey();
+  const csrDer = buildOriginCaCsr({ hostname: wildcard, privateKeyPem: key.privateKeyPem });
+  const csrPem = csrToPem(csrDer);
+  const { issuance } = await repos.discoveryTlsIssuance.startIssuance({
+    domainId: input.domainId,
+    operationId: input.operationId,
+    hostname: wildcard,
+    zoneId: input.zoneId,
+    csrPem,
+    keyEnc: encryptSecretField(key.privateKeyPem) ?? "",
+    validityDays: input.validityDays ?? 365,
+    credentialId: input.credentialId ?? null,
+  });
+  return createWithRecoveryOnAmbiguity(issuance.id, {
+    apiToken: input.apiToken,
+    hostname: wildcard,
+    hostnames: csrHostnames(wildcard),
+    csrPem,
+    keyPem: key.publicKeyPem,
+    zoneId: input.zoneId,
+    validityDays: input.validityDays ?? 365,
+  });
 }

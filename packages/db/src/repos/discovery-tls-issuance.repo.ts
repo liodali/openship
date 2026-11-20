@@ -65,6 +65,19 @@ export function createDiscoveryTlsIssuanceRepo(db: Database) {
       return db.query.discoveryTlsIssuance.findFirst({ where: eq(issuance.id, id) });
     },
 
+    /** The live (pending_create/candidate) issuance for a WILDCARD source —
+     *  shared-certificate rows store the wildcard pattern as their hostname.
+     *  Any sharing domain's dispatch resumes THIS row instead of issuing a
+     *  duplicate. */
+    findLiveIssuanceByHostname(hostname: string) {
+      return db.query.discoveryTlsIssuance.findFirst({
+        where: and(
+          eq(issuance.hostname, hostname.toLowerCase()),
+          inArray(issuance.state, [...LIVE_STATES]),
+        ),
+      });
+    },
+
     /** The live (pending_create/candidate) issuance for a domain, or null. */
     findLiveIssuance(domainId: string) {
       return db.query.discoveryTlsIssuance.findFirst({

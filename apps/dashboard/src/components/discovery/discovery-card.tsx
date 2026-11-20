@@ -362,9 +362,15 @@ function ServiceRow({
               {s.routeState[phase]}
             </span>
             {service.tls && (
-              <span className="inline-flex items-center gap-1 rounded-full bg-muted/40 px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+              <span
+                className="inline-flex items-center gap-1 rounded-full bg-muted/40 px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+                title={tlsOperationTitle(service, s.tlsState)}
+              >
                 <UiIcon name={service.tls.verified ? "verified" : "lock"} className="size-3" />
                 {tlsLabel(service, s.tlsState)}
+                {tlsProviderLabel(service, s.tlsState) && (
+                  <span className="text-muted-foreground/70">· {tlsProviderLabel(service, s.tlsState)}</span>
+                )}
               </span>
             )}
           </div>
@@ -494,6 +500,39 @@ function tlsLabel(
   if (tls.sslStatus === "expired") return t.expired;
   if (tls.sslStatus === "error") return t.error;
   return t.none;
+}
+
+/** The ACTIVE provider when installed, else the DESIRED one — the operator
+ *  cares which CA answers for this hostname. Null when no TLS view exists. */
+function tlsProviderLabel(
+  service: DiscoveryService,
+  t: { providerLetsencrypt: string; providerCloudflareOriginCa: string },
+): string | null {
+  const tls = service.tls;
+  if (!tls) return null;
+  const provider = tls.tlsActiveProvider ?? tls.tlsProvider;
+  if (provider === "cloudflare-origin-ca") return t.providerCloudflareOriginCa;
+  if (provider === "letsencrypt") return t.providerLetsencrypt;
+  return null;
+}
+
+/** Durable operation state for the chip title: where the certificate work
+ *  actually is, beyond the certificate material's own sslStatus. */
+function tlsOperationTitle(
+  service: DiscoveryService,
+  t: { opQueued: string; opRunning: string; opDeferred: string; opError: string; waitingBackend: string },
+): string | undefined {
+  const op = service.tlsOperation;
+  if (!op || op.state === "complete") return undefined;
+  if (op.state === "waiting") return t.opQueued;
+  if (op.state === "running") return t.opRunning;
+  if (op.state === "error") return t.opError;
+  // Deferred: the reason names the waiter (stopped backend, provider
+  // configuration, ambiguity recovery) — the operator-facing part of it.
+  const wait = /backend/i.test(op.reason ?? "")
+    ? t.waitingBackend
+    : (op.reason ?? t.opDeferred);
+  return `${t.opDeferred}: ${wait}`;
 }
 
 function timeAgoShort(dateStr: string): string {
