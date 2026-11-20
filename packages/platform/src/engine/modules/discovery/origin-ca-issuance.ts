@@ -55,6 +55,9 @@ export interface OriginCaIssuanceInput {
   organizationId: string;
   /** One of Cloudflare's discrete durations (validated at policy-write time). */
   validityDays?: OriginCaValidityDays;
+  /** The issuing credential — persisted with the intent so cleanup revokes
+   *  with the credential that ISSUED the certificate. */
+  credentialId?: string | null;
   /**
    * Whether the domain's recorded ACTIVE inventory is believed healthy. The
    * worker checks the EDGE (fingerprint actually on disk) before calling —
@@ -153,6 +156,7 @@ export async function ensureOriginCaIssued(input: OriginCaIssuanceInput): Promis
     csrPem,
     keyEnc: encryptSecretField(key.privateKeyPem) ?? "",
     validityDays,
+    credentialId: input.credentialId ?? null,
   });
 
   return createWithRecoveryOnAmbiguity(issuance.id, {

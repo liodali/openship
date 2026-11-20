@@ -337,6 +337,10 @@ export const discoveryTlsIssuance = pgTable(
       .references(() => domain.id, { onDelete: "cascade" }),
     /** The queue operation that requested this issuance (recovery linkage). */
     operationId: text("operation_id"),
+    /** The Cloudflare credential that ISSUED the certificate — cleanup
+     *  revokes with THIS reference, never the domain's current policy
+     *  credential (cleared on provider switch, changed on reconfiguration). */
+    credentialId: text("credential_id"),
     hostname: text("hostname").notNull(),
     /** The Cloudflare zone the issuance targets. */
     zoneId: text("zone_id").notNull(),

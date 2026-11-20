@@ -33,6 +33,7 @@ import {
 } from "./discovery-reconciler";
 import { repairDiscoveryRoutes, type DiscoveryRepairSummary } from "./discovery-repair";
 import { kickDiscoveryTlsQueue } from "./discovery-tls-queue";
+import { readServerDomainCert } from "../../lib/domain-ssl";
 import { revokeOriginCaCertificate } from "./origin-ca-client";
 import { readCredentialSecrets } from "../credentials/credential.service";
 import { renewDiscoveryWatchers } from "./discovery-watch";
@@ -43,12 +44,14 @@ export const DISCOVERY_SWEEP_JOB = "discovery:sweep";
 export interface DiscoveryServerSweepSummary {
   /** Replaced Origin CA certificates revoked after successful replacement. */
   revokedCertificates?: number;
+  /** Domains enqueued for Edge repair/rotation by the periodic cert audit. */
+  certAuditScheduled?: number;
   serverId: string;
   scan?: DiscoveryScanSummary;
   reconcile?: DiscoveryReconcileSummary;
   repair?: DiscoveryRepairSummary;
   /** Stages that threw (their key is absent from the summary). */
-  failed: Array<"scan" | "reconcile" | "repair" | "certificate-cleanup">;
+  failed: Array<"scan" | "reconcile" | "repair" | "certificate-cleanup" | "certificate-audit">;
 }
 
 /**
@@ -103,6 +106,46 @@ export function sweepServerDiscovery(
   return runInServerQueue(serverId, () => runServerSweep(serverId, organizationId, options));
 }
 
+/**
+ * Bounded periodic certificate audit: for server domains recording ACTIVE
+ * Origin CA inventory, compare the EDGE fingerprint against the database.
+ * A mismatch or missing material enqueues the durable worker (whose repair
+ * flow re-issues through the full gate chain); transient read failures are
+ * ignored — a SSH blip must not spin up re-issuance.
+ */
+async function auditServerCertificates(serverId: string, organizationId: string): Promise<number> {
+  const domains = await repos.domain.findOriginCaActiveDomainsForServer(serverId, 5);
+  let scheduled = 0;
+  for (const domainRow of domains) {
+    if (!domainRow.tlsCertificateFingerprint) continue;
+    const edge = await readServerDomainCert(domainRow.hostname, { serverId });
+    const healthy =
+      edge.verified && edge.fingerprint
+        ? edge.fingerprint === domainRow.tlsCertificateFingerprint
+        : edge.reason === "read_error";
+    if (healthy) continue;
+    const policy = await repos.domain.getTlsPolicy(domainRow.id);
+    const binding = await repos.discovery.getBindingForDomain(serverId, domainRow.hostname);
+    const wildcard = binding?.tlsDeclaredWildcard ?? null;
+    const { created } = await repos.discoveryTlsQueue.ensureOperation({
+      hostname: domainRow.hostname,
+      sourceHostname: (wildcard ?? domainRow.hostname).toLowerCase(),
+      source: wildcard ? "wildcard" : "exact",
+      provider: policy?.tlsProvider ?? "letsencrypt",
+      domainId: domainRow.id,
+      serverId,
+      organizationId,
+      serviceKey: binding?.serviceKey ?? domainRow.hostname,
+      policyGeneration: policy?.tlsPolicyGeneration ?? 0,
+    });
+    if (created) {
+      kickDiscoveryTlsQueue();
+      scheduled += 1;
+    }
+  }
+  return scheduled;
+}
+
 async function runServerSweep(
   serverId: string,
   organizationId: string,
@@ -154,6 +197,19 @@ async function runServerSweep(
     summary.failed.push("repair");
   }
 
+  // CERTIFICATE AUDIT: bounded periodic check that the edge still holds the
+  // certificate the database claims — INDEPENDENT of route reapplication (a
+  // server rebuild loses cert files while every binding stays unchanged, and
+  // a healthy DB expiry would otherwise keep the repair path forever
+  // unreached). Missing/mismatched material enqueues the durable worker,
+  // whose repair flow re-issues; transient read failures never audit-repair.
+  try {
+    summary.certAuditScheduled = await auditServerCertificates(serverId, organizationId);
+  } catch (error) {
+    reportCaughtError(error, "platform/engine/modules/discovery/discovery-sweep");
+    summary.failed.push("certificate-audit");
+  }
+
   // CERTIFICATE CLEANUP: activated Origin CA certificates this instance
   // exclusively issued whose id is no longer referenced by ANY domain —
   // they were replaced (rotation, or a provider switch to Let's Encrypt,
@@ -165,10 +221,13 @@ async function runServerSweep(
     let revoked = 0;
     for (const row of stale) {
       if (!row.certificateId) continue;
+      // Revoke with the ISSUING credential (persisted on the inventory row) —
+      // the domain's current policy credential is cleared on a provider
+      // switch and may change across reconfigurations. Legacy rows without a
+      // reference fall back to the current policy credential.
       const policy = await repos.domain.getTlsPolicy(row.domainId);
-      const credential = policy?.tlsCfCredentialId
-        ? await repos.credential.findById(organizationId, policy.tlsCfCredentialId)
-        : undefined;
+      const credentialId = row.credentialId ?? policy?.tlsCfCredentialId ?? null;
+      const credential = credentialId ? await repos.credential.findById(organizationId, credentialId) : undefined;
       const apiToken = credential?.provider === "cloudflare" ? readCredentialSecrets(credential).apiToken : undefined;
       if (!apiToken) continue; // credential gone/changed: the certificate expires naturally
       await revokeOriginCaCertificate(apiToken, row.certificateId);

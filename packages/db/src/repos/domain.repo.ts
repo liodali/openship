@@ -694,6 +694,29 @@ export function createDomainRepo(db: Database) {
      * success flips the row verified + active without any TXT check. No project
      * admission locks — server domains have no project lifecycle.
      */
+    /** Server-owned domains recording ACTIVE Origin CA inventory — the
+     *  periodic Edge audit's bounded selection (files can vanish on a server
+     *  rebuild while every database field still looks healthy). */
+    async findOriginCaActiveDomainsForServer(serverId: string, limit = 5) {
+      return db
+        .select({
+          id: domain.id,
+          hostname: domain.hostname,
+          tlsCertificateFingerprint: domain.tlsCertificateFingerprint,
+          sslExpiresAt: domain.sslExpiresAt,
+        })
+        .from(domain)
+        .where(
+          and(
+            eq(domain.ownerType, "server"),
+            eq(domain.serverId, serverId),
+            eq(domain.tlsActiveProvider, "cloudflare-origin-ca"),
+            isNotNull(domain.tlsCertificateId),
+          ),
+        )
+        .limit(limit);
+    },
+
     /** How many OTHER domains reference a certificate (replacement cleanup's
      *  "unused" check — 0 means the certificate is safely revocable). */
     async countByCertificateId(certificateId: string, excludeDomainId?: string): Promise<number> {
@@ -702,6 +725,25 @@ export function createDomainRepo(db: Database) {
         .from(domain)
         .where(and(eq(domain.tlsCertificateId, certificateId), ne(domain.id, excludeDomainId ?? "")));
       return rows.length;
+    },
+
+    /**
+     * Commit the ACTIVE provider inventory after a provider switch: the newly
+     * activated provider owns the domain's TLS now, so any previous Cloudflare
+     * Origin CA inventory (certificate id + fingerprint) is cleared — leaving
+     * it behind would keep the replaced certificate "referenced" forever and
+     * block its cleanup. Server-owned rows only.
+     */
+    async commitServerDomainProvider(id: string, provider: "letsencrypt", now = new Date()) {
+      await db
+        .update(domain)
+        .set({
+          tlsActiveProvider: provider,
+          tlsCertificateId: null,
+          tlsCertificateFingerprint: null,
+          updatedAt: now,
+        })
+        .where(and(eq(domain.id, id), eq(domain.ownerType, "server")));
     },
 
     async markServerDomainVerified(id: string) {

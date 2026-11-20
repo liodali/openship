@@ -32,6 +32,8 @@ export function createDiscoveryTlsIssuanceRepo(db: Database) {
        *  pure persistence and never sees plaintext key material. */
       keyEnc: string;
       validityDays: number;
+      /** The issuing credential — cleanup revokes with THIS, not the current policy. */
+      credentialId?: string | null;
     }): Promise<{ issuance: DiscoveryTlsIssuance; created: boolean }> {
       if (!input.keyEnc.startsWith("enc1:"))
         throw new Error("Refusing to persist an unsealed Origin CA private key");
@@ -46,6 +48,7 @@ export function createDiscoveryTlsIssuanceRepo(db: Database) {
           csr: input.csrPem,
           keyEnc: input.keyEnc,
           validityDays: input.validityDays,
+          credentialId: input.credentialId ?? null,
         })
         // The partial unique index arbitrates: an in-flight issuance for the
         // domain is resumed, not duplicated.
@@ -234,7 +237,12 @@ export function createDiscoveryTlsIssuanceRepo(db: Database) {
      */
     async findStaleIssuedForServer(serverId: string, limit = 5) {
       const rows = await db
-        .select({ id: issuance.id, certificateId: issuance.certificateId, domainId: issuance.domainId })
+        .select({
+          id: issuance.id,
+          certificateId: issuance.certificateId,
+          domainId: issuance.domainId,
+          credentialId: issuance.credentialId,
+        })
         .from(issuance)
         .innerJoin(domain, eq(issuance.domainId, domain.id))
         .where(
@@ -255,11 +263,16 @@ export function createDiscoveryTlsIssuanceRepo(db: Database) {
       return rows;
     },
 
-    /** GC bookkeeping: record that a replaced certificate was revoked. */
+    /**
+     * GC bookkeeping: a replaced certificate was revoked — TERMINAL cleanup
+     * state ("retired", outside the live states and outside the cleanup
+     * selector), so the same bounded batch never re-selects it and starve
+     * later certificates.
+     */
     async markRevokedAfterReplacement(id: string, now = new Date()): Promise<void> {
       await db
         .update(issuance)
-        .set({ reason: "certificate revoked after replacement", updatedAt: now })
+        .set({ state: "retired", reason: "certificate revoked after replacement", updatedAt: now })
         .where(eq(issuance.id, id));
     },
 

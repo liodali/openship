@@ -327,6 +327,7 @@ async function dispatchOriginCaIssuance(operation: DiscoveryTlsOperation, clock:
         organizationId: operation.organizationId,
         validityDays: (policy.tlsValidityDays ?? undefined) as import("@repo/core").OriginCaValidityDays | undefined,
         activeMaterialHealthy,
+        credentialId: policy.tlsCfCredentialId,
       });
       if (result.outcome === "reused") {
         await repos.discoveryTlsQueue.completeOperation(operation.id, "reused", now(), WORKER_ID);
@@ -410,9 +411,21 @@ async function dispatchOriginCaIssuance(operation: DiscoveryTlsOperation, clock:
           if (managed) {
             const foreignUsage = await repos.domain.countByCertificateId(previousCertificateId, operation.domainId);
             if (foreignUsage === 0) {
-              await revokeOriginCaCertificate(apiToken, previousCertificateId).catch((error) => {
-                reportCaughtError(error, "platform/engine/modules/discovery/discovery-tls-queue");
-              });
+              // Revoke with the credential that ISSUED the replaced
+              // certificate (the current policy token may name a different
+              // credential after a reconfiguration; the issuance row carries
+              // the issuing reference).
+              const issuingCredentialId = managed.credentialId ?? policy.tlsCfCredentialId;
+              const issuingCredential = issuingCredentialId
+                ? await repos.credential.findById(operation.organizationId, issuingCredentialId)
+                : undefined;
+              const issuingToken =
+                issuingCredential?.provider === "cloudflare" ? readCredentialSecrets(issuingCredential).apiToken : undefined;
+              if (issuingToken) {
+                await revokeOriginCaCertificate(issuingToken, previousCertificateId).catch((error) => {
+                  reportCaughtError(error, "platform/engine/modules/discovery/discovery-tls-queue");
+                });
+              }
             }
           }
         }

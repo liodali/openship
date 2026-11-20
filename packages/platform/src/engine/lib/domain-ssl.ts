@@ -1228,6 +1228,14 @@ async function provisionAuthorizedDomainCert(
         await repos.domain.markServerDomainVerified(domainRecord.id).catch((diagnosticFailure) => {
           observeCaughtError(diagnosticFailure, "platform/engine/lib/domain-ssl");
         });
+        // PROVIDER-SWITCH inventory commit: the newly activated provider owns
+        // the domain's TLS — stale Cloudflare Origin CA inventory (id +
+        // fingerprint) would keep the replaced certificate referenced forever
+        // and block its cleanup. Best-effort here, converged again on the
+        // next successful renewal (same contract as the verified write).
+        await repos.domain.commitServerDomainProvider(domainRecord.id, "letsencrypt").catch((diagnosticFailure) => {
+          observeCaughtError(diagnosticFailure, "platform/engine/lib/domain-ssl");
+        });
       }
       return result;
     } catch (err) {
@@ -1239,6 +1247,7 @@ async function provisionAuthorizedDomainCert(
       const recovered = await recoverIssuedCert(ssl, domainRecord, err);
       if (owner.kind === "server" && recovered.verified) {
         await repos.domain.markServerDomainVerified(domainRecord.id).catch(() => {});
+        await repos.domain.commitServerDomainProvider(domainRecord.id, "letsencrypt").catch(() => {});
       }
       opts.onLog?.(
         `A valid certificate for ${domainRecord.hostname} is present on the edge (expires ` +
