@@ -98,6 +98,7 @@ const INPUT = {
   apiToken: "tok",
   organizationId: "org_1",
   validityDays: 90 as const,
+  credentialId: "cred_cf", // the issuing credential, persisted with the intent
 };
 
 /** A provider create result (validation is stubbed to accept it). */
@@ -135,9 +136,16 @@ describe("fresh issuance", () => {
     const candidateOrder = issuanceRepo.recordCandidate.mock.invocationCallOrder[0];
     expect(intentOrder).toBeLessThan(createOrder);
     expect(createOrder).toBeLessThan(candidateOrder);
-    // The intent carried a SEALED key (never plaintext).
+    // The intent carried a SEALED key (never plaintext) + the ISSUING
+    // credential reference (cleanup revokes with THIS, not the current policy).
     expect(issuanceRepo.startIssuance).toHaveBeenCalledWith(
-      expect.objectContaining({ keyEnc: expect.stringContaining("enc1:"), hostname: "site.example.com", zoneId: "zone_1", validityDays: 90 }),
+      expect.objectContaining({
+        keyEnc: expect.stringContaining("enc1:"),
+        hostname: "site.example.com",
+        zoneId: "zone_1",
+        validityDays: 90,
+        credentialId: "cred_cf",
+      }),
     );
     // The create sent the CSR + hostnames, and requested the discrete validity.
     expect(client.create).toHaveBeenCalledWith(

@@ -23,7 +23,7 @@ const otherRepos = vi.hoisted(() => ({
     tlsValidityDays: 90,
     tlsPolicyGeneration: 3,
   })),
-  credentialFind: vi.fn(async () => ({ id: "cred_cf", provider: "cloudflare" })),
+  credentialFind: vi.fn(async (_org?: string, id?: string) => ({ id: id ?? "cred_cf", provider: "cloudflare" })),
   domainFindById: vi.fn(async (): Promise<Record<string, unknown> | undefined> => undefined),
   countByCertificateId: vi.fn(async (): Promise<number> => 0),
 }));
@@ -71,7 +71,9 @@ vi.mock("../../lib/provision-lock", () => ({
   createProvisionLock: vi.fn((_key: string) => ({ run: (fn: () => Promise<unknown>) => fn() })),
 }));
 vi.mock("../credentials/credential.service", () => ({
-  readCredentialSecrets: vi.fn(() => ({ apiToken: "tok_cf" })),
+  readCredentialSecrets: vi.fn((credential: { id: string } | undefined) =>
+    credential ? { apiToken: `tok_${credential.id}` } : {},
+  ),
 }));
 const ensureOriginCaIssued = vi.fn();
 vi.mock("./origin-ca-issuance", () => ({ ensureOriginCaIssued: ensureOriginCaIssued }));
@@ -292,7 +294,7 @@ describe("execution dispatch", () => {
         domainId: op.domainId,
         hostname: "app.example.com",
         zoneId: "zone_1",
-        apiToken: "tok_cf",
+        apiToken: "tok_cred_cf",
         validityDays: 90,
       }),
     );
@@ -539,8 +541,30 @@ describe("execution dispatch", () => {
     const op = operation({ provider: "cloudflare-origin-ca" });
     queue.claimDueOperations.mockResolvedValueOnce([op]).mockResolvedValue([]);
     await drainDiscoveryTlsQueue(clock);
-    expect(revokeOriginCaCertificate).toHaveBeenCalledWith("tok_cf", "ca_previous");
+    // Legacy row without a credential reference: the current policy credential resolves the token.
+    expect(revokeOriginCaCertificate).toHaveBeenCalledWith("tok_cred_cf", "ca_previous");
     expect(queue.completeOperation).toHaveBeenCalledWith(op.id, "installed", expect.any(Date), expect.any(String));
+  });
+
+  it("CLEANUP revokes with the ISSUING credential reference from the inventory row", async () => {
+    const { clock } = fakeClock();
+    // The replaced certificate was issued by a DIFFERENT credential than the
+    // domain's current policy names (reconfiguration mid-lifecycle).
+    otherRepos.domainFindById.mockResolvedValue({ id: "dom_1", tlsCertificateId: "ca_prev" });
+    issuanceInventory.findByCertificateId.mockResolvedValue({
+      id: "dti_old",
+      certificateId: "ca_prev",
+      credentialId: "cred_issuing_old",
+    });
+    otherRepos.credentialFind.mockImplementation(
+      async (_org: string | undefined, id?: string) =>
+        id === "cred_issuing_old" ? { id: "cred_issuing_old", provider: "cloudflare" } : { id: id ?? "cred_cf", provider: "cloudflare" },
+    );
+    const op = operation({ provider: "cloudflare-origin-ca" });
+    queue.claimDueOperations.mockResolvedValueOnce([op]).mockResolvedValue([]);
+    await drainDiscoveryTlsQueue(clock);
+    expect(otherRepos.credentialFind).toHaveBeenCalledWith("org_1", "cred_issuing_old");
+    expect(revokeOriginCaCertificate).toHaveBeenCalledWith("tok_cred_issuing_old", "ca_prev");
   });
 
   it("CLEANUP restraint: a certificate another domain still uses is NOT revoked", async () => {

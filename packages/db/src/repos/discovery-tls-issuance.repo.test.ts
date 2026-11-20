@@ -30,6 +30,7 @@ function startInput(over: Partial<Parameters<typeof repo.startIssuance>[0]> = {}
     csrPem: "-----BEGIN CERTIFICATE REQUEST-----abc",
     keyEnc: SEALED,
     validityDays: 365,
+    credentialId: "cred_issuing",
     ...over,
   };
 }
@@ -125,6 +126,48 @@ describe("candidate state machine", () => {
     });
     expect((await repo.findByCertificateId("ca_find_me"))?.id).toBe(issuance.id);
     expect(await repo.findByCertificateId("ca_ghost")).toBeUndefined();
+  });
+});
+
+describe("issuing credential reference", () => {
+  it("persists the issuing credential with the intent (cleanup revokes with THIS, not the current policy)", async () => {
+    const { issuance } = await repo.startIssuance(startInput());
+    expect(issuance.credentialId).toBe("cred_issuing");
+    const without = await repo.startIssuance(startInput({ keyEnc: SEALED + "2", credentialId: undefined }));
+    expect(without.created).toBe(false); // dedup returns the live row
+  });
+});
+
+describe("replaced-certificate cleanup state", () => {
+  it("a revoked certificate leaves the cleanup selector FOREVER (terminal retired state)", async () => {
+    const { issuance } = await repo.startIssuance(startInput());
+    await repo.recordCandidate(issuance.id, {
+      certificateId: "ca_gc",
+      certificatePem: "pem",
+      fingerprint: "gg",
+      expiresOn: new Date("2031-01-01"),
+    });
+    await repo.markActive({
+      issuanceId: issuance.id,
+      domainId: DOMAIN,
+      expectedServerId: SERVER,
+      expectedTlsProvider: "cloudflare-origin-ca",
+      expectedPolicyGeneration: 2,
+    });
+    // Simulate replacement: another certificate wins the domain inventory.
+    await db
+      .update(schema.domain)
+      .set({ tlsCertificateId: "ca_newer" })
+      .where(eq(schema.domain.id, DOMAIN));
+    const staleBefore = await repo.findStaleIssuedForServer(SERVER, 5);
+    expect(staleBefore.map((r) => r.certificateId)).toContain("ca_gc");
+    await repo.markRevokedAfterReplacement(issuance.id);
+    // TERMINAL: the same bounded batch never re-selects the revoked row…
+    const staleAfter = await repo.findStaleIssuedForServer(SERVER, 5);
+    expect(staleAfter.map((r) => r.certificateId)).not.toContain("ca_gc");
+    const row = await repo.findIssuanceById(issuance.id);
+    expect(row?.state).toBe("retired");
+    expect(row?.reason).toBe("certificate revoked after replacement");
   });
 });
 

@@ -30,6 +30,7 @@ const state = {
   } as Record<string, unknown> | null,
   server: { id: "srv_tls", organizationId: "org_1", isLocal: false, workspaceId: null } as Record<string, unknown> | null,
   markedVerified: 0,
+  providerCommits: 0,
   sslPatches: [] as Array<Record<string, unknown>>,
   failures: [] as string[],
   discoveryEnabled: true,
@@ -67,6 +68,9 @@ vi.mock("@repo/db", () => ({
       findById: vi.fn(async () => state.policyRow ?? state.domainRow),
       markServerDomainVerified: vi.fn(async () => {
         state.markedVerified += 1;
+      }),
+      commitServerDomainProvider: vi.fn(async () => {
+        state.providerCommits += 1;
       }),
       updateSsl: vi.fn(async (_id: string, patch: Record<string, unknown>) => {
         state.sslPatches.push(patch);
@@ -141,6 +145,7 @@ beforeEach(() => {
   takeoverRenewalOwnership.mockClear();
   provisionCert.mockClear();
   state.markedVerified = 0;
+  state.providerCommits = 0;
   state.sslPatches = [];
   state.failures = [];
   state.domainRow.verified = false;
@@ -170,6 +175,10 @@ describe("server-scoped domain TLS (ownerType='server')", () => {
     expect(result.verified).toBe(true);
     expect(state.markedVerified).toBe(1);
     expect(state.sslPatches.some((p) => p.sslStatus === "active")).toBe(true);
+    // PROVIDER-SWITCH inventory commit: the newly activated provider (ACME →
+    // letsencrypt) owns the domain's TLS — stale Cloudflare Origin CA
+    // inventory is cleared so the replaced certificate can be cleaned up.
+    expect(state.providerCommits).toBe(1);
   });
 
   it("defers — never fails — when the binding is stopped, and opens no order", async () => {
