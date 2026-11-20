@@ -23,6 +23,8 @@ const issuanceRepo = vi.hoisted(() => ({
   recordCandidate: vi.fn(async () => ({ id: "dti_new", state: "candidate" })),
   recordRecoveryAttempt: vi.fn(async () => 1),
   markFailed: vi.fn(async () => {}),
+  findByCertificateId: vi.fn(async (): Promise<Record<string, unknown> | undefined> => undefined),
+  findLiveIssuanceByHostname: vi.fn(async (): Promise<Record<string, unknown> | undefined> => undefined),
 }));
 const domainRepo = vi.hoisted(() => ({
   findById: vi.fn(async (): Promise<Record<string, unknown> | undefined> => undefined),
@@ -86,7 +88,7 @@ vi.mock("./origin-ca-cert", async (importOriginal) => {
 });
 
 import { CloudflareApiError } from "../../lib/cloudflare-api";
-import { ensureOriginCaIssued } from "./origin-ca-issuance";
+import { ensureOriginCaIssued, ensureWildcardOriginCaShared } from "./origin-ca-issuance";
 import { OriginCaCertificateInvalidError, validateOriginCaCertificate } from "./origin-ca-cert";
 import { generateOriginCaKey } from "./origin-ca-csr";
 
@@ -114,6 +116,8 @@ async function importOriginalValidator() {
 beforeEach(() => {
   vi.clearAllMocks();
   validate.impl = null;
+  issuanceRepo.findByCertificateId.mockResolvedValue(undefined);
+  issuanceRepo.findLiveIssuanceByHostname.mockResolvedValue(undefined);
   issuanceRepo.findLiveIssuance.mockResolvedValue(undefined);
   issuanceRepo.findIssuanceById.mockResolvedValue(undefined);
   domainRepo.findById.mockResolvedValue(undefined);
@@ -470,5 +474,59 @@ describe("reuse of healthy active inventory", () => {
     await ensureOriginCaIssued(INPUT);
     expect(issuanceRepo.markFailed).toHaveBeenCalledWith("dti_stale", expect.stringContaining("no longer usable"));
     expect(client.create).toHaveBeenCalled(); // fresh issuance after retiring the stale one
+  });
+});
+
+describe("SHARED WILDCARD issuance", () => {
+  const WILDCARD_INPUT = { ...INPUT, hostname: "*.sub1.example.com" };
+
+  it("the wildcard PATTERN is the issuance identity: resume a live shared row, never duplicate", async () => {
+    const sharedRow = {
+      id: "dti_shared",
+      domainId: "dom_cf", // issued by another sharing domain
+      hostname: "*.sub1.example.com",
+      state: "candidate",
+      certificatePem: CERT_PEM,
+      certificateId: "ca_shared",
+      fingerprint: "shared:fp",
+      expiresOn: new Date(Date.now() + 300 * 86_400_000),
+      keyEnc: "enc1:sealed",
+    };
+    issuanceRepo.findLiveIssuance.mockResolvedValue(undefined);
+    issuanceRepo.findLiveIssuanceByHostname = vi.fn(async () => sharedRow);
+    const result = await ensureWildcardOriginCaShared(WILDCARD_INPUT);
+    expect(result).toMatchObject({ outcome: "issued", issuanceId: "dti_shared", certificateId: "ca_shared" });
+    // NO new intent, NO provider create — sharing never duplicates.
+    expect(issuanceRepo.startIssuance).not.toHaveBeenCalled();
+    expect(client.create).not.toHaveBeenCalled();
+  });
+
+  it("REUSE: a healthy shared inventory short-circuits from the referenced row", async () => {
+    issuanceRepo.findByCertificateId.mockResolvedValue({
+      id: "dti_shared0",
+      certificateId: "ca_shared",
+      expiresOn: new Date(Date.now() + 300 * 86_400_000),
+    });
+    const result = await ensureWildcardOriginCaShared({ ...WILDCARD_INPUT, activeCertificateId: "ca_shared" });
+    expect(result).toMatchObject({ outcome: "reused", issuanceId: "dti_shared0" });
+    expect(issuanceRepo.startIssuance).not.toHaveBeenCalled();
+    expect(client.create).not.toHaveBeenCalled();
+  });
+
+  it("FRESH: the intent persists under the WILDCARD hostname with the issuing credential", async () => {
+    const result = await ensureWildcardOriginCaShared(WILDCARD_INPUT);
+    expect(result.outcome).toBe("issued");
+    expect(issuanceRepo.startIssuance).toHaveBeenCalledWith(
+      expect.objectContaining({
+        hostname: "*.sub1.example.com",
+        credentialId: "cred_cf",
+        keyEnc: expect.stringContaining("enc1:"),
+      }),
+    );
+    // The create requests EXACTLY the pattern as the hostname set.
+    expect(client.create).toHaveBeenCalledWith(
+      "tok",
+      expect.objectContaining({ hostnames: ["*.sub1.example.com"] }),
+    );
   });
 });

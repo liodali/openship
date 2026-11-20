@@ -350,6 +350,8 @@ describe("createDiscoveryOperations", () => {
       sslStatus: "none",
       sslExpiresAt: null,
       sslIssuer: null,
+      tlsProvider: null, // additive provider fields: null without a domain row
+      tlsActiveProvider: null,
     };
     expect(single.data.tls).toEqual(expected);
     expect(list.data.services[0].tls).toEqual(expected);

@@ -26,6 +26,9 @@ const otherRepos = vi.hoisted(() => ({
   credentialFind: vi.fn(async (_org?: string, id?: string) => ({ id: id ?? "cred_cf", provider: "cloudflare" })),
   domainFindById: vi.fn(async (): Promise<Record<string, unknown> | undefined> => undefined),
   countByCertificateId: vi.fn(async (): Promise<number> => 0),
+  findOriginCaActiveDomainsForServer: vi.fn(async (): Promise<Array<Record<string, unknown>>> => []),
+  findDomainsForBindings: vi.fn(async (): Promise<Map<string, Record<string, unknown>>> => new Map()),
+  getBindingsForWildcard: vi.fn(async (): Promise<Array<Record<string, unknown>>> => []),
 }));
 
 const issuanceInventory = vi.hoisted(() => ({
@@ -34,6 +37,7 @@ const issuanceInventory = vi.hoisted(() => ({
   markSuperseded: vi.fn(async (): Promise<void> => {}),
   markFailed: vi.fn(async (): Promise<void> => {}),
   findByCertificateId: vi.fn(async (_id?: string): Promise<Record<string, unknown> | undefined> => undefined),
+  findLiveIssuanceByHostname: vi.fn(async (): Promise<Record<string, unknown> | undefined> => undefined),
 }));
 
 vi.mock("@repo/db", () => ({
@@ -43,6 +47,13 @@ vi.mock("@repo/db", () => ({
       getTlsPolicy: otherRepos.getTlsPolicy,
       findById: otherRepos.domainFindById,
       countByCertificateId: otherRepos.countByCertificateId,
+      findOriginCaActiveDomainsForServer: otherRepos.findOriginCaActiveDomainsForServer,
+    },
+    discovery: {
+      getBindingForDomain: vi.fn(async () => undefined),
+      getBindingsForWildcard: otherRepos.getBindingsForWildcard,
+      findDomainsForBindings: otherRepos.findDomainsForBindings,
+      getSettings: vi.fn(async () => ({ enabled: true })),
     },
     credential: { findById: otherRepos.credentialFind },
     discoveryTlsIssuance: issuanceInventory,
@@ -76,7 +87,8 @@ vi.mock("../credentials/credential.service", () => ({
   ),
 }));
 const ensureOriginCaIssued = vi.fn();
-vi.mock("./origin-ca-issuance", () => ({ ensureOriginCaIssued: ensureOriginCaIssued }));
+const ensureWildcardOriginCaShared = vi.fn();
+vi.mock("./origin-ca-issuance", () => ({ ensureOriginCaIssued: ensureOriginCaIssued, ensureWildcardOriginCaShared: (...args: unknown[]) => ensureWildcardOriginCaShared(...args) }));
 const revokeOriginCaCertificate = vi.fn(async (_token: string, _id: string): Promise<void> => {});
 vi.mock("./origin-ca-client", () => ({
   createOriginCaCertificate: vi.fn(),
@@ -143,9 +155,16 @@ beforeEach(() => {
   otherRepos.credentialFind.mockResolvedValue({ id: "cred_cf", provider: "cloudflare" });
   otherRepos.domainFindById.mockResolvedValue(undefined);
   otherRepos.countByCertificateId.mockResolvedValue(0);
+  otherRepos.findOriginCaActiveDomainsForServer.mockResolvedValue([]);
+  otherRepos.findDomainsForBindings.mockResolvedValue(new Map());
+  otherRepos.getBindingsForWildcard.mockResolvedValue([]);
+  readServerDomainCert.mockReset();
+  readServerDomainCert.mockResolvedValue({ domain: "x", verified: false, reason: "missing" });
   readServerDomainCert.mockResolvedValue({ domain: "app.example.com", verified: false, reason: "missing" });
   revokeOriginCaCertificate.mockResolvedValue(undefined);
   issuanceInventory.findByCertificateId.mockResolvedValue(undefined);
+  issuanceInventory.findLiveIssuanceByHostname.mockResolvedValue(undefined);
+  ensureWildcardOriginCaShared.mockResolvedValue({ outcome: "unknown", reason: "unused" });
   ensureOriginCaIssued.mockResolvedValue({
     outcome: "issued",
     issuanceId: "dti_1",
@@ -482,6 +501,8 @@ describe("execution dispatch", () => {
     readServerDomainCert.mockResolvedValue({ domain: "app.example.com", verified: false, reason: "missing" });
   revokeOriginCaCertificate.mockResolvedValue(undefined);
   issuanceInventory.findByCertificateId.mockResolvedValue(undefined);
+  issuanceInventory.findLiveIssuanceByHostname.mockResolvedValue(undefined);
+  ensureWildcardOriginCaShared.mockResolvedValue({ outcome: "unknown", reason: "unused" });
     const op = operation({ provider: "cloudflare-origin-ca" });
     queue.claimDueOperations.mockResolvedValueOnce([op]).mockResolvedValue([]);
     await drainDiscoveryTlsQueue(clock);
@@ -586,6 +607,76 @@ describe("execution dispatch", () => {
     queue.claimDueOperations.mockResolvedValueOnce([op]).mockResolvedValue([]);
     await drainDiscoveryTlsQueue(clock);
     expect(revokeOriginCaCertificate).not.toHaveBeenCalled();
+  });
+
+  it("WILDCARD dispatch: issues the shared pattern, installs under the pattern dir, activates all sharing domains", async () => {
+    const { clock } = fakeClock();
+    const wildcardOp = operation({ provider: "cloudflare-origin-ca", source: "wildcard", hostname: "a.example.com", sourceHostname: "*.example.com" });
+    ensureWildcardOriginCaShared.mockResolvedValue({
+      outcome: "issued", issuanceId: "dti_w", certificateId: "ca_w", fingerprint: "w:fp", expiresAt: new Date("2030-01-01"),
+    });
+    issuanceInventory.findLiveIssuanceByHostname.mockResolvedValue({
+      id: "dti_w", state: "candidate", certificatePem: "-----BEGIN CERTIFICATE-----", fingerprint: "w:fp", keyEnc: "enc1:sealed",
+    });
+    otherRepos.findDomainsForBindings.mockResolvedValue(new Map([
+      ["a.example.com", { id: "dom_1" }],
+      ["b.example.com", { id: "dom_2" }],
+    ]));
+    queue.claimDueOperations.mockResolvedValueOnce([wildcardOp]).mockResolvedValue([]);
+    await drainDiscoveryTlsQueue(clock);
+    // The PATTERN is the issuance identity + the install target.
+    expect(ensureWildcardOriginCaShared).toHaveBeenCalledWith(
+      expect.objectContaining({ hostname: "*.example.com", domainId: wildcardOp.domainId, credentialId: "cred_cf" }),
+    );
+    expect(installDiscoveryServerCert).toHaveBeenCalledWith(
+      "*.example.com",
+      { certPem: "-----BEGIN CERTIFICATE-----", keyPem: "UNSEALED-PRIVATE-KEY" },
+      { serverId: wildcardOp.serverId, expectedFingerprint: "w:fp" },
+    );
+    // EVERY sharing domain activates (fenced individually).
+    expect(issuanceInventory.markActive).toHaveBeenCalledWith(
+      expect.objectContaining({ issuanceId: "dti_w", domainId: "dom_1" }),
+    );
+    expect(issuanceInventory.markActive).toHaveBeenCalledWith(
+      expect.objectContaining({ issuanceId: "dti_w", domainId: "dom_2" }),
+    );
+    expect(queue.completeOperation).toHaveBeenCalledWith(wildcardOp.id, "installed", expect.any(Date), expect.any(String));
+  });
+
+  it("WILDCARD reuse: healthy shared material commits THIS domain's inventory and completes without issuing", async () => {
+    const { clock } = fakeClock();
+    const wildcardOp = operation({ provider: "cloudflare-origin-ca", source: "wildcard", hostname: "b.example.com", sourceHostname: "*.example.com" });
+    otherRepos.findOriginCaActiveDomainsForServer.mockResolvedValue([
+      { id: "dom_1", tlsCertificateId: "ca_shared", tlsCertificateFingerprint: "w:fp", sslExpiresAt: new Date("2030-01-01") },
+    ]);
+    readServerDomainCert.mockResolvedValue({ domain: "*.example.com", verified: true, fingerprint: "w:fp" });
+    ensureWildcardOriginCaShared.mockResolvedValue({
+      outcome: "reused", issuanceId: "dti_w0", fingerprint: "shared", expiresAt: new Date("2030-01-01"),
+    });
+    queue.claimDueOperations.mockResolvedValueOnce([wildcardOp]).mockResolvedValue([]);
+    await drainDiscoveryTlsQueue(clock);
+    expect(ensureWildcardOriginCaShared).toHaveBeenCalledWith(
+      expect.objectContaining({ activeMaterialHealthy: true, activeCertificateId: "ca_shared" }),
+    );
+    expect(issuanceInventory.markActive).toHaveBeenCalledWith(
+      expect.objectContaining({ issuanceId: "dti_w0", domainId: wildcardOp.domainId }),
+    );
+    expect(queue.completeOperation).toHaveBeenCalledWith(wildcardOp.id, "reused", expect.any(Date), expect.any(String));
+  });
+
+  it("WILDCARD ambiguity defers like the exact flow", async () => {
+    const { clock } = fakeClock();
+    const wildcardOp = operation({ provider: "cloudflare-origin-ca", source: "wildcard", hostname: "a.example.com", sourceHostname: "*.example.com" });
+    ensureWildcardOriginCaShared.mockResolvedValue({ outcome: "unknown", reason: "certificate creation outcome is unknown (recovery attempt 1); no duplicate is created" });
+    queue.claimDueOperations.mockResolvedValueOnce([wildcardOp]).mockResolvedValue([]);
+    await drainDiscoveryTlsQueue(clock);
+    expect(queue.deferOperation).toHaveBeenCalledWith(
+      wildcardOp.id,
+      expect.stringContaining("no duplicate is created"),
+      expect.any(Date),
+      expect.any(Date),
+      expect.any(String),
+    );
   });
 
   it("an ambiguous Origin CA outcome stays durably deferred with the recovery reason", async () => {
