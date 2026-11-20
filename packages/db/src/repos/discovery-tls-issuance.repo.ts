@@ -1,6 +1,6 @@
 import { and, eq, inArray, isNotNull, notExists, sql } from "drizzle-orm";
 import type { Database } from "../client";
-import { discoveryTlsIssuance as issuance, domain } from "../schema";
+import { discoveryTlsIssuance, discoveryTlsIssuance as issuance, domain } from "../schema";
 
 export type DiscoveryTlsIssuance = typeof issuance.$inferSelect;
 
@@ -65,17 +65,29 @@ export function createDiscoveryTlsIssuanceRepo(db: Database) {
       return db.query.discoveryTlsIssuance.findFirst({ where: eq(issuance.id, id) });
     },
 
-    /** The live (pending_create/candidate) issuance for a WILDCARD source —
-     *  shared-certificate rows store the wildcard pattern as their hostname.
-     *  Any sharing domain's dispatch resumes THIS row instead of issuing a
-     *  duplicate. */
-    findLiveIssuanceByHostname(hostname: string) {
-      return db.query.discoveryTlsIssuance.findFirst({
-        where: and(
-          eq(issuance.hostname, hostname.toLowerCase()),
-          inArray(issuance.state, [...LIVE_STATES]),
-        ),
-      });
+    /**
+     * The live (pending_create/candidate) issuance for a WILDCARD source —
+     * shared-certificate rows store the wildcard pattern as their hostname.
+     * SCOPE: shared identity is isolated by the serving EDGE (join through the
+     * owning domain) and the provider policy — another server's (or another
+     * organization's, via its server) pending wildcard row — and its
+     * ENCRYPTED private key — is never visible to this server's dispatch.
+     */
+    findLiveWildcardIssuance(serverId: string, wildcard: string) {
+      return db
+        .select({ issuance: discoveryTlsIssuance })
+        .from(discoveryTlsIssuance)
+        .innerJoin(domain, eq(discoveryTlsIssuance.domainId, domain.id))
+        .where(
+          and(
+            eq(discoveryTlsIssuance.hostname, wildcard.toLowerCase()),
+            inArray(discoveryTlsIssuance.state, [...LIVE_STATES]),
+            eq(domain.serverId, serverId),
+            eq(domain.tlsProvider, "cloudflare-origin-ca"),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0]?.issuance);
     },
 
     /** The live (pending_create/candidate) issuance for a domain, or null. */

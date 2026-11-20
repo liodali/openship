@@ -3056,6 +3056,44 @@ ${serveLocation}
    * this removal before trusting the staged pair, or certbot's next run
    * replaces the manual certificate.
    */
+  async installSharedWildcardCert(wildcard: string, cert: ManualCert): Promise<SslResult> {
+    assertValidDomain(wildcard);
+    if (!wildcard.startsWith("*.")) throw new Error(`Shared certificates install under a wildcard pattern, got ${wildcard}`);
+    return this.withConfigLock(async () => {
+      const candidate = validateCertFor(wildcard, cert, "shared wildcard certificate");
+      if (!candidate.cert) throw new Error(`Invalid certificate: ${candidate.reason}`);
+      const dir = join(this.certDir, wildcard);
+      const snapshots = await Promise.all([
+        { path: join(dir, "fullchain.pem"), mode: undefined },
+        { path: join(dir, "privkey.pem"), mode: 0o600 },
+      ].map(async (file) => ({ ...file, snapshot: await this._captureFile(file.path, true) })));
+      try {
+        await this.stageCertDir(dir, cert);
+      } catch (error) {
+        const failures: string[] = [];
+        for (const { path, snapshot, mode } of snapshots) {
+          await this._restoreFile(path, snapshot, mode).catch((restoreError) => {
+            observeCaughtError(restoreError, "adapters/infra/nginx");
+            failures.push(`${path}: ${safeErrorMessage(restoreError)}`);
+          });
+        }
+        if (failures.length) throw new Error(`${safeErrorMessage(error)}; rollback failed: ${failures.join("; ")}`, { cause: error });
+        throw error;
+      }
+      // No vhost of its own to activate and no ACME renewal record to remove:
+      // children inherit through the parent-wildcard resolution, and each
+      // child's own route activation serves from this directory.
+      return {
+        domain: wildcard,
+        expiresAt: candidate.cert.expiresAt,
+        issuer: candidate.cert.renewable ? candidate.cert.issuer : "manual",
+        fingerprint: candidate.cert.fingerprint,
+        renewable: candidate.cert.renewable,
+        verified: true,
+      };
+    });
+  }
+
   async takeoverRenewalOwnership(domain: string): Promise<void> {
     assertValidDomain(domain);
     await this.withConfigLock(() => this._rm(this.renewalConfPath(domain)));
@@ -3431,6 +3469,7 @@ ${serveLocation}
       expiresAt,
       issuer: candidate.cert.renewable ? candidate.cert.issuer : "manual",
       fingerprint: candidate.cert.fingerprint,
+      renewable: candidate.cert.renewable,
       verified: true,
       reason: "issued",
     };
@@ -3730,6 +3769,7 @@ ${serveLocation}
       expiresAt: candidate.cert.expiresAt,
       issuer: candidate.cert.issuer || "certbot",
       fingerprint: candidate.cert.fingerprint,
+      renewable: candidate.cert.renewable,
       verified: true,
     };
   }

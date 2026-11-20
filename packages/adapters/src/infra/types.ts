@@ -197,6 +197,16 @@ export interface SslProvider {
   takeoverRenewalOwnership?(domain: string): Promise<void>;
 
   /**
+   * Install a SHARED wildcard certificate under its pattern directory
+   * (certDir/"*.base" — the pattern, never a concrete child). Children
+   * resolve it through the parent-wildcard lookup; there is NO vhost of its
+   * own to activate and no ACME renewal record to remove. Powers shared
+   * wildcard certificates, which are authorized through a requesting child
+   * (wildcard patterns have no domain row of their own).
+   */
+  installSharedWildcardCert?(wildcard: string, cert: ManualCert): Promise<SslResult>;
+
+  /**
    * Read-only verification: report whether a valid cert is currently present
    * for the domain (and its expiry/issuer) WITHOUT running certbot. Powers the
    * "Recheck SSL" action and lets a redeploy confirm an existing cert instead

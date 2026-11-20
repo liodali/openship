@@ -749,6 +749,13 @@ export interface SslResult {
   expiresAt: string;
   issuer: string;
   /**
+   * True when the served certificate was issued by a PUBLIC ACME CA (certbot
+   * can renew it). This is POSITIVE proof of Let's Encrypt material — provider
+   * switches must require it before re-labeling a domain's inventory, because
+   * an issuer display string can coincide with other CAs' labels.
+   */
+  renewable?: boolean;
+  /**
    * SHA-256 fingerprint of the SERVED certificate (X509Certificate.fingerprint256
    * form — colon-separated hex), when a real certificate was read. This is what
    * lets callers prove "the edge is serving EXACTLY this certificate" without

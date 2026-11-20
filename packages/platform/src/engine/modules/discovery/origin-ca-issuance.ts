@@ -47,6 +47,9 @@ const MAX_RECOVERY_ATTEMPTS = 5;
 const RECOVERY_RECHECK_INTERVAL_MS = 30 * 60_000;
 
 export interface OriginCaIssuanceInput {
+  /** The serving edge — scopes shared wildcard identity (plan: a child may
+   *  only reference a shared certificate authorized for ITS server). */
+  serverId?: string;
   domainId: string;
   operationId: string | null;
   hostname: string;
@@ -404,14 +407,14 @@ export async function createWithRecoveryOnAmbiguity(
  * (the worker has already verified the edge fingerprint), FRESH otherwise.
  */
 export async function ensureWildcardOriginCaShared(
-  input: OriginCaIssuanceInput,
+  input: OriginCaIssuanceInput & { /** REQUIRED: shared identity is scoped to the serving edge. */ serverId: string },
 ): Promise<OriginCaIssuanceOutcome> {
   const wildcard = input.hostname.toLowerCase().replace(/\.$/, "");
 
   // 1. RESUME: the live wildcard row (issued by ANY sharing domain) owns the
   //    pattern's in-flight work — a duplicate issuance here would defeat the
   //    entire sharing design.
-  const live = await repos.discoveryTlsIssuance.findLiveIssuanceByHostname(wildcard);
+  const live = await repos.discoveryTlsIssuance.findLiveWildcardIssuance(input.serverId, wildcard);
   if (live) {
     if (live.state === "candidate" && live.certificatePem && live.certificateId && live.fingerprint && live.expiresOn) {
       try {
@@ -439,13 +442,23 @@ export async function ensureWildcardOriginCaShared(
   //    domains activate from that row; no provider request.
   if (input.activeMaterialHealthy !== false && input.activeCertificateId) {
     const issuing = await repos.discoveryTlsIssuance.findByCertificateId(input.activeCertificateId);
-    const expiresAt = issuing?.expiresOn ?? new Date(Date.now() + 86_400_000);
-    return {
-      outcome: "reused",
-      issuanceId: issuing?.id,
-      fingerprint: "shared",
-      expiresAt,
-    };
+    // Rotation horizon — the SAME rule as exact issuance: near-expiry shared
+    // material is replaced, not reused forever. Only ACTIVATED rows count
+    // (a retired row's certificate was revoked; a failed one never served).
+    const horizonMs = rotateHorizonMs(input.validityDays ?? 365);
+    if (
+      issuing &&
+      issuing.state === "active" &&
+      issuing.expiresOn &&
+      issuing.expiresOn.getTime() > Date.now() + horizonMs
+    ) {
+      return {
+        outcome: "reused",
+        issuanceId: issuing.id,
+        fingerprint: "shared",
+        expiresAt: issuing.expiresOn,
+      };
+    }
   }
 
   // 3. FRESH: the shared pattern's first issuance.

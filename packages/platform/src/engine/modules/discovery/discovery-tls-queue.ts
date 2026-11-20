@@ -18,12 +18,13 @@
  *    so the queue can never bypass an eligibility rule.
  */
 import { randomUUID } from "node:crypto";
-import { AppError, DISCOVERY_TLS_QUEUE } from "@repo/core";
+import { AppError, DISCOVERY_TLS_QUEUE, SYSTEM } from "@repo/core";
 import { repos } from "@repo/db";
 import { reportCaughtError } from "@repo/core/diagnostics";
 import {
   assertDiscoveryBackendFresh,
   DiscoveryBackendUnavailableError,
+  installSharedWildcardCert,
   manageDomainSsl,
   readServerDomainCert,
   sslIssueLockKey,
@@ -300,22 +301,35 @@ async function dispatchWildcardOriginCa(operation: DiscoveryTlsOperation, clock:
         operation.hostname,
       );
 
-      // Shared-material health on the EDGE: the pattern directory is what
-      // every child inherits. The audit-style comparison decides reuse vs
-      // repair — transient read failures never trigger a re-issue.
+      // Shared-material health on the EDGE, read through the REQUESTING CHILD
+      // (the wildcard pattern has no domain row of its own; the child's
+      // inherited read reports the shared certificate's fingerprint). The
+      // comparison decides reuse vs repair — transient read failures never
+      // trigger a re-issue.
       let activeMaterialHealthy = true;
       let activeCertificateId: string | null = null;
       const shared = await repos.domain.findOriginCaActiveDomainsForServer(operation.serverId, { limit: 25 });
-      const edge = await readServerDomainCert(operation.sourceHostname, { serverId: operation.serverId });
+      const edge = await readServerDomainCert(operation.hostname, { serverId: operation.serverId });
       if (edge.verified && edge.fingerprint) {
         const match = shared.find((row) => row.tlsCertificateFingerprint === edge.fingerprint);
-        if (match) activeCertificateId = match.tlsCertificateId;
-        else activeMaterialHealthy = false; // someone else's wildcard serves there — repair
+        if (match) {
+          activeCertificateId = match.tlsCertificateId;
+          // Rotation horizon (same rule as exact issuance): near-expiry shared
+          // material is replaced, not reused.
+          const horizonDays = Math.max(
+            1,
+            Math.min(SYSTEM.DOMAINS.SSL_RENEW_BEFORE_DAYS, (policy.tlsValidityDays ?? 365) / 2),
+          );
+          if (match.sslExpiresAt && match.sslExpiresAt.getTime() <= Date.now() + horizonDays * 86_400_000) {
+            activeMaterialHealthy = false;
+          }
+        } else activeMaterialHealthy = false; // someone else's wildcard serves there — repair
       } else if (edge.reason !== "read_error") {
         activeMaterialHealthy = false; // the shared pattern is missing on the edge
       }
 
       const result = await ensureWildcardOriginCaShared({
+        serverId: operation.serverId,
         domainId: operation.domainId,
         operationId: operation.id,
         hostname: operation.sourceHostname,
@@ -345,7 +359,7 @@ async function dispatchWildcardOriginCa(operation: DiscoveryTlsOperation, clock:
       if (result.outcome === "issued") {
         // Install the shared pair under the PATTERN directory (children
         // inherit it through the edge's parent-wildcard resolution).
-        const row = await repos.discoveryTlsIssuance.findLiveIssuanceByHostname(operation.sourceHostname);
+        const row = await repos.discoveryTlsIssuance.findLiveWildcardIssuance(operation.serverId, operation.sourceHostname);
         if (!row || !row.certificatePem || !row.fingerprint || !row.keyEnc) {
           await defer(operation.id, `The shared wildcard inventory for ${operation.sourceHostname} is incomplete; the next attempt retries.`, operation.attempts, now(), WORKER_ID);
           return;
@@ -356,7 +370,10 @@ async function dispatchWildcardOriginCa(operation: DiscoveryTlsOperation, clock:
           await defer(operation.id, `The pending private key for ${operation.sourceHostname} could not be unsealed; the issuance was retired and a fresh one follows.`, operation.attempts, now(), WORKER_ID);
           return;
         }
-        const install = await installDiscoveryServerCert(
+        // Authorized through the REQUESTING CHILD (the wildcard has no domain
+        // row); the material lands in the pattern directory.
+        const install = await installSharedWildcardCert(
+          operation.hostname,
           operation.sourceHostname,
           { certPem: row.certificatePem, keyPem },
           { serverId: operation.serverId, expectedFingerprint: row.fingerprint },

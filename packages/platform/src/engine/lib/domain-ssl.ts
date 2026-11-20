@@ -1112,49 +1112,46 @@ async function manageAuthorizedDomainSsl(
  * SslResult ({verified} on success); propagates the summarized certbot failure
  * so the caller can surface an actionable "not yet" message. Persisted on exit.
  */
-/** The issuer display string of a Cloudflare Origin CA certificate. */
-const ORIGIN_CA_ISSUER_PATTERN = /cloudflare.*origin/i;
-
 /**
  * PROVIDER-SWITCH bookkeeping after a successful server-domain ACME run:
  * commit the letsencrypt provider inventory (releasing the replaced Origin CA
- * certificate for cleanup) — but ONLY with proof of the desired provider and
- * under the per-hostname lock, fenced transactionally:
+ * certificate for cleanup) — but ONLY with POSITIVE proof of the desired
+ * provider, carrying the generation captured BEFORE issuance, fenced
+ * transactionally:
  *
- *  - PROOF: the served certificate's issuer must NOT be the Origin CA. The
- *    ACME reuse path can hand back a still-valid ORIGIN CA certificate
- *    (it was already on the edge); recording THAT as letsencrypt and
- *    clearing its id would release a certificate that is STILL SERVING for
- *    revocation. No proof → no commit; the next true renewal provides it.
- *  - LOCK: activation bookkeeping serializes with TLS-queue installation on
- *    the SAME per-hostname mutex — the caller's issue lock has already been
- *    released by the time this runs.
- *  - FENCE: the transaction re-checks server ownership, provider, and policy
- *    generation under the row lock, so a delayed commit can never overwrite
- *    inventory from a newer Cloudflare activation.
+ *  - PROOF: the result must be RENEWABLE — issued by a public ACME CA. The
+ *    ACME reuse path can hand back a still-valid ORIGIN CA certificate (it
+ *    was already on the edge), and issuer DISPLAY strings cannot be trusted
+ *    to distinguish (the bundled roots reduce to "CloudFlare, Inc." — a
+ *    pattern on them misses real labels and a pattern on "Cloudflare" would
+ *    match unrelated names). A non-renewable result is not proof; no commit.
+ *  - GENERATION: the caller passes the policy generation captured BEFORE the
+ *    order opened, INSIDE the issue lock. Reading the newest generation here
+ *    would authorize a stale result after an intervening Cloudflare
+ *    activation; the captured one refuses it.
+ *  - FENCE: the transaction re-checks server ownership, provider, and that
+ *    captured generation under the row lock.
  */
 async function commitServerDomainActivation(
   owner: Extract<SslOwner, { kind: "server" }>,
   domainRecord: Domain,
   result: SslResult,
+  expectedGeneration: number,
 ): Promise<void> {
-  if (ORIGIN_CA_ISSUER_PATTERN.test(result.issuer ?? "")) return; // still the Origin CA certificate — not proof
-  await createProvisionLock(sslIssueLockKey(domainRecord.hostname)).run(async () => {
-    const policy = await repos.domain.getTlsPolicy(domainRecord.id);
-    const landed = await repos.domain.commitServerDomainProvider({
-      domainId: domainRecord.id,
-      provider: "letsencrypt",
-      expectedServerId: owner.serverId,
-      expectedTlsProvider: "letsencrypt",
-      expectedPolicyGeneration: policy?.tlsPolicyGeneration ?? 0,
-    });
-    if (!landed) {
-      errorDiagnostics.warn(
-        "platform/engine/lib/domain-ssl",
-        `[domain-ssl] provider-switch inventory commit for ${domainRecord.hostname} was fenced out (policy moved on); the newer activation owns the bookkeeping.`,
-      );
-    }
+  if (result.renewable !== true) return; // not provably Let's Encrypt material — never release inventory
+  const landed = await repos.domain.commitServerDomainProvider({
+    domainId: domainRecord.id,
+    provider: "letsencrypt",
+    expectedServerId: owner.serverId,
+    expectedTlsProvider: "letsencrypt",
+    expectedPolicyGeneration: expectedGeneration,
   });
+  if (!landed) {
+    errorDiagnostics.warn(
+      "platform/engine/lib/domain-ssl",
+      `[domain-ssl] provider-switch inventory commit for ${domainRecord.hostname} was fenced out (policy or generation moved on); the newer activation owns the bookkeeping.`,
+    );
+  }
 }
 
 export async function provisionDomainCertForVerify(
@@ -1195,19 +1192,29 @@ async function provisionAuthorizedDomainCert(
       domainRecord.sslChallenge === "dns-01" ||
       isWildcardHostname(domainRecord.hostname));
 
-    // Serialize issuance per-hostname, and re-check the cert INSIDE the lock.
-    // This closes the TOCTOU: two concurrent Verify hits (or Verify racing the
-    // renewal scheduler) both queue on the lock; the first issues, and the second
-    // — now inside the lock — sees the freshly-issued cert and reuses it instead
-    // of opening a second ACME order. The service-level fast-path in verifyDomain
-    // is only a cheap read-only optimization; THIS is the authoritative gate.
+    // Serialize issuance AND its activation bookkeeping per-hostname: one lock
+    // acquisition covers the issue decision, the order, the persistence, and
+    // the provider-switch commit. Releasing the lock between issuance and
+    // bookkeeping would let an intervening Cloudflare activation interleave —
+    // which is exactly why the commit fences on the generation captured BELOW,
+    // BEFORE the order opened (reading the newest generation at commit time
+    // would authorize a stale result).
     //
     // The nested per-box lock covers the OTHER collision: a different hostname on
     // the same box (the www sibling, the pending-SSL sweep) running certbot at the
     // same time and losing the race for the shared standalone port.
+    // The policy generation captured BEFORE the order opens (inside the lock)
+    // — the recovery path's commit fences on it too, hence the outer scope.
+    let capturedGeneration = 0;
     try {
-      const result = await createProvisionLock(sslIssueLockKey(domainRecord.hostname)).run(
+      return await createProvisionLock(sslIssueLockKey(domainRecord.hostname)).run(
         async () => {
+          // Capture the policy generation NOW — before any order — for the
+          // activation fence (server domains only; harmless otherwise).
+          if (owner.kind === "server") {
+            const policyNow = await repos.domain.getTlsPolicy(domainRecord.id);
+            capturedGeneration = policyNow?.tlsPolicyGeneration ?? 0;
+          }
           if (!opts.force) {
             const existing = await ssl.verifyCert(domainRecord.hostname).catch((diagnosticFailure) => {
               observeCaughtError(diagnosticFailure, "platform/engine/lib/domain-ssl");
@@ -1232,6 +1239,14 @@ async function provisionAuthorizedDomainCert(
                   (existing.expiresAt ? ` (expires ${existing.expiresAt.slice(0, 10)})` : "") +
                   " — reusing it. No new certificate requested.",
               );
+              // The reused certificate may BE the Origin CA one (provider
+              // switch in flight): commitServerDomainActivation's positive
+              // proof (renewable) refuses to release its inventory.
+              await persistSslResult(domainRecord.id, domainRecord.sslStatus, existing);
+              if (owner.kind === "server" && existing.verified) {
+                await repos.domain.markServerDomainVerified(domainRecord.id).catch(() => {});
+                await commitServerDomainActivation(owner, domainRecord, existing, capturedGeneration);
+              }
               return existing;
             }
           }
@@ -1247,9 +1262,9 @@ async function provisionAuthorizedDomainCert(
           // otherwise its file-exists short-circuit would return the old cert and a
           // near-expiry renewal would silently no-op. The server-domain ACME gate
           // runs INSIDE the per-box lock, immediately before the order: the
-          // container can stop while this hostname waits for the lock, and a
+          // container can stop while this hostname waited for the lock, and a
           // queued order must not open for a backend that is no longer running.
-          return createProvisionLock(acmeIssueLockKey(lockScope)).run(async () => {
+          const result = await createProvisionLock(acmeIssueLockKey(lockScope)).run(async () => {
             if (owner.kind === "server") {
               await assertDiscoveryBackendFresh(owner, domainRecord.hostname);
               await assertTlsPolicyStillAcmeEligible(owner, domainRecord.id, domainRecord.hostname);
@@ -1261,21 +1276,18 @@ async function provisionAuthorizedDomainCert(
               ...dnsHooks,
             });
           });
+          // Activation bookkeeping INSIDE the hostname lock: persist, verify
+          // (ACME-as-verification), and the FENCED provider-switch commit.
+          await persistSslResult(domainRecord.id, domainRecord.sslStatus, result);
+          if (owner.kind === "server" && result.verified) {
+            await repos.domain.markServerDomainVerified(domainRecord.id).catch((diagnosticFailure) => {
+              observeCaughtError(diagnosticFailure, "platform/engine/lib/domain-ssl");
+            });
+            await commitServerDomainActivation(owner, domainRecord, result, capturedGeneration);
+          }
+          return result;
         },
       );
-
-      await persistSslResult(domainRecord.id, domainRecord.sslStatus, result);
-      // ACME-as-verification for server-scoped domains: a successful issuance
-      // proves control of the hostname (HTTP-01 reached THIS server's edge), so
-      // it flips the row verified without any TXT check (docs: "ACME success
-      // establishes certificate validation").
-      if (owner.kind === "server" && result.verified) {
-        await repos.domain.markServerDomainVerified(domainRecord.id).catch((diagnosticFailure) => {
-          observeCaughtError(diagnosticFailure, "platform/engine/lib/domain-ssl");
-        });
-        await commitServerDomainActivation(owner, domainRecord, result);
-      }
-      return result;
     } catch (err) {
       observeCaughtError(err, "platform/engine/lib/domain-ssl");
       // This is the path that lost TLS: a cert was issued, the post-issue read threw,
@@ -1285,7 +1297,11 @@ async function provisionAuthorizedDomainCert(
       const recovered = await recoverIssuedCert(ssl, domainRecord, err);
       if (owner.kind === "server" && recovered.verified) {
         await repos.domain.markServerDomainVerified(domainRecord.id).catch(() => {});
-        await commitServerDomainActivation(owner, domainRecord, recovered).catch(() => {});
+        // Recovery runs after the lock released — re-acquire it for the
+        // bookkeeping, still fenced on the captured generation.
+        await createProvisionLock(sslIssueLockKey(domainRecord.hostname))
+          .run(() => commitServerDomainActivation(owner, domainRecord, recovered, capturedGeneration))
+          .catch(() => {});
       }
       opts.onLog?.(
         `A valid certificate for ${domainRecord.hostname} is present on the edge (expires ` +
@@ -1293,6 +1309,57 @@ async function provisionAuthorizedDomainCert(
       );
       return recovered;
     }
+  });
+}
+
+/**
+ * Install a SHARED wildcard certificate under its pattern directory. The
+ * wildcard pattern has NO domain row of its own — authorization runs through
+ * the REQUESTING CHILD (a discovered, enrolled domain on this server), while
+ * the material itself installs to certDir/<pattern> where every sibling
+ * resolves it through the parent-wildcard lookup. Verification reads the
+ * pattern through the provider directly (a child's read could return its own
+ * exact certificate). Recovery mirrors the exact flow: a staged pair whose
+ * fingerprint matches skips installation. MUST be called under the per-
+ * hostname lock of the PATTERN.
+ */
+export async function installSharedWildcardCert(
+  childHostname: string,
+  wildcard: string,
+  cert: ManualCert,
+  opts: { serverId: string; expectedFingerprint: string },
+): Promise<{ outcome: "installed" | "recovered"; result: SslResult }> {
+  const { owner } = await resolveAuthorizedDomain(childHostname, {
+    action: "provision",
+    allowUnverified: true,
+    serverId: opts.serverId,
+  });
+  if (owner.kind !== "server") {
+    throw new ForbiddenError("Shared wildcard installation is restricted to server-owned domains.");
+  }
+  await assertDiscoveryBackendFresh(owner, childHostname);
+  return withSslProvider(owner, async ({ ssl }) => {
+    if (!ssl.installSharedWildcardCert) {
+      throw new AppError(
+        `This server's edge provider cannot host shared wildcard certificates.`,
+        502,
+        "DISCOVERY_CERT_INSTALL_FAILED",
+      );
+    }
+    // Crash recovery: does the pattern directory already hold our pair?
+    const current = await ssl.verifyCert(wildcard);
+    if (current.verified && current.fingerprint && current.fingerprint === opts.expectedFingerprint) {
+      return { outcome: "recovered", result: current };
+    }
+    const result = await ssl.installSharedWildcardCert(wildcard, cert);
+    if (!result.verified) {
+      throw new AppError(
+        `The shared certificate for ${wildcard} could not be installed; the previous certificate remains on the edge.`,
+        502,
+        "DISCOVERY_CERT_INSTALL_FAILED",
+      );
+    }
+    return { outcome: "installed", result };
   });
 }
 
