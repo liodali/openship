@@ -69,8 +69,10 @@ vi.mock("@repo/db", () => ({
       markServerDomainVerified: vi.fn(async () => {
         state.markedVerified += 1;
       }),
-      commitServerDomainProvider: vi.fn(async () => {
+      getTlsPolicy: vi.fn(async () => ({ tlsProvider: "letsencrypt", tlsPolicyGeneration: 1 })),
+      commitServerDomainProvider: vi.fn(async (): Promise<boolean> => {
         state.providerCommits += 1;
+        return true;
       }),
       updateSsl: vi.fn(async (_id: string, patch: Record<string, unknown>) => {
         state.sslPatches.push(patch);
@@ -254,6 +256,30 @@ describe("server-scoped domain TLS (ownerType='server')", () => {
     });
     expect(result.verified).toBe(true);
     expect(provisionCert).not.toHaveBeenCalled(); // reused, no new order
+  });
+
+  it("a REUSED ORIGIN CA certificate is never recorded as letsencrypt (no inventory release)", async () => {
+    // The regression probe: policy switched to letsencrypt, but the edge still
+    // serves a comfortably-valid ORIGIN CA certificate — the ACME reuse path
+    // hands it back. Recording it as letsencrypt and clearing its id would
+    // release a STILL-SERVING certificate for revocation.
+    verifyCert.mockResolvedValueOnce({
+      domain: "app.example.com",
+      verified: true,
+      issuer: "CloudFlare Origin SSL Certificate Authority",
+      expiresAt: new Date(Date.now() + 60 * 86_400_000).toISOString(),
+      fingerprint: "cf:origin:fp",
+    } as never);
+    const result = await manageDomainSsl("app.example.com", {
+      action: "provision",
+      allowUnverified: true,
+      serverId: "srv_tls",
+    });
+    expect(result.verified).toBe(true);
+    expect(provisionCert).not.toHaveBeenCalled(); // reused, no order
+    // NO provider-switch commit: the served certificate is not proof of the
+    // desired provider, so its inventory (and revocation protection) stays.
+    expect(state.providerCommits).toBe(0);
   });
 
   it("refuses a caller that passes a projectId for a server domain", async () => {
