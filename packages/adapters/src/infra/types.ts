@@ -204,7 +204,11 @@ export interface SslProvider {
    * wildcard certificates, which are authorized through a requesting child
    * (wildcard patterns have no domain row of their own).
    */
-  installSharedWildcardCert?(wildcard: string, cert: ManualCert): Promise<SslResult>;
+  installSharedWildcardCert?(
+    wildcard: string,
+    cert: ManualCert,
+    opts?: { children?: string[] },
+  ): Promise<SslResult>;
 
   /**
    * Read-only verification: report whether a valid cert is currently present

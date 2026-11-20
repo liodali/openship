@@ -1232,7 +1232,23 @@ async function provisionAuthorizedDomainCert(
             // fresh order is needed either. Explicit Renew retains its path.
             if (ssl.certificateManagement === "provider" && existing &&
               ["edge_invalid", "read_error", "pending"].includes(existing.reason ?? "")) return existing;
-            if (existing && certComfortablyValid(existing)) {
+            // REUSE must be provider-aware: for a server-owned domain, a
+            // healthy certificate that is NOT provably ACME-renewable may be
+            // the Cloudflare Origin CA certificate while the policy already
+            // says letsencrypt — a switch in flight. Returning it as success
+            // would end the switch WITHOUT ever requesting the replacement
+            // (the destructive relabel is prevented elsewhere; this is the
+            // silent no-op variant). Fall through to issuance — the under-lock
+            // eligibility gate still refuses orders for CF/wildcard intents.
+            // Operator-uploaded (manualSsl) certificates are exempt: they are
+            // legitimate final material and must not be replaced by ACME.
+            const reuseBlockedByProviderSwitch =
+              owner.kind === "server" &&
+              existing !== null &&
+              !("reason" in existing) &&
+              existing.renewable !== true &&
+              domainRecord.manualSsl !== true;
+            if (existing && certComfortablyValid(existing) && !reuseBlockedByProviderSwitch) {
               await ssl.activateCert?.(domainRecord.hostname);
               opts.onLog?.(
                 `A valid certificate is already present for ${domainRecord.hostname}` +
@@ -1327,7 +1343,7 @@ export async function installSharedWildcardCert(
   childHostname: string,
   wildcard: string,
   cert: ManualCert,
-  opts: { serverId: string; expectedFingerprint: string },
+  opts: { serverId: string; expectedFingerprint: string; children?: string[] },
 ): Promise<{ outcome: "installed" | "recovered"; result: SslResult }> {
   const { owner } = await resolveAuthorizedDomain(childHostname, {
     action: "provision",
@@ -1346,12 +1362,14 @@ export async function installSharedWildcardCert(
         "DISCOVERY_CERT_INSTALL_FAILED",
       );
     }
-    // Crash recovery: does the pattern directory already hold our pair?
+    // Crash recovery probe: does the pattern directory already hold our pair?
     const current = await ssl.verifyCert(wildcard);
-    if (current.verified && current.fingerprint && current.fingerprint === opts.expectedFingerprint) {
-      return { outcome: "recovered", result: current };
-    }
-    const result = await ssl.installSharedWildcardCert(wildcard, cert);
+    const recovered = current.verified && current.fingerprint === opts.expectedFingerprint;
+    // ALWAYS run the install, even on a recovered pair: a crash between
+    // staging and activation leaves exactly this state — material present,
+    // child routes never switched. Re-staging identical material is harmless
+    // (snapshot + atomic stage), and the activation pass runs with rollback.
+    const result = await ssl.installSharedWildcardCert(wildcard, cert, { children: opts.children });
     if (!result.verified) {
       throw new AppError(
         `The shared certificate for ${wildcard} could not be installed; the previous certificate remains on the edge.`,
@@ -1359,7 +1377,52 @@ export async function installSharedWildcardCert(
         "DISCOVERY_CERT_INSTALL_FAILED",
       );
     }
-    return { outcome: "installed", result };
+    // Verify THROUGH the requesting child: the adapter re-registered child
+    // routes to inherit the pattern, so the child's own read must now report
+    // the shared fingerprint — proving children USE the wildcard, not merely
+    // that files exist under the pattern directory.
+    const serving = await ssl.verifyCert(childHostname);
+    if (!serving.verified || serving.fingerprint !== opts.expectedFingerprint) {
+      throw new AppError(
+        `The shared certificate for ${wildcard} installed, but ${childHostname} does not serve it yet; activation retries.`,
+        502,
+        "DISCOVERY_CERT_INSTALL_FAILED",
+      );
+    }
+    return { outcome: recovered ? "recovered" : "installed", result: { ...result, fingerprint: serving.fingerprint } };
+  });
+}
+
+/**
+ * Switch every sibling route of a SHARED wildcard certificate to serving it.
+ * Used on the REUSE path: the pattern directory is already healthy on the
+ * edge (proven through the requesting child), but a sibling whose route was
+ * never activated — newly enrolled, or superseded before its own operation
+ * ran — would stay without TLS forever, because its dispatch would REUSE and
+ * only commit database inventory. Authorized through the REQUESTING CHILD
+ * (the wildcard has no domain row); each activation re-registers that
+ * sibling's vhost with TLS and reloads, with the adapter's own rollback
+ * (a refused config test never reaches a reload).
+ */
+export async function activateSharedWildcardChildren(
+  childHostname: string,
+  wildcard: string,
+  siblings: string[],
+  opts: { serverId: string },
+): Promise<void> {
+  const { owner } = await resolveAuthorizedDomain(childHostname, {
+    action: "provision",
+    allowUnverified: true,
+    serverId: opts.serverId,
+  });
+  if (owner.kind !== "server") {
+    throw new ForbiddenError("Shared wildcard activation is restricted to server-owned domains.");
+  }
+  await assertDiscoveryBackendFresh(owner, childHostname);
+  return withSslProvider(owner, async ({ ssl }) => {
+    for (const sibling of siblings) {
+      await ssl.activateCert?.(sibling);
+    }
   });
 }
 

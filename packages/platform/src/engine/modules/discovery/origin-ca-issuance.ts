@@ -446,9 +446,16 @@ export async function ensureWildcardOriginCaShared(
     // material is replaced, not reused forever. Only ACTIVATED rows count
     // (a retired row's certificate was revoked; a failed one never served).
     const horizonMs = rotateHorizonMs(input.validityDays ?? 365);
+    // SOURCE IDENTITY: the referenced row must BE the requested shared
+    // pattern — a child's exact-host issuance (its own certificate) must
+    // never satisfy a wildcard operation, because its material does not
+    // cover the siblings. Equality with the pattern is the coverage rule
+    // for shared rows (they store the wildcard as their hostname).
+    const pattern = wildcard.toLowerCase();
     if (
       issuing &&
       issuing.state === "active" &&
+      issuing.hostname === pattern &&
       issuing.expiresOn &&
       issuing.expiresOn.getTime() > Date.now() + horizonMs
     ) {

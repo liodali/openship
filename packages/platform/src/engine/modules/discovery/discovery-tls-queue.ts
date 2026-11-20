@@ -22,6 +22,7 @@ import { AppError, DISCOVERY_TLS_QUEUE, SYSTEM } from "@repo/core";
 import { repos } from "@repo/db";
 import { reportCaughtError } from "@repo/core/diagnostics";
 import {
+  activateSharedWildcardChildren,
   assertDiscoveryBackendFresh,
   DiscoveryBackendUnavailableError,
   installSharedWildcardCert,
@@ -341,9 +342,26 @@ async function dispatchWildcardOriginCa(operation: DiscoveryTlsOperation, clock:
         activeCertificateId,
         credentialId: policy.tlsCfCredentialId,
       });
+      // The sharing set (every unsuppressed declaring binding + the
+      // requesting child) — needed on BOTH success paths: siblings must
+      // actually SERVE the pattern before any inventory is committed.
+      const sharingBindings = await repos.discovery.getBindingsForWildcard(operation.serverId, operation.sourceHostname);
+      const sharingHostnames = [...new Set([operation.hostname.toLowerCase(), ...sharingBindings.map((b) => b.hostname)])];
       if (result.outcome === "reused") {
-        // The shared pattern is healthy on the edge — commit THIS domain's
-        // inventory from the issuing row (sharing activation), then complete.
+        // The shared pattern is healthy on the edge — but a sibling whose
+        // route was never activated (newly enrolled, or superseded before its
+        // own operation ran) stays without TLS unless it is switched to the
+        // pattern HERE: reuse would otherwise only commit database inventory.
+        // The requesting child is excluded — its fingerprint just proved it
+        // already serves the pattern.
+        await activateSharedWildcardChildren(
+          operation.hostname,
+          operation.sourceHostname,
+          sharingHostnames.filter((h) => h !== operation.hostname.toLowerCase()),
+          { serverId: operation.serverId },
+        );
+        // Commit THIS domain's inventory from the issuing row (sharing
+        // activation), then complete.
         if (result.issuanceId) {
           await repos.discoveryTlsIssuance.markActive({
             issuanceId: result.issuanceId,
@@ -371,12 +389,14 @@ async function dispatchWildcardOriginCa(operation: DiscoveryTlsOperation, clock:
           return;
         }
         // Authorized through the REQUESTING CHILD (the wildcard has no domain
-        // row); the material lands in the pattern directory.
+        // row); the material lands in the pattern directory and every sharing
+        // route is switched to it — with rollback — INSIDE the install, before
+        // any inventory below is committed.
         const install = await installSharedWildcardCert(
           operation.hostname,
           operation.sourceHostname,
           { certPem: row.certificatePem, keyPem },
-          { serverId: operation.serverId, expectedFingerprint: row.fingerprint },
+          { serverId: operation.serverId, expectedFingerprint: row.fingerprint, children: sharingHostnames },
         );
         if (!install.result.verified) {
           await defer(operation.id, `The shared certificate for ${operation.sourceHostname} is not serving yet; the previous certificate remains on the edge.`, operation.attempts, now(), WORKER_ID);
@@ -384,8 +404,6 @@ async function dispatchWildcardOriginCa(operation: DiscoveryTlsOperation, clock:
         }
         // Activation for EVERY unsuppressed sharing domain (fenced per domain;
         // refusals are skipped — those domains' own operations handle them).
-        const sharingBindings = await repos.discovery.getBindingsForWildcard(operation.serverId, operation.sourceHostname);
-        const sharingHostnames = [...new Set([...sharingBindings.map((b) => b.hostname), operation.hostname.toLowerCase()])];
         const sharingDomains = await repos.discovery.findDomainsForBindings(operation.serverId, sharingHostnames);
         for (const domainRow of sharingDomains.values()) {
           await repos.discoveryTlsIssuance

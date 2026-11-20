@@ -3056,7 +3056,11 @@ ${serveLocation}
    * this removal before trusting the staged pair, or certbot's next run
    * replaces the manual certificate.
    */
-  async installSharedWildcardCert(wildcard: string, cert: ManualCert): Promise<SslResult> {
+  async installSharedWildcardCert(
+    wildcard: string,
+    cert: ManualCert,
+    opts?: { children?: string[] },
+  ): Promise<SslResult> {
     assertValidDomain(wildcard);
     if (!wildcard.startsWith("*.")) throw new Error(`Shared certificates install under a wildcard pattern, got ${wildcard}`);
     return this.withConfigLock(async () => {
@@ -3079,6 +3083,68 @@ ${serveLocation}
         }
         if (failures.length) throw new Error(`${safeErrorMessage(error)}; rollback failed: ${failures.join("; ")}`, { cause: error });
         throw error;
+      }
+      // Staging alone changes nothing on the wire: each child only USES the
+      // pattern through its OWN route (its vhost names whichever directory its
+      // certificate resolution picked). Activate every affected child route —
+      // re-register with TLS + reload — BEFORE the caller commits inventory:
+      // "active" in the database must mean SERVING on the edge, and the
+      // replaced exact material must not keep shadowing the pattern.
+      // Rollback protection per child: the vhost, its sidecar, and any exact
+      // certificate pair it was serving are snapshotted; a failed activation
+      // restores all three and reloads. registerRoute additionally refuses a
+      // broken config test, so a half-written vhost never reaches a reload.
+      for (const child of opts?.children ?? []) {
+        const slug = await this.resolveSlug(child);
+        const configPath = join(this.sitesDir, `${slug}.conf`);
+        const statePath = this.routeStatePath(slug);
+        const confSnapshot = await this._captureFile(configPath);
+        const stateSnapshot = await this._captureFile(statePath);
+        // Exact-first resolution: a child still holding its own exact
+        // certificate pair would keep serving it FOREVER even after the vhost
+        // re-registers — the pattern directory can never win the lookup. A
+        // non-certbot exact pair on a wildcard-covered host is superseded
+        // discovery material — retire it (snapshotted) so inheritance actually
+        // takes effect. Certbot-owned material is never touched: the child may
+        // be independently managed (a switch back to Let's Encrypt, a project
+        // domain that happens to share the server).
+        const exactDir = join(this.certDir, child);
+        const exactFiles = [join(exactDir, "fullchain.pem"), join(exactDir, "privkey.pem")];
+        const certbotOwned = await this._exists(this.renewalConfPath(child));
+        const exactSnapshots: Array<{ path: string; snapshot: FileSnapshot; mode?: number }> = [];
+        if (!certbotOwned && (await this.certFileExists(exactFiles[0]))) {
+          for (const file of [{ path: exactFiles[0], mode: undefined }, { path: exactFiles[1], mode: 0o600 }]) {
+            exactSnapshots.push({ path: file.path, mode: file.mode, snapshot: await this._captureFile(file.path, true) });
+          }
+          await this._rm(exactDir);
+        }
+        try {
+          await this.activateRouteCert(child);
+        } catch (error) {
+          const failures: string[] = [];
+          for (const { path, snapshot, mode } of [
+            { path: configPath, snapshot: confSnapshot, mode: 0o600 },
+            { path: statePath, snapshot: stateSnapshot, mode: undefined },
+            ...exactSnapshots,
+          ]) {
+            await this._restoreFile(path, snapshot, mode).catch((restoreError) => {
+              observeCaughtError(restoreError, "adapters/infra/nginx");
+              failures.push(`${path}: ${safeErrorMessage(restoreError)}`);
+            });
+          }
+          // Put the edge back on the restored config before reporting failure —
+          // the caller must never see "installed" while a half-activated route
+          // is on disk.
+          await this.reloadConfig({ allowStopped: true }).catch((reloadFailure) => {
+            observeCaughtError(reloadFailure, "adapters/infra/nginx");
+            failures.push(`reload: ${safeErrorMessage(reloadFailure)}`);
+          });
+          if (failures.length) throw new Error(`${safeErrorMessage(error)}; rollback failed: ${failures.join("; ")}`, { cause: error });
+          throw new Error(
+            `The shared certificate for ${wildcard} staged, but ${child}'s route could not be switched to it: ${safeErrorMessage(error)}`,
+            { cause: error },
+          );
+        }
       }
       // No vhost of its own to activate and no ACME renewal record to remove:
       // children inherit through the parent-wildcard resolution, and each
@@ -3704,6 +3770,12 @@ ${serveLocation}
             domain,
             expiresAt: candidate.cert.expiresAt,
             issuer: candidate.cert.issuer || "certbot",
+            // Health consumers compare fingerprints (and the ACME-renewable
+            // proof) to decide reuse vs repair — an inherited read without
+            // them reads as UNPROVABLE material and burns a fresh issuance
+            // for a certificate that is already serving.
+            fingerprint: candidate.cert.fingerprint,
+            renewable: candidate.cert.renewable,
             verified: true,
           },
         };
