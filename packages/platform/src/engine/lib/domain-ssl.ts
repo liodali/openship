@@ -1112,6 +1112,51 @@ async function manageAuthorizedDomainSsl(
  * SslResult ({verified} on success); propagates the summarized certbot failure
  * so the caller can surface an actionable "not yet" message. Persisted on exit.
  */
+/** The issuer display string of a Cloudflare Origin CA certificate. */
+const ORIGIN_CA_ISSUER_PATTERN = /cloudflare.*origin/i;
+
+/**
+ * PROVIDER-SWITCH bookkeeping after a successful server-domain ACME run:
+ * commit the letsencrypt provider inventory (releasing the replaced Origin CA
+ * certificate for cleanup) — but ONLY with proof of the desired provider and
+ * under the per-hostname lock, fenced transactionally:
+ *
+ *  - PROOF: the served certificate's issuer must NOT be the Origin CA. The
+ *    ACME reuse path can hand back a still-valid ORIGIN CA certificate
+ *    (it was already on the edge); recording THAT as letsencrypt and
+ *    clearing its id would release a certificate that is STILL SERVING for
+ *    revocation. No proof → no commit; the next true renewal provides it.
+ *  - LOCK: activation bookkeeping serializes with TLS-queue installation on
+ *    the SAME per-hostname mutex — the caller's issue lock has already been
+ *    released by the time this runs.
+ *  - FENCE: the transaction re-checks server ownership, provider, and policy
+ *    generation under the row lock, so a delayed commit can never overwrite
+ *    inventory from a newer Cloudflare activation.
+ */
+async function commitServerDomainActivation(
+  owner: Extract<SslOwner, { kind: "server" }>,
+  domainRecord: Domain,
+  result: SslResult,
+): Promise<void> {
+  if (ORIGIN_CA_ISSUER_PATTERN.test(result.issuer ?? "")) return; // still the Origin CA certificate — not proof
+  await createProvisionLock(sslIssueLockKey(domainRecord.hostname)).run(async () => {
+    const policy = await repos.domain.getTlsPolicy(domainRecord.id);
+    const landed = await repos.domain.commitServerDomainProvider({
+      domainId: domainRecord.id,
+      provider: "letsencrypt",
+      expectedServerId: owner.serverId,
+      expectedTlsProvider: "letsencrypt",
+      expectedPolicyGeneration: policy?.tlsPolicyGeneration ?? 0,
+    });
+    if (!landed) {
+      errorDiagnostics.warn(
+        "platform/engine/lib/domain-ssl",
+        `[domain-ssl] provider-switch inventory commit for ${domainRecord.hostname} was fenced out (policy moved on); the newer activation owns the bookkeeping.`,
+      );
+    }
+  });
+}
+
 export async function provisionDomainCertForVerify(
   hostname: string,
   opts: {
@@ -1228,14 +1273,7 @@ async function provisionAuthorizedDomainCert(
         await repos.domain.markServerDomainVerified(domainRecord.id).catch((diagnosticFailure) => {
           observeCaughtError(diagnosticFailure, "platform/engine/lib/domain-ssl");
         });
-        // PROVIDER-SWITCH inventory commit: the newly activated provider owns
-        // the domain's TLS — stale Cloudflare Origin CA inventory (id +
-        // fingerprint) would keep the replaced certificate referenced forever
-        // and block its cleanup. Best-effort here, converged again on the
-        // next successful renewal (same contract as the verified write).
-        await repos.domain.commitServerDomainProvider(domainRecord.id, "letsencrypt").catch((diagnosticFailure) => {
-          observeCaughtError(diagnosticFailure, "platform/engine/lib/domain-ssl");
-        });
+        await commitServerDomainActivation(owner, domainRecord, result);
       }
       return result;
     } catch (err) {
@@ -1247,7 +1285,7 @@ async function provisionAuthorizedDomainCert(
       const recovered = await recoverIssuedCert(ssl, domainRecord, err);
       if (owner.kind === "server" && recovered.verified) {
         await repos.domain.markServerDomainVerified(domainRecord.id).catch(() => {});
-        await repos.domain.commitServerDomainProvider(domainRecord.id, "letsencrypt").catch(() => {});
+        await commitServerDomainActivation(owner, domainRecord, recovered).catch(() => {});
       }
       opts.onLog?.(
         `A valid certificate for ${domainRecord.hostname} is present on the edge (expires ` +

@@ -113,8 +113,24 @@ export function sweepServerDiscovery(
  * flow re-issues through the full gate chain); transient read failures are
  * ignored — a SSH blip must not spin up re-issuance.
  */
+/**
+ * Fair-rotation cursor (per server, in-process): each sweep audits the next
+ * slice of active domains after the last audited id, so every domain is
+ * eventually checked instead of a fixed first page forever. Resets when the
+ * selection is exhausted (wrapped around) or on restart.
+ */
+const certificateAuditCursor = new Map<string, string>();
+
 async function auditServerCertificates(serverId: string, organizationId: string): Promise<number> {
-  const domains = await repos.domain.findOriginCaActiveDomainsForServer(serverId, 5);
+  const domains = await repos.domain.findOriginCaActiveDomainsForServer(serverId, {
+    afterId: certificateAuditCursor.get(serverId),
+    limit: 5,
+  });
+  if (domains.length === 0) {
+    certificateAuditCursor.delete(serverId); // exhausted — the next sweep wraps around
+    return 0;
+  }
+  certificateAuditCursor.set(serverId, domains[domains.length - 1]!.id);
   let scheduled = 0;
   for (const domainRow of domains) {
     if (!domainRow.tlsCertificateFingerprint) continue;

@@ -9,6 +9,7 @@ import {
   lte,
   gte,
   asc,
+  gt,
   inArray,
   isNull,
   isNotNull,
@@ -696,8 +697,14 @@ export function createDomainRepo(db: Database) {
      */
     /** Server-owned domains recording ACTIVE Origin CA inventory — the
      *  periodic Edge audit's bounded selection (files can vanish on a server
-     *  rebuild while every database field still looks healthy). */
-    async findOriginCaActiveDomainsForServer(serverId: string, limit = 5) {
+     *  rebuild while every database field still looks healthy). CURSOR-scoped
+     *  (ordered by id, after the last audited id) so every active domain
+     *  eventually gets checked — a fixed first-page LIMIT would audit the
+     *  same rows forever. */
+    async findOriginCaActiveDomainsForServer(
+      serverId: string,
+      opts: { afterId?: string; limit?: number } = {},
+    ) {
       return db
         .select({
           id: domain.id,
@@ -712,9 +719,11 @@ export function createDomainRepo(db: Database) {
             eq(domain.serverId, serverId),
             eq(domain.tlsActiveProvider, "cloudflare-origin-ca"),
             isNotNull(domain.tlsCertificateId),
+            opts.afterId ? gt(domain.id, opts.afterId) : undefined,
           ),
         )
-        .limit(limit);
+        .orderBy(asc(domain.id))
+        .limit(opts.limit ?? 5);
     },
 
     /** How many OTHER domains reference a certificate (replacement cleanup's
@@ -728,22 +737,42 @@ export function createDomainRepo(db: Database) {
     },
 
     /**
-     * Commit the ACTIVE provider inventory after a provider switch: the newly
-     * activated provider owns the domain's TLS now, so any previous Cloudflare
-     * Origin CA inventory (certificate id + fingerprint) is cleared — leaving
-     * it behind would keep the replaced certificate "referenced" forever and
-     * block its cleanup. Server-owned rows only.
+     * Commit the ACTIVE provider inventory after a provider switch — FENCED:
+     * the write lands only when, under the row lock, the domain still belongs
+     * to the expected server, the policy still names the NEW provider, and
+     * the policy generation has not moved (a delayed commit must never
+     * overwrite inventory from a newer Cloudflare activation). Clearing the
+     * previous Origin CA certificate id/fingerprint is what RELEASES the
+     * replaced certificate for cleanup — done only with proof of the new
+     * provider, never speculatively. Returns whether the commit landed.
      */
-    async commitServerDomainProvider(id: string, provider: "letsencrypt", now = new Date()) {
-      await db
-        .update(domain)
-        .set({
-          tlsActiveProvider: provider,
-          tlsCertificateId: null,
-          tlsCertificateFingerprint: null,
-          updatedAt: now,
-        })
-        .where(and(eq(domain.id, id), eq(domain.ownerType, "server")));
+    async commitServerDomainProvider(
+      input: {
+        domainId: string;
+        provider: "letsencrypt";
+        expectedServerId: string;
+        expectedTlsProvider: string;
+        expectedPolicyGeneration: number;
+      },
+      now = new Date(),
+    ): Promise<boolean> {
+      return db.transaction(async (tx): Promise<boolean> => {
+        const [row] = await tx.select().from(domain).where(eq(domain.id, input.domainId)).for("update");
+        if (!row || row.ownerType !== "server") return false;
+        if (row.serverId !== input.expectedServerId) return false;
+        if (row.tlsProvider !== input.expectedTlsProvider) return false;
+        if (row.tlsPolicyGeneration !== input.expectedPolicyGeneration) return false;
+        await tx
+          .update(domain)
+          .set({
+            tlsActiveProvider: input.provider,
+            tlsCertificateId: null,
+            tlsCertificateFingerprint: null,
+            updatedAt: now,
+          })
+          .where(eq(domain.id, input.domainId));
+        return true;
+      });
     },
 
     async markServerDomainVerified(id: string) {
