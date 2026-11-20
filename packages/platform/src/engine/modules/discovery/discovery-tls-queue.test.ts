@@ -64,6 +64,9 @@ const manageDomainSsl = vi.fn(async () => ({ verified: true } as { verified: boo
 
 const installDiscoveryServerCert = vi.fn();
 const installSharedWildcardCert = vi.fn();
+const activateSharedWildcardChildren = vi.fn(
+  async (_child?: string, _wildcard?: string, _siblings?: string[], _opts?: { serverId: string }) => {},
+);
 const readServerDomainCert = vi.fn();
 vi.mock("../../lib/domain-ssl", () => ({
   manageDomainSsl,
@@ -71,7 +74,8 @@ vi.mock("../../lib/domain-ssl", () => ({
   sslIssueLockKey: vi.fn((hostname: string) => `lock:${hostname}`),
   installDiscoveryServerCert: (...args: unknown[]) => installDiscoveryServerCert(...args),
   readServerDomainCert: (hostname: string, opts: { serverId: string }) => readServerDomainCert(hostname, opts),
-  installSharedWildcardCert: (child: string, wildcard: string, cert: { certPem: string; keyPem: string }, opts: { serverId: string; expectedFingerprint: string }) => installSharedWildcardCert(child, wildcard, cert, opts),
+  installSharedWildcardCert: (child: string, wildcard: string, cert: { certPem: string; keyPem: string }, opts: { serverId: string; expectedFingerprint: string; children?: string[] }) => installSharedWildcardCert(child, wildcard, cert, opts),
+  activateSharedWildcardChildren: (child: string, wildcard: string, siblings: string[], opts: { serverId: string }) => activateSharedWildcardChildren(child, wildcard, siblings, opts),
   DiscoveryBackendUnavailableError: class DiscoveryBackendUnavailableError extends AppError {},
 }));
 vi.mock("../../lib/credential-encryption", () => ({
@@ -624,6 +628,9 @@ describe("execution dispatch", () => {
     issuanceInventory.findLiveWildcardIssuance.mockResolvedValue({
       id: "dti_w", state: "candidate", certificatePem: "-----BEGIN CERTIFICATE-----", fingerprint: "w:fp", keyEnc: "enc1:sealed",
     });
+    otherRepos.getBindingsForWildcard.mockResolvedValueOnce([
+      { hostname: "b.example.com" },
+    ]);
     otherRepos.findDomainsForBindings.mockResolvedValue(new Map([
       ["a.example.com", { id: "dom_1" }],
       ["b.example.com", { id: "dom_2" }],
@@ -634,12 +641,14 @@ describe("execution dispatch", () => {
     expect(ensureWildcardOriginCaShared).toHaveBeenCalledWith(
       expect.objectContaining({ hostname: "*.example.com", domainId: wildcardOp.domainId, credentialId: "cred_cf" }),
     );
-    // Authorized through the requesting child; material lands in the PATTERN dir.
+    // Authorized through the requesting child; material lands in the PATTERN dir
+    // and EVERY sharing route is switched to it inside the install (before any
+    // inventory commit).
     expect(installSharedWildcardCert).toHaveBeenCalledWith(
       "a.example.com",
       "*.example.com",
       { certPem: "-----BEGIN CERTIFICATE-----", keyPem: "UNSEALED-PRIVATE-KEY" },
-      { serverId: wildcardOp.serverId, expectedFingerprint: "w:fp" },
+      { serverId: wildcardOp.serverId, expectedFingerprint: "w:fp", children: ["a.example.com", "b.example.com"] },
     );
     expect(installDiscoveryServerCert).not.toHaveBeenCalled();
     // EVERY sharing domain activates (fenced individually).
@@ -658,6 +667,9 @@ describe("execution dispatch", () => {
     otherRepos.findOriginCaActiveDomainsForServer.mockResolvedValue([
       { id: "dom_1", tlsCertificateId: "ca_shared", tlsCertificateFingerprint: "w:fp", sslExpiresAt: new Date("2030-01-01") },
     ]);
+    otherRepos.getBindingsForWildcard.mockResolvedValueOnce([
+      { hostname: "a.example.com" },
+    ]);
     readServerDomainCert.mockResolvedValue({ domain: "*.example.com", verified: true, fingerprint: "w:fp" });
     ensureWildcardOriginCaShared.mockResolvedValue({
       outcome: "reused", issuanceId: "dti_w0", fingerprint: "shared", expiresAt: new Date("2030-01-01"),
@@ -666,6 +678,12 @@ describe("execution dispatch", () => {
     await drainDiscoveryTlsQueue(clock);
     expect(ensureWildcardOriginCaShared).toHaveBeenCalledWith(
       expect.objectContaining({ activeMaterialHealthy: true, activeCertificateId: "ca_shared" }),
+    );
+    // Siblings are switched to the pattern BEFORE any inventory commit —
+    // reuse never strands a sibling without TLS (the requesting child is
+    // excluded: its fingerprint just proved it already serves).
+    expect(activateSharedWildcardChildren).toHaveBeenCalledWith(
+      "b.example.com", "*.example.com", ["a.example.com"], { serverId: wildcardOp.serverId },
     );
     expect(issuanceInventory.markActive).toHaveBeenCalledWith(
       expect.objectContaining({ issuanceId: "dti_w0", domainId: wildcardOp.domainId }),

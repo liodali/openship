@@ -505,6 +505,7 @@ describe("SHARED WILDCARD issuance", () => {
     issuanceRepo.findByCertificateId.mockResolvedValue({
       id: "dti_shared0",
       state: "active",
+      hostname: "*.sub1.example.com", // the SHARED pattern — source identity holds
       certificateId: "ca_shared",
       expiresOn: new Date(Date.now() + 300 * 86_400_000),
     });
@@ -512,6 +513,25 @@ describe("SHARED WILDCARD issuance", () => {
     expect(result).toMatchObject({ outcome: "reused", issuanceId: "dti_shared0" });
     expect(issuanceRepo.startIssuance).not.toHaveBeenCalled();
     expect(client.create).not.toHaveBeenCalled();
+  });
+
+  it("REUSE refuses EXACT-HOST inventory: a child's own certificate never satisfies a wildcard", async () => {
+    // The referenced row is the requesting child's exact-host issuance —
+    // healthy, active, unexpired — but its material covers only itself, not
+    // the siblings. Reuse must fall through to a FRESH shared issuance.
+    issuanceRepo.findByCertificateId.mockResolvedValue({
+      id: "dti_exact",
+      state: "active",
+      hostname: "sub1.example.com", // an exact host, NOT the pattern
+      certificateId: "ca_exact",
+      expiresOn: new Date(Date.now() + 300 * 86_400_000),
+    });
+    const result = await ensureWildcardOriginCaShared({ ...WILDCARD_INPUT, activeCertificateId: "ca_exact" });
+    expect(result.outcome).toBe("issued");
+    expect(issuanceRepo.startIssuance).toHaveBeenCalledWith(
+      expect.objectContaining({ hostname: "*.sub1.example.com" }),
+    );
+    expect(client.create).toHaveBeenCalledTimes(1);
   });
 
   it("FRESH: the intent persists under the WILDCARD hostname with the issuing credential", async () => {

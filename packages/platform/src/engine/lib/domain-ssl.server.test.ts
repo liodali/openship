@@ -36,6 +36,8 @@ const state = {
   discoveryEnabled: true,
   /** When set, the under-lock findById re-read returns THIS row instead. */
   policyRow: null as Record<string, unknown> | null,
+  /** Overrides the domain row's manualSsl flag for the NEXT manage call. */
+  manualSslOverride: null as boolean | null,
   /** Sequential binding responses; empty = current binding (see mock). */
   bindingQueue: [] as Array<Record<string, unknown> | null>,
 };
@@ -63,7 +65,10 @@ const installCert = vi.fn(async () => ({
 vi.mock("@repo/db", () => ({
   repos: {
     domain: {
-      findByHostname: vi.fn(async () => state.domainRow),
+      findByHostname: vi.fn(async () => ({
+    ...state.domainRow,
+    ...(state.manualSslOverride === null ? {} : { manualSsl: state.manualSslOverride }),
+  })),
       // The UNDER-LOCK policy re-read: defaults to the same row the snapshot
       // came from; race tests point it at a policy that changed while queued.
       findById: vi.fn(async () => state.policyRow ?? state.domainRow),
@@ -248,6 +253,7 @@ describe("server-scoped domain TLS (ownerType='server')", () => {
       domain: "app.example.com",
       verified: true,
       issuer: "letsencrypt",
+      renewable: true, // provably ACME material — reuse is provider-correct
       expiresAt: new Date(Date.now() + 60 * 86_400_000).toISOString(),
     } as never);
     const result = await manageDomainSsl("app.example.com", {
@@ -259,11 +265,13 @@ describe("server-scoped domain TLS (ownerType='server')", () => {
     expect(provisionCert).not.toHaveBeenCalled(); // reused, no new order
   });
 
-  it("a REUSED ORIGIN CA certificate is never recorded as letsencrypt (no inventory release)", async () => {
-    // The regression probe: policy switched to letsencrypt, but the edge still
-    // serves a comfortably-valid ORIGIN CA certificate — the ACME reuse path
-    // hands it back. Recording it as letsencrypt and clearing its id would
-    // release a STILL-SERVING certificate for revocation.
+  it("a served ORIGIN CA certificate never passes as letsencrypt (no inventory release)", async () => {
+    // The regression probe, tightened: policy switched to letsencrypt, but the
+    // edge still serves a comfortably-valid ORIGIN CA certificate. Provider
+    // strings cannot be trusted — the proof gate refuses the commit — and the
+    // REUSE gate refuses to return it as success either: a switch that ends
+    // "successfully" without ever requesting the replacement is a silent
+    // no-op. The run must OPEN THE ORDER and complete the switch.
     verifyCert.mockResolvedValueOnce({
       domain: "app.example.com",
       verified: true,
@@ -277,10 +285,35 @@ describe("server-scoped domain TLS (ownerType='server')", () => {
       serverId: "srv_tls",
     });
     expect(result.verified).toBe(true);
-    expect(provisionCert).not.toHaveBeenCalled(); // reused, no order
-    // NO provider-switch commit: the served certificate is not proof of the
-    // desired provider, so its inventory (and revocation protection) stays.
-    expect(state.providerCommits).toBe(0);
+    // The desired replacement was REQUESTED — the switch actually completes.
+    expect(provisionCert).toHaveBeenCalledTimes(1);
+    // And the FRESH material (renewable) — not the reused Origin CA cert —
+    // releases the old inventory.
+    expect(state.providerCommits).toBe(1);
+  });
+
+  it("reuses an operator-uploaded (manual) certificate even though it is not renewable", async () => {
+    // manualSsl material is legitimate FINAL state: provider-aware reuse must
+    // not burn an ACME order to replace the operator's certificate.
+    verifyCert.mockResolvedValueOnce({
+      domain: "app.example.com",
+      verified: true,
+      issuer: "manual",
+      expiresAt: new Date(Date.now() + 300 * 86_400_000).toISOString(),
+      fingerprint: "manual:fp",
+    } as never);
+    state.manualSslOverride = true;
+    try {
+      const result = await manageDomainSsl("app.example.com", {
+        action: "provision",
+        allowUnverified: true,
+        serverId: "srv_tls",
+      });
+      expect(result.verified).toBe(true);
+      expect(provisionCert).not.toHaveBeenCalled();
+    } finally {
+      state.manualSslOverride = null;
+    }
   });
 
   it("refuses a caller that passes a projectId for a server domain", async () => {
