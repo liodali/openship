@@ -357,7 +357,18 @@ function ServiceRow({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-sm font-medium text-foreground truncate max-w-full">{service.hostname}</span>
+            {/* The hostname opens the site itself — in EVERY phase, including the
+                retained unavailable form, so the operator can see exactly what a
+                visitor sees (the edge's 503 page) without leaving the card. */}
+            <a
+              href={`https://${service.hostname}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="group inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md text-sm font-medium text-foreground transition-colors hover:text-primary focus-visible:outline-2 focus-visible:outline-ring"
+            >
+              <span className="truncate">{service.hostname}</span>
+              <UiIcon name="external-link" className="size-3.5 shrink-0 text-muted-foreground transition-colors group-hover:text-primary" />
+            </a>
             <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${PHASE_TONE[phase]}`}>
               {s.routeState[phase]}
             </span>

@@ -438,7 +438,7 @@ describe("NginxProvider unavailable routes (retained hostname, 503 + TLS)", () =
     const staleConf = conf("app-example-com")!
       .replace(/^# openship-vhost-gen: \d+$/m, `# openship-vhost-gen: ${VHOST_GENERATION - 1}`)
       .replace(/types \{ \}\s*default_type text\/html;\s*return 503 '[^']*';/g, "return 503;")
-      .replace(/add_header Cache-Control "no-store" always;\n\n/g, "");
+      .replace(/add_header Cache-Control "no-store" always;\n/g, "");
     files.set(`${SITES}/app-example-com.conf`, staleConf);
     expect(conf("app-example-com")).not.toContain("openship-edge-unavailable");
     expect(readVhostGeneration(conf("app-example-com")!)).toBe(VHOST_GENERATION - 1);

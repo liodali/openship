@@ -21,6 +21,14 @@
  * internal fact a stranger must not learn. The page is a CONSTANT, so nothing
  * route-specific can reach it by construction; the tests keep it that way.
  *
+ * Deliberately UNBRANDED as well: no product name, logo, footer or dashboard URL
+ * in the visible page. It answers on the OPERATOR's own domain, for the operator's
+ * own visitors — a vendor signature there advertises a third party on someone
+ * else's site (the same reason the upstream-down page exists at all). The design
+ * is a compact neutral status card: one soft generic icon, one heading, one line
+ * of guidance, light and dark. The sentinel comment below stays the page's ONLY
+ * product identifier — invisible to visitors, present for `curl | head -c 200`.
+ *
  * Why the body is INLINE in the config, and the tokenizer constraints (no `'`, no
  * `$`, no newline, no `#`, balanced braces): inherited unchanged from the two
  * siblings, each violation produces a config that fails `openresty -t`, and a
@@ -78,55 +86,40 @@ const HTML_FRAGMENTS: readonly string[] = [
   `<meta name="robots" content="noindex,nofollow">`,
   `<title>Application temporarily unavailable</title>`,
   `<style>`,
-  // Same neutral black-on-white scale as the 404 and upstream-down pages, mirrored
-  // for dark, so the three pages the edge serves read as one system. No webfont, no
-  // image, no external request: the page must render on a box whose only working
-  // listener is the one serving it. Colours are `rgb()`, never a hex triplet — see
-  // the no-`#` invariant above.
+  // Neutral light scale mirrored for dark — an unbranded status card, not a
+  // product page. No webfont, no image, no external request: the page must render
+  // on a box whose only working listener is the one serving it. Colours are
+  // `rgb()`/`rgba()`, never a hex triplet — see the no-`#` invariant above.
   `:root{color-scheme:light dark}`,
   `*{box-sizing:border-box}`,
   `body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:rgb(255,255,255);color:rgba(0,0,0,.66);font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}`,
-  `main{width:100%;max-width:32rem;padding:2.5rem 1.5rem;text-align:center}`,
-  // .56 on white ≈ 4.75:1 — WCAG AA for text this small, the scale the 404 page
-  // settled on after its lighter first draft measured under the bar.
-  `.tag{display:inline-flex;align-items:center;gap:.5rem;margin-bottom:1.25rem;padding:.25rem .625rem;border:1px solid rgba(0,0,0,.1);border-radius:999px;font-size:12px;color:rgba(0,0,0,.56)}`,
-  // Red, like upstream-down rather than the 404 page's amber: this host WAS wired
-  // up and answered before, which is closer to "an app that should be serving and
-  // is not" than to "nothing was ever deployed here".
-  `.dot{width:6px;height:6px;border-radius:50%;background:rgb(214,69,58)}`,
-  `h1{margin:0 0 .5rem;font-size:1.375rem;font-weight:600;letter-spacing:-.01em;color:rgba(0,0,0,.92)}`,
-  `p{margin:0 auto 1.5rem;max-width:26rem}`,
-  `ul{display:inline-block;margin:0;padding:0;list-style:none;text-align:left;font-size:13.5px;color:rgba(0,0,0,.56)}`,
-  `li{position:relative;padding:.2rem 0 .2rem 1rem}`,
-  `li::before{content:"";position:absolute;left:0;top:.75em;width:4px;height:4px;border-radius:50%;background:rgba(0,0,0,.25)}`,
-  `footer{margin-top:2.25rem;font-size:12px;color:rgba(0,0,0,.56)}`,
+  `main{width:100%;max-width:26rem;padding:2.5rem 1.5rem;text-align:center}`,
+  // .66 on white ≈ 7:1, and the dark mirror clears AA on rgb(10,10,10) by a wide
+  // margin — the supporting line stays readable in both appearances.
+  `.art{display:block;width:64px;height:64px;margin:0 auto 1.75rem}`,
+  `.art-bg{fill:rgba(0,0,0,.05)}`,
+  `.art-line{fill:none;stroke:rgba(0,0,0,.45);stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round}`,
+  `h1{margin:0 0 .75rem;font-size:1.25rem;font-weight:600;letter-spacing:-.01em;color:rgba(0,0,0,.92)}`,
+  `p{margin:0}`,
   `@media(prefers-color-scheme:dark){`,
   `body{background:rgb(10,10,10);color:rgba(255,255,255,.66)}`,
-  `.tag{border-color:rgba(255,255,255,.12);color:rgba(255,255,255,.56)}`,
+  `.art-bg{fill:rgba(255,255,255,.08)}`,
+  `.art-line{stroke:rgba(255,255,255,.5)}`,
   `h1{color:rgba(255,255,255,.95)}`,
-  `ul{color:rgba(255,255,255,.56)}`,
-  `li::before{background:rgba(255,255,255,.28)}`,
-  `footer{color:rgba(255,255,255,.56)}`,
   `}`,
   `</style>`,
   `</head>`,
   `<body>`,
   `<main>`,
-  // No status number in the tag: the status line carries the real code (503), and
-  // the page exists for people, not for parsers.
-  `<span class="tag"><span class="dot"></span>temporarily unavailable</span>`,
+  // A generic clock in a soft disc — "back in a moment" without a status number,
+  // a brand, or any claim about the backend's internals. Inline SVG only; the
+  // class-driven fills/strokes follow the appearance above.
+  `<svg class="art" viewBox="0 0 64 64" aria-hidden="true"><circle class="art-bg" cx="32" cy="32" r="30"/><circle class="art-line" cx="32" cy="32" r="13"/><path class="art-line" d="M32 25v7l5 3"/></svg>`,
   `<h1>Application temporarily unavailable</h1>`,
-  // The whole message, in one sentence: it happened, it is known, it is not
-  // permanent. The distinction from the upstream-down page is subtext, not copy:
-  // there the app may be crashing or merely slow; here the edge KNOWS the backend
-  // was withdrawn, so the page promises nothing is wrong with the visitor's
-  // request — only that the application is not running.
-  `<p>This application is temporarily unavailable. Please try again later.</p>`,
-  `<ul>`,
-  `<li>The application behind this address has stopped</li>`,
-  `<li>It will become available again when the application starts</li>`,
-  `</ul>`,
-  `<footer>Served by Openship</footer>`,
+  // The whole message: one heading, one line of guidance. No bullet list, no
+  // container-state claims, no promise about WHEN the app returns — resumption is
+  // the reconciler's job on the backend's own lifecycle, not the page's.
+  `<p>Please try again in a moment.</p>`,
   `</main>`,
   `</body>`,
   `</html>`,
