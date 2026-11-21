@@ -11,6 +11,8 @@ import { Button } from "@/components/ui/button";
 import DomainSettings from "./DomainSettings";
 import { MonorepoDomains } from "@/components/import-project/MonorepoDomains";
 import BuildSummary from "./BuildSummary";
+import type { ServerSelection } from "@/components/shared/ServerSelector";
+import { DeployButton } from "./DeployButton";
 import { LocalDeployComingSoonModal } from "@/components/LocalDeployComingSoonModal";
 import { useLocalDeployGate } from "@/hooks/useLocalDeployGate";
 import DnsRecordsModal from "@/components/domains/DnsRecordsModal";
@@ -155,7 +157,7 @@ const ComposeChecklist: React.FC = () => {
 
 // ─── Sidebar ─────────────────────────────────────────────────────────────────
 
-const Sidebar: React.FC<{ destinationReady: boolean }> = ({ destinationReady }) => {
+const Sidebar: React.FC<{ destinationReady: boolean; reviewDestination?: ServerSelection }> = ({ destinationReady, reviewDestination }) => {
   const { config, state, updateConfig, startDeployment, rescanWithBranch, isRescanning } =
     useDeployment();
   const { t } = useI18n();
@@ -606,30 +608,22 @@ const Sidebar: React.FC<{ destinationReady: boolean }> = ({ destinationReady }) 
           </Button>
         </div>
       ) : (
-        <button
-          onClick={handleDeploy}
+        <DeployButton
+          key={reviewDestination?.resourceKey}
+          review={reviewDestination}
+          destinationReady={destinationReady}
+          projectName={config.projectName || config.repo}
+          branch={!config.isApp && !config.localPath && !config.uploadSessionId ? config.branch : undefined}
+          onDeploy={handleDeploy}
+          deploying={state.isDeploying}
           disabled={
             state.isDeploying ||
             isRescanning ||
-            !destinationReady ||
             (config.projectType === "monorepo" &&
               config.serviceDeploymentMode !== "single" &&
               !config.monorepoApps?.some((app) => app.enabled))
           }
-          className="w-full inline-flex items-center justify-center gap-2 px-5 py-3 bg-primary text-primary-foreground text-sm font-medium rounded-xl hover:bg-primary/90 transition-all hover:shadow-lg hover:shadow-primary/25 hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          {state.isDeploying ? (
-            <>
-              <UiIcon name="spinner" className="size-4 animate-spin" />
-              {t.deploy.sidebar.deploying}
-            </>
-          ) : (
-            <>
-              <UiIcon name="rocket" className="size-4" />
-              {t.deploy.sidebar.deploy}
-            </>
-          )}
-        </button>
+        />
       )}
 
       {/* Build Summary */}

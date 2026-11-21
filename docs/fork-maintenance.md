@@ -232,6 +232,20 @@ Upstream refactored around our patches:
   delete that check from `scripts/fork/patch-guard.mjs`, drop our patch. Each
   such merge shrinks the fork toward a pure mirror.
 
+## Migration index collisions (journal conflicts)
+
+The fork's discovery migrations occupy journal idx **231–237** and are already
+applied on live boxes. Upstream numbers its own migrations from the same base,
+so `_journal.json` conflicts on every sync until upstream passes 239. Resolve
+by KEEPING the fork entries byte-for-byte (their `when` stamps are recorded in
+`drizzle.__drizzle_migrations` on the VPS) and APPENDING upstream's migrations
+after them: renumber idx/tag (`0231_project_icon_url` → `0238_project_icon_url`,
+done at the 1.0.1 sync), `git mv` the matching `.sql` files, and give the
+entries fresh `when` stamps NEWER than the fork's last — drizzle only applies
+entries newer than the last applied `when`, so upstream's original (older)
+stamps would silently never run on the VPS. Update any test that references
+the renamed tags (`packages/db/src/migrate-chain.test.ts`).
+
 ## Rollback on the VPS
 
 ```sh

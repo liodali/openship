@@ -1,4 +1,5 @@
 "use client";
+import { parseDeployDestination } from "@repo/core";
 
 import { ComposeChangeSummary } from "@/hooks/useComposeReview";
 import WarningCallout from "@/components/shared/WarningCallout";
@@ -189,6 +190,7 @@ const DeployRepository: React.FC = () => {
         autoSelectFirst: savedTargetState === "none" && !selectReadServer,
         useSavedDefault: savedTargetState === "none" && !selectReadServer,
         selfHostedOnly: selectReadServer,
+        destinationKind: !loadsSavedTarget && !projectId ? parseDeployDestination(searchParams.get("destination")) : undefined,
         onSelect: (server) => updateConfig({
             deployTarget: server ? (server.raw.managed ? "cloud" : "server") : (selfHosted ? "server" : "cloud"),
             serverId: server?.id,
@@ -467,6 +469,12 @@ const DeployRepository: React.FC = () => {
         </>
     );
 
+    const firstDeployment = !config.projectId || (decodedForTarget?.kind === "project" && savedTargetState === "none");
+    const reviewDestination = firstDeployment && !isConfigEdit && config.deployTarget !== "cluster" &&
+        !serverSelection.readOnly
+        ? serverSelection
+        : undefined;
+
     return (
         <PageContainer>
                 {/* Destination settings share the page's normal content/sidebar layout. */}
@@ -509,6 +517,7 @@ const DeployRepository: React.FC = () => {
                                         : t.widgets.shared.serverSelector.selectServer
                                 )}
                                 onEdit={() => setStep("target")}
+                                editLabel={reviewDestination ? t.billing.workspaces.choose : undefined}
                             />
                             {serverSelection.error && <p role="alert" className="text-sm text-danger">{serverSelection.error}</p>}
 
@@ -519,7 +528,10 @@ const DeployRepository: React.FC = () => {
                             <ConfigDiagnostics />
                             {deploymentSections}
                         </div>
-                        <Sidebar destinationReady={(config.deployTarget === "cluster" && !!config.projectId) || serverSelection.ready} />
+                        <Sidebar
+                            destinationReady={(config.deployTarget === "cluster" && !!config.projectId) || serverSelection.ready}
+                            reviewDestination={reviewDestination}
+                        />
                     </div>
                 )}
         </PageContainer>

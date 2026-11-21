@@ -1581,7 +1581,9 @@
     "connect": "Adicionar credencial",
     "delete": "Eliminar",
     "verify": "Verificar novamente com o fornecedor",
-    "badgeActive": "A funcionar",
+    "badgeActive": "Última verificação aprovada",
+    "badgeSaved": "Guardada",
+    "lastVerified": "Última verificação: {date}",
     "badgeInvalid": "Requer atenção",
     "fieldName": "Etiqueta",
     "namePlaceholder": "ex.: GHCR só leitura",
@@ -1791,5 +1793,22 @@
     "confirmCta": "Parar de servir",
     "cancel": "Cancelar",
     "noReverseProxy": "Nenhum proxy reverso detectado nesta máquina."
+  },
+  "imageUrl": {
+    "preview": "Prévia da imagem",
+    "invalid": "Insira uma URL HTTP ou HTTPS sem credenciais.",
+    "failed": "Não foi possível salvar a URL da imagem.",
+    "save": "Salvar",
+    "saving": "Salvando…",
+    "saved": "Salvo",
+    "previewFailed": "Prévia indisponível. Verifique se a URL aponta diretamente para uma imagem."
+  },
+  "profile": {
+    "change": "Alterar avatar",
+    "title": "Perfil",
+    "description": "A imagem da sua conta pessoal.",
+    "label": "URL do avatar",
+    "hint": "Use uma URL direta de imagem. Deixe em branco para usar sua inicial.",
+    "reset": "Usar inicial"
   }
 }

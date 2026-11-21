@@ -28,6 +28,14 @@ concurrency:
 # unmergeable forever with no visible reason.
 
 jobs:
+  website-image:
+    name: Website image
+    uses: ./.github/workflows/website-image.yml
+
+  # Fork: no actions-runner caller — actions-e2e.yml is deliberately removed
+  # (a26156a2a): the Go supervisor e2e matrix is an upstream concern, the fork's
+  # patches stay guarded by patch-guard. Keep the removal on upstream syncs.
+
   typecheck:
     name: Typecheck
     runs-on: ubuntu-latest
@@ -188,6 +196,7 @@ jobs:
               test/e2e/image-volume-persistence.e2e.test.ts
               test/e2e/image-gc-concurrent-build.e2e.test.ts
               test/e2e/image-refresh.e2e.test.ts
+              test/e2e/local-image-refresh.e2e.test.ts
           - suite: Security advisories
             artifact: security-advisories
             command: >-
@@ -204,6 +213,7 @@ jobs:
               test/e2e/static-fallback.e2e.test.ts
               test/e2e/route-protection.e2e.test.ts
               test/e2e/edge-not-found-page.e2e.test.ts
+              test/e2e/edge-upstream-down-page.e2e.test.ts
           - suite: Kubernetes manifests
             artifact: kubernetes
             command: >-
@@ -232,6 +242,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      # Native engine fixtures run Node workers; keep their runtime explicit
+      # instead of inheriting whichever Node version the runner image adds.
+      - name: Setup native test runtime
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '22'
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
@@ -256,6 +273,14 @@ jobs:
         if: matrix.suite == 'Other packages'
         working-directory: apps/email/client
         run: bun install --frozen-lockfile --ignore-scripts
+
+      - name: Verify scoped agents against the released Mindwire daemon
+        if: matrix.suite == 'Other packages'
+        env:
+          OPENSHIP_ASSISTANT_E2E: "1"
+        run: >-
+          bun run --cwd packages/platform test
+          test/assistant-agents.e2e.test.ts test/assistant-remote.test.ts
 
       # Run every workspace test, with the large API suite split across runners.
       # Direct Vitest runs and Turbo's stream mode expose progress immediately.
@@ -295,7 +320,7 @@ jobs:
   # matrix must fail this check; no individual shard can make the PR green.
   test:
     name: Test
-    needs: [test_suites]
+    needs: [test_suites, website-image]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 2
@@ -303,9 +328,10 @@ jobs:
       - name: Require every test suite to pass
         env:
           TEST_SUITES_RESULT: ${{ needs.test_suites.result }}
+          WEBSITE_RESULT: ${{ needs.website-image.result }}
         run: |
-          if [ "$TEST_SUITES_RESULT" != "success" ]; then
-            echo "::error::Test suites: $TEST_SUITES_RESULT"
+          if [ "$TEST_SUITES_RESULT" != "success" ] || [ "$WEBSITE_RESULT" != "success" ]; then
+            echo "::error::Test suites: $TEST_SUITES_RESULT; Website image: $WEBSITE_RESULT"
             exit 1
           fi
 
@@ -445,3 +471,35 @@ jobs:
       - name: Run webmail client tests
         working-directory: apps/email/client
         run: bun test
+
+      # Unit tests do not exercise the Docker dependency layout or the release
+      # bundle's dev-origin scan. Build the same artifact that ships to users.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+
+      - name: Build production webmail image
+        run: docker buildx build --load --file apps/email/Dockerfile.webmail --tag openship-webmail:ci .
+
+      - name: Verify production webmail startup
+        run: |
+          set -euo pipefail
+          container="webmail-readiness-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          trap 'docker logs "$container"; docker rm -fv "$container" >/dev/null' EXIT
+          docker run -d --name "$container" --network none \
+            -e SESSION_ENCRYPTION_KEY="$(openssl rand -hex 32)" \
+            -e BRANDING_ADMIN_TOKEN="$(openssl rand -hex 32)" \
+            openship-webmail:ci
+          for attempt in $(seq 1 30); do
+            if docker exec "$container" bun -e \
+              'fetch("http://127.0.0.1:4080/health").then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))'; then
+              docker exec "$container" bun -e '
+                const response = await fetch("http://127.0.0.1:4080/");
+                const html = await response.text();
+                if (!response.ok || !html.includes("/assets/")) process.exit(1);
+                console.log("Production webmail serves its health endpoint and client assets.");
+              '
+              exit 0
+            fi
+            sleep 1
+          done
+          exit 1

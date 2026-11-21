@@ -193,8 +193,12 @@ describe("billing through the same SDK and HTTP application operations", () => {
     // Exercise the actual SDK/validator before the shared application operation;
     // a mock entitlement alone missed the provider's newly included transfer.
     const billing = new OblienBillingApi({ clientId: "test-id", clientSecret: "test-secret",
-      fetch: (async url => Response.json(providerBillingFixture(new URL(String(url)).pathname === "/v1/billing/balance"
-        ? monthly.balance : monthly.entitlement))) as typeof fetch });
+      fetch: (async url => {
+        const { pathname } = new URL(String(url));
+        if (pathname === "/v2/billing/balance") return Response.json(providerBillingFixture(monthly.balance));
+        if (pathname === "/v2/billing/entitlement") return Response.json(providerBillingFixture(monthly.entitlement));
+        throw new Error(`Unexpected billing path ${pathname}`);
+      }) as typeof fetch });
     provider.subscriptions.set(selected.namespace!, monthly.subscription);
     provider.entitlement.mockImplementation(async namespace => namespace === selected.namespace
       ? billing.getEntitlement(namespace) : { success: true, namespace, tierId: null, status: "credit_exhausted",
@@ -728,6 +732,26 @@ describe("billing through the same SDK and HTTP application operations", () => {
       expect((await client.getState()).billing.enabled).toBe(false);
     }
     expect(provider.checkout).not.toHaveBeenCalled();
+    expect(provider.checkout).not.toHaveBeenCalled();
+  });
+
+  it("accepts empty request streams for optional billing actions", async () => {
+    const owner = await seedOwner(), c = await clients(owner);
+    await c.native.getState();
+    const namespace = (await billingWorkspace(owner)).namespace!;
+    provider.subscriptions.set(namespace, {
+      tierId: "hobby", status: "active", billingInterval: "yearly", periodStart: "2026-09-01T00:00:00Z", periodEnd: "2027-09-01T00:00:00Z",
+      cancelAtPeriodEnd: false, canceledAt: null,
+    });
+    for (const endpoint of ["portal", "cancel", "resume"]) {
+      const response = await app.request(`/api/billing/${endpoint}`, {
+        method: "POST", headers: { Authorization: `Bearer ${owner.token}`, "X-Organization-Id": owner.orgId }, body: "",
+      });
+      expect(response.status).toBe(200);
+    }
+    expect(provider.portal).toHaveBeenCalledWith(expect.objectContaining({ namespace }));
+    expect(provider.cancel).toHaveBeenCalledWith(namespace);
+    expect(provider.resume).toHaveBeenCalledWith(namespace);
     expect(provider.checkout).not.toHaveBeenCalled();
   });
 

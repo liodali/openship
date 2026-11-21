@@ -26,12 +26,12 @@
       }
     },
     {
-      "id": "update-0.9.12",
-      "severity": "critical",
+      "id": "update-1.0.1",
+      "severity": "recommended",
       "announce": true,
-      "affects": "<0.9.12",
-      "title": "Update to OpenShip 0.9.12",
-      "message": "Critical update: protects build secrets, repairs database upgrades and improves deployments, platform imports, backups and mail restores. Review the release notes and update all OpenShip components.",
+      "affects": "<1.0.1",
+      "title": "Update to OpenShip 1.0.1",
+      "message": "OpenShip 1.0.1 fixes self-hosted startup, image updates, and private GitHub repository access. Updating is recommended.",
       "action": {
         "label": "Update now",
         "kind": "update"
