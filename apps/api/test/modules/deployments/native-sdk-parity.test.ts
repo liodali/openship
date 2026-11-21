@@ -436,6 +436,15 @@ const native = (organizationId = "org-a") =>
     organizationId,
   });
 
+it.each(["redeploy", "pin"])("rejects broken JSON before a deployment %s can use default options", async action => {
+  const response = await app.request(`/api/deployments/dep-project-a/${action}`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: "{invalid",
+  });
+  expect(response.status).toBe(400);
+  expect(await response.json()).toMatchObject({ code: "INVALID_JSON" });
+  expect(h.trigger).not.toHaveBeenCalled();
+});
+
 describe("deployment preparation HTTP/native parity", () => {
   const remote = () => new OpenshipClient({ baseUrl: "http://openship.test", organizationId: "org-a", fetch: ((url, init) => app.request(url as string, init)) as typeof fetch });
   let info: ProjectInfo;
@@ -1876,6 +1885,19 @@ describe("domain and DNS HTTP/native parity", () => {
       expect(await contextFor("domain-b", "provision")).toBeNull();
     }
   });
+  it("accepts empty verification options but never turns malformed JSON into a batch scan", async () => {
+    const data = { verified: 0, stillPending: 0, failed: 0, total: 0, details: [] };
+    h.domainPending.mockResolvedValue(data);
+    for (const body of [undefined, "", "{invalid", '{"limit":"all"}']) {
+      const response = await app.request("/api/domains/verify-pending", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        ...(body === undefined ? {} : { body }),
+      });
+      expect(response.status).toBe(body ? 400 : 200);
+      if (!body) expect(await response.json()).toEqual({ data });
+    }
+    expect(h.domainPending).toHaveBeenCalledTimes(2);
+  });
   it("keeps certificate contents out of audit and refuses uploads to provider-managed Cloud domains", async () => {
     h.domainUpload.mockResolvedValue({ domain: "app.example.com", sslStatus: "active", issuer: "manual" });
     const local = await native();
@@ -1897,8 +1919,8 @@ describe("domain and DNS HTTP/native parity", () => {
     const local = await native();
     h.members.set("org-a:alice", { id: "member-a", role: "member" });
     for (const dns of [remote().dns, local.dns]) {
-      await expect(dns.addCredential(input)).rejects.toMatchObject({ code: "INSUFFICIENT_ROLE" });
-      await expect(dns.removeCredential("dns-a")).rejects.toMatchObject({ code: "INSUFFICIENT_ROLE" });
+      await expect(dns.addCredential(input)).rejects.toMatchObject({ code: "NOT_FOUND" });
+      await expect(dns.removeCredential("dns-a")).rejects.toMatchObject({ code: "NOT_FOUND" });
     }
     expect(h.dnsAdd).not.toHaveBeenCalled();
     expect(h.dnsRemove).not.toHaveBeenCalled();
@@ -2045,10 +2067,10 @@ describe("provider credential HTTP/native parity", () => {
     const local = await native();
     h.members.set("org-a:alice", { id: "member-a", role: "member" });
     for (const credentials of [local.credentials, remote().credentials]) {
-      await expect(credentials.create({ provider: "docker-registry", name: "Registry", values: { secret: "value" } })).rejects.toMatchObject({ code: "INSUFFICIENT_ROLE" });
-      await expect(credentials.update("credential-a", { name: "Renamed" })).rejects.toMatchObject({ code: "INSUFFICIENT_ROLE" });
-      await expect(credentials.remove("credential-a")).rejects.toMatchObject({ code: "INSUFFICIENT_ROLE" });
-      await expect(credentials.verify("credential-a")).rejects.toMatchObject({ code: "INSUFFICIENT_ROLE" });
+      await expect(credentials.create({ provider: "docker-registry", name: "Registry", values: { secret: "value" } })).rejects.toMatchObject({ code: "NOT_FOUND" });
+      await expect(credentials.update("credential-a", { name: "Renamed" })).rejects.toMatchObject({ code: "NOT_FOUND" });
+      await expect(credentials.remove("credential-a")).rejects.toMatchObject({ code: "NOT_FOUND" });
+      await expect(credentials.verify("credential-a")).rejects.toMatchObject({ code: "NOT_FOUND" });
     }
     expect(h.credentialCreate).not.toHaveBeenCalled();
     expect(h.credentialUpdate).not.toHaveBeenCalled();
@@ -2492,6 +2514,20 @@ describe("server HTTP/native parity", () => {
     expect(h.serverRemove).not.toHaveBeenCalled();
   });
 
+  it("denies ordinary members host execution through native, SDK and raw HTTP operations", async () => {
+    h.members.set("org-a:alice", { id: "member-a", role: "member" });
+    const local = await native();
+    for (const servers of [local.servers, remote().servers]) {
+      await expect(servers.exec("server-a", { command: "whoami" })).rejects.toMatchObject({ code: "NOT_FOUND" });
+    }
+    const response = await app.request("/api/system/servers/server-a/exec", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ command: "whoami" }),
+    });
+    expect(response.status).toBe(404);
+    expect(h.serverWithExecutor).not.toHaveBeenCalled();
+    expect(h.audit.mock.calls.filter(([event]) => event.eventType === "server.exec")).toHaveLength(0);
+  });
+
   it("returns the same partial teardown result and keeps HTTP 409", async () => {
     h.serverWorkloads.mockResolvedValue([{ id: "project-a", name: "Application", appTemplateId: null }]);
     h.projectTeardown.mockResolvedValue({ rowDeleted: false, orphaned: [], unrecoverable: [{ error: "volume busy" }] });
@@ -2584,11 +2620,11 @@ describe("HTTP/native system parity", () => {
       for (const system of [local.system, remote().system]) {
         await expect(system.updateSettings({ productMode: "mail" })).rejects.toMatchObject({ statusCode: 403 });
         await expect(system.updateEmailSettings({ host: null })).rejects.toMatchObject({ statusCode: 403 });
-        await expect(system.resetSettings()).rejects.toMatchObject({ statusCode: 403 });
+        await expect(system.resetSettings()).rejects.toMatchObject({ statusCode: role === "member" ? 404 : 403 });
         await expect(system.health()).rejects.toMatchObject({ statusCode: 403 });
         await expect(system.browse({ path: "/" })).rejects.toMatchObject({ statusCode: 403 });
         await expect(system.listUntrackedEdgeSites()).rejects.toMatchObject({ statusCode: 403 });
-        await expect(system.removeUntrackedEdgeSite({ hostname: "orphan.example.test" })).rejects.toMatchObject({ statusCode: 403 });
+        await expect(system.removeUntrackedEdgeSite({ hostname: "orphan.example.test" })).rejects.toMatchObject({ statusCode: role === "member" ? 404 : 403 });
       }
     }
     expect(h.settingsUpsert).not.toHaveBeenCalled();
@@ -2855,6 +2891,51 @@ describe("backup HTTP/native parity with retained policy services", () => {
     h.backupPrepare.mockResolvedValue({ restoreId: "restore-a", confirmationToken: "in-force-token" });
     h.backupApply.mockResolvedValue(undefined);
     h.backupCancel.mockResolvedValue({ accepted: true, status: "applying", destructive: true, forced: false });
+  });
+
+  it.each([
+    ["/api/backup-policies/policy-a/run", { runId: "run-a", runIds: ["run-a"] }],
+    ["/api/backup-runs/run-a/protect", { ok: true, retentionLockedUntil: "2099-12-31T23:59:59.000Z" }],
+    ["/api/backup-runs/run-a/restore/prepare", { restoreId: "restore-a", confirmationToken: "in-force-token" }],
+  ])("accepts omitted and zero-byte options through %s", async (path, data) => {
+    for (const body of [undefined, "", "{}"]) {
+      const response = await app.request(path as string, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        ...(body === undefined ? {} : { body }),
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ data });
+    }
+  });
+
+  it.each([
+    ["/api/backup-policies/policy-a/run", { serviceId: 42 }],
+    ["/api/backup-runs/run-a/protect", { protected: "false" }],
+    ["/api/backup-runs/run-a/restore/prepare", { mode: "wrong" }],
+  ])("rejects malformed JSON and invalid options before %s acts", async (path, invalid) => {
+    for (const body of ["{invalid", " ", "null", "[]", JSON.stringify(invalid)]) {
+      const response = await app.request(path as string, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body,
+      });
+      expect(response.status).toBe(400);
+    }
+    expect(h.backupEnqueue).not.toHaveBeenCalled();
+    expect(h.backupRetentionLock).not.toHaveBeenCalled();
+    expect(h.backupPrepare).not.toHaveBeenCalled();
+  });
+
+  it("keeps empty backup actions scoped and restore confirmation required", async () => {
+    const post = (path: string) => app.request(path, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "",
+    });
+    expect((await post("/api/backup-restores/restore-a/apply")).status).toBe(400);
+    h.members.set("org-a:alice", { id: "member-a", role: "restricted" });
+    h.grants.set("org-a:alice:backup_destination:destination-a", { permissions: ["admin"] });
+    expect((await post("/api/backup-policies/policy-a/run")).status).toBe(404);
+    expect((await post("/api/backup-runs/run-a/restore/prepare")).status).toBe(404);
+    expect(h.backupEnqueue).not.toHaveBeenCalled();
+    expect(h.backupPrepare).not.toHaveBeenCalled();
+    expect(h.backupApply).not.toHaveBeenCalled();
   });
 
   it("preserves project-write enumeration while direct destination readers receive masked snapshots", async () => {

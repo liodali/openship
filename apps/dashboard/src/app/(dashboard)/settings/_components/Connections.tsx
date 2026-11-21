@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 
 import { credentialsApi, type Credential } from "@/lib/api";
 import { getApiErrorMessage } from "@/lib/api/client";
-import { useI18n } from "@/components/i18n-provider";
+import { useI18n, interpolate } from "@/components/i18n-provider";
 import { useToast } from "@/context/ToastContext";
 import { SettingsSection } from "./SettingsSection";
 
@@ -30,7 +30,7 @@ import { SettingsSection } from "./SettingsSection";
  */
 
 export function Connections() {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const copy = t.settings.credentials;
   const { showToast } = useToast();
 
@@ -59,6 +59,13 @@ export function Connections() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Provider sections arrive after navigation's hash scroll has already run.
+  useEffect(() => {
+    if (loading) return;
+    const provider = providers.find((p) => `#${p.id}` === window.location.hash);
+    if (provider) document.getElementById(provider.id)?.scrollIntoView({ block: "start" });
+  }, [loading, providers]);
 
   const byProvider = useMemo(() => {
     const map = new Map<string, Credential[]>();
@@ -122,7 +129,7 @@ export function Connections() {
             const pLabel = pLoc?.label ?? provider.label;
             const pSummary = pLoc?.summary ?? provider.summary;
             return (
-              <section key={provider.id} aria-label={pLabel} className="py-5 first:pt-0 last:pb-0">
+              <section key={provider.id} id={provider.id} aria-label={pLabel} className="scroll-mt-24 py-5 first:pt-0 last:pb-0">
                 <div className="flex items-start gap-3">
                   <AppLogo slug={provider.icon} icon="key" className="mt-1 size-6 shrink-0" />
                   <div className="min-w-0 flex-1">
@@ -175,8 +182,10 @@ export function Connections() {
                                 </span>
                               ) : (
                                 <span className="inline-flex items-center gap-1 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-                                  <UiIcon name="check-circle" className="size-3" />{" "}
-                                  {copy.badgeActive}
+                                  {row.lastVerifiedAt && (
+                                    <UiIcon name="check-circle" className="size-3" />
+                                  )}{" "}
+                                  {row.lastVerifiedAt ? copy.badgeActive : copy.badgeSaved}
                                 </span>
                               )}
                             </div>
@@ -191,6 +200,16 @@ export function Connections() {
                                 .map(([k, v]) => `${k}: ${v}`)
                                 .join(" · ")}
                             </p>
+                            {row.lastVerifiedAt && (
+                              <p className="mt-1 text-xs text-muted-foreground">
+                                {interpolate(copy.lastVerified, {
+                                  date: new Date(row.lastVerifiedAt).toLocaleString(locale, {
+                                    dateStyle: "medium",
+                                    timeStyle: "short",
+                                  }),
+                                })}
+                              </p>
+                            )}
                             {row.status === "invalid" && row.lastError && (
                               <p className="mt-1 text-xs text-warning">{row.lastError}</p>
                             )}

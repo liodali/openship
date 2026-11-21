@@ -1667,6 +1667,20 @@
       "when": 1794978000000,
       "tag": "0237_discovery_tls_issuance_credential",
       "breakpoints": true
+    },
+    {
+      "idx": 238,
+      "version": "7",
+      "when": 1795237200000,
+      "tag": "0238_project_icon_url",
+      "breakpoints": true
+    },
+    {
+      "idx": 239,
+      "version": "7",
+      "when": 1795237201000,
+      "tag": "0239_project_icon_cleanup",
+      "breakpoints": true
     }
   ]
 }

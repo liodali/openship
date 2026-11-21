@@ -1,11 +1,11 @@
 {
   "name": "@repo/web",
-  "version": "0.9.12-fork.4",
+  "version": "1.0.1-fork.1",
   "license": "Apache-2.0",
   "private": true,
   "scripts": {
-    "dev": "next dev --port 3009",
-    "build": "next build",
+    "dev": "bun scripts/share-feature-art.tsx && node ../../scripts/web-client-messages.mjs && next dev --port 3009",
+    "build": "bun scripts/share-feature-art.tsx && node ../../scripts/web-client-messages.mjs && fumadocs-mdx && next build",
     "start": "next start",
     "lint": "next typegen && tsc --noEmit",
     "test": "bun test ./test",

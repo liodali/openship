@@ -25,6 +25,8 @@ export type ProjectRouteCleanupResult = "removed" | "absent" | "foreign";
 export interface RoutingProvider {
   /** Dial from the proxy's own network namespace, never the control plane's. */
   probeUpstream?(host: string, port: number): Promise<TcpProbeResult>;
+  setRouteEdgePages?(domain: string, pages: import("@repo/core").CompiledEdgePages | null): Promise<boolean>;
+  getRouteEdgePages?(domain: string): Promise<import("@repo/core").CompiledEdgePages | null | undefined>;
   /** Full loopback upstream inventory from this edge's own connection.
    * Unreadable or ambiguous configuration must reject, never return an empty set. */
   listLoopbackUpstreamPortsStrict?(opts?: { refresh?: boolean }): Promise<Set<number>>;
