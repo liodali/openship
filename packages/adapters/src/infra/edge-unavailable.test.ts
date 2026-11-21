@@ -149,13 +149,38 @@ server {
     // The one thing the page exists to communicate — and the distinction the stock
     // OpenResty 503 destroys, shared with the 404 ("nothing is deployed here") and
     // upstream-down ("deployed and not answering") pages: this one is "deployed,
-    // stopped, coming back".
+    // stopped, coming back". One heading and one line of guidance — no bullet
+    // list, no claims about the backend's internals.
     expect(EDGE_UNAVAILABLE_HTML).toContain("Application temporarily unavailable");
-    expect(EDGE_UNAVAILABLE_HTML).toContain(
-      "This application is temporarily unavailable. Please try again later.",
-    );
+    expect(EDGE_UNAVAILABLE_HTML).toContain("Please try again in a moment.");
     // A transient state must never be the version of the host that enters an index.
     expect(EDGE_UNAVAILABLE_HTML).toContain("noindex");
+  });
+
+  test("carries no visible product branding", () => {
+    // The page answers on the OPERATOR's domain for the operator's visitors — a
+    // vendor footer there advertises a third party on someone else's site. The
+    // sentinel comment stays the ONLY product identifier (invisible, for
+    // `curl | head -c 200`), so strip HTML comments before looking for the name.
+    expect(EDGE_UNAVAILABLE_HTML).not.toContain("Served by");
+    expect(EDGE_UNAVAILABLE_HTML.replace(/<!--[\s\S]*?-->/g, "")).not.toMatch(/openship/i);
+    expect(EDGE_UNAVAILABLE_HTML).not.toContain("<footer");
+  });
+
+  test("makes no request beyond the document itself — inline styles and SVG only", () => {
+    // No image fetch, no stylesheet import, no font: a visitor's browser must not
+    // contact anything but the edge that served the page (which may be the box's
+    // ONLY working listener).
+    expect(EDGE_UNAVAILABLE_HTML).not.toContain("<img");
+    expect(EDGE_UNAVAILABLE_HTML).not.toContain("<link");
+    expect(EDGE_UNAVAILABLE_HTML).not.toMatch(/url\(/i);
+    expect(EDGE_UNAVAILABLE_HTML).not.toContain("@import");
+    expect(EDGE_UNAVAILABLE_HTML).toContain("<svg");
+  });
+
+  test("supports light and dark appearances", () => {
+    expect(EDGE_UNAVAILABLE_HTML).toContain("color-scheme:light dark");
+    expect(EDGE_UNAVAILABLE_HTML).toContain("prefers-color-scheme:dark");
   });
 
   test("names no status code in the body", () => {
@@ -165,10 +190,12 @@ server {
   });
 
   test("does not promise a restart that routing does not perform", () => {
-    // The page says the application stopped and will return when it starts — it
-    // must NOT promise anything about timing or automation, because resumption is
-    // the reconciler's job on the container's own lifecycle, not the page's.
+    // "Please try again in a moment." is guidance for the VISITOR, not a promise
+    // about the backend: the page must not claim the app stopped, restarts, or
+    // returns on any schedule — resumption is the reconciler's job on the
+    // backend's own lifecycle, not the page's.
     expect(EDGE_UNAVAILABLE_HTML).not.toContain("will return automatically");
-    expect(EDGE_UNAVAILABLE_HTML).not.toContain("moment");
+    expect(EDGE_UNAVAILABLE_HTML).not.toContain("has stopped");
+    expect(EDGE_UNAVAILABLE_HTML).not.toContain("when the application starts");
   });
 });

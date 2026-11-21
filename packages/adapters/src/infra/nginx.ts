@@ -255,8 +255,14 @@ const FORWARD_VARS = `    set $openship_fwd_proto $scheme;
  *     Fork history: shipped as generation 5 in 0.9.12-fork.3/.4; upstream's
  *     maintenance/pages shape claimed 5 at 1.0.0, so the merged writer carries both
  *     and re-stamps at 6 — the sweep upgrades either generation-5 variant.
+ * 7 — the retained-unavailable page is neutral and UNBRANDED: no product footer,
+ *     no internal-state bullet list — a soft generic status icon, one heading,
+ *     one line of guidance ({@link ./edge-unavailable.ts}). Vhosts stamped 5/6
+ *     carry the old branded body; the sweep re-renders them from their sidecars,
+ *     and discovery repair upgrades a retained vhost in place on its next pass
+ *     (`retainedVhostStale` reads this same constant).
  */
-export const VHOST_GENERATION = 6;
+export const VHOST_GENERATION = 7;
 
 /** Marker line carrying {@link VHOST_GENERATION}, matched by {@link readVhostGeneration}. */
 const GENERATION_MARKER = `# openship-vhost-gen: ${VHOST_GENERATION}`;
