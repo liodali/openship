@@ -4,6 +4,41 @@ All notable changes to OpenShip. Versions follow [semver](https://semver.org);
 the in-app updater surfaces critical advisories from `release-advisories.json`.
 Runtime security notices use the signed feed published from `security-advisories.json`.
 
+## 1.0.1-fork.2
+
+Fork release on top of the upstream v1.0.1 sync (1.0.1-fork.1): two discovery UX
+improvements — clickable service hostnames and a neutral, unbranded unavailable
+page for retained services.
+
+### Discovery
+
+- Service hostnames on the discovery cards are now external links (`https`, new
+  tab, `noopener noreferrer`) in every route phase — including the retained
+  unavailable form, so the operator can open exactly what a visitor sees without
+  leaving the card. Truncation, status badges and the action menu are preserved,
+  with hover and keyboard-focus styling plus a small external-link icon. Applies
+  to both the server overview and the dedicated `/discovery` page.
+
+### Edge
+
+- Replace the branded retained-service 503 page with a neutral, unbranded status
+  card: a generic icon, the heading "Application temporarily unavailable" and one
+  line "Please try again in a moment." No product name, logo, footer, links or
+  claims about the backend's internal state; light and dark appearances with
+  accessible contrast, inline styles and SVG only. HTTP 503, no-store caching,
+  TLS and ACME challenge handling, and operator custom pages are unchanged.
+- Bump `VHOST_GENERATION` to 7 so existing retained vhosts receive the new page
+  through the supported reconciliation paths: the API startup/deploy sweep
+  re-renders vhosts stamped below 7 from their saved route state, and discovery
+  repair upgrades a retained vhost in place on its next pass — no stop/start
+  cycle required.
+
+### Upgrade notes
+
+- Rebuild/update the API and dashboard images; the edge image and CLI are
+  unchanged. After `openship update`, the generation-7 sweep converts existing
+  retained vhosts on API startup.
+
 ## 1.0.1
 
 **Recommended update** for self-hosted startup, application image updates, and
