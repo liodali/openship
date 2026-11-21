@@ -356,18 +356,46 @@ async function dispatchWildcardOriginCa(operation: DiscoveryTlsOperation, clock:
       const sharingBindings = await repos.discovery.getBindingsForWildcard(operation.serverId, operation.sourceHostname);
       const candidateHostnames = [...new Set([operation.hostname.toLowerCase(), ...sharingBindings.map((b) => b.hostname)])];
       const sharingDomains = await repos.discovery.findDomainsForBindings(operation.serverId, candidateHostnames);
-      const authorizedSiblings = candidateHostnames.filter((hostname) => {
-        if (hostname === operation.hostname.toLowerCase()) return true;
-        const row = sharingDomains.get(hostname);
-        return (
-          !!row &&
-          // The lookup is server-scoped: a row here belongs to THIS server,
-          // hence this organization — the server is the org boundary.
-          row.manualSsl !== true && // operator-uploaded material is never replaced by the fan-out
-          row.tlsProvider === "cloudflare-origin-ca" && // policy moved on: the sibling owns its bookkeeping
-          row.tlsPolicyGeneration === operation.policyGeneration // generation moved on: fenced
-        );
-      });
+      type SiblingRow = NonNullable<(typeof sharingDomains) extends Map<string, infer R> ? R : never>;
+      const siblingAuthorized = (row: SiblingRow | undefined): boolean =>
+        !!row &&
+        // The lookup is server-scoped: a row here belongs to THIS server,
+        // hence this organization — the server is the org boundary.
+        row.manualSsl !== true && // operator-uploaded material is never replaced by the fan-out
+        row.tlsProvider === "cloudflare-origin-ca" && // policy moved on: the sibling owns its bookkeeping
+        row.tlsPolicyGeneration === operation.policyGeneration; // generation moved on: fenced
+      const childHostname = operation.hostname.toLowerCase();
+      const authorizedSiblings = candidateHostnames.filter(
+        (hostname) => hostname === childHostname || siblingAuthorized(sharingDomains.get(hostname)),
+      );
+      // The checks above are necessary but NOT sufficient: they run while
+      // holding only the PATTERN lock, and a sibling can switch to Let's
+      // Encrypt under its OWN hostname lock between this read and the
+      // install — which would then delete that sibling's exact certificate
+      // and renewal record. The later database fence cannot restore Edge
+      // files. So every mutation below first acquires each authorized
+      // sibling's hostname lock, RE-READS the sibling rows under the locks,
+      // re-filters, and only then touches the filesystem. Compatible lock
+      // order (pattern → sibling): a sibling's exact/dispatch work takes
+      // only its own hostname lock, and a sibling's wildcard operation takes
+      // the SAME pattern lock first — no path acquires them in reverse, so
+      // the nesting cannot deadlock.
+      const withSiblingLocks = async <T>(
+        work: (authorized: string[]) => Promise<T>,
+      ): Promise<T | null> => {
+        const descend = async (index: number): Promise<T | null> => {
+          if (index >= authorizedSiblings.length) {
+            // Every sibling lock is held: re-read NOW — the moment a
+            // sibling's own provisioning acquires its hostname lock and
+            // flips provider, this read observes it.
+            const fresh = await repos.discovery.findDomainsForBindings(operation.serverId, authorizedSiblings);
+            if (!siblingAuthorized(fresh.get(childHostname))) return null; // the driver's own policy moved: defer everything
+            return work(authorizedSiblings.filter((h) => h === childHostname || siblingAuthorized(fresh.get(h))));
+          }
+          return createProvisionLock(sslIssueLockKey(authorizedSiblings[index])).run(() => descend(index + 1));
+        };
+        return descend(0);
+      };
       if (result.outcome === "reused") {
         // The shared pattern is healthy on the edge — but a sibling whose
         // route was never activated (newly enrolled, or superseded before its
@@ -375,12 +403,18 @@ async function dispatchWildcardOriginCa(operation: DiscoveryTlsOperation, clock:
         // pattern HERE: reuse would otherwise only commit database inventory.
         // The requesting child is excluded — its fingerprint just proved it
         // already serves the pattern.
-        await activateSharedWildcardChildren(
-          operation.hostname,
-          operation.sourceHostname,
-          authorizedSiblings.filter((h) => h !== operation.hostname.toLowerCase()),
-          { serverId: operation.serverId },
+        const authorized = await withSiblingLocks(async (authorized) =>
+          activateSharedWildcardChildren(
+            operation.hostname,
+            operation.sourceHostname,
+            authorized.filter((h) => h !== childHostname),
+            { serverId: operation.serverId },
+          ),
         );
+        if (authorized === null) {
+          await defer(operation.id, `The TLS policy for ${operation.hostname} moved on while its wildcard operation waited; the domain's own dispatch takes over from here.`, operation.attempts, now(), WORKER_ID);
+          return;
+        }
         // Commit THIS domain's inventory from the issuing row (sharing
         // activation), then complete.
         if (result.issuanceId) {
@@ -403,6 +437,10 @@ async function dispatchWildcardOriginCa(operation: DiscoveryTlsOperation, clock:
           await defer(operation.id, `The shared wildcard inventory for ${operation.sourceHostname} is incomplete; the next attempt retries.`, operation.attempts, now(), WORKER_ID);
           return;
         }
+        // Narrowed above; captured into consts because the install closure
+        // below does not inherit control-flow narrowing.
+        const certificatePem: string = row.certificatePem;
+        const expectedFingerprint: string = row.fingerprint;
         const keyPem = decryptSecretField(row.keyEnc);
         if (!keyPem) {
           await repos.discoveryTlsIssuance.markFailed(result.issuanceId, "the shared wildcard private key could not be unsealed for installation");
@@ -410,43 +448,52 @@ async function dispatchWildcardOriginCa(operation: DiscoveryTlsOperation, clock:
           return;
         }
         // Authorized through the REQUESTING CHILD (the wildcard has no domain
-        // row); the material lands in the pattern directory and every sharing
-        // route is switched to it — with rollback — INSIDE the install, before
-        // any inventory below is committed.
-        const install = await installSharedWildcardCert(
-          operation.hostname,
-          operation.sourceHostname,
-          { certPem: row.certificatePem, keyPem },
-          {
-            serverId: operation.serverId,
-            expectedFingerprint: row.fingerprint,
-            children: authorizedSiblings,
-            // This dispatch IS the authorized provider operation (fenced on
-            // policy + generation): a certbot-managed exact certificate that
-            // shadows the pattern is replaced, with renewal ownership
-            // transferred to the shared material.
-            replaceCertbot: true,
-          },
-        );
+        // row). Under the sibling locks (freshly re-checked rows), the
+        // material lands in the pattern directory and every AUTHORIZED
+        // sharing route is switched to it — with rollback — before any
+        // inventory below is committed.
+        const install = await withSiblingLocks(async (authorized) => {
+          const installed = await installSharedWildcardCert(
+            operation.hostname,
+            operation.sourceHostname,
+            { certPem: certificatePem, keyPem },
+            {
+              serverId: operation.serverId,
+              expectedFingerprint,
+              children: authorized,
+              // This dispatch IS the authorized provider operation (fenced on
+              // policy + generation): a certbot-managed exact certificate that
+              // shadows the pattern is replaced, with renewal ownership
+              // transferred to the shared material.
+              replaceCertbot: true,
+            },
+          );
+          // Inventory commit mirrors the AUTHORIZED fan-out (fenced per
+          // domain; refusals are skipped — those domains' own operations
+          // handle them). Siblings dropped by the under-lock re-check keep
+          // their old bookkeeping untouched — like their Edge files.
+          for (const hostname of authorized) {
+            const domainRow = sharingDomains.get(hostname);
+            if (!domainRow) continue;
+            await repos.discoveryTlsIssuance
+              .markActive({
+                issuanceId: result.issuanceId,
+                domainId: domainRow.id,
+                expectedServerId: operation.serverId,
+                expectedTlsProvider: "cloudflare-origin-ca",
+                expectedPolicyGeneration: operation.policyGeneration,
+              })
+              .catch(() => {});
+          }
+          return installed;
+        });
+        if (install === null) {
+          await defer(operation.id, `The TLS policy for ${operation.hostname} moved on while its wildcard operation waited; the domain's own dispatch takes over from here.`, operation.attempts, now(), WORKER_ID);
+          return;
+        }
         if (!install.result.verified) {
           await defer(operation.id, `The shared certificate for ${operation.sourceHostname} is not serving yet; the previous certificate remains on the edge.`, operation.attempts, now(), WORKER_ID);
           return;
-        }
-        // Inventory commit mirrors the AUTHORIZED fan-out (fenced per domain;
-        // refusals are skipped — those domains' own operations handle them).
-        // Unauthorized siblings keep their old bookkeeping untouched.
-        for (const hostname of authorizedSiblings) {
-          const domainRow = sharingDomains.get(hostname);
-          if (!domainRow) continue;
-          await repos.discoveryTlsIssuance
-            .markActive({
-              issuanceId: result.issuanceId,
-              domainId: domainRow.id,
-              expectedServerId: operation.serverId,
-              expectedTlsProvider: "cloudflare-origin-ca",
-              expectedPolicyGeneration: operation.policyGeneration,
-            })
-            .catch(() => {});
         }
         // The issuing row is now terminal-active; pending key material wiped.
         await repos.discoveryTlsQueue.completeOperation(operation.id, "installed", now(), WORKER_ID);

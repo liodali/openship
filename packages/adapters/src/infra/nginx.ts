@@ -3122,18 +3122,24 @@ ${serveLocation}
           { path: configPath, snapshot: await this._captureFile(configPath), mode: 0o600 },
           { path: statePath, snapshot: await this._captureFile(statePath), mode: undefined },
         ];
-        if (await this.certFileExists(exactFiles[0])) {
-          for (const file of [{ path: exactFiles[0], mode: undefined }, { path: exactFiles[1], mode: 0o600 }]) {
-            rollback.push({ path: file.path, mode: file.mode, snapshot: await this._captureFile(file.path, true) });
-          }
-          await this._rm(exactDir);
-        }
-        if (replaceCertbot) {
-          const renewalConf = this.renewalConfPath(child);
-          rollback.push({ path: renewalConf, mode: 0o644, snapshot: await this._captureFile(renewalConf) });
-          await this._rm(renewalConf);
-        }
         try {
+          // DESTRUCTIVE STEPS INSIDE THE BOUNDARY: exact-certificate and
+          // renewal-record removal are snapshotted-then-deleted HERE, not
+          // before the try — a failure mid-preparation (renewal removal
+          // failing after the pair was deleted, an I/O error on any rm) must
+          // reach the same restore-everything path as an activation failure,
+          // not leak half-deleted state past the rollback.
+          if (await this.certFileExists(exactFiles[0])) {
+            for (const file of [{ path: exactFiles[0], mode: undefined }, { path: exactFiles[1], mode: 0o600 }]) {
+              rollback.push({ path: file.path, mode: file.mode, snapshot: await this._captureFile(file.path, true) });
+            }
+            await this._rm(exactDir);
+          }
+          if (replaceCertbot) {
+            const renewalConf = this.renewalConfPath(child);
+            rollback.push({ path: renewalConf, mode: 0o644, snapshot: await this._captureFile(renewalConf) });
+            await this._rm(renewalConf);
+          }
           await this.activateRouteCert(child);
           routeRollbacks.push(rollback);
         } catch (error) {
