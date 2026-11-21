@@ -3059,7 +3059,7 @@ ${serveLocation}
   async installSharedWildcardCert(
     wildcard: string,
     cert: ManualCert,
-    opts?: { children?: string[] },
+    opts?: { children?: string[]; replaceCertbot?: boolean },
   ): Promise<SslResult> {
     assertValidDomain(wildcard);
     if (!wildcard.startsWith("*.")) throw new Error(`Shared certificates install under a wildcard pattern, got ${wildcard}`);
@@ -3090,43 +3090,62 @@ ${serveLocation}
       // re-register with TLS + reload — BEFORE the caller commits inventory:
       // "active" in the database must mean SERVING on the edge, and the
       // replaced exact material must not keep shadowing the pattern.
-      // Rollback protection per child: the vhost, its sidecar, and any exact
-      // certificate pair it was serving are snapshotted; a failed activation
-      // restores all three and reloads. registerRoute additionally refuses a
-      // broken config test, so a half-written vhost never reaches a reload.
+      //
+      // ROLLBACK COVERS THE WHOLE MUTATION: the replaced SHARED PAIR is part
+      // of the snapshot set, and every route touched by this call (children
+      // activated before the failure included) is restored — reporting failure
+      // must leave the edge exactly as it was found: previous shared pair,
+      // previous routes. registerRoute additionally refuses a broken config
+      // test, so a half-written vhost never reaches a reload.
+      const routeRollbacks: Array<Array<{ path: string; snapshot: FileSnapshot; mode?: number }>> = [];
       for (const child of opts?.children ?? []) {
         const slug = await this.resolveSlug(child);
         const configPath = join(this.sitesDir, `${slug}.conf`);
         const statePath = this.routeStatePath(slug);
-        const confSnapshot = await this._captureFile(configPath);
-        const stateSnapshot = await this._captureFile(statePath);
         // Exact-first resolution: a child still holding its own exact
         // certificate pair would keep serving it FOREVER even after the vhost
         // re-registers — the pattern directory can never win the lookup. A
-        // non-certbot exact pair on a wildcard-covered host is superseded
-        // discovery material — retire it (snapshotted) so inheritance actually
-        // takes effect. Certbot-owned material is never touched: the child may
-        // be independently managed (a switch back to Let's Encrypt, a project
-        // domain that happens to share the server).
+        // plain exact pair on a wildcard-covered host is superseded discovery
+        // material — retire it (snapshotted) so inheritance actually takes
+        // effect. A CERTBOT-MANAGED pair additionally owns its own renewal
+        // record: replacing it transfers renewal ownership to the shared
+        // material (remove the record, or certbot's next run fights the
+        // pattern). That is destructive to independently-managed state, so it
+        // happens ONLY when the caller explicitly authorizes the provider
+        // switch (opts.replaceCertbot) — otherwise the child is skipped.
         const exactDir = join(this.certDir, child);
         const exactFiles = [join(exactDir, "fullchain.pem"), join(exactDir, "privkey.pem")];
         const certbotOwned = await this._exists(this.renewalConfPath(child));
-        const exactSnapshots: Array<{ path: string; snapshot: FileSnapshot; mode?: number }> = [];
-        if (!certbotOwned && (await this.certFileExists(exactFiles[0]))) {
+        const replaceCertbot = certbotOwned && opts?.replaceCertbot === true;
+        if (certbotOwned && !replaceCertbot) continue; // unauthorized: leave the child exactly as it is
+        const rollback: Array<{ path: string; snapshot: FileSnapshot; mode?: number }> = [
+          { path: configPath, snapshot: await this._captureFile(configPath), mode: 0o600 },
+          { path: statePath, snapshot: await this._captureFile(statePath), mode: undefined },
+        ];
+        if (await this.certFileExists(exactFiles[0])) {
           for (const file of [{ path: exactFiles[0], mode: undefined }, { path: exactFiles[1], mode: 0o600 }]) {
-            exactSnapshots.push({ path: file.path, mode: file.mode, snapshot: await this._captureFile(file.path, true) });
+            rollback.push({ path: file.path, mode: file.mode, snapshot: await this._captureFile(file.path, true) });
           }
           await this._rm(exactDir);
         }
+        if (replaceCertbot) {
+          const renewalConf = this.renewalConfPath(child);
+          rollback.push({ path: renewalConf, mode: 0o644, snapshot: await this._captureFile(renewalConf) });
+          await this._rm(renewalConf);
+        }
         try {
           await this.activateRouteCert(child);
+          routeRollbacks.push(rollback);
         } catch (error) {
           const failures: string[] = [];
-          for (const { path, snapshot, mode } of [
-            { path: configPath, snapshot: confSnapshot, mode: 0o600 },
-            { path: statePath, snapshot: stateSnapshot, mode: undefined },
-            ...exactSnapshots,
-          ]) {
+          // Restore EVERYTHING this call touched — earlier (succeeded) children
+          // and the shared pair included, routes in reverse activation order.
+          const restoreAll = [
+            ...routeRollbacks.slice().reverse().flat(),
+            ...rollback,
+            ...snapshots, // the replaced shared pair: previous material goes back
+          ];
+          for (const { path, snapshot, mode } of restoreAll) {
             await this._restoreFile(path, snapshot, mode).catch((restoreError) => {
               observeCaughtError(restoreError, "adapters/infra/nginx");
               failures.push(`${path}: ${safeErrorMessage(restoreError)}`);
@@ -3134,7 +3153,7 @@ ${serveLocation}
           }
           // Put the edge back on the restored config before reporting failure —
           // the caller must never see "installed" while a half-activated route
-          // is on disk.
+          // or a half-replaced pattern is on disk.
           await this.reloadConfig({ allowStopped: true }).catch((reloadFailure) => {
             observeCaughtError(reloadFailure, "adapters/infra/nginx");
             failures.push(`reload: ${safeErrorMessage(reloadFailure)}`);

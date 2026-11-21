@@ -1343,7 +1343,7 @@ export async function installSharedWildcardCert(
   childHostname: string,
   wildcard: string,
   cert: ManualCert,
-  opts: { serverId: string; expectedFingerprint: string; children?: string[] },
+  opts: { serverId: string; expectedFingerprint: string; children?: string[]; replaceCertbot?: boolean },
 ): Promise<{ outcome: "installed" | "recovered"; result: SslResult }> {
   const { owner } = await resolveAuthorizedDomain(childHostname, {
     action: "provision",
@@ -1369,7 +1369,10 @@ export async function installSharedWildcardCert(
     // staging and activation leaves exactly this state — material present,
     // child routes never switched. Re-staging identical material is harmless
     // (snapshot + atomic stage), and the activation pass runs with rollback.
-    const result = await ssl.installSharedWildcardCert(wildcard, cert, { children: opts.children });
+    const result = await ssl.installSharedWildcardCert(wildcard, cert, {
+      children: opts.children,
+      replaceCertbot: opts.replaceCertbot,
+    });
     if (!result.verified) {
       throw new AppError(
         `The shared certificate for ${wildcard} could not be installed; the previous certificate remains on the edge.`,

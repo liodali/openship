@@ -345,8 +345,29 @@ async function dispatchWildcardOriginCa(operation: DiscoveryTlsOperation, clock:
       // The sharing set (every unsuppressed declaring binding + the
       // requesting child) — needed on BOTH success paths: siblings must
       // actually SERVE the pattern before any inventory is committed.
+      // But a DECLARING BINDING IS NOT AUTHORIZATION: the fan-out authorizes
+      // each sibling's CURRENT ownership, policy, and generation right here —
+      // before its route or certificate files are touched — because the
+      // sharing query includes blocked ownership conflicts and stale
+      // declarations. A sibling that fails any check is skipped untouched;
+      // its own durable operation re-checks and handles it. Only the
+      // requesting child is pre-authorized (this operation's own gates ran
+      // for it).
       const sharingBindings = await repos.discovery.getBindingsForWildcard(operation.serverId, operation.sourceHostname);
-      const sharingHostnames = [...new Set([operation.hostname.toLowerCase(), ...sharingBindings.map((b) => b.hostname)])];
+      const candidateHostnames = [...new Set([operation.hostname.toLowerCase(), ...sharingBindings.map((b) => b.hostname)])];
+      const sharingDomains = await repos.discovery.findDomainsForBindings(operation.serverId, candidateHostnames);
+      const authorizedSiblings = candidateHostnames.filter((hostname) => {
+        if (hostname === operation.hostname.toLowerCase()) return true;
+        const row = sharingDomains.get(hostname);
+        return (
+          !!row &&
+          // The lookup is server-scoped: a row here belongs to THIS server,
+          // hence this organization — the server is the org boundary.
+          row.manualSsl !== true && // operator-uploaded material is never replaced by the fan-out
+          row.tlsProvider === "cloudflare-origin-ca" && // policy moved on: the sibling owns its bookkeeping
+          row.tlsPolicyGeneration === operation.policyGeneration // generation moved on: fenced
+        );
+      });
       if (result.outcome === "reused") {
         // The shared pattern is healthy on the edge — but a sibling whose
         // route was never activated (newly enrolled, or superseded before its
@@ -357,7 +378,7 @@ async function dispatchWildcardOriginCa(operation: DiscoveryTlsOperation, clock:
         await activateSharedWildcardChildren(
           operation.hostname,
           operation.sourceHostname,
-          sharingHostnames.filter((h) => h !== operation.hostname.toLowerCase()),
+          authorizedSiblings.filter((h) => h !== operation.hostname.toLowerCase()),
           { serverId: operation.serverId },
         );
         // Commit THIS domain's inventory from the issuing row (sharing
@@ -396,16 +417,27 @@ async function dispatchWildcardOriginCa(operation: DiscoveryTlsOperation, clock:
           operation.hostname,
           operation.sourceHostname,
           { certPem: row.certificatePem, keyPem },
-          { serverId: operation.serverId, expectedFingerprint: row.fingerprint, children: sharingHostnames },
+          {
+            serverId: operation.serverId,
+            expectedFingerprint: row.fingerprint,
+            children: authorizedSiblings,
+            // This dispatch IS the authorized provider operation (fenced on
+            // policy + generation): a certbot-managed exact certificate that
+            // shadows the pattern is replaced, with renewal ownership
+            // transferred to the shared material.
+            replaceCertbot: true,
+          },
         );
         if (!install.result.verified) {
           await defer(operation.id, `The shared certificate for ${operation.sourceHostname} is not serving yet; the previous certificate remains on the edge.`, operation.attempts, now(), WORKER_ID);
           return;
         }
-        // Activation for EVERY unsuppressed sharing domain (fenced per domain;
+        // Inventory commit mirrors the AUTHORIZED fan-out (fenced per domain;
         // refusals are skipped — those domains' own operations handle them).
-        const sharingDomains = await repos.discovery.findDomainsForBindings(operation.serverId, sharingHostnames);
-        for (const domainRow of sharingDomains.values()) {
+        // Unauthorized siblings keep their old bookkeeping untouched.
+        for (const hostname of authorizedSiblings) {
+          const domainRow = sharingDomains.get(hostname);
+          if (!domainRow) continue;
           await repos.discoveryTlsIssuance
             .markActive({
               issuanceId: result.issuanceId,

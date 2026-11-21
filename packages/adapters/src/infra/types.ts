@@ -207,7 +207,14 @@ export interface SslProvider {
   installSharedWildcardCert?(
     wildcard: string,
     cert: ManualCert,
-    opts?: { children?: string[] },
+    opts?: {
+      children?: string[];
+      /** Replace a CERTBOT-MANAGED exact certificate that shadows the
+       *  pattern, transferring renewal ownership (removing its renewal
+       *  record). Destructive to independently-managed state — only for an
+       *  explicitly authorized provider switch. */
+      replaceCertbot?: boolean;
+    },
   ): Promise<SslResult>;
 
   /**
