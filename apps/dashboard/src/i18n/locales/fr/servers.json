@@ -1298,7 +1298,14 @@
       "error": "Échec du certificat",
       "none": "Aucun certificat",
       "provisioning": "Certificat en cours de délivrance",
-      "expired": "Certificat expiré"
+      "expired": "Certificat expiré",
+      "providerLetsencrypt": "Let's Encrypt",
+      "providerCloudflareOriginCa": "Cloudflare Origin CA",
+      "opQueued": "en file",
+      "opRunning": "en cours",
+      "opDeferred": "en attente",
+      "opError": "réessai",
+      "waitingBackend": "en attente du backend"
     },
     "strategy": {
       "network-ip": "réseau du conteneur",

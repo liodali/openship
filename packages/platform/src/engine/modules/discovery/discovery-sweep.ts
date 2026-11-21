@@ -21,7 +21,7 @@
  * (`discovery-watch.ts`) renews from the sweep itself, so it also arms here.
  */
 
-import { diagnostics as errorDiagnostics } from "@repo/core/diagnostics";
+import { diagnostics as errorDiagnostics, reportCaughtError } from "@repo/core/diagnostics";
 import { safeErrorMessage } from "@repo/core";
 import { repos } from "@repo/db";
 import { scheduleSystemJob, type JobSummary } from "../../lib/system-jobs";
@@ -32,18 +32,26 @@ import {
   type DiscoveryReconcileSummary,
 } from "./discovery-reconciler";
 import { repairDiscoveryRoutes, type DiscoveryRepairSummary } from "./discovery-repair";
+import { kickDiscoveryTlsQueue } from "./discovery-tls-queue";
+import { readServerDomainCert } from "../../lib/domain-ssl";
+import { revokeOriginCaCertificate } from "./origin-ca-client";
+import { readCredentialSecrets } from "../credentials/credential.service";
 import { renewDiscoveryWatchers } from "./discovery-watch";
 
 export const DISCOVERY_SWEEP_JOB = "discovery:sweep";
 
 /** Per-stage summaries for one server's sweep. */
 export interface DiscoveryServerSweepSummary {
+  /** Replaced Origin CA certificates revoked after successful replacement. */
+  revokedCertificates?: number;
+  /** Domains enqueued for Edge repair/rotation by the periodic cert audit. */
+  certAuditScheduled?: number;
   serverId: string;
   scan?: DiscoveryScanSummary;
   reconcile?: DiscoveryReconcileSummary;
   repair?: DiscoveryRepairSummary;
   /** Stages that threw (their key is absent from the summary). */
-  failed: Array<"scan" | "reconcile" | "repair">;
+  failed: Array<"scan" | "reconcile" | "repair" | "certificate-cleanup" | "certificate-audit">;
 }
 
 /**
@@ -98,6 +106,62 @@ export function sweepServerDiscovery(
   return runInServerQueue(serverId, () => runServerSweep(serverId, organizationId, options));
 }
 
+/**
+ * Bounded periodic certificate audit: for server domains recording ACTIVE
+ * Origin CA inventory, compare the EDGE fingerprint against the database.
+ * A mismatch or missing material enqueues the durable worker (whose repair
+ * flow re-issues through the full gate chain); transient read failures are
+ * ignored — a SSH blip must not spin up re-issuance.
+ */
+/**
+ * Fair-rotation cursor (per server, in-process): each sweep audits the next
+ * slice of active domains after the last audited id, so every domain is
+ * eventually checked instead of a fixed first page forever. Resets when the
+ * selection is exhausted (wrapped around) or on restart.
+ */
+const certificateAuditCursor = new Map<string, string>();
+
+async function auditServerCertificates(serverId: string, organizationId: string): Promise<number> {
+  const domains = await repos.domain.findOriginCaActiveDomainsForServer(serverId, {
+    afterId: certificateAuditCursor.get(serverId),
+    limit: 5,
+  });
+  if (domains.length === 0) {
+    certificateAuditCursor.delete(serverId); // exhausted — the next sweep wraps around
+    return 0;
+  }
+  certificateAuditCursor.set(serverId, domains[domains.length - 1]!.id);
+  let scheduled = 0;
+  for (const domainRow of domains) {
+    if (!domainRow.tlsCertificateFingerprint) continue;
+    const edge = await readServerDomainCert(domainRow.hostname, { serverId });
+    const healthy =
+      edge.verified && edge.fingerprint
+        ? edge.fingerprint === domainRow.tlsCertificateFingerprint
+        : edge.reason === "read_error";
+    if (healthy) continue;
+    const policy = await repos.domain.getTlsPolicy(domainRow.id);
+    const binding = await repos.discovery.getBindingForDomain(serverId, domainRow.hostname);
+    const wildcard = binding?.tlsDeclaredWildcard ?? null;
+    const { created } = await repos.discoveryTlsQueue.ensureOperation({
+      hostname: domainRow.hostname,
+      sourceHostname: (wildcard ?? domainRow.hostname).toLowerCase(),
+      source: wildcard ? "wildcard" : "exact",
+      provider: policy?.tlsProvider ?? "letsencrypt",
+      domainId: domainRow.id,
+      serverId,
+      organizationId,
+      serviceKey: binding?.serviceKey ?? domainRow.hostname,
+      policyGeneration: policy?.tlsPolicyGeneration ?? 0,
+    });
+    if (created) {
+      kickDiscoveryTlsQueue();
+      scheduled += 1;
+    }
+  }
+  return scheduled;
+}
+
 async function runServerSweep(
   serverId: string,
   organizationId: string,
@@ -147,6 +211,49 @@ async function runServerSweep(
       `[discovery-sweep] repair failed for ${serverId}: ${safeErrorMessage(error)}`,
     );
     summary.failed.push("repair");
+  }
+
+  // CERTIFICATE AUDIT: bounded periodic check that the edge still holds the
+  // certificate the database claims — INDEPENDENT of route reapplication (a
+  // server rebuild loses cert files while every binding stays unchanged, and
+  // a healthy DB expiry would otherwise keep the repair path forever
+  // unreached). Missing/mismatched material enqueues the durable worker,
+  // whose repair flow re-issues; transient read failures never audit-repair.
+  try {
+    summary.certAuditScheduled = await auditServerCertificates(serverId, organizationId);
+  } catch (error) {
+    reportCaughtError(error, "platform/engine/modules/discovery/discovery-sweep");
+    summary.failed.push("certificate-audit");
+  }
+
+  // CERTIFICATE CLEANUP: activated Origin CA certificates this instance
+  // exclusively issued whose id is no longer referenced by ANY domain —
+  // they were replaced (rotation, or a provider switch to Let's Encrypt,
+  // whose completion path knows nothing about Cloudflare revocation).
+  // Bounded per sweep; strictly best-effort: a revocation failure leaves the
+  // certificate to expire naturally and never fails the sweep.
+  try {
+    const stale = await repos.discoveryTlsIssuance.findStaleIssuedForServer(serverId, 5);
+    let revoked = 0;
+    for (const row of stale) {
+      if (!row.certificateId) continue;
+      // Revoke with the ISSUING credential (persisted on the inventory row) —
+      // the domain's current policy credential is cleared on a provider
+      // switch and may change across reconfigurations. Legacy rows without a
+      // reference fall back to the current policy credential.
+      const policy = await repos.domain.getTlsPolicy(row.domainId);
+      const credentialId = row.credentialId ?? policy?.tlsCfCredentialId ?? null;
+      const credential = credentialId ? await repos.credential.findById(organizationId, credentialId) : undefined;
+      const apiToken = credential?.provider === "cloudflare" ? readCredentialSecrets(credential).apiToken : undefined;
+      if (!apiToken) continue; // credential gone/changed: the certificate expires naturally
+      await revokeOriginCaCertificate(apiToken, row.certificateId);
+      await repos.discoveryTlsIssuance.markRevokedAfterReplacement(row.id);
+      revoked += 1;
+    }
+    if (revoked > 0) summary.revokedCertificates = revoked;
+  } catch (error) {
+    reportCaughtError(error, "platform/engine/modules/discovery/discovery-sweep");
+    summary.failed.push("certificate-cleanup");
   }
 
   return summary;
@@ -222,6 +329,9 @@ export async function startDiscoverySweep(): Promise<void> {
     cronExpression: "* * * * *", // every minute = the plan's 60-second sweep
     run: async (): Promise<JobSummary> => {
       const summary = await sweepDiscovery(); // cron poll: interval-gated
+      // The durable TLS queue drains on every tick too (restart recovery for
+      // waiting/abandoned work; the in-drain pacing keeps starts ≤1/sec).
+      void kickDiscoveryTlsQueue();
       return {
         servers: summary.servers,
         failed: summary.failed.length,
@@ -242,4 +352,7 @@ export async function startDiscoverySweep(): Promise<void> {
       );
     }),
   );
+  // Resume durable TLS work abandoned by a previous process (expired leases)
+  // and any waiting rows that never drained.
+  void kickDiscoveryTlsQueue();
 }

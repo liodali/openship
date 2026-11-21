@@ -311,7 +311,13 @@ export async function createNativePlatform(value: NativePlatformOptions): Promis
   const discovery: PlatformDiscoveryOperations = {
     configure: (ctx, id, input) => call("discovery.configure", ctx, id, input),
     status: (ctx, id) => call("discovery.status", ctx, id),
+    getService: (ctx, id, input) => call("discovery.getService", ctx, id, input),
     rescan: (ctx, id) => call("discovery.rescan", ctx, id),
+    ensureServiceTls: (ctx, id, input) => call("discovery.ensureServiceTls", ctx, id, input),
+    getServerTlsSettings: (ctx, id) => call("discovery.getServerTlsSettings", ctx, id),
+    configureServerTls: (ctx, id, input) => call("discovery.configureServerTls", ctx, id, input),
+    getServiceTls: (ctx, id, input) => call("discovery.getServiceTls", ctx, id, input),
+    setServiceTls: (ctx, id, input) => call("discovery.setServiceTls", ctx, id, input),
     suppress: (ctx, id, input) => call("discovery.suppress", ctx, id, input),
     unsuppress: (ctx, id, input) => call("discovery.unsuppress", ctx, id, input),
     forget: (ctx, id, input) => call("discovery.forget", ctx, id, input),

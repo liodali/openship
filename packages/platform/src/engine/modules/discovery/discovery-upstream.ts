@@ -74,6 +74,15 @@ export async function readLiveDiscoveryDeclaration(
       declaration.port !== binding.port || discoveryConfigHash(declaration) !== binding.configHash) {
     throw new Error("Discovery configuration changed during reconciliation; rescan before routing");
   }
+  // TLS declaration intent is desired state too: the routing hash deliberately
+  // excludes it, so compare the normalized fields explicitly. A container
+  // recreated with a new provider/wildcard label (same routing config) must
+  // never be applied — or have certificate work scheduled — against the stale
+  // persisted declaration; the rescan versions it first.
+  if ((declaration.tlsProvider ?? null) !== (binding.tlsDeclaredProvider ?? null) ||
+      (declaration.tlsWildcard ?? null) !== (binding.tlsDeclaredWildcard ?? null)) {
+    throw new Error("Discovery TLS declaration changed during reconciliation; rescan before routing");
+  }
   return declaration;
 }
 

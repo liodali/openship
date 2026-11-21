@@ -142,7 +142,9 @@ export const EDGE_UPSTREAM_DOWN_HTML = HTML_FRAGMENTS.join("");
  * unavailable" would report a deliberate block as an outage.
  *
  * NO `=` before the location name, which is load-bearing and was verified against
- * `openresty/openresty:1.27.1.1-alpine` rather than assumed:
+ * the shipped edge base (OpenResty 1.31.9.1 / nginx 1.31.9, built from source in
+ * apps/edge/Dockerfile; the sibling E2E's edgeBaseImage() tests whichever base the
+ * Dockerfile ships, so every base bump re-verifies it) rather than assumed:
  *   - `error_page 502 504 @loc;`   → the ORIGINAL code survives (502 stays 502, a real
  *     read-timeout stays 504) and the body is ours. One shared body covers both codes.
  *   - `error_page 502 504 = @loc;` → the named location's own `return` code replaces it,

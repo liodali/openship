@@ -98,7 +98,9 @@ export const SYSTEM_JOB_DEFS: SystemJobDef[] = [
     available: () => true,
     run: async () => {
       const r = await renewExpiringCerts();
-      return { renewed: r.renewed, failed: r.failed, total: r.total };
+      // `renewed` = CONFIRMED completions only; `queued` = accepted durable
+      // work (incl. deferred waits) that has not executed yet.
+      return { renewed: r.renewed, queued: r.queued, failed: r.failed, total: r.total };
     },
   },
   {

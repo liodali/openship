@@ -224,6 +224,17 @@ const MULTI_PART_TLDS = new Set([
 ]);
 
 /**
+ * True when `host` IS one of the known multi-part public suffixes itself
+ * (`co.uk`, `com.au`, …) — not a domain registered under one. Same pragmatic
+ * list as {@link isApexDomain} (no full PSL dependency). Used to refuse naming
+ * a public suffix as a certificate base: `*.co.uk` is never a registrable
+ * wildcard resource, while `*.example.co.uk` is fine.
+ */
+export function isMultiPartPublicSuffix(host: string): boolean {
+  return MULTI_PART_TLDS.has(normalizeServedHostname(host));
+}
+
+/**
  * True when `host` is an APEX / registrable domain (`example.com`,
  * `example.co.uk`) rather than a subdomain (`app.example.com`, `www.example.com`).
  *

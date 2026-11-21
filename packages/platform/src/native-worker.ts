@@ -172,7 +172,7 @@ try {
     if (operation === "close") return close();
     if (finalizing) throw new AppError("The platform is closed", 503, "PLATFORM_CLOSED");
     if (operation === "start") return start();
-    if (draining && !["scope", "system.info", "projects.get", "projects.list", "projects.listLocal", "projects.getHome", "deployments.get", "deployments.list", "deployments.logs", "deployments.buildStatus", "deployments.cancel", "deployments.respond", "deployments.containerInfo", "deployments.containerUsage", "deployments.pendingActions", "deployments.sslStatus", "stream.next", "stream.close", "servers.getInstallSession", "servers.respondToInstall",
+    if (draining && !["scope", "system.info", "projects.get", "projects.list", "projects.listLocal", "projects.getHome", "deployments.get", "deployments.list", "deployments.logs", "deployments.buildStatus", "deployments.cancel", "deployments.respond", "deployments.containerInfo", "deployments.containerUsage", "deployments.pendingActions", "deployments.sslStatus", "stream.next", "stream.close", "servers.getInstallSession", "servers.respondToInstall", "discovery.status", "discovery.getService",
       ...Object.entries(ProjectControlSchemas).filter(([, spec]) => spec.action === "read").map(([name]) => `projects.${name}`),
       ...Object.entries({ ...ServiceCollectionSchemas, ...ServiceResourceSchemas }).filter(([, spec]) => spec.action === "read").map(([name]) => `services.${name}`),
       ...Object.entries({ ...DomainCollectionSchemas, ...DomainResourceSchemas, ...DomainScopedSchemas }).filter(([, spec]) => spec.action === "read").map(([name]) => `domains.${name}`),
@@ -343,7 +343,7 @@ try {
         return runWithOperationSource((args[0] as ExecutionContext).source ?? "api", () => fn(...args));
       }
     }
-    for (const [prefix, operations] of Object.entries({ domains: kernel.domains, dns: kernel.dns, credentials: kernel.credentials, servers: kernel.servers, system: kernel.system, apps: kernel.apps, backupDestinations: kernel.backupDestinations, backups: kernel.backups, billing: kernel.billing, referralProgram: kernel.referralProgram, notices: kernel.notices, github: kernel.github, permissions: kernel.permissions, tokens: kernel.tokens, webhooks: kernel.webhooks, updates: kernel.updates, audit: kernel.audit, settings: kernel.settings, notifications: kernel.notifications, issues: kernel.issues, analytics: kernel.analytics, jobs: kernel.jobs, actions: kernel.actions })) {
+    for (const [prefix, operations] of Object.entries({ domains: kernel.domains, dns: kernel.dns, credentials: kernel.credentials, servers: kernel.servers, system: kernel.system, apps: kernel.apps, backupDestinations: kernel.backupDestinations, backups: kernel.backups, billing: kernel.billing, referralProgram: kernel.referralProgram, notices: kernel.notices, github: kernel.github, permissions: kernel.permissions, tokens: kernel.tokens, webhooks: kernel.webhooks, updates: kernel.updates, audit: kernel.audit, settings: kernel.settings, notifications: kernel.notifications, issues: kernel.issues, analytics: kernel.analytics, jobs: kernel.jobs, actions: kernel.actions, discovery: kernel.discovery })) {
       if (!operation.startsWith(`${prefix}.`)) continue;
       const key = operation.slice(prefix.length + 1);
       if (key !== "verifyStream" && Object.hasOwn(operations, key)) {

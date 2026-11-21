@@ -64,6 +64,10 @@ const SCHEME_BY_KEY: Record<string, { table: AnyTable; scheme: SecretScheme }> =
   "dns_credential.apiTokenEnc": { table: schema.dnsCredential, scheme: "enc1" },
   "credential.secretsEnc": { table: schema.credential, scheme: "enc1" },
   "git_source.secretsEnc": { table: schema.gitSource, scheme: "enc1" },
+  // Origin CA issuance intent: the enc1-sealed pending private key (see
+  // dump.ts ENCRYPTED_COLUMNS). Export decrypts and import re-encrypts under
+  // the destination key; an unreadable intent self-heals (recovery retires it).
+  "discovery_tls_issuance.keyEnc": { table: schema.discoveryTlsIssuance, scheme: "enc1" },
   "servers.sshPassword": { table: schema.servers, scheme: "enc1" },
   "servers.sshPrivateKey": { table: schema.servers, scheme: "enc1" },
   "servers.sshKeyPassphrase": { table: schema.servers, scheme: "enc1" },

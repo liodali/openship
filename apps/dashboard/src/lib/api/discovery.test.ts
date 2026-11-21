@@ -30,6 +30,43 @@ describe("discoveryApi", () => {
     expect(api.get).toHaveBeenCalledWith("discovery/servers/srv_1/discovery", undefined);
   });
 
+  it("reads ONE service by its key, encoding both separators in the path", () => {
+    discoveryApi.service("srv_1", "compose:proj/serv");
+    expect(api.get).toHaveBeenCalledWith(
+      "discovery/servers/srv_1/discovery/services/compose%3Aproj%2Fserv",
+      undefined,
+    );
+    discoveryApi.service("srv_1", "id:my-app", { signal: expect.any(AbortSignal) });
+    expect(api.get).toHaveBeenCalledWith(
+      "discovery/servers/srv_1/discovery/services/id%3Amy-app",
+      { signal: expect.any(AbortSignal) },
+    );
+  });
+
+  it("TLS configuration APIs ride the same URL rules", () => {
+    discoveryApi.tlsSettings("srv_1");
+    expect(api.get).toHaveBeenCalledWith("discovery/servers/srv_1/discovery/tls", undefined);
+    discoveryApi.configureTlsSettings("srv_1", { defaultProvider: "cloudflare-origin-ca" });
+    expect(api.put).toHaveBeenCalledWith(
+      "discovery/servers/srv_1/discovery/tls",
+      { defaultProvider: "cloudflare-origin-ca" },
+    );
+    discoveryApi.serviceTls("srv_1", "id:my-app");
+    expect(api.get).toHaveBeenCalledWith(
+      "discovery/servers/srv_1/discovery/services/id%3Amy-app/tls",
+      undefined,
+    );
+    discoveryApi.configureServiceTls("srv_1", "compose:proj/serv", {
+      provider: "cloudflare-origin-ca",
+      cloudflare: { credentialId: "cred_1", zoneId: "zone_1" },
+    });
+    expect(api.put).toHaveBeenCalledWith(
+      "discovery/servers/srv_1/discovery/services/compose%3Aproj%2Fserv/tls",
+      { provider: "cloudflare-origin-ca", cloudflare: { credentialId: "cred_1", zoneId: "zone_1" } },
+      { timeout: 30_000, dedupe: false },
+    );
+  });
+
   it("encodes BOTH separators of a Compose service key in the path", () => {
     discoveryApi.suppress("srv_1", "compose:proj/serv");
     expect(api.post).toHaveBeenCalledWith(

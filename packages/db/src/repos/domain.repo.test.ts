@@ -5,6 +5,7 @@ import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
 import * as schema from "../schema";
+import { eq } from "drizzle-orm";
 import { domain } from "../schema";
 import { createDomainRepo } from "./domain.repo";
 
@@ -71,5 +72,70 @@ describe("domain.repo findExpiringSsl (PGlite)", () => {
     await ctx.db.insert(domain).values({ id: "concrete", projectId: "p2", hostname: "app.example.com" });
     expect((await ctx.repo.getPrimaryByProject("p2"))?.hostname).toBe("app.example.com");
     expect((await ctx.repo.getPrimariesByProjects(["p2"])).get("p2")?.hostname).toBe("app.example.com");
+  });
+});
+
+describe("domain.repo commitServerDomainProvider + certificate audit cursor (PGlite)", () => {
+  it("commits only under matching fences; a moved generation or provider refuses", async () => {
+    const { client, db, repo } = await freshRepo();
+    try {
+      await db.insert(domain).values({
+        id: "sd1",
+        ownerType: "server",
+        serverId: "srv_1",
+        hostname: "switch.test",
+        status: "active",
+        verified: true,
+        tlsProvider: "letsencrypt",
+        tlsPolicyGeneration: 7,
+        tlsActiveProvider: "cloudflare-origin-ca",
+        tlsCertificateId: "ca_old",
+        tlsCertificateFingerprint: "old:fp",
+      });
+      // Fence mismatch: generation moved (a newer CF activation landed).
+      const fenced = await repo.commitServerDomainProvider({
+        domainId: "sd1", provider: "letsencrypt",
+        expectedServerId: "srv_1", expectedTlsProvider: "letsencrypt", expectedPolicyGeneration: 6,
+      });
+      expect(fenced).toBe(false);
+      let row = await db.query.domain.findFirst({ where: eq(domain.id, "sd1") });
+      expect(row?.tlsCertificateId).toBe("ca_old"); // untouched
+      // Fence mismatch: provider flipped back to Cloudflare.
+      expect(await repo.commitServerDomainProvider({
+        domainId: "sd1", provider: "letsencrypt",
+        expectedServerId: "srv_1", expectedTlsProvider: "cloudflare-origin-ca", expectedPolicyGeneration: 7,
+      })).toBe(false);
+      // Matching fences: the replaced certificate is RELEASED for cleanup.
+      const landed = await repo.commitServerDomainProvider({
+        domainId: "sd1", provider: "letsencrypt",
+        expectedServerId: "srv_1", expectedTlsProvider: "letsencrypt", expectedPolicyGeneration: 7,
+      });
+      expect(landed).toBe(true);
+      row = await db.query.domain.findFirst({ where: eq(domain.id, "sd1") });
+      expect(row?.tlsActiveProvider).toBe("letsencrypt");
+      expect(row?.tlsCertificateId).toBeNull();
+      expect(row?.tlsCertificateFingerprint).toBeNull();
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("the audit selection rotates fairly: id-ordered cursor, exhausted selection wraps", async () => {
+    const { client, db, repo } = await freshRepo();
+    try {
+      await db.insert(domain).values([
+        { id: "a1", ownerType: "server", serverId: "srv_a", hostname: "a1.test", status: "active", verified: true, tlsActiveProvider: "cloudflare-origin-ca", tlsCertificateId: "c1", tlsCertificateFingerprint: "f1" },
+        { id: "a2", ownerType: "server", serverId: "srv_a", hostname: "a2.test", status: "active", verified: true, tlsActiveProvider: "cloudflare-origin-ca", tlsCertificateId: "c2", tlsCertificateFingerprint: "f2" },
+        { id: "a3", ownerType: "server", serverId: "srv_a", hostname: "a3.test", status: "active", verified: true, tlsActiveProvider: "letsencrypt" }, // not origin-ca
+      ]);
+      const page1 = await repo.findOriginCaActiveDomainsForServer("srv_a", { limit: 2 });
+      expect(page1.map((r) => r.id)).toEqual(["a1", "a2"]);
+      const page2 = await repo.findOriginCaActiveDomainsForServer("srv_a", { afterId: page1[page1.length - 1]!.id, limit: 2 });
+      expect(page2).toEqual([]); // exhausted — the sweep wraps its cursor
+      const wrapped = await repo.findOriginCaActiveDomainsForServer("srv_a", { limit: 2 });
+      expect(wrapped.map((r) => r.id)).toEqual(["a1", "a2"]);
+    } finally {
+      await client.close();
+    }
   });
 });

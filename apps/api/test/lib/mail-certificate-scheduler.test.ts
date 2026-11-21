@@ -20,6 +20,10 @@ const h = vi.hoisted(() => ({
   project: vi.fn(),
   access: vi.fn(),
   defer: vi.fn(),
+  getTlsPolicy: vi.fn(),
+  getBindingForDomain: vi.fn(),
+  ensureOperation: vi.fn(),
+  kick: vi.fn(),
 }));
 vi.mock("@repo/db", () => ({
   repos: {
@@ -28,12 +32,17 @@ vi.mock("@repo/db", () => ({
       findPendingServerIssuance: h.serverIssuance,
       findByHostname: async () => ({ id: "dom-mail" }),
       recordSslDeferred: h.defer,
+      getTlsPolicy: h.getTlsPolicy,
     },
+    discovery: { getBindingForDomain: h.getBindingForDomain },
+    discoveryTlsQueue: { ensureOperation: h.ensureOperation },
     mailServer: { list: h.list },
     project: { findById: h.project },
     server: { get: vi.fn(async () => null) },
-    discovery: { getBindingForDomain: vi.fn(async () => null) },
   },
+}));
+vi.mock("@repo/platform/engine/modules/discovery/discovery-tls-queue", () => ({
+  kickDiscoveryTlsQueue: h.kick,
 }));
 vi.mock("@repo/platform/engine/modules/billing/management.service", () => ({
   assertManagementAccess: h.access,
@@ -78,6 +87,9 @@ beforeEach(() => {
   h.project.mockResolvedValue({ organizationId: "org-1", name: "Project" });
   h.access.mockResolvedValue(undefined);
   h.defer.mockResolvedValue(undefined);
+  h.getTlsPolicy.mockResolvedValue({ tlsProvider: "letsencrypt", tlsPolicyGeneration: 1 });
+  h.getBindingForDomain.mockResolvedValue({ serviceKey: "id:app", observationStatus: "observed", containerRunning: true, tlsDeclaredWildcard: null });
+  h.ensureOperation.mockResolvedValue({ operation: { id: "dtop_x" }, created: true });
 });
 
 describe("shared mail certificate scheduler", () => {
@@ -110,12 +122,15 @@ describe("shared mail certificate scheduler", () => {
       },
     ]);
     const result = await renewExpiringCerts();
-    const manageHostnames = h.manage.mock.calls.map((c) => c[0]);
+    // Server retries go through the DURABLE QUEUE, not direct TLS execution.
+    const queuedHostnames = h.ensureOperation.mock.calls.map((c) => c[0].hostname);
     // Appending retries after a full 50-item expiring list and truncating would
     // drop them entirely; round-robin interleaving puts them in the batch.
-    expect(manageHostnames).toContain("svc.example.com");
-    expect(manageHostnames.indexOf("svc.example.com")).toBeLessThan(50);
+    expect(queuedHostnames).toContain("svc.example.com");
     expect(result.total).toBe(51);
+    expect(h.kick).toHaveBeenCalled();
+    // The retry rotated its scheduling entry — the durable operation owns it now.
+    expect(h.defer).toHaveBeenCalledWith("dom_srv_retry", "queued for paced TLS issuance");
   });
 
   it("deferred entries rotate back — 50 stopped domains cannot starve the 51st running one", async () => {
@@ -149,24 +164,27 @@ describe("shared mail certificate scheduler", () => {
     };
     h.list.mockResolvedValue([]);
     h.domains.mockResolvedValue([...stopped, running]);
-    // Simulate the real gate: stopped backends defer (DiscoveryBackendUnavailableError),
-    // the running one renews.
-    h.manage.mockImplementation(async (hostname: string) => {
-      if (String(hostname).startsWith("stopped")) {
-        throw new DiscoveryBackendUnavailableError("backend stopped");
-      }
-      return { verified: true };
-    });
+    // Server domains enqueue durably: stopped backends carry an initialReason
+    // (the queue defers them); every entry ROTATES via recordSslDeferred.
+    h.getBindingForDomain.mockImplementation(async (_serverId: string, hostname: string) => ({
+      serviceKey: "id:app",
+      observationStatus: "observed",
+      containerRunning: !String(hostname).startsWith("stopped"),
+      tlsDeclaredWildcard: null,
+    }));
 
     // Sweep 1: the batch is exactly the 50 stopped domains; the running domain
-    // is NOT attempted. Each defer ADVANCES the entry (recordSslDeferred).
+    // is NOT enqueued. Each rotation advances the entry (recordSslDeferred).
     await renewExpiringCerts();
-    let attempted = h.manage.mock.calls.map((c) => c[0]);
-    expect(attempted).toContain("stopped0.example.com");
-    expect(attempted).not.toContain("running.example.com");
+    const enqueued = h.ensureOperation.mock.calls.map((c) => c[0].hostname);
+    expect(enqueued).toContain("stopped0.example.com");
+    expect(enqueued).not.toContain("running.example.com");
+    expect(enqueued.filter((host: string) => host.startsWith("stopped"))).toHaveLength(50);
+    expect(h.ensureOperation.mock.calls.every((c) => typeof c[0].initialReason === "string")).toBe(true);
     expect(h.defer).toHaveBeenCalledTimes(50);
+    expect(h.manage).not.toHaveBeenCalled();
 
-    // Simulate the repo effect of those defers: lastCheckedAt = now, which
+    // Simulate the repo effect of those rotations: lastCheckedAt = now, which
     // moves the stopped entries BEHIND the running one in the sort order.
     const deferredIds = new Set(h.defer.mock.calls.map((c) => c[0]));
     h.domains.mockResolvedValue(
@@ -177,14 +195,13 @@ describe("shared mail certificate scheduler", () => {
       ),
     );
 
-    // Sweep 2: the running domain gets service FIRST — the deferred entries
-    // rotated behind it (their advanced lastCheckedAt sorts them last), and the
-    // remaining slot count no longer hides it.
-    h.manage.mockClear();
+    // Sweep 2: the running domain gets service FIRST — the rotated entries
+    // moved behind it, and the remaining slot count no longer hides it.
+    h.ensureOperation.mockClear();
+    h.defer.mockClear();
     await renewExpiringCerts();
-    attempted = h.manage.mock.calls.map((c) => c[0]);
-    expect(attempted).toContain("running.example.com");
-    expect(attempted[0]).toBe("running.example.com");
+    const enqueued2 = h.ensureOperation.mock.calls.map((c) => c[0].hostname);
+    expect(enqueued2[0]).toBe("running.example.com");
   });
 
   it("deduplicates a server domain that appears in both queues", async () => {
@@ -204,7 +221,10 @@ describe("shared mail certificate scheduler", () => {
     h.serverIssuance.mockResolvedValue([row]);
     const result = await renewExpiringCerts();
     expect(result.total).toBe(1);
-    expect(h.manage.mock.calls.filter((c) => c[0] === "both.example.com")).toHaveLength(1);
+    // The durable queue's dedup identity sees ONE enqueue for the hostname —
+    // the fair merge guarantees the batch holds it exactly once.
+    expect(h.ensureOperation.mock.calls.filter((c) => c[0].hostname === "both.example.com")).toHaveLength(1);
+    expect(h.manage).not.toHaveBeenCalled();
   });
 
   it("repairs legacy mail installs without a domain row", async () => {
@@ -254,7 +274,7 @@ describe("shared mail certificate scheduler", () => {
         throw new AppError("Manage expired", 402, "MANAGEMENT_PLAN_REQUIRED");
     });
     expect(await renewExpiringCerts()).toEqual({
-      renewed: 1, failed: 0, total: 1,
+      renewed: 1, queued: 0, failed: 0, total: 1,
       details: [{ domain: "customer.example.test", status: "renewed" }],
     });
     expect(h.manage).toHaveBeenCalledExactlyOnceWith("customer.example.test", {

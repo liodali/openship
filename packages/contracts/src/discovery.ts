@@ -1,6 +1,196 @@
 import { Type, type Static } from "@sinclair/typebox";
+import {
+  DISCOVERY_TLS_ORIGIN_CA_DEFAULT_VALIDITY_DAYS,
+  DISCOVERY_TLS_ORIGIN_CA_VALIDITY_DAYS,
+  DISCOVERY_TLS_PROVIDERS,
+  DISCOVERY_TLS_DEFAULT_PROVIDER,
+} from "@repo/core";
 
 const nullableString = Type.Union([Type.String(), Type.Null()]);
+
+// ── Managed TLS providers (docs/cloudflare-origin-ca-discovery-plan.md) ─────
+
+/** The ONLY two managed provider IDs — mirrored from @repo/core's vocabulary. */
+export const DiscoveryTlsProviderSchema = Type.Union(
+  DISCOVERY_TLS_PROVIDERS.map((p) => Type.Literal(p)),
+);
+export type DiscoveryTlsProvider = Static<typeof DiscoveryTlsProviderSchema>;
+
+/**
+ * Server discovery TLS settings: the default provider applied to NEWLY
+ * enrolled domains. Changing it never switches existing certificates (each
+ * domain persists its own resolved provider); no Cloudflare credential or
+ * zone is stored at server scope.
+ */
+export const DiscoveryTlsSettingsSchema = Type.Object({
+  defaultProvider: DiscoveryTlsProviderSchema,
+});
+export type DiscoveryTlsSettings = Static<typeof DiscoveryTlsSettingsSchema>;
+
+/** PUT body for the server default (accepted values: the two provider IDs only). */
+export const DiscoveryTlsSettingsInputSchema = Type.Object(
+  { defaultProvider: DiscoveryTlsProviderSchema },
+  { additionalProperties: false },
+);
+export type DiscoveryTlsSettingsInput = Static<typeof DiscoveryTlsSettingsInputSchema>;
+
+/** Per-domain Cloudflare Origin CA configuration — required as a block. */
+export const DiscoveryDomainTlsCloudflareSchema = Type.Object(
+  {
+    /** An existing encrypted organization credential (never a token). */
+    credentialId: Type.String({ minLength: 1 }),
+    /** The exact authorized Cloudflare zone id. */
+    zoneId: Type.String({ minLength: 1 }),
+    /** Zone display name; recorded only once verified through Cloudflare. */
+    zoneName: Type.Optional(Type.String({ minLength: 1 })),
+    validityDays: Type.Optional(
+      Type.Union(
+        DISCOVERY_TLS_ORIGIN_CA_VALIDITY_DAYS.map((days) => Type.Literal(days)),
+        {
+          description: `Origin CA validity in days — Cloudflare's discrete supported durations only (${DISCOVERY_TLS_ORIGIN_CA_VALIDITY_DAYS.join(", ")}); default ${DISCOVERY_TLS_ORIGIN_CA_DEFAULT_VALIDITY_DAYS}`,
+        },
+      ),
+    ),
+  },
+  { additionalProperties: false },
+);
+
+/**
+ * STRICT discriminated per-domain policy: Let's Encrypt rejects Cloudflare-only
+ * fields; Cloudflare requires its credential and zone. Invalid provider IDs are
+ * validation errors, never a fallback.
+ */
+export const DiscoveryDomainTlsPolicyInputSchema = Type.Union([
+  Type.Object({ provider: Type.Literal("letsencrypt") }, { additionalProperties: false }),
+  Type.Object(
+    { provider: Type.Literal("cloudflare-origin-ca"), cloudflare: DiscoveryDomainTlsCloudflareSchema },
+    { additionalProperties: false },
+  ),
+]);
+export type DiscoveryDomainTlsPolicyInput = Static<typeof DiscoveryDomainTlsPolicyInputSchema>;
+
+/** How a domain's persisted provider was chosen. */
+export const DiscoveryTlsProviderSourceSchema = Type.Union([
+  Type.Literal("default"),
+  Type.Literal("explicit"),
+]);
+export type DiscoveryTlsProviderSource = Static<typeof DiscoveryTlsProviderSourceSchema>;
+
+/** The domain's Cloudflare Origin CA configuration as STORED (non-secret). */
+export const DiscoveryDomainTlsCloudflareViewSchema = Type.Object({
+  credentialId: Type.String(),
+  zoneId: Type.String(),
+  /** Recorded only after verification through Cloudflare (never a submitted name). */
+  zoneName: nullableString,
+  validityDays: Type.Union([Type.Number(), Type.Null()]),
+});
+export type DiscoveryDomainTlsCloudflareView = Static<typeof DiscoveryDomainTlsCloudflareViewSchema>;
+
+/**
+ * The per-domain managed TLS policy view (GET .../services/:serviceKey/tls).
+ * `provider` is DESIRED policy; `activeProvider` describes installed managed
+ * TLS and may be null before installation. `state` is derived policy progress:
+ *  - configuration_required: Cloudflare desired without this domain's
+ *    credential/zone — no issuance, no implicit fallback.
+ *  - pending: policy set, managed installation not confirmed.
+ *  - active: the desired provider's certificate is installed and serving.
+ *  - error: the last certificate attempt failed.
+ * These states do NOT redefine the established domain sslStatus values; the
+ * ssl_* fields keep describing certificate material.
+ */
+export const DiscoveryDomainTlsPolicySchema = Type.Object({
+  hostname: Type.String(),
+  provider: DiscoveryTlsProviderSchema,
+  activeProvider: Type.Union([DiscoveryTlsProviderSchema, Type.Null()]),
+  selectionSource: DiscoveryTlsProviderSourceSchema,
+  state: Type.Union([
+    Type.Literal("configuration_required"),
+    Type.Literal("pending"),
+    Type.Literal("active"),
+    Type.Literal("error"),
+  ]),
+  cloudflare: Type.Union([DiscoveryDomainTlsCloudflareViewSchema, Type.Null()]),
+  error: nullableString,
+});
+export type DiscoveryDomainTlsPolicy = Static<typeof DiscoveryDomainTlsPolicySchema>;
+
+/** The initial server default, as a schema (for tests and generated clients). */
+export const DISCOVERY_TLS_DEFAULT_PROVIDER_SCHEMA = Type.Literal(DISCOVERY_TLS_DEFAULT_PROVIDER);
+
+// ── Durable TLS operations: ensure API + status (plan "Asynchronous queue") ──
+
+/** Lifecycle of one durable TLS operation (mirrors @repo/core's vocabulary). */
+export const DiscoveryTlsOperationStateSchema = Type.Union([
+  Type.Literal("waiting"),
+  Type.Literal("running"),
+  Type.Literal("deferred"),
+  Type.Literal("error"),
+  Type.Literal("complete"),
+]);
+export type DiscoveryTlsOperationState = Static<typeof DiscoveryTlsOperationStateSchema>;
+
+/** What a TLS operation issues for. */
+export const DiscoveryTlsOperationSourceSchema = Type.Union([
+  Type.Literal("exact"),
+  Type.Literal("wildcard"),
+]);
+export type DiscoveryTlsOperationSource = Static<typeof DiscoveryTlsOperationSourceSchema>;
+
+/** Idempotent ensure request: identity comes from the encoded service key — the body carries NOTHING. */
+export const DiscoveryTlsEnsureInputSchema = Type.Object(
+  {},
+  { additionalProperties: false, description: "Empty body: {} — the service key in the path is the identity." },
+);
+export type DiscoveryTlsEnsureInput = Static<typeof DiscoveryTlsEnsureInputSchema>;
+
+/**
+ * POST .../services/:serviceKey/tls/ensure — the four durable outcomes.
+ * `skipped` (HTTP 200): valid installed material for the desired provider/
+ * source already exists; due-renewal scheduling stays the scheduler's job.
+ * `queued` (202): newly accepted work. `already_queued` (202): the SAME
+ * durable operation (stable id) — a client retry never creates a second job.
+ * `deferred` (202): durable wait (stopped/unobservable backend, provider
+ * dispatch pending) — the operation exists and reports its reason.
+ */
+export const DiscoveryTlsEnsureResponseSchema = Type.Union([
+  Type.Object({
+    outcome: Type.Literal("skipped"),
+    reason: Type.Literal("already_valid"),
+    hostname: Type.String(),
+    source: DiscoveryTlsOperationSourceSchema,
+  }),
+  Type.Object({
+    outcome: Type.Literal("queued"),
+    hostname: Type.String(),
+    /** Stable repository operation id — the retry/progress handle. */
+    operationId: Type.String(),
+  }),
+  Type.Object({
+    outcome: Type.Literal("already_queued"),
+    hostname: Type.String(),
+    operationId: Type.String(),
+  }),
+  Type.Object({
+    outcome: Type.Literal("deferred"),
+    hostname: Type.String(),
+    operationId: Type.String(),
+    /** Sanitized, actionable reason — never a provider response body. */
+    reason: Type.String(),
+  }),
+]);
+export type DiscoveryTlsEnsureResponse = Static<typeof DiscoveryTlsEnsureResponseSchema>;
+
+/** The ACTIVE TLS operation behind a discovered service, for status reads. */
+export const DiscoveryTlsOperationStatusSchema = Type.Object({
+  operationId: Type.String(),
+  state: DiscoveryTlsOperationStateSchema,
+  source: DiscoveryTlsOperationSourceSchema,
+  provider: DiscoveryTlsProviderSchema,
+  reason: nullableString,
+  attempts: Type.Number(),
+  updatedAt: nullableString,
+});
+export type DiscoveryTlsOperationStatus = Static<typeof DiscoveryTlsOperationStatusSchema>;
 
 /** Enable/disable server discovery. */
 export const DiscoveryConfigureInputSchema = Type.Object(
@@ -59,6 +249,16 @@ export const DiscoveryServiceSchema = Type.Object({
   desiredGeneration: Type.Number(),
   appliedGeneration: Type.Number(),
   updatedAt: nullableString,
+  /**
+   * Container-declared managed TLS intent (docs/cloudflare-origin-ca-discovery-plan.md).
+   * Optional for backward compatibility with existing list consumers; null =
+   * no declaration (the domain's persisted policy / server default applies).
+   */
+  tlsDeclaredProvider: Type.Optional(nullableString),
+  /** Normalized wildcard certificate source pattern requested by the container; null = exact-host intent. */
+  tlsDeclaredWildcard: Type.Optional(nullableString),
+  /** `tls-policy-conflict` detail when the declaration disagrees with the explicit per-domain policy; null = none. Never blocks routing. */
+  tlsPolicyConflict: Type.Optional(nullableString),
   /** The server-scoped domain backing the TLS lifecycle (missing until first apply). */
   tls: Type.Union([
     Type.Object({
@@ -68,9 +268,18 @@ export const DiscoveryServiceSchema = Type.Object({
       sslStatus: Type.String(),
       sslExpiresAt: nullableString,
       sslIssuer: nullableString,
+      /** Desired managed-TLS provider and the provider whose certificate is
+       *  actually installed (null before first installation). Additive and
+       *  optional for existing consumers. */
+      tlsProvider: Type.Optional(Type.Union([DiscoveryTlsProviderSchema, Type.Null()])),
+      tlsActiveProvider: Type.Optional(Type.Union([DiscoveryTlsProviderSchema, Type.Null()])),
     }),
     Type.Null(),
   ]),
+  /** The ACTIVE durable TLS operation for this service (paced issuance queue),
+   *  or null when no issuance/transition work is pending. Additive: consumers
+   *  that ignore it keep working unchanged. */
+  tlsOperation: Type.Union([DiscoveryTlsOperationStatusSchema, Type.Null()]),
 });
 export type DiscoveryService = Static<typeof DiscoveryServiceSchema>;
 

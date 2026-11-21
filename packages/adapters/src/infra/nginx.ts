@@ -3048,6 +3048,165 @@ ${serveLocation}
     return this.withConfigLock(() => this.activateRouteCert(domain));
   }
 
+  /**
+   * Complete the renewal-ownership takeover of an already-staged manual
+   * install: remove the certbot renewal record that writeCert removes AFTER
+   * staging (see writeCert — "A manual certificate also takes over Certbot's
+   * renewal ownership"). Crash recovery between those two steps must finish
+   * this removal before trusting the staged pair, or certbot's next run
+   * replaces the manual certificate.
+   */
+  async installSharedWildcardCert(
+    wildcard: string,
+    cert: ManualCert,
+    opts?: { children?: string[]; replaceCertbot?: boolean },
+  ): Promise<SslResult> {
+    assertValidDomain(wildcard);
+    if (!wildcard.startsWith("*.")) throw new Error(`Shared certificates install under a wildcard pattern, got ${wildcard}`);
+    return this.withConfigLock(async () => {
+      const candidate = validateCertFor(wildcard, cert, "shared wildcard certificate");
+      if (!candidate.cert) throw new Error(`Invalid certificate: ${candidate.reason}`);
+      const dir = join(this.certDir, wildcard);
+      const snapshots = await Promise.all([
+        { path: join(dir, "fullchain.pem"), mode: undefined },
+        { path: join(dir, "privkey.pem"), mode: 0o600 },
+      ].map(async (file) => ({ ...file, snapshot: await this._captureFile(file.path, true) })));
+      try {
+        await this.stageCertDir(dir, cert);
+      } catch (error) {
+        const failures: string[] = [];
+        for (const { path, snapshot, mode } of snapshots) {
+          await this._restoreFile(path, snapshot, mode).catch((restoreError) => {
+            observeCaughtError(restoreError, "adapters/infra/nginx");
+            failures.push(`${path}: ${safeErrorMessage(restoreError)}`);
+          });
+        }
+        if (failures.length) throw new Error(`${safeErrorMessage(error)}; rollback failed: ${failures.join("; ")}`, { cause: error });
+        throw error;
+      }
+      // Staging alone changes nothing on the wire: each child only USES the
+      // pattern through its OWN route (its vhost names whichever directory its
+      // certificate resolution picked). Activate every affected child route —
+      // re-register with TLS + reload — BEFORE the caller commits inventory:
+      // "active" in the database must mean SERVING on the edge, and the
+      // replaced exact material must not keep shadowing the pattern.
+      //
+      // ROLLBACK COVERS THE WHOLE MUTATION: the replaced SHARED PAIR is part
+      // of the snapshot set, and every route touched by this call (children
+      // activated before the failure included) is restored — reporting failure
+      // must leave the edge exactly as it was found: previous shared pair,
+      // previous routes. registerRoute additionally refuses a broken config
+      // test, so a half-written vhost never reaches a reload.
+      // ONE rollback boundary around the whole post-staging phase: the
+      // per-child PREPARATION is mutation-adjacent too — route lookups,
+      // existence checks, and the initial snapshot reads can all fail (an
+      // unknown child slug, an I/O error mid-capture) — and any such failure
+      // must not leave the replacement pair installed with no handler
+      // running. Everything this call touches after staging — shared pair,
+      // every child reached so far, and the in-flight child's partial
+      // snapshots — is restored on ANY failure.
+      const routeRollbacks: Array<Array<{ path: string; snapshot: FileSnapshot; mode?: number }>> = [];
+      let rollback: Array<{ path: string; snapshot: FileSnapshot; mode?: number }> = [];
+      let currentChild: string | undefined;
+      try {
+        for (const child of opts?.children ?? []) {
+          rollback = []; // fresh per child — the handler restores only what this call captured
+          currentChild = child;
+          const slug = await this.resolveSlug(child);
+          const configPath = join(this.sitesDir, `${slug}.conf`);
+          const statePath = this.routeStatePath(slug);
+          // Exact-first resolution: a child still holding its own exact
+          // certificate pair would keep serving it FOREVER even after the
+          // vhost re-registers — the pattern directory can never win the
+          // lookup. A plain exact pair on a wildcard-covered host is
+          // superseded discovery material — retire it (snapshotted) so
+          // inheritance actually takes effect. A CERTBOT-MANAGED pair
+          // additionally owns its own renewal record: replacing it transfers
+          // renewal ownership to the shared material (remove the record, or
+          // certbot's next run fights the pattern). That is destructive to
+          // independently-managed state, so it happens ONLY when the caller
+          // explicitly authorizes the provider switch (opts.replaceCertbot) —
+          // otherwise the child is skipped.
+          const exactDir = join(this.certDir, child);
+          const exactFiles = [join(exactDir, "fullchain.pem"), join(exactDir, "privkey.pem")];
+          const certbotOwned = await this._exists(this.renewalConfPath(child));
+          const replaceCertbot = certbotOwned && opts?.replaceCertbot === true;
+          if (certbotOwned && !replaceCertbot) continue; // unauthorized: leave the child exactly as it is
+          rollback = [
+            { path: configPath, snapshot: await this._captureFile(configPath), mode: 0o600 },
+            { path: statePath, snapshot: await this._captureFile(statePath), mode: undefined },
+          ];
+          // DESTRUCTIVE STEPS INSIDE THE BOUNDARY: exact-certificate and
+          // renewal-record removal are snapshotted-then-deleted HERE — a
+          // failure mid-preparation (renewal removal failing after the pair
+          // was deleted, an I/O error on any rm) reaches the same
+          // restore-everything path as an activation failure, never leaking
+          // half-deleted state past the rollback.
+          if (await this.certFileExists(exactFiles[0])) {
+            for (const file of [{ path: exactFiles[0], mode: undefined }, { path: exactFiles[1], mode: 0o600 }]) {
+              rollback.push({ path: file.path, mode: file.mode, snapshot: await this._captureFile(file.path, true) });
+            }
+            await this._rm(exactDir);
+          }
+          if (replaceCertbot) {
+            const renewalConf = this.renewalConfPath(child);
+            rollback.push({ path: renewalConf, mode: 0o644, snapshot: await this._captureFile(renewalConf) });
+            await this._rm(renewalConf);
+          }
+          await this.activateRouteCert(child);
+          routeRollbacks.push(rollback);
+          rollback = []; // fully succeeded — its entries now live in routeRollbacks
+        }
+      } catch (error) {
+        const failures: string[] = [];
+        // Restore EVERYTHING this call touched — earlier (succeeded) children,
+        // the in-flight child's partial snapshots, and the shared pair, routes
+        // in reverse activation order.
+        const restoreAll = [
+          ...routeRollbacks.slice().reverse().flat(),
+          ...rollback,
+          ...snapshots, // the replaced shared pair: previous material goes back
+        ];
+        for (const { path, snapshot, mode } of restoreAll) {
+          await this._restoreFile(path, snapshot, mode).catch((restoreError) => {
+            observeCaughtError(restoreError, "adapters/infra/nginx");
+            failures.push(`${path}: ${safeErrorMessage(restoreError)}`);
+          });
+        }
+        // Put the edge back on the restored config before reporting failure —
+        // the caller must never see "installed" while a half-activated route
+        // or a half-replaced pattern is on disk.
+        await this.reloadConfig({ allowStopped: true }).catch((reloadFailure) => {
+          observeCaughtError(reloadFailure, "adapters/infra/nginx");
+          failures.push(`reload: ${safeErrorMessage(reloadFailure)}`);
+        });
+        if (failures.length) throw new Error(`${safeErrorMessage(error)}; rollback failed: ${failures.join("; ")}`, { cause: error });
+        throw new Error(
+          currentChild
+            ? `The shared certificate for ${wildcard} staged, but ${currentChild}'s route could not be switched to it: ${safeErrorMessage(error)}`
+            : `The shared certificate for ${wildcard} staged, but the affected routes could not be switched to it: ${safeErrorMessage(error)}`,
+          { cause: error },
+        );
+      }
+      // No vhost of its own to activate and no ACME renewal record to remove:
+      // children inherit through the parent-wildcard resolution, and each
+      // child's own route activation serves from this directory.
+      return {
+        domain: wildcard,
+        expiresAt: candidate.cert.expiresAt,
+        issuer: candidate.cert.renewable ? candidate.cert.issuer : "manual",
+        fingerprint: candidate.cert.fingerprint,
+        renewable: candidate.cert.renewable,
+        verified: true,
+      };
+    });
+  }
+
+  async takeoverRenewalOwnership(domain: string): Promise<void> {
+    assertValidDomain(domain);
+    await this.withConfigLock(() => this._rm(this.renewalConfPath(domain)));
+  }
+
   private async activateRouteCert(domain: string): Promise<void> {
     assertValidDomain(domain);
     // Rewrite the config with SSL now that certs exist
@@ -3417,6 +3576,8 @@ ${serveLocation}
       domain,
       expiresAt,
       issuer: candidate.cert.renewable ? candidate.cert.issuer : "manual",
+      fingerprint: candidate.cert.fingerprint,
+      renewable: candidate.cert.renewable,
       verified: true,
       reason: "issued",
     };
@@ -3651,6 +3812,12 @@ ${serveLocation}
             domain,
             expiresAt: candidate.cert.expiresAt,
             issuer: candidate.cert.issuer || "certbot",
+            // Health consumers compare fingerprints (and the ACME-renewable
+            // proof) to decide reuse vs repair — an inherited read without
+            // them reads as UNPROVABLE material and burns a fresh issuance
+            // for a certificate that is already serving.
+            fingerprint: candidate.cert.fingerprint,
+            renewable: candidate.cert.renewable,
             verified: true,
           },
         };
@@ -3715,6 +3882,8 @@ ${serveLocation}
       domain,
       expiresAt: candidate.cert.expiresAt,
       issuer: candidate.cert.issuer || "certbot",
+      fingerprint: candidate.cert.fingerprint,
+      renewable: candidate.cert.renewable,
       verified: true,
     };
   }

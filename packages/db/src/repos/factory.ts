@@ -84,7 +84,16 @@ export {
 } from "./deployment.repo";
 export { createDomainRepo, type Domain, type NewDomain } from "./domain.repo";
 export { createDomainDnsChallengeRepo, type DomainDnsChallenge } from "./domain-dns-challenge.repo";
-export { createDiscoveryRepo, type DiscoverySettings, type DiscoveryBinding, type DiscoveryObservation } from "./discovery.repo";
+export {
+  createDiscoveryRepo,
+  type DiscoverySettings,
+  type DiscoveryBinding,
+  type DiscoveryObservation,
+  type DiscoveryTlsDeclarationIntent,
+  type DiscoveryTlsDeclarationOutcome,
+} from "./discovery.repo";
+export { createDiscoveryTlsQueueRepo, type DiscoveryTlsOperation, type DiscoveryTlsQueueRepo } from "./discovery-tls-queue.repo";
+export { createDiscoveryTlsIssuanceRepo, type DiscoveryTlsIssuance, type DiscoveryTlsIssuanceRepo } from "./discovery-tls-issuance.repo";
 export {
   createDnsCredentialRepo,
   type DnsCredential,
@@ -338,6 +347,8 @@ export { createDeploymentCheckRepo, type DeploymentCheck } from "./deployment-ch
 import { createDomainRepo } from "./domain.repo";
 import { createDomainDnsChallengeRepo } from "./domain-dns-challenge.repo";
 import { createDiscoveryRepo } from "./discovery.repo";
+import { createDiscoveryTlsQueueRepo } from "./discovery-tls-queue.repo";
+import { createDiscoveryTlsIssuanceRepo } from "./discovery-tls-issuance.repo";
 import { createDnsCredentialRepo } from "./dns-credential.repo";
 import { createCredentialRepo } from "./credential.repo";
 import { createRouteProtectionRepo } from "./route-protection.repo";
@@ -430,6 +441,8 @@ export function createRepositories(db: Database, encryption: ConfigurationEncryp
     domain: createDomainRepo(db),
     domainDnsChallenge: createDomainDnsChallengeRepo(db),
     discovery: createDiscoveryRepo(db),
+    discoveryTlsQueue: createDiscoveryTlsQueueRepo(db),
+    discoveryTlsIssuance: createDiscoveryTlsIssuanceRepo(db),
     dnsCredential: createDnsCredentialRepo(db),
     credential: createCredentialRepo(db),
     ingress: createIngressRepo(db),

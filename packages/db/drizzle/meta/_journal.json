@@ -1625,6 +1625,48 @@
       "when": 1794459600000,
       "tag": "0231_server_discovery",
       "breakpoints": true
+    },
+    {
+      "idx": 232,
+      "version": "7",
+      "when": 1794546000000,
+      "tag": "0232_discovery_tls_providers",
+      "breakpoints": true
+    },
+    {
+      "idx": 233,
+      "version": "7",
+      "when": 1794632400000,
+      "tag": "0233_discovery_tls_declarations",
+      "breakpoints": true
+    },
+    {
+      "idx": 234,
+      "version": "7",
+      "when": 1794718800000,
+      "tag": "0234_discovery_tls_policy_origin",
+      "breakpoints": true
+    },
+    {
+      "idx": 235,
+      "version": "7",
+      "when": 1794805200000,
+      "tag": "0235_discovery_tls_operations",
+      "breakpoints": true
+    },
+    {
+      "idx": 236,
+      "version": "7",
+      "when": 1794891600000,
+      "tag": "0236_discovery_tls_issuance",
+      "breakpoints": true
+    },
+    {
+      "idx": 237,
+      "version": "7",
+      "when": 1794978000000,
+      "tag": "0237_discovery_tls_issuance_credential",
+      "breakpoints": true
     }
   ]
 }

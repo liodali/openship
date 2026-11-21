@@ -1298,7 +1298,14 @@
       "error": "Certificate failed",
       "none": "No certificate",
       "provisioning": "Certificate provisioning",
-      "expired": "Certificate expired"
+      "expired": "Certificate expired",
+      "providerLetsencrypt": "Let's Encrypt",
+      "providerCloudflareOriginCa": "Cloudflare Origin CA",
+      "opQueued": "queued",
+      "opRunning": "in progress",
+      "opDeferred": "waiting",
+      "opError": "retrying",
+      "waitingBackend": "waiting for backend"
     },
     "strategy": {
       "network-ip": "container network",

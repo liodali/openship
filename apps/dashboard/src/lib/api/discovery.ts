@@ -42,6 +42,13 @@ export const discoveryApi = {
       `discovery/servers/${encodeURIComponent(serverId)}/discovery`,
       opts,
     ),
+  /** One service by stable identity — a constant-size read; the key's `:` and
+   *  `/` travel percent-encoded as a single path segment. */
+  service: (serverId: string, serviceKey: string, opts?: { signal?: AbortSignal }) =>
+    api.get<DiscoveryService>(
+      `discovery/servers/${encodeURIComponent(serverId)}/discovery/services/${encodeURIComponent(serviceKey)}`,
+      opts,
+    ),
   configure: (serverId: string, input: DiscoveryConfigureInput) =>
     api.put<DiscoveryStatus>(
       `discovery/servers/${encodeURIComponent(serverId)}/discovery`,
@@ -67,6 +74,42 @@ export const discoveryApi = {
   forget: (serverId: string, serviceKey: string) =>
     api.delete<{ forgotten: boolean }>(
       `discovery/servers/${encodeURIComponent(serverId)}/discovery/services/${encodeURIComponent(serviceKey)}`,
+    ),
+  /** Idempotent TLS ensure: skips when valid material for the desired provider
+   *  is installed; otherwise the durable operation id comes back (202). The
+   *  body is empty — identity is the encoded service key. */
+  ensureTls: (serverId: string, serviceKey: string) =>
+    api.post<import("@repo/contracts").DiscoveryTlsEnsureResponse>(
+      `discovery/servers/${encodeURIComponent(serverId)}/discovery/services/${encodeURIComponent(serviceKey)}/tls/ensure`,
+      {},
+      { timeout: 30_000, dedupe: false },
+    ),
+  /** Server managed TLS defaults (new enrollments only). */
+  tlsSettings: (serverId: string, opts?: { signal?: AbortSignal }) =>
+    api.get<import("@repo/contracts").DiscoveryTlsSettings>(
+      `discovery/servers/${encodeURIComponent(serverId)}/discovery/tls`,
+      opts,
+    ),
+  configureTlsSettings: (serverId: string, input: import("@repo/contracts").DiscoveryTlsSettingsInput) =>
+    api.put<import("@repo/contracts").DiscoveryTlsSettings>(
+      `discovery/servers/${encodeURIComponent(serverId)}/discovery/tls`,
+      input,
+    ),
+  /** Per-domain managed TLS policy (non-secret view) and its configuration. */
+  serviceTls: (serverId: string, serviceKey: string, opts?: { signal?: AbortSignal }) =>
+    api.get<import("@repo/contracts").DiscoveryDomainTlsPolicy>(
+      `discovery/servers/${encodeURIComponent(serverId)}/discovery/services/${encodeURIComponent(serviceKey)}/tls`,
+      opts,
+    ),
+  configureServiceTls: (
+    serverId: string,
+    serviceKey: string,
+    input: import("@repo/contracts").DiscoveryDomainTlsPolicyInput,
+  ) =>
+    api.put<import("@repo/contracts").DiscoveryDomainTlsPolicy>(
+      `discovery/servers/${encodeURIComponent(serverId)}/discovery/services/${encodeURIComponent(serviceKey)}/tls`,
+      input,
+      { timeout: 30_000, dedupe: false },
     ),
 };
 
