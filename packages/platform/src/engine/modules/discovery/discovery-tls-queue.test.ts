@@ -761,6 +761,73 @@ describe("execution dispatch", () => {
     );
   });
 
+  it("WILDCARD fan-out re-checks siblings UNDER their locks: a mid-flight LE switch is excluded", async () => {
+    const { clock } = fakeClock();
+    const wildcardOp = operation({ provider: "cloudflare-origin-ca", source: "wildcard", hostname: "a.example.com", sourceHostname: "*.example.com" });
+    ensureWildcardOriginCaShared.mockResolvedValue({
+      outcome: "issued", issuanceId: "dti_w", certificateId: "ca_w", fingerprint: "w:fp", expiresAt: new Date("2030-01-01"),
+    });
+    issuanceInventory.findLiveWildcardIssuance.mockResolvedValue({
+      id: "dti_w", state: "candidate", certificatePem: "-----BEGIN CERTIFICATE-----", fingerprint: "w:fp", keyEnc: "enc1:sealed",
+    });
+    otherRepos.getBindingsForWildcard.mockResolvedValueOnce([{ hostname: "b.example.com" }]);
+    const cfRow = (id: string) => ({ id, manualSsl: false, tlsProvider: "cloudflare-origin-ca", tlsPolicyGeneration: wildcardOp.policyGeneration });
+    // FIRST read (preflight): b is authorized. SECOND read (UNDER the sibling
+    // locks): b switched to Let's Encrypt mid-flight.
+    otherRepos.findDomainsForBindings
+      .mockResolvedValueOnce(new Map([
+        ["a.example.com", cfRow("dom_1")],
+        ["b.example.com", cfRow("dom_2")],
+      ]))
+      .mockResolvedValueOnce(new Map([
+        ["a.example.com", cfRow("dom_1")],
+        ["b.example.com", { id: "dom_2", manualSsl: false, tlsProvider: "letsencrypt", tlsPolicyGeneration: wildcardOp.policyGeneration }],
+      ]));
+    queue.claimDueOperations.mockResolvedValueOnce([wildcardOp]).mockResolvedValue([]);
+    await drainDiscoveryTlsQueue(clock);
+    // b is NOT switched: its exact certificate and renewal record survive.
+    expect(installSharedWildcardCert).toHaveBeenCalledWith(
+      "a.example.com",
+      "*.example.com",
+      expect.anything(),
+      expect.objectContaining({ children: ["a.example.com"] }),
+    );
+    // And its inventory keeps its old bookkeeping.
+    expect(issuanceInventory.markActive).not.toHaveBeenCalledWith(expect.objectContaining({ domainId: "dom_2" }));
+    expect(queue.completeOperation).toHaveBeenCalledWith(wildcardOp.id, "installed", expect.any(Date), expect.any(String));
+  });
+
+  it("WILDCARD defers when the REQUESTING CHILD's policy flips before mutation", async () => {
+    const { clock } = fakeClock();
+    const wildcardOp = operation({ provider: "cloudflare-origin-ca", source: "wildcard", hostname: "a.example.com", sourceHostname: "*.example.com" });
+    ensureWildcardOriginCaShared.mockResolvedValue({
+      outcome: "reused", issuanceId: "dti_w0", fingerprint: "shared", expiresAt: new Date("2030-01-01"),
+    });
+    otherRepos.getBindingsForWildcard.mockResolvedValueOnce([{ hostname: "b.example.com" }]);
+    const cfRow = (id: string) => ({ id, manualSsl: false, tlsProvider: "cloudflare-origin-ca", tlsPolicyGeneration: wildcardOp.policyGeneration });
+    otherRepos.findDomainsForBindings
+      .mockResolvedValueOnce(new Map([
+        ["a.example.com", cfRow("dom_1")],
+        ["b.example.com", cfRow("dom_2")],
+      ]))
+      .mockResolvedValueOnce(new Map([
+        // The DRIVER's row flipped mid-flight: no mutation may proceed.
+        ["a.example.com", { id: "dom_1", manualSsl: false, tlsProvider: "letsencrypt", tlsPolicyGeneration: wildcardOp.policyGeneration }],
+        ["b.example.com", cfRow("dom_2")],
+      ]));
+    queue.claimDueOperations.mockResolvedValueOnce([wildcardOp]).mockResolvedValue([]);
+    await drainDiscoveryTlsQueue(clock);
+    expect(installSharedWildcardCert).not.toHaveBeenCalled();
+    expect(activateSharedWildcardChildren).not.toHaveBeenCalled();
+    expect(queue.deferOperation).toHaveBeenCalledWith(
+      wildcardOp.id,
+      expect.stringContaining("moved on"),
+      expect.any(Date),
+      expect.any(Date),
+      expect.any(String),
+    );
+  });
+
   it("WILDCARD ambiguity defers like the exact flow", async () => {
     const { clock } = fakeClock();
     const wildcardOp = operation({ provider: "cloudflare-origin-ca", source: "wildcard", hostname: "a.example.com", sourceHostname: "*.example.com" });
