@@ -245,6 +245,45 @@ describe("DiscoveryCard", () => {
     root.unmount();
   });
 
+  it("renders the hostname as an external link in every phase — including the retained unavailable page", async () => {
+    discoveryApi.status.mockResolvedValue(status({}, [
+      service(),
+      service({ serviceKey: "id:stopped", id: "dsb_2", hostname: "stopped.example.com", containerName: "stopped", containerRunning: false, applyState: "applied" }),
+      service({ serviceKey: "id:sup", id: "dsb_3", hostname: "sup.example.com", containerName: "sup", suppressed: true }),
+    ]));
+    const { root } = mount(<DiscoveryCard serverId="srv_1" />);
+    await act(async () => {});
+
+    for (const hostname of ["app.example.com", "stopped.example.com", "sup.example.com"]) {
+      const link = document.querySelector<HTMLAnchorElement>(`a[href="https://${hostname}"]`);
+      expect(link).not.toBeNull();
+      expect(link!.target).toBe("_blank");
+      expect(link!.rel).toBe("noopener noreferrer");
+      // Truncation survives, with a small external-link icon beside the name.
+      expect(link!.querySelector("span.truncate")?.textContent).toBe(hostname);
+      expect(link!.querySelector("[data-icon]")).not.toBeNull();
+    }
+
+    // The link never replaces the surrounding truth: chips and the action menu
+    // stay beside it, so a retained row still reads Unavailable and stays operable.
+    const text = TEXT(document.body);
+    expect(text).toContain("Unavailable");
+    expect(text).toContain("Suppressed");
+    expect(document.querySelectorAll('button[aria-label="Service actions"]').length).toBe(3);
+    root.unmount();
+  });
+
+  it("keeps the hostname link on retired rows when discovery is disabled", async () => {
+    discoveryApi.status.mockResolvedValue(status({ enabled: false }, [service()]));
+    const { root } = mount(<DiscoveryCard serverId="srv_1" />);
+    await act(async () => {});
+    const link = document.querySelector<HTMLAnchorElement>('a[href="https://app.example.com"]');
+    expect(link).not.toBeNull();
+    expect(link!.rel).toBe("noopener noreferrer");
+    expect(TEXT(document.body)).toContain("Retired");
+    root.unmount();
+  });
+
   it("renders a 403 read as no-access, and other failures with retry", async () => {
     discoveryApi.status.mockRejectedValue(new ApiError(403, "Forbidden", { error: "no" }));
     const a = mount(<DiscoveryCard serverId="srv_1" />);
