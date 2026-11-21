@@ -631,9 +631,17 @@ describe("execution dispatch", () => {
     otherRepos.getBindingsForWildcard.mockResolvedValueOnce([
       { hostname: "b.example.com" },
     ]);
+    // Each sibling row is what the fan-out AUTHORIZES against: same server
+    // (lookup scope), CF policy, the operation's generation, no manual cert.
+    const siblingRow = (id: string) => ({
+      id,
+      manualSsl: false,
+      tlsProvider: "cloudflare-origin-ca",
+      tlsPolicyGeneration: wildcardOp.policyGeneration,
+    });
     otherRepos.findDomainsForBindings.mockResolvedValue(new Map([
-      ["a.example.com", { id: "dom_1" }],
-      ["b.example.com", { id: "dom_2" }],
+      ["a.example.com", siblingRow("dom_1")],
+      ["b.example.com", siblingRow("dom_2")],
     ]));
     queue.claimDueOperations.mockResolvedValueOnce([wildcardOp]).mockResolvedValue([]);
     await drainDiscoveryTlsQueue(clock);
@@ -642,13 +650,19 @@ describe("execution dispatch", () => {
       expect.objectContaining({ hostname: "*.example.com", domainId: wildcardOp.domainId, credentialId: "cred_cf" }),
     );
     // Authorized through the requesting child; material lands in the PATTERN dir
-    // and EVERY sharing route is switched to it inside the install (before any
-    // inventory commit).
+    // and EVERY AUTHORIZED sharing route is switched to it inside the install
+    // (before any inventory commit), transferring renewal ownership from any
+    // certbot-managed exact certificate (the authorized switch).
     expect(installSharedWildcardCert).toHaveBeenCalledWith(
       "a.example.com",
       "*.example.com",
       { certPem: "-----BEGIN CERTIFICATE-----", keyPem: "UNSEALED-PRIVATE-KEY" },
-      { serverId: wildcardOp.serverId, expectedFingerprint: "w:fp", children: ["a.example.com", "b.example.com"] },
+      {
+        serverId: wildcardOp.serverId,
+        expectedFingerprint: "w:fp",
+        children: ["a.example.com", "b.example.com"],
+        replaceCertbot: true,
+      },
     );
     expect(installDiscoveryServerCert).not.toHaveBeenCalled();
     // EVERY sharing domain activates (fenced individually).
@@ -670,6 +684,15 @@ describe("execution dispatch", () => {
     otherRepos.getBindingsForWildcard.mockResolvedValueOnce([
       { hostname: "a.example.com" },
     ]);
+    otherRepos.findDomainsForBindings.mockResolvedValue(new Map([
+      ["a.example.com", {
+        id: "dom_1",
+        manualSsl: false,
+        tlsProvider: "cloudflare-origin-ca",
+        tlsPolicyGeneration: wildcardOp.policyGeneration,
+      }],
+      ["b.example.com", { id: wildcardOp.domainId, manualSsl: false, tlsProvider: "cloudflare-origin-ca", tlsPolicyGeneration: wildcardOp.policyGeneration }],
+    ]));
     readServerDomainCert.mockResolvedValue({ domain: "*.example.com", verified: true, fingerprint: "w:fp" });
     ensureWildcardOriginCaShared.mockResolvedValue({
       outcome: "reused", issuanceId: "dti_w0", fingerprint: "shared", expiresAt: new Date("2030-01-01"),
@@ -689,6 +712,53 @@ describe("execution dispatch", () => {
       expect.objectContaining({ issuanceId: "dti_w0", domainId: wildcardOp.domainId }),
     );
     expect(queue.completeOperation).toHaveBeenCalledWith(wildcardOp.id, "reused", expect.any(Date), expect.any(String));
+  });
+
+  it("WILDCARD fan-out authorizes each sibling: a stale-generation declaration is never mutated", async () => {
+    const { clock } = fakeClock();
+    const wildcardOp = operation({ provider: "cloudflare-origin-ca", source: "wildcard", hostname: "a.example.com", sourceHostname: "*.example.com" });
+    ensureWildcardOriginCaShared.mockResolvedValue({
+      outcome: "issued", issuanceId: "dti_w", certificateId: "ca_w", fingerprint: "w:fp", expiresAt: new Date("2030-01-01"),
+    });
+    issuanceInventory.findLiveWildcardIssuance.mockResolvedValue({
+      id: "dti_w", state: "candidate", certificatePem: "-----BEGIN CERTIFICATE-----", fingerprint: "w:fp", keyEnc: "enc1:sealed",
+    });
+    otherRepos.getBindingsForWildcard.mockResolvedValueOnce([
+      { hostname: "b.example.com" }, // declares the wildcard, but...
+      { hostname: "stale.example.com" }, // ...moved to letsencrypt since
+      { hostname: "manual.example.com" }, // ...operator-uploaded exact cert
+    ]);
+    otherRepos.findDomainsForBindings.mockResolvedValue(new Map([
+      ["a.example.com", { id: "dom_1", manualSsl: false, tlsProvider: "cloudflare-origin-ca", tlsPolicyGeneration: wildcardOp.policyGeneration }],
+      ["b.example.com", { id: "dom_2", manualSsl: false, tlsProvider: "cloudflare-origin-ca", tlsPolicyGeneration: wildcardOp.policyGeneration }],
+      // UNAUTHORIZED: stale generation (policy moved on mid-flight)
+      ["stale.example.com", { id: "dom_3", manualSsl: false, tlsProvider: "cloudflare-origin-ca", tlsPolicyGeneration: wildcardOp.policyGeneration + 1 }],
+      // UNAUTHORIZED: manual material is final state for its domain
+      ["manual.example.com", { id: "dom_4", manualSsl: true, tlsProvider: "cloudflare-origin-ca", tlsPolicyGeneration: wildcardOp.policyGeneration }],
+    ]));
+    queue.claimDueOperations.mockResolvedValueOnce([wildcardOp]).mockResolvedValue([]);
+    await drainDiscoveryTlsQueue(clock);
+    // Only the AUTHORIZED siblings are switched; unauthorized declarations
+    // are never touched (their own durable operations own them).
+    expect(installSharedWildcardCert).toHaveBeenCalledWith(
+      "a.example.com",
+      "*.example.com",
+      expect.anything(),
+      expect.objectContaining({ children: ["a.example.com", "b.example.com"] }),
+    );
+    // Inventory mirrors the authorized fan-out too.
+    expect(issuanceInventory.markActive).toHaveBeenCalledWith(
+      expect.objectContaining({ issuanceId: "dti_w", domainId: "dom_1" }),
+    );
+    expect(issuanceInventory.markActive).toHaveBeenCalledWith(
+      expect.objectContaining({ issuanceId: "dti_w", domainId: "dom_2" }),
+    );
+    expect(issuanceInventory.markActive).not.toHaveBeenCalledWith(
+      expect.objectContaining({ domainId: "dom_3" }),
+    );
+    expect(issuanceInventory.markActive).not.toHaveBeenCalledWith(
+      expect.objectContaining({ domainId: "dom_4" }),
+    );
   });
 
   it("WILDCARD ambiguity defers like the exact flow", async () => {
