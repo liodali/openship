@@ -552,4 +552,188 @@ describe("determinism and config hash", () => {
     expect(same).not.toBe(discoveryConfigHash({ ...base, network: "backend" }));
     expect(same).toMatch(/^[0-9a-f]{8}$/);
   });
+
+  it("keeps TLS declaration intent out of the routing fingerprint", () => {
+    // A TLS-only change must version the binding through its declaration
+    // columns, not re-fingerprint routing (which upstream retention keys on).
+    const plain = declarationOf(parseDiscoveryDeclaration(candidate()));
+    const withTls = declarationOf(
+      parseDiscoveryDeclaration(
+        candidate({
+          env: [
+            `${DISCOVERY_ENV.discovery}=true`,
+            `${DISCOVERY_ENV.serviceId}=my-app`,
+            `${DISCOVERY_ENV.domain}=app.example.com`,
+            `${DISCOVERY_ENV.port}=3000`,
+            `${DISCOVERY_ENV.tlsProvider}=cloudflare-origin-ca`,
+            `${DISCOVERY_ENV.tlsWildcard}=*.example.com`,
+          ],
+        }),
+      ),
+    );
+    expect(withTls.tlsProvider).toBe("cloudflare-origin-ca");
+    expect(withTls.tlsWildcard).toBe("*.example.com");
+    expect(discoveryConfigHash(withTls)).toBe(discoveryConfigHash(plain));
+  });
+});
+
+// ─── Managed TLS declarations (docs/cloudflare-origin-ca-discovery-plan.md) ──
+
+/** A candidate whose exact hostname sits one label below `base`. */
+function tlsCandidate(envExtra: string[] = [], labels: Record<string, string> = {}, hostname = "site.sub1.example.com") {
+  return candidate({
+    env: [
+      `${DISCOVERY_ENV.discovery}=true`,
+      `${DISCOVERY_ENV.serviceId}=my-app`,
+      `${DISCOVERY_ENV.domain}=${hostname}`,
+      `${DISCOVERY_ENV.port}=3000`,
+      ...envExtra,
+    ],
+    labels,
+  });
+}
+
+describe("TLS provider declarations", () => {
+  it("accepts both canonical providers via env or label, normalized for case", () => {
+    for (const provider of ["letsencrypt", "cloudflare-origin-ca"]) {
+      const fromEnv = declarationOf(parseDiscoveryDeclaration(tlsCandidate([`${DISCOVERY_ENV.tlsProvider}=${provider}`])));
+      expect(fromEnv.tlsProvider).toBe(provider);
+      const fromLabel = declarationOf(
+        parseDiscoveryDeclaration(tlsCandidate([], { [DISCOVERY_LABEL.tlsProvider]: provider.toUpperCase() })),
+      );
+      expect(fromLabel.tlsProvider).toBe(provider);
+    }
+  });
+
+  it("is optional: no declaration leaves the fields absent", () => {
+    const declaration = declarationOf(parseDiscoveryDeclaration(tlsCandidate()));
+    expect(declaration.tlsProvider).toBeUndefined();
+    expect(declaration.tlsWildcard).toBeUndefined();
+  });
+
+  it("rejects every non-canonical value, including the cloudflare shorthand", () => {
+    for (const bad of ["cloudflare", "origin-ca", "zero_ssl", "lets-encrypt", "acme", "1", "true"]) {
+      const rejection = rejectionOf(parseDiscoveryDeclaration(tlsCandidate([`${DISCOVERY_ENV.tlsProvider}=${bad}`])));
+      expect(rejection, bad).toMatchObject({ kind: "invalid", code: "invalid-tls-provider", serviceKey: "id:my-app" });
+    }
+    // Whitespace-padded canonical values are trimmed, not rejected.
+    const padded = declarationOf(parseDiscoveryDeclaration(tlsCandidate([`${DISCOVERY_ENV.tlsProvider}= letsencrypt `])));
+    expect(padded.tlsProvider).toBe("letsencrypt");
+  });
+
+  it("requires env and label to agree — never a precedence game", () => {
+    const conflict = rejectionOf(
+      parseDiscoveryDeclaration(
+        tlsCandidate([`${DISCOVERY_ENV.tlsProvider}=letsencrypt`], { [DISCOVERY_LABEL.tlsProvider]: "cloudflare-origin-ca" }),
+      ),
+    );
+    expect(conflict).toMatchObject({ kind: "invalid", code: "conflict", serviceKey: "id:my-app" });
+    expect((conflict as { message: string }).message).toContain(DISCOVERY_ENV.tlsProvider);
+    expect((conflict as { message: string }).message).toContain(DISCOVERY_LABEL.tlsProvider);
+    const agreed = declarationOf(
+      parseDiscoveryDeclaration(
+        tlsCandidate([`${DISCOVERY_ENV.tlsProvider}=letsencrypt`], { [DISCOVERY_LABEL.tlsProvider]: "letsencrypt" }),
+      ),
+    );
+    expect(agreed.tlsProvider).toBe("letsencrypt");
+  });
+});
+
+describe("TLS wildcard declarations", () => {
+  it("accepts one complete leftmost wildcard label covering the exact hostname", () => {
+    const declaration = declarationOf(
+      parseDiscoveryDeclaration(tlsCandidate([`${DISCOVERY_ENV.tlsWildcard}=*.sub1.example.com`])),
+    );
+    expect(declaration.tlsWildcard).toBe("*.sub1.example.com");
+    expect(declaration.hostname).toBe("site.sub1.example.com"); // exact route hostname, never the pattern
+    // *.example.com covers sub1.example.com (one label below example.com).
+    const shallow = declarationOf(
+      parseDiscoveryDeclaration(tlsCandidate([`${DISCOVERY_ENV.tlsWildcard}=*.example.com`], {}, "sub1.example.com")),
+    );
+    expect(shallow.tlsWildcard).toBe("*.example.com");
+    // A wildcard source without a provider declaration is valid on its own.
+    expect(shallow.tlsProvider).toBeUndefined();
+  });
+
+  it("normalizes case and ONE trailing DNS root dot like domain validation", () => {
+    const declaration = declarationOf(
+      parseDiscoveryDeclaration(tlsCandidate([`${DISCOVERY_ENV.tlsWildcard}= *.SUB1.Example.COM. `])),
+    );
+    expect(declaration.tlsWildcard).toBe("*.sub1.example.com");
+  });
+
+  it("rejects malformed wildcard forms", () => {
+    for (const bad of [
+      "*x.sub1.example.com", // partial leftmost label
+      "site*.sub1.example.com", // partial label, non-wildcard prefix
+      "sub.*.example.com", // wildcard not leftmost
+      "*.*.example.com", // nested wildcards
+      "*.sub1.*.example.com", // second wildcard anywhere
+      "*.", // empty base
+      "*", // no base at all
+      "*.com", // single-label base is not a registrable hostname
+      "*.co.uk", // a public suffix is never a certificate base
+      "*.sub1.example.com..", // more than one trailing dot
+      ".sub1.example.com", // no wildcard label
+      "sub1.example.com", // exact hostname is not a wildcard pattern
+      "*.sub1.example.com:443", // port leftovers
+      "*.sub1.example.com/path", // path leftovers
+      "*.büch.example.com", // non-ASCII (same shape gate as domains)
+    ]) {
+      const rejection = rejectionOf(parseDiscoveryDeclaration(tlsCandidate([`${DISCOVERY_ENV.tlsWildcard}=${bad}`])));
+      expect(rejection, bad).toMatchObject({ kind: "invalid", code: "invalid-tls-wildcard", serviceKey: "id:my-app" });
+    }
+  });
+
+  it("refuses patterns that do not cover the declared hostname", () => {
+    // The base itself: a wildcard never covers its own base.
+    const base = rejectionOf(
+      parseDiscoveryDeclaration(tlsCandidate([`${DISCOVERY_ENV.tlsWildcard}=*.sub1.example.com`], {}, "sub1.example.com")),
+    );
+    expect(base).toMatchObject({ kind: "invalid", code: "tls-wildcard-coverage" });
+    expect((base as { message: string }).message).toContain("base");
+    // Deeper names: two labels below the base.
+    const deeper = rejectionOf(
+      parseDiscoveryDeclaration(tlsCandidate([`${DISCOVERY_ENV.tlsWildcard}=*.sub1.example.com`], {}, "x.site.sub1.example.com")),
+    );
+    expect(deeper).toMatchObject({ kind: "invalid", code: "tls-wildcard-coverage" });
+    // Sibling suffixes: a different branch of the zone.
+    const sibling = rejectionOf(
+      parseDiscoveryDeclaration(tlsCandidate([`${DISCOVERY_ENV.tlsWildcard}=*.sub1.example.com`], {}, "site.sub2.example.com")),
+    );
+    expect(sibling).toMatchObject({ kind: "invalid", code: "tls-wildcard-coverage" });
+    // Unrelated hostname entirely.
+    const unrelated = rejectionOf(
+      parseDiscoveryDeclaration(tlsCandidate([`${DISCOVERY_ENV.tlsWildcard}=*.sub1.example.com`], {}, "elsewhere.example.org")),
+    );
+    expect(unrelated).toMatchObject({ kind: "invalid", code: "tls-wildcard-coverage" });
+  });
+
+  it("requires env and label to agree", () => {
+    const conflict = rejectionOf(
+      parseDiscoveryDeclaration(
+        tlsCandidate([`${DISCOVERY_ENV.tlsWildcard}=*.sub1.example.com`], { [DISCOVERY_LABEL.tlsWildcard]: "*.example.com" }),
+      ),
+    );
+    expect(conflict).toMatchObject({ kind: "invalid", code: "conflict", serviceKey: "id:my-app" });
+    const agreed = declarationOf(
+      parseDiscoveryDeclaration(
+        tlsCandidate([`${DISCOVERY_ENV.tlsWildcard}=*.sub1.example.com`], { [DISCOVERY_LABEL.tlsWildcard]: "*.sub1.example.com" }),
+      ),
+    );
+    expect(agreed.tlsWildcard).toBe("*.sub1.example.com");
+  });
+
+  it("combines with a provider declaration", () => {
+    const declaration = declarationOf(
+      parseDiscoveryDeclaration(
+        tlsCandidate([
+          `${DISCOVERY_ENV.tlsProvider}=cloudflare-origin-ca`,
+          `${DISCOVERY_ENV.tlsWildcard}=*.sub1.example.com`,
+        ]),
+      ),
+    );
+    expect(declaration.tlsProvider).toBe("cloudflare-origin-ca");
+    expect(declaration.tlsWildcard).toBe("*.sub1.example.com");
+  });
 });

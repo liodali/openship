@@ -1298,7 +1298,14 @@
       "error": "Sertifika başarısız",
       "none": "Sertifika yok",
       "provisioning": "Sertifika sağlanıyor",
-      "expired": "Sertifikanın süresi doldu"
+      "expired": "Sertifikanın süresi doldu",
+      "providerLetsencrypt": "Let's Encrypt",
+      "providerCloudflareOriginCa": "Cloudflare Origin CA",
+      "opQueued": "kuyrukta",
+      "opRunning": "sürüyor",
+      "opDeferred": "bekliyor",
+      "opError": "yeniden deneniyor",
+      "waitingBackend": "backend bekleniyor"
     },
     "strategy": {
       "network-ip": "konteyner ağı",

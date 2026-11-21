@@ -51,18 +51,32 @@ const discoveryRepo = {
     },
   ),
   recordScan: vi.fn(async () => {}),
+  applyTlsDeclaration: vi.fn(async (): Promise<{ outcome: string; reason?: string }> => ({ outcome: "no-declaration" })),
 };
 
 const domainRepo = {
-  ensureServerDomain: vi.fn(async () => ({ domain: { id: "dom_x" }, created: true })),
+  ensureServerDomain: vi.fn(async () => ({
+    domain: { id: "dom_x", tlsProvider: null, tlsActiveProvider: null, sslExpiresAt: null },
+    created: true,
+  })),
+  getTlsPolicy: vi.fn(async () => ({ tlsProvider: "letsencrypt", tlsPolicyGeneration: 1 })),
 };
+
+/** The durable TLS queue the reconciler enqueues into (no inline issuance). */
+const tlsQueueRepo = {
+  ensureOperation: vi.fn(async () => ({ operation: { id: "dtop_x" }, created: true })),
+};
+const kickTlsQueue = vi.fn();
 
 vi.mock("@repo/db", () => ({
   repos: {
     discovery: discoveryRepo,
     domain: domainRepo,
+    discoveryTlsQueue: tlsQueueRepo,
   },
 }));
+
+vi.mock("./discovery-tls-queue", () => ({ kickDiscoveryTlsQueue: kickTlsQueue }));
 
 vi.mock("../../lib/domain-ssl", () => ({
   manageDomainSsl: vi.fn(async () => ({ verified: true, expiresAt: "2027-01-01T00:00:00Z" })),
@@ -111,7 +125,12 @@ function liveView(row: Record<string, unknown>) {
   return {
     containerId: String(row.containerId), running: true, status: "running", labels: {},
     env: ["OPENSHIP_DISCOVERY=true", "OPENSHIP_SERVICE_ID=my-app",
-      `OPENSHIP_DOMAIN=${row.hostname}`, `OPENSHIP_PORT=${row.port}`],
+      `OPENSHIP_DOMAIN=${row.hostname}`, `OPENSHIP_PORT=${row.port}`,
+      // The live container declares what the binding persisted — a fresh
+      // inspection must agree with the recorded TLS intent (the stale guard).
+      ...(row.tlsDeclaredProvider ? [`OPENSHIP_TLS_PROVIDER=${row.tlsDeclaredProvider}`] : []),
+      ...(row.tlsDeclaredWildcard ? [`OPENSHIP_TLS_WILDCARD=${row.tlsDeclaredWildcard}`] : []),
+    ],
     networks: [{ name: "frontend", id: "net_fe", ipAddress: "172.20.0.5" }],
     publishedPorts: row.hostPort
       ? [{ containerPort: 3000, hostPort: Number(row.hostPort), hostIp: row.hostIp as string | null }]
@@ -186,10 +205,103 @@ describe("reconcileServerDiscovery", () => {
     );
     expect(summary.applied).toEqual(["id:my-app"]);
     expect(state.applied).toEqual([{ serviceKey: "id:my-app", generation: 1 }]);
-    // Immediate certificate reconciliation for the freshly applied upstream.
-    expect(manageDomainSsl).toHaveBeenCalledWith(
-      "app.example.com",
-      expect.objectContaining({ action: "provision", allowUnverified: true, serverId: SERVER() }),
+    // Certificate work is now DURABLE QUEUE WORK, not inline issuance: the
+    // reconcile persists the operation (route apply never waits on a cert)
+    // and kicks the paced drain — which is what calls the shared entrypoint.
+    // The enqueue rides a fire-and-forget chain: settle it before asserting.
+    await vi.waitFor(() => expect(tlsQueueRepo.ensureOperation).toHaveBeenCalled());
+    expect(tlsQueueRepo.ensureOperation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        hostname: "app.example.com",
+        sourceHostname: "app.example.com",
+        source: "exact",
+        provider: "letsencrypt",
+        serverId: SERVER(),
+        serviceKey: "id:my-app",
+      }),
+    );
+    expect(kickTlsQueue).toHaveBeenCalled();
+    expect(manageDomainSsl).not.toHaveBeenCalled(); // no inline order from the sweep
+  });
+
+  it("applies the binding's TLS declaration intent right after enrolling the domain", async () => {
+    state.dueApply = [binding({ tlsDeclaredProvider: "cloudflare-origin-ca", tlsDeclaredWildcard: "*.example.com" })];
+    const summary = await reconcileServerDiscovery(SERVER(), "org_1", { edge: edge() });
+    expect(summary.applied).toEqual(["id:my-app"]);
+    expect(domainRepo.ensureServerDomain).toHaveBeenCalled();
+    // Reconciliation is a pure function of durable state (declaration + policy
+    // provenance) — no scan-local previous-declaration input.
+    expect(discoveryRepo.applyTlsDeclaration).toHaveBeenCalledWith(
+      SERVER(),
+      "id:my-app",
+      { provider: "cloudflare-origin-ca", wildcard: "*.example.com" },
+    );
+  });
+
+  it("reconciles TLS intent on the retained unavailable-vhost path as well", async () => {
+    state.dueApply = [
+      binding({
+        applyState: "applied", appliedGeneration: 2, observationStatus: "missing",
+        containerId: null, ipAddress: null, containerRunning: false,
+        tlsDeclaredProvider: "letsencrypt", tlsDeclaredWildcard: null,
+      }),
+    ];
+    const summary = await reconcileServerDiscovery(SERVER(), "org_1", { edge: edge() });
+    expect(summary.retained).toEqual(["id:my-app"]);
+    expect(discoveryRepo.applyTlsDeclaration).toHaveBeenCalledWith(
+      SERVER(),
+      "id:my-app",
+      { provider: "letsencrypt", wildcard: null },
+    );
+  });
+
+  it("a TLS policy conflict never fails the route apply", async () => {
+    discoveryRepo.applyTlsDeclaration.mockResolvedValueOnce({
+      outcome: "conflict",
+      reason: "tls-policy-conflict: declaration disagrees with the explicit policy",
+    });
+    state.dueApply = [binding({ tlsDeclaredProvider: "letsencrypt" })];
+    const target = edge();
+    const summary = await reconcileServerDiscovery(SERVER(), "org_1", { edge: target });
+    expect(summary.applied).toEqual(["id:my-app"]); // the route keeps working
+    expect(summary.failed).toEqual([]);
+    expect(target.routing.registerRoute).toHaveBeenCalled();
+  });
+
+  it("defers certificate work for a Cloudflare policy — never falls through to ACME", async () => {
+    domainRepo.getTlsPolicy.mockResolvedValueOnce({ tlsProvider: "cloudflare-origin-ca", tlsPolicyGeneration: 2 });
+    state.dueApply = [binding({ tlsDeclaredProvider: "cloudflare-origin-ca" })];
+    const target = edge();
+    const summary = await reconcileServerDiscovery(SERVER(), "org_1", { edge: target });
+    expect(summary.applied).toEqual(["id:my-app"]); // the route still applies
+    expect(manageDomainSsl).not.toHaveBeenCalled(); // no unintended exact LE order
+  });
+
+  it("defers certificate work for an explicit wildcard source — no exact-host fallback", async () => {
+    state.dueApply = [binding({ tlsDeclaredProvider: "letsencrypt", tlsDeclaredWildcard: "*.example.com" })];
+    const summary = await reconcileServerDiscovery(SERVER(), "org_1", { edge: edge() });
+    expect(summary.applied).toEqual(["id:my-app"]);
+    expect(manageDomainSsl).not.toHaveBeenCalled();
+  });
+
+  it("gates certificate work on the POST-reconciliation policy, not the declaration", async () => {
+    // Declaration says letsencrypt, but the persisted (admin-owned) policy is
+    // Cloudflare — the conflict leaves the policy authoritative, and ACME must
+    // not issue against it.
+    domainRepo.getTlsPolicy.mockResolvedValueOnce({ tlsProvider: "cloudflare-origin-ca", tlsPolicyGeneration: 2 });
+    discoveryRepo.applyTlsDeclaration.mockResolvedValueOnce({ outcome: "conflict", reason: "tls-policy-conflict" });
+    state.dueApply = [binding({ tlsDeclaredProvider: "letsencrypt" })];
+    const summary = await reconcileServerDiscovery(SERVER(), "org_1", { edge: edge() });
+    expect(summary.applied).toEqual(["id:my-app"]);
+    expect(manageDomainSsl).not.toHaveBeenCalled();
+  });
+
+  it("still enqueues exact-host ACME work for an exact Let's Encrypt policy without a wildcard source", async () => {
+    state.dueApply = [binding({ tlsDeclaredProvider: "letsencrypt", tlsDeclaredWildcard: null })];
+    await reconcileServerDiscovery(SERVER(), "org_1", { edge: edge() });
+    await vi.waitFor(() => expect(tlsQueueRepo.ensureOperation).toHaveBeenCalled());
+    expect(tlsQueueRepo.ensureOperation).toHaveBeenCalledWith(
+      expect.objectContaining({ hostname: "app.example.com", source: "exact", provider: "letsencrypt" }),
     );
   });
 
@@ -460,6 +572,60 @@ describe("reconcileServerDiscovery", () => {
     const summary = await reconcileServerDiscovery(SERVER(), "org_1", { edge: target });
     expect(summary.failed[0].reason).toContain("serving Edge cannot probe");
     expect(target.routing.registerRoute).not.toHaveBeenCalled();
+  });
+
+  it("ENQUEUES Cloudflare work when the provider is desired but the domain has no active material yet", async () => {
+    domainRepo.getTlsPolicy.mockResolvedValueOnce({ tlsProvider: "cloudflare-origin-ca", tlsPolicyGeneration: 2 });
+    state.dueApply = [binding({ tlsDeclaredProvider: "cloudflare-origin-ca" })];
+    await reconcileServerDiscovery(SERVER(), "org_1", { edge: edge() });
+    await vi.waitFor(() => expect(tlsQueueRepo.ensureOperation).toHaveBeenCalled());
+    expect(tlsQueueRepo.ensureOperation).toHaveBeenCalledWith(
+      expect.objectContaining({ hostname: "app.example.com", source: "exact", provider: "cloudflare-origin-ca" }),
+    );
+  });
+
+  it("a SATISFIED Cloudflare domain (active provider + comfortable expiry) does not churn operations", async () => {
+    domainRepo.getTlsPolicy.mockResolvedValueOnce({
+      tlsProvider: "cloudflare-origin-ca",
+      tlsValidityDays: 365 as const,
+      tlsPolicyGeneration: 2,
+    } as never);
+    domainRepo.ensureServerDomain.mockResolvedValueOnce({
+      domain: {
+        id: "dom_x",
+        tlsProvider: "cloudflare-origin-ca",
+        tlsActiveProvider: "cloudflare-origin-ca",
+        sslExpiresAt: new Date(Date.now() + 300 * 86_400_000), // well outside the rotation horizon
+      },
+      created: false,
+    } as never);
+    state.dueApply = [binding({ tlsDeclaredProvider: "cloudflare-origin-ca" })];
+    await reconcileServerDiscovery(SERVER(), "org_1", { edge: edge() });
+    // nothing to reconcile: the queue is not churned by every scan
+    expect(tlsQueueRepo.ensureOperation).not.toHaveBeenCalled();
+  });
+
+  it("a Cloudflare domain whose active inventory is NEAR EXPIRY enqueues rotation", async () => {
+    domainRepo.getTlsPolicy.mockResolvedValueOnce({
+      tlsProvider: "cloudflare-origin-ca",
+      tlsValidityDays: 365 as const,
+      tlsPolicyGeneration: 2,
+    } as never);
+    domainRepo.ensureServerDomain.mockResolvedValueOnce({
+      domain: {
+        id: "dom_x",
+        tlsProvider: "cloudflare-origin-ca",
+        tlsActiveProvider: "cloudflare-origin-ca",
+        sslExpiresAt: new Date(Date.now() + 10 * 86_400_000), // inside the horizon
+      },
+      created: false,
+    } as never);
+    state.dueApply = [binding({ tlsDeclaredProvider: "cloudflare-origin-ca" })];
+    await reconcileServerDiscovery(SERVER(), "org_1", { edge: edge() });
+    await vi.waitFor(() => expect(tlsQueueRepo.ensureOperation).toHaveBeenCalled());
+    expect(tlsQueueRepo.ensureOperation).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: "cloudflare-origin-ca" }),
+    );
   });
 });
 

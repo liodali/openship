@@ -847,6 +847,41 @@ describe("server-scoped issuance eligibility (liveVerificationOwner extension)",
     expect((await domainRepo.findPendingServerIssuance()).map((r) => r.hostname)).not.toContain("app.example.com");
   });
 
+  it("a Cloudflare Origin CA policy is never ACME retry work (no fallback issuance)", async () => {
+    await seedServerDomain();
+    // A fresh Cloudflare declaration enrols the domain with no certificate:
+    // it must NOT enter the ACME first-issuance retry queue.
+    await db
+      .update(schema.domain)
+      .set({ tlsProvider: "cloudflare-origin-ca", tlsProviderSource: "explicit", tlsPolicyOrigin: "declaration", tlsPolicyGeneration: 2 })
+      .where(eq(schema.domain.id, "dom_server_scope"));
+    expect((await domainRepo.findPendingServerIssuance()).map((r) => r.hostname)).not.toContain("app.example.com");
+    // Let's Encrypt (and legacy null-policy rows) stay eligible.
+    await db.update(schema.domain).set({ tlsProvider: "letsencrypt" }).where(eq(schema.domain.id, "dom_server_scope"));
+    expect((await domainRepo.findPendingServerIssuance()).map((r) => r.hostname)).toContain("app.example.com");
+    await db.update(schema.domain).set({ tlsProvider: null }).where(eq(schema.domain.id, "dom_server_scope"));
+    expect((await domainRepo.findPendingServerIssuance()).map((r) => r.hostname)).toContain("app.example.com");
+  });
+
+  it("findExpiringSsl skips Cloudflare-desired server domains even while old-provider material is installed", async () => {
+    await seedServerDomain();
+    const due = new Date(Date.now() + 7 * 86_400_000);
+    await db
+      .update(schema.domain)
+      .set({ verified: true, status: "active", sslStatus: "active", sslExpiresAt: new Date(Date.now() + 86_400_000) })
+      .where(eq(schema.domain.id, "dom_server_scope"));
+    // A legacy/default row (NULL provider) stays renewal-eligible — the
+    // exclusion must not drop it under SQL three-valued logic.
+    expect((await domainRepo.findExpiringSsl(due)).map((r) => r.hostname)).toContain("app.example.com");
+    // An expiring Let's Encrypt certificate on a letsencrypt domain: renewal work.
+    await db.update(schema.domain).set({ tlsProvider: "letsencrypt" }).where(eq(schema.domain.id, "dom_server_scope"));
+    expect((await domainRepo.findExpiringSsl(due)).map((r) => r.hostname)).toContain("app.example.com");
+    // The desired provider switched to Cloudflare (staged transition): certbot
+    // must not renew the old provider's material — dispatch owns that step.
+    await db.update(schema.domain).set({ tlsProvider: "cloudflare-origin-ca" }).where(eq(schema.domain.id, "dom_server_scope"));
+    expect((await domainRepo.findExpiringSsl(due)).map((r) => r.hostname)).not.toContain("app.example.com");
+  });
+
   it("recordSslDeferred advances scheduling state without recording a failure", async () => {
     await seedServerDomain();
     // Simulate an issued certificate that now defers on a stopped backend:

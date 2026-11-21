@@ -66,6 +66,7 @@ function service(over: Partial<DiscoveryService> = {}): DiscoveryService {
     appliedGeneration: 2,
     updatedAt: "2026-01-01T00:00:00.000Z",
     tls: { hostname: "app.example.com", verified: true, sslStatus: "active", sslExpiresAt: null, sslIssuer: null },
+    tlsOperation: null,
     ...over,
   };
 }

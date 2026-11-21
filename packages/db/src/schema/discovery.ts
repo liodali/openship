@@ -1,4 +1,9 @@
 import { sql } from "drizzle-orm";
+import type {
+  DiscoveryTlsOperationSource,
+  DiscoveryTlsOperationState,
+  DiscoveryTlsProvider,
+} from "@repo/core";
 import {
   pgTable,
   text,
@@ -11,6 +16,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { servers } from "./servers";
 import { cloudWorkspace } from "./cloud-workspace";
+import { domain } from "./domain";
 
 // ─── Docker service discovery (docs/docker-service-discovery-plan.md) ───────
 
@@ -46,6 +52,20 @@ export const discoverySettings = pgTable("discovery_settings", {
 
   /** Periodic repair sweep cadence. First release fixes this at 60s. */
   sweepIntervalSeconds: integer("sweep_interval_seconds").notNull().default(60),
+
+  /**
+   * Managed TLS provider for NEWLY enrolled discovery domains only
+   * (docs/cloudflare-origin-ca-discovery-plan.md). Exactly the two managed IDs
+   * in @repo/core; the initial default is `letsencrypt`. CHANGING THIS NEVER
+   * SWITCHES EXISTING CERTIFICATES: every domain persists its own resolved
+   * provider at enrollment (domain.tlsProvider), and that row is authoritative
+   * from then on. No server-wide Cloudflare credential or zone lives here —
+   * Cloudflare configuration is PER DOMAIN.
+   */
+  tlsDefaultProvider: text("tls_default_provider")
+    .$type<DiscoveryTlsProvider>()
+    .notNull()
+    .default("letsencrypt"),
 
   /** Last completed inventory, for status UI. Error text is sanitized upstream. */
   lastScanAt: timestamp("last_scan_at"),
@@ -101,8 +121,37 @@ export const discoveryBinding = pgTable(
      */
     networkName: text("network_name"),
     networkId: text("network_id"),
-    /** Fingerprint of {hostname, port, network} — see `discoveryConfigHash`. */
+    /** Fingerprint of {hostname, port, network} — see `discoveryConfigHash`.
+     *  Routing-only on purpose: TLS declaration intent is versioned through the
+     *  tls_declared_* columns below, and a TLS-only change bumps the desired
+     *  generation without re-fingerprinting the routing config. */
     configHash: text("config_hash").notNull(),
+
+    // ── Managed TLS declaration intent (docs/cloudflare-origin-ca-discovery-plan.md) ──
+    /**
+     * Provider requested by the container's `openship.tls.provider` label /
+     * `OPENSHIP_TLS_PROVIDER` env, normalized to a canonical managed ID.
+     * NULL = no request: the domain keeps its persisted policy (or resolves the
+     * server default on first enrollment). Removing a declaration never reverts
+     * an already-persisted provider. A declaration never carries credentials.
+     */
+    tlsDeclaredProvider: text("tls_declared_provider").$type<DiscoveryTlsProvider>(),
+    /**
+     * Normalized shared-wildcard certificate SOURCE pattern requested by
+     * `openship.tls.wildcard` / `OPENSHIP_TLS_WILDCARD` (e.g. `*.sub1.example.com`),
+     * validated by the parser to cover the binding's exact hostname. NULL =
+     * exact-host certificate intent. A coverage request, never a wildcard route;
+     * resolution to an authorized shared certificate resource is a later step.
+     */
+    tlsDeclaredWildcard: text("tls_declared_wildcard"),
+    /**
+     * `tls-policy-conflict` detail when the declaration disagrees with the
+     * domain's EXPLICIT per-domain TLS policy; NULL = no conflict. Visibility
+     * only — a TLS conflict never blocks route reconciliation and never changes
+     * working certificate material. Cleared when the declaration is removed or
+     * agrees again (or an explicit policy change resolves it).
+     */
+    tlsPolicyConflict: text("tls_policy_conflict"),
 
     // ── Resolved upstream (persisted separately from authored config) ────
     /** network-ip (bridge direct IP) | published-port (observed host binding). */
@@ -187,3 +236,144 @@ export const discoveryBinding = pgTable(
  * retry state survive; docs "retain ownership/certificate metadata"), which a
  * cascade could not do. The certificate sweep joins on hostname + server.
  */
+
+// ─── Durable TLS operations (the paced issuance queue) ───────────────────────
+
+/**
+ * ONE durable TLS issuance operation (plan: "Asynchronous queue, ensure API").
+ * The ROW is the queue: waiting work survives restarts, drains through worker
+ * leases, and dedupes by its unique ACTIVE identity — (serving server,
+ * certificate source hostname, policy generation). A retried ensure never
+ * creates a second job; a policy change bumps the generation and supersedes.
+ *
+ * State machine: waiting → running → (complete | deferred | error); deferred
+ * and error return to waiting at their backoff. Leases make crash recovery
+ * safe: a running row whose lease expired was abandoned by a dead worker and
+ * is reclaimable. `complete` rows are history (bounded-pruned), never work.
+ */
+export const discoveryTlsOperation = pgTable(
+  "discovery_tls_operation",
+  {
+    id: text("id")
+      .primaryKey()
+      .default(sql`'dtop_' || gen_random_uuid()::text`),
+    /** The site hostname this operation serves (binding identity scope). */
+    hostname: text("hostname").notNull(),
+    /** The certificate SOURCE identity: the exact hostname, or the shared
+     *  wildcard pattern when `source` is 'wildcard'. Dedup key component. */
+    sourceHostname: text("source_hostname").notNull(),
+    /** exact | wildcard. */
+    source: text("source").$type<DiscoveryTlsOperationSource>().notNull().default("exact"),
+    /** The provider this operation must issue through — never fallen back from. */
+    provider: text("provider").$type<DiscoveryTlsProvider>().notNull(),
+    /** The server-scoped domain row this work belongs to. */
+    domainId: text("domain_id")
+      .notNull()
+      .references(() => domain.id, { onDelete: "cascade" }),
+    /** The serving Edge — with sourceHostname and organization this is the
+     *  plan's dedup scope; never dedupe unrelated tenants by hostname string. */
+    serverId: text("server_id")
+      .notNull()
+      .references(() => servers.id, { onDelete: "cascade" }),
+    organizationId: text("organization_id").notNull(),
+    /** The binding that requested the work (audit/UI pointer). */
+    serviceKey: text("service_key").notNull(),
+    /** Policy generation at enqueue — a bump supersedes this operation. */
+    policyGeneration: integer("policy_generation").notNull(),
+    /** waiting | running | deferred | error | complete (see core vocabulary). */
+    state: text("state")
+      .$type<DiscoveryTlsOperationState>()
+      .notNull()
+      .default("waiting"),
+    /** Terminal outcome for complete rows: issued | reused | superseded. */
+    outcome: text("outcome"),
+    /** Sanitized defer reason or actionable error — never provider bodies. */
+    reason: text("reason"),
+    attempts: integer("attempts").notNull().default(0),
+    /** When the next attempt may start (backoff); null = immediately. */
+    nextAttemptAt: timestamp("next_attempt_at"),
+    /** Worker lease: who claimed a running row and until when. */
+    leasedBy: text("leased_by"),
+    leasedUntil: timestamp("leased_until"),
+
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    // THE dedup: at most one ACTIVE operation per serving server + certificate
+    // source + policy generation. Complete rows free the slot for renewals.
+    uniqueIndex("uq_discovery_tls_operation_active")
+      .on(t.serverId, t.sourceHostname, t.policyGeneration)
+      .where(sql`${t.state} IN ('waiting','running','deferred','error')`),
+    // The drain claims due work in fair created_at order.
+    index("idx_discovery_tls_operation_due").on(t.state, t.nextAttemptAt, t.createdAt),
+    // Status reads: a server's active operations joined onto its services.
+    index("idx_discovery_tls_operation_server").on(t.serverId, t.hostname),
+  ],
+);
+
+// ─── Origin CA issuance inventory (plan §1: candidate/active state) ──────────
+
+/**
+ * ONE Origin CA issuance attempt's DURABLE state. The intent (CSR + ENCRYPTED
+ * private key) is persisted BEFORE the create request; the returned candidate
+ * is persisted after. A crash between request and response leaves a
+ * pending_create row — the recovery path reads the provider and matches by
+ * hostname + CSR public key instead of ever blindly re-creating.
+ *
+ * Private key material lives ONLY in `key_enc` (the `enc1:` envelope, same
+ * cipher as credentials). It never travels in status, audit, MCP output, or
+ * diagnostics — only this column.
+ */
+export const discoveryTlsIssuance = pgTable(
+  "discovery_tls_issuance",
+  {
+    id: text("id")
+      .primaryKey()
+      .default(sql`'dti_' || gen_random_uuid()::text`),
+    /** The domain whose certificate this is. */
+    domainId: text("domain_id")
+      .notNull()
+      .references(() => domain.id, { onDelete: "cascade" }),
+    /** The queue operation that requested this issuance (recovery linkage). */
+    operationId: text("operation_id"),
+    /** The Cloudflare credential that ISSUED the certificate — cleanup
+     *  revokes with THIS reference, never the domain's current policy
+     *  credential (cleared on provider switch, changed on reconfiguration). */
+    credentialId: text("credential_id"),
+    hostname: text("hostname").notNull(),
+    /** The Cloudflare zone the issuance targets. */
+    zoneId: text("zone_id").notNull(),
+    /** pending_create (intent persisted, no id yet) | candidate (issued, not installed) | active | failed. */
+    state: text("state").notNull().default("pending_create"),
+    /** The CSR (PUBLIC material — the private key's counterpart). */
+    csr: text("csr").notNull(),
+    /** The private key, sealed in the `enc1:` envelope. NEVER surfaced anywhere else. */
+    keyEnc: text("key_enc").notNull(),
+    /** Requested validity in days (one of Cloudflare's discrete values). */
+    validityDays: integer("validity_days").notNull(),
+    attempts: integer("attempts").notNull().default(0),
+    /** Provider certificate id once known (from create or recovery). */
+    certificateId: text("certificate_id"),
+    /** The certificate PEM (PUBLIC material) once issued. */
+    certificatePem: text("certificate_pem"),
+    /** SHA-256 fingerprint of the issued certificate. */
+    fingerprint: text("fingerprint"),
+    /** Cloudflare's expires_on for the issued certificate. */
+    expiresOn: timestamp("expires_on"),
+    /** Sanitized ambiguity/recovery state for visible pending/unknown rows. */
+    reason: text("reason"),
+
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    // ONE live (pending/candidate) issuance per domain: recovery reads it, and
+    // a renewed attempt supersedes (completes) the previous one first.
+    uniqueIndex("uq_discovery_tls_issuance_live")
+      .on(t.domainId)
+      .where(sql`${t.state} IN ('pending_create','candidate')`),
+    index("idx_discovery_tls_issuance_cert").on(t.certificateId),
+    index("idx_discovery_tls_issuance_domain").on(t.domainId, t.state),
+  ],
+);

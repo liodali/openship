@@ -34,6 +34,8 @@ export interface AdoptedCert extends ManualCert {
   expiresAt: string;
   /** Issuer CN (falling back to O, then the raw issuer line). */
   issuer: string;
+  /** SHA-256 fingerprint of the leaf (X509Certificate.fingerprint256). */
+  fingerprint: string;
   /** The names the leaf actually covers (SANs, or the subject CN if it has no SANs). */
   covers: string[];
   /**
@@ -177,6 +179,7 @@ export function validateCertFor(host: string, pems: ManualCert, source: string):
       source,
       expiresAt: notAfter.toISOString(),
       issuer: issuerLabel(x509),
+      fingerprint: x509.fingerprint256,
       covers: certNames(x509),
       renewable: isAcmeIssuer(x509),
     },

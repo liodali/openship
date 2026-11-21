@@ -9,6 +9,7 @@ import {
   lte,
   gte,
   asc,
+  gt,
   inArray,
   isNull,
   isNotNull,
@@ -22,11 +23,21 @@ import {
   DOMAIN_RETRY_DELAYS_MS,
   normalizeCustomHostname,
   resolveRedirectStatus,
+  ValidationError,
+  DISCOVERY_ENV,
+  DISCOVERY_LABEL,
+  DISCOVERY_TLS_DEFAULT_PROVIDER,
+  DISCOVERY_TLS_ORIGIN_CA_DEFAULT_VALIDITY_DAYS,
+  DISCOVERY_TLS_ORIGIN_CA_VALIDITY_DAYS,
+  DISCOVERY_TLS_POLICY_CONFLICT,
+  isSupportedOriginCaValidityDays,
+  type DiscoveryTlsProvider,
 } from "@repo/core";
 import type { Database } from "../client";
 import {
   discoveryBinding,
   discoverySettings,
+  credential,
   domain,
   orphanedResource,
   project,
@@ -42,6 +53,48 @@ import { assertProjectConfigurationWritable, withProjectConfigurationWrite } fro
 export type Domain = typeof domain.$inferSelect;
 export type NewDomain = typeof domain.$inferInsert;
 type RepoTransaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
+
+/**
+ * An explicit per-domain managed-TLS selection, exactly as the plan's strict
+ * discriminated shape: Let's Encrypt carries nothing else; Cloudflare Origin CA
+ * REQUIRES its organization credential and exact zone (zoneName only once
+ * verified through Cloudflare; validityDays optional with provider default).
+ */
+export type TlsPolicySelection =
+  | { provider: "letsencrypt" }
+  | {
+      provider: "cloudflare-origin-ca";
+      credentialId: string;
+      zoneId: string;
+      zoneName?: string;
+      validityDays?: number;
+    };
+
+/** Structural validation shared by every policy writer (repo today, HTTP/labels later). */
+function validateTlsPolicySelection(policy: TlsPolicySelection) {
+  if (policy.provider === "cloudflare-origin-ca") {
+    if (!policy.credentialId?.trim() || !policy.zoneId?.trim())
+      throw new ValidationError("Cloudflare Origin CA requires this domain's credential and zone");
+    if (policy.validityDays !== undefined && !isSupportedOriginCaValidityDays(policy.validityDays))
+      throw new ValidationError(
+        `Origin CA validity must be one of Cloudflare's supported durations: ${DISCOVERY_TLS_ORIGIN_CA_VALIDITY_DAYS.join(", ")} days`,
+      );
+    return {
+      provider: policy.provider,
+      credentialId: policy.credentialId.trim(),
+      zoneId: policy.zoneId.trim(),
+      zoneName: policy.zoneName?.trim() || undefined,
+      // The provider default (365) normalizes to null: an explicit 365 and an
+      // omitted validity are the SAME policy (identical writes stay idempotent).
+      validityDays:
+        policy.validityDays !== undefined && policy.validityDays !== DISCOVERY_TLS_ORIGIN_CA_DEFAULT_VALIDITY_DAYS
+          ? policy.validityDays
+          : null,
+    } as const;
+  }
+  if (policy.provider !== "letsencrypt") throw new ValidationError(`Unknown managed TLS provider: ${String((policy as { provider?: unknown }).provider)}`);
+  return { provider: "letsencrypt" } as const;
+}
 
 // ─── Repository ──────────────────────────────────────────────────────────────
 
@@ -386,6 +439,8 @@ export function createDomainRepo(db: Database) {
             );
           }
           if (existing.targetPort !== input.targetPort) {
+            // A port change updates routing metadata ONLY: the persisted TLS
+            // policy (and every ssl_* column) survives re-ensuring untouched.
             const [updated] = await tx
               .update(domain)
               .set({ targetPort: input.targetPort, updatedAt: new Date() })
@@ -395,6 +450,13 @@ export function createDomainRepo(db: Database) {
           }
           return { domain: existing, created: false };
         }
+        // Enrollment-time TLS default for the row this call may create (the
+        // resolved policy persists with the row; a concurrent default change
+        // afterwards never rewrites it).
+        const [serverDefault] = await tx
+          .select({ tlsDefaultProvider: discoverySettings.tlsDefaultProvider })
+          .from(discoverySettings)
+          .where(eq(discoverySettings.serverId, input.serverId));
         const [created] = await tx
           .insert(domain)
           .values({
@@ -406,6 +468,14 @@ export function createDomainRepo(db: Database) {
             targetPort: input.targetPort,
             status: "pending",
             verified: false,
+            // Enrollment resolves the managed TLS provider ONCE, from the
+            // server default at this moment (no explicit override exists yet —
+            // labels arrive with the parser step). The resolved value persists
+            // here and is authoritative from now on: later default changes never
+            // rewrite it. Generation 1 = a policy exists.
+            tlsProvider: serverDefault?.tlsDefaultProvider ?? DISCOVERY_TLS_DEFAULT_PROVIDER,
+            tlsProviderSource: "default",
+            tlsPolicyGeneration: 1,
           })
           .onConflictDoNothing({ target: domain.hostname })
           .returning();
@@ -419,12 +489,293 @@ export function createDomainRepo(db: Database) {
       });
     },
 
+    // ── Managed TLS policy (server-scoped discovery domains) ─────────────
+    //
+    // docs/cloudflare-origin-ca-discovery-plan.md §1: the persisted operator
+    // INTENT for a discovery domain's managed TLS. These writes touch ONLY the
+    // tls_policy columns — never ssl_*/manualSsl/certificate material (existing
+    // certificates are unchanged by policy writes) and never tlsActiveProvider
+    // (the installed-provider marker advances only through managed activation).
+
+    /** The persisted policy for one domain row, or null when it has none. */
+    async getTlsPolicy(domainId: string) {
+      const [row] = await db
+        .select({
+          hostname: domain.hostname,
+          ownerType: domain.ownerType,
+          serverId: domain.serverId,
+          tlsProvider: domain.tlsProvider,
+          tlsProviderSource: domain.tlsProviderSource,
+          tlsPolicyOrigin: domain.tlsPolicyOrigin,
+          tlsActiveProvider: domain.tlsActiveProvider,
+          tlsPolicyGeneration: domain.tlsPolicyGeneration,
+          tlsCfCredentialId: domain.tlsCfCredentialId,
+          tlsCfZoneId: domain.tlsCfZoneId,
+          tlsCfZoneName: domain.tlsCfZoneName,
+          tlsValidityDays: domain.tlsValidityDays,
+        })
+        .from(domain)
+        .where(eq(domain.id, domainId));
+      return row ?? null;
+    },
+
+    /**
+     * Persist an EXPLICIT per-domain TLS policy (the admin/API/UI path; container
+     * declarations reconcile through discovery.applyTlsDeclaration). Every
+     * non-no-op write records `admin` provenance, so a disagreeing declaration
+     * conflicts instead of evolving the policy. Bumps the policy generation —
+     * stale in-flight work and lost races detect the bump — and refuses stale
+     * writers when `expectedGeneration` no longer matches. Let's Encrypt clears
+     * every Cloudflare reference; Cloudflare requires its credential and zone
+     * together (zoneName may accompany them once verified through Cloudflare).
+     * Returns the updated row.
+     */
+    async setTlsPolicy(input: {
+      domainId: string;
+      policy: TlsPolicySelection;
+      expectedGeneration?: number;
+    }): Promise<Domain> {
+      const validated = validateTlsPolicySelection(input.policy);
+      /** Bindings whose stale declaration-conflict marker this switch resolves. */
+      const resolvedConflictBindingIds: string[] = [];
+      const updated = await db.transaction(async (tx) => {
+        const [row] = await tx.select().from(domain).where(eq(domain.id, input.domainId)).for("update");
+        if (!row) throw new ConflictError(`Unknown domain ${input.domainId}`);
+        if (row.ownerType !== "server" || !row.serverId)
+          throw new ConflictError(
+            `Managed TLS policy applies only to server-scoped discovery domains; ${row.hostname} is a ${row.ownerType} domain`,
+          );
+        if (input.expectedGeneration !== undefined && input.expectedGeneration !== row.tlsPolicyGeneration)
+          throw new ConflictError(
+            `TLS policy changed concurrently (generation ${row.tlsPolicyGeneration}, expected ${input.expectedGeneration})`,
+          );
+
+        // The desired selection, normalized for comparison with the row. A
+        // repeated IDENTICAL policy is a no-op: the generation stays put, so a
+        // retrying operator never invalidates pending issuance/transition work.
+        // zoneName is deliberately NOT compared — it is verified-then-Cloudflare
+        // metadata, not the operator's selection, and a re-submitted policy
+        // without it must not erase (or fake-change) the recorded name.
+        const desired = {
+          provider: validated.provider as DiscoveryTlsProvider,
+          credentialId: validated.provider === "cloudflare-origin-ca" ? validated.credentialId : null,
+          zoneId: validated.provider === "cloudflare-origin-ca" ? validated.zoneId : null,
+          validityDays: validated.provider === "cloudflare-origin-ca" ? validated.validityDays : null,
+        };
+        const identical =
+          desired.provider === row.tlsProvider &&
+          desired.credentialId === row.tlsCfCredentialId &&
+          desired.zoneId === row.tlsCfZoneId &&
+          desired.validityDays === row.tlsValidityDays;
+        if (identical) {
+          // Same selection: never bump the generation. Only record that the
+          // provider is now an EXPLICIT ADMIN choice (audit truth + durable
+          // provenance) if it wasn't already — an already-admin policy is a
+          // pure no-op. CRITICALLY, a DECLARATION-owned policy (a label wrote
+          // this same provider) transfers to admin provenance here WITHOUT a
+          // bump: otherwise a later label change could still evolve/overwrite
+          // a choice the operator just confirmed (legacy explicit rows with
+          // unknown/null origin are conservatively admin — mirroring the
+          // declaration writer's conflict rule).
+          if (row.tlsProviderSource === "explicit" && row.tlsPolicyOrigin !== "declaration") return row;
+          const [marked] = await tx
+            .update(domain)
+            .set({ tlsProviderSource: "explicit", tlsPolicyOrigin: "admin", updatedAt: new Date() })
+            .where(eq(domain.id, input.domainId))
+            .returning();
+          return marked!;
+        }
+
+        // Declaration conflict gate (plan: "An explicit API/UI policy and the
+        // label must agree ... Operators first update/remove a conflicting
+        // declaration to switch through the UI"). A persisted container
+        // declaration requesting a DIFFERENT provider refuses a UI provider
+        // SWITCH with the stable tls-policy-conflict code; nothing is written.
+        // Only provider switches are gated: identical re-submissions returned
+        // above, and credential/zone/validity changes under the SAME provider
+        // are admin-controlled configuration the declaration never carries.
+        // Plain read (no binding lock): declaration reconciliation locks
+        // binding→domain, this transaction already holds the domain row — a
+        // binding write lock here would invert that order. A declaration
+        // persisted concurrently is caught by the next scan's conflict rule.
+        if (desired.provider !== row.tlsProvider) {
+          const declarationRows = await tx
+            .select({
+              id: discoveryBinding.id,
+              serviceKey: discoveryBinding.serviceKey,
+              tlsDeclaredProvider: discoveryBinding.tlsDeclaredProvider,
+              tlsPolicyConflict: discoveryBinding.tlsPolicyConflict,
+            })
+            .from(discoveryBinding)
+            .where(and(eq(discoveryBinding.serverId, row.serverId), eq(discoveryBinding.hostname, row.hostname)));
+          const conflicting = declarationRows.find(
+            (b) => b.tlsDeclaredProvider != null && b.tlsDeclaredProvider !== desired.provider,
+          );
+          if (conflicting) {
+            throw new ConflictError(
+              `${DISCOVERY_TLS_POLICY_CONFLICT}: ${DISCOVERY_LABEL.tlsProvider}/${DISCOVERY_ENV.tlsProvider} on discovered service ` +
+                `${conflicting.serviceKey} requests "${conflicting.tlsDeclaredProvider}", which disagrees with the requested policy ` +
+                `"${desired.provider}" for ${row.hostname}. Update or remove the container declaration (then rescan) before switching ` +
+                `the policy; the working certificate is unchanged.`,
+              DISCOVERY_TLS_POLICY_CONFLICT,
+            );
+          }
+          for (const b of declarationRows) {
+            if (b.tlsPolicyConflict != null) resolvedConflictBindingIds.push(b.id);
+          }
+        }
+
+        // Cloudflare selections reference an organization credential. Enforce
+        // ownership BEFORE writing: the credential must exist, be a Cloudflare
+        // credential, and belong to the SAME organization as this domain's
+        // server — a FK only proves existence, never tenancy, and reusing one
+        // org's token must never authorize another org's issuance.
+        if (validated.provider === "cloudflare-origin-ca") {
+          const [credentialRow] = await tx
+            .select({ organizationId: credential.organizationId, provider: credential.provider })
+            .from(credential)
+            .where(eq(credential.id, validated.credentialId));
+          if (!credentialRow)
+            throw new ValidationError(`Unknown credential ${validated.credentialId} for this domain's TLS policy`);
+          if (credentialRow.provider !== "cloudflare")
+            throw new ValidationError(
+              `Credential ${validated.credentialId} is a ${credentialRow.provider} credential; Cloudflare Origin CA requires a cloudflare credential`,
+            );
+          const [server] = await tx
+            .select({ organizationId: servers.organizationId })
+            .from(servers)
+            .where(eq(servers.id, row.serverId));
+          if (!server || credentialRow.organizationId !== server.organizationId)
+            throw new ConflictError(
+              `Credential ${validated.credentialId} belongs to another organization; it cannot issue this server's certificates`,
+            );
+        }
+
+        const [written] = await tx
+          .update(domain)
+          .set({
+            tlsProvider: desired.provider,
+            tlsProviderSource: "explicit",
+            // Every admin write — including credential/zone configuration under
+            // a declared provider — records ADMIN provenance. A later label
+            // change must conflict with this policy, never evolve it.
+            tlsPolicyOrigin: "admin",
+            tlsPolicyGeneration: row.tlsPolicyGeneration + 1,
+            tlsCfCredentialId: desired.credentialId,
+            tlsCfZoneId: desired.zoneId,
+            // The verified zone name survives a re-submitted policy for the
+            // SAME zone; a different zone invalidates it until re-verified.
+            tlsCfZoneName:
+              desired.provider === "cloudflare-origin-ca"
+                ? (validated.zoneName ?? (desired.zoneId === row.tlsCfZoneId ? row.tlsCfZoneName : null))
+                : null,
+            tlsValidityDays: desired.validityDays,
+            updatedAt: new Date(),
+          })
+          .where(eq(domain.id, input.domainId))
+          .returning();
+        return written!;
+      });
+      // The switch committed: every persisted declaration agrees or is absent
+      // (the gate proved it), so stale conflict markers resolve. AFTER commit,
+      // outside the domain lock — see the gate's lock-order note. A crash here
+      // self-heals: the next declaration reconciliation clears on agreement.
+      for (const bindingId of resolvedConflictBindingIds) {
+        await db
+          .update(discoveryBinding)
+          .set({ tlsPolicyConflict: null, updatedAt: new Date() })
+          .where(and(eq(discoveryBinding.id, bindingId), isNotNull(discoveryBinding.tlsPolicyConflict)));
+      }
+      return updated;
+    },
+
     /**
      * ACME-as-verification for server-scoped domains: the first successful
      * issuance IS the proof of control (HTTP-01 reached this server's edge), so
      * success flips the row verified + active without any TXT check. No project
      * admission locks — server domains have no project lifecycle.
      */
+    /** Server-owned domains recording ACTIVE Origin CA inventory — the
+     *  periodic Edge audit's bounded selection (files can vanish on a server
+     *  rebuild while every database field still looks healthy). CURSOR-scoped
+     *  (ordered by id, after the last audited id) so every active domain
+     *  eventually gets checked — a fixed first-page LIMIT would audit the
+     *  same rows forever. */
+    async findOriginCaActiveDomainsForServer(
+      serverId: string,
+      opts: { afterId?: string; limit?: number } = {},
+    ) {
+      return db
+        .select({
+          id: domain.id,
+          hostname: domain.hostname,
+          tlsCertificateId: domain.tlsCertificateId,
+          tlsCertificateFingerprint: domain.tlsCertificateFingerprint,
+          sslExpiresAt: domain.sslExpiresAt,
+        })
+        .from(domain)
+        .where(
+          and(
+            eq(domain.ownerType, "server"),
+            eq(domain.serverId, serverId),
+            eq(domain.tlsActiveProvider, "cloudflare-origin-ca"),
+            isNotNull(domain.tlsCertificateId),
+            opts.afterId ? gt(domain.id, opts.afterId) : undefined,
+          ),
+        )
+        .orderBy(asc(domain.id))
+        .limit(opts.limit ?? 5);
+    },
+
+    /** How many OTHER domains reference a certificate (replacement cleanup's
+     *  "unused" check — 0 means the certificate is safely revocable). */
+    async countByCertificateId(certificateId: string, excludeDomainId?: string): Promise<number> {
+      const rows = await db
+        .select({ id: domain.id })
+        .from(domain)
+        .where(and(eq(domain.tlsCertificateId, certificateId), ne(domain.id, excludeDomainId ?? "")));
+      return rows.length;
+    },
+
+    /**
+     * Commit the ACTIVE provider inventory after a provider switch — FENCED:
+     * the write lands only when, under the row lock, the domain still belongs
+     * to the expected server, the policy still names the NEW provider, and
+     * the policy generation has not moved (a delayed commit must never
+     * overwrite inventory from a newer Cloudflare activation). Clearing the
+     * previous Origin CA certificate id/fingerprint is what RELEASES the
+     * replaced certificate for cleanup — done only with proof of the new
+     * provider, never speculatively. Returns whether the commit landed.
+     */
+    async commitServerDomainProvider(
+      input: {
+        domainId: string;
+        provider: "letsencrypt";
+        expectedServerId: string;
+        expectedTlsProvider: string;
+        expectedPolicyGeneration: number;
+      },
+      now = new Date(),
+    ): Promise<boolean> {
+      return db.transaction(async (tx): Promise<boolean> => {
+        const [row] = await tx.select().from(domain).where(eq(domain.id, input.domainId)).for("update");
+        if (!row || row.ownerType !== "server") return false;
+        if (row.serverId !== input.expectedServerId) return false;
+        if (row.tlsProvider !== input.expectedTlsProvider) return false;
+        if (row.tlsPolicyGeneration !== input.expectedPolicyGeneration) return false;
+        await tx
+          .update(domain)
+          .set({
+            tlsActiveProvider: input.provider,
+            tlsCertificateId: null,
+            tlsCertificateFingerprint: null,
+            updatedAt: now,
+          })
+          .where(eq(domain.id, input.domainId));
+        return true;
+      });
+    },
+
     async markServerDomainVerified(id: string) {
       const now = new Date();
       await db
@@ -1027,7 +1378,22 @@ export function createDomainRepo(db: Database) {
      * excluded. A transient renewal error must not strand an expiring cert. */
     async findExpiringSsl(beforeDate: Date) {
       return db.query.domain.findMany({
-        where: and(inArray(domain.sslStatus, ["active", "error"]), lt(domain.sslExpiresAt, beforeDate), ne(domain.sslDnsMode, "manual")),
+        where: and(
+          inArray(domain.sslStatus, ["active", "error"]),
+          lt(domain.sslExpiresAt, beforeDate),
+          ne(domain.sslDnsMode, "manual"),
+          // A Cloudflare Origin CA selection is not ACME work even while the
+          // OLD provider's certificate is still installed: renewal dispatch
+          // belongs to the provider step, never to certbot (no ACME fallback).
+          // NULL-safe complement of (server AND cloudflare-origin-ca): a NULL
+          // provider (legacy/default row) must STAY eligible — `NOT(a AND b)`
+          // alone would drop it under three-valued logic.
+          or(
+            ne(domain.ownerType, "server"),
+            isNull(domain.tlsProvider),
+            ne(domain.tlsProvider, "cloudflare-origin-ca"),
+          ),
+        ),
         // Fair batching: least-recently-checked first (creation time as the
         // fallback for rows never checked), stable id tie-breaker. WITHOUT this
         // ordering, deferred entries (recordSslDeferred advances lastCheckedAt)
@@ -1114,6 +1480,11 @@ export function createDomainRepo(db: Database) {
           and(eq(domain.sslStatus, "active"), lte(domain.sslExpiresAt, new Date())),
         ),
         ne(domain.status, "removing"),
+        // A managed Origin CA selection is not ACME work: until provider
+        // dispatch exists it waits for configuration/dispatch — never retried
+        // here, never fallen back to Let's Encrypt. (Wildcard-source intent is
+        // deferred at the shared TLS entrypoint, which reads the binding.)
+        or(isNull(domain.tlsProvider), ne(domain.tlsProvider, "cloudflare-origin-ca")),
         retryDue(),
         serverVerificationOwner(organizationId),
       ];

@@ -8,10 +8,12 @@ import {
   uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
+import type { DiscoveryTlsProvider, DiscoveryTlsProviderSource, DiscoveryTlsPolicyOrigin } from "@repo/core";
 import { project } from "./project";
 import { service } from "./service";
 import { webhookSource } from "./webhook-source";
 import { servers } from "./servers";
+import { credential } from "./credential";
 
 // ─── Domains ─────────────────────────────────────────────────────────────────
 
@@ -143,6 +145,61 @@ export const domain = pgTable(
     sslIssuer: text("ssl_issuer"),
     /** When the current certificate expires */
     sslExpiresAt: timestamp("ssl_expires_at"),
+
+    /* ── Managed TLS provider policy (server-scoped discovery domains) ────
+     *
+     * Operator INTENT for discovery's managed TLS selection
+     * (docs/cloudflare-origin-ca-discovery-plan.md). All columns are NULL on
+     * non-discovery owners (project/mail/webhook): the policy is server-scoped
+     * discovery only, and project/manual/external TLS paths stay unchanged.
+     *
+     * These columns never describe certificate material: `sslIssuer` keeps
+     * describing installed certificates, and no writer here may touch the
+     * ssl_* columns — existing certificates are unchanged by policy writes.
+     */
+    /**
+     * The RESOLVED, desired managed provider persisted at enrollment (explicit
+     * override or server default) or by an explicit policy change. Authoritative
+     * once set: a server default change never rewrites it.
+     */
+    tlsProvider: text("tls_provider").$type<DiscoveryTlsProvider>(),
+    /** Whether the persisted provider came from the server default or an explicit override (UI/audit). */
+    tlsProviderSource: text("tls_provider_source").$type<DiscoveryTlsProviderSource>(),
+    /**
+     * DURABLE provenance of the explicit policy: `admin` (API/UI write) or
+     * `declaration` (container label/env write). Null while the policy is
+     * default-resolved (or absent). Recorded by every policy writer — never
+     * inferred from value agreement — so a disagreeing declaration can only
+     * evolve a policy the declaration itself owns; an admin-selected policy
+     * (including admin credential/zone configuration under a declared provider)
+     * conflicts instead of being overwritten. Pre-0234 explicit rows backfill
+     * to `admin`: the policy API was their only writer.
+     */
+    tlsPolicyOrigin: text("tls_policy_origin").$type<DiscoveryTlsPolicyOrigin>(),
+    /**
+     * The provider whose certificate is actually INSTALLED and managed. Lags
+     * tlsProvider while a staged provider switch is pending; null before any
+     * managed installation is recorded.
+     */
+    tlsActiveProvider: text("tls_active_provider").$type<DiscoveryTlsProvider>(),
+    /** Bumped on every policy change; expected-generation checks keep stale writers and in-flight work from winning races. */
+    tlsPolicyGeneration: integer("tls_policy_generation").notNull().default(0),
+    /** Origin CA references — required TOGETHER when tlsProvider is cloudflare-origin-ca. Null for letsencrypt. */
+    tlsCfCredentialId: text("tls_cf_credential_id").references(() => credential.id, {
+      onDelete: "set null",
+    }),
+    /** The exact authorized Cloudflare zone id (never a zone selector or automatic match). */
+    tlsCfZoneId: text("tls_cf_zone_id"),
+    /** Zone display name, recorded only after verification through Cloudflare — never a submitted name. */
+    tlsCfZoneName: text("tls_cf_zone_name"),
+    /** Requested Origin CA validity in days; null = provider default (365). */
+    tlsValidityDays: integer("tls_validity_days"),
+
+    /* ── Active certificate inventory (managed providers) ───────────────── */
+    /** The provider certificate ID for the INSTALLED managed certificate (Origin CA id; null for ACME). */
+    tlsCertificateId: text("tls_certificate_id"),
+    /** SHA-256 fingerprint of the installed managed certificate. */
+    tlsCertificateFingerprint: text("tls_certificate_fingerprint"),
 
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),

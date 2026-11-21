@@ -17,8 +17,32 @@ const serverRepo = {
   get: vi.fn(async (serverId: string) => state.servers[serverId]),
 };
 
+const cleanupRepo = vi.hoisted(() => ({
+  findStaleIssuedForServer: vi.fn(async (): Promise<Array<Record<string, unknown>>> => []),
+  markRevokedAfterReplacement: vi.fn(async (): Promise<void> => {}),
+}));
+const sweepDomainRepo = vi.hoisted(() => ({
+  getTlsPolicy: vi.fn(async (): Promise<Record<string, unknown> | undefined> => undefined),
+}));
+const sweepCredentialRepo = vi.hoisted(() => ({
+  findById: vi.fn(async (): Promise<Record<string, unknown> | undefined> => undefined),
+}));
+
+const auditRepos = vi.hoisted(() => ({
+  findOriginCaActiveDomainsForServer: vi.fn(async (): Promise<Array<Record<string, unknown>>> => []),
+  getBindingForDomain: vi.fn(async (): Promise<Record<string, unknown> | undefined> => undefined),
+  ensureOperation: vi.fn(async (): Promise<Record<string, unknown>> => ({ created: true, operation: { id: "dtop_a" } })),
+}));
+
 vi.mock("@repo/db", () => ({
-  repos: { discovery: discoveryRepo, server: serverRepo },
+  repos: {
+    discovery: { ...discoveryRepo, getBindingForDomain: auditRepos.getBindingForDomain },
+    server: serverRepo,
+    discoveryTlsIssuance: cleanupRepo,
+    domain: { ...sweepDomainRepo, findOriginCaActiveDomainsForServer: auditRepos.findOriginCaActiveDomainsForServer },
+    credential: sweepCredentialRepo,
+    discoveryTlsQueue: { ensureOperation: auditRepos.ensureOperation },
+  },
 }));
 
 const scan = vi.fn(async (serverId: string) => ({
@@ -54,12 +78,29 @@ const renew = vi.fn(async () => {});
 vi.mock("./discovery-scanner", () => ({ scanServerDiscovery: scan }));
 vi.mock("./discovery-reconciler", () => ({ reconcileServerDiscovery: reconcile }));
 vi.mock("./discovery-repair", () => ({ repairDiscoveryRoutes: repair }));
+const readServerDomainCert = vi.fn();
+vi.mock("../../lib/domain-ssl", () => ({
+  readServerDomainCert: (hostname: string, opts: { serverId: string }) => readServerDomainCert(hostname, opts),
+}));
 vi.mock("./discovery-watch", () => ({ renewDiscoveryWatchers: renew }));
+vi.mock("./discovery-tls-queue", () => ({ kickDiscoveryTlsQueue: vi.fn() }));
+const revokeOriginCaCertificate = vi.fn(async (_token: string, _id: string): Promise<void> => {});
+vi.mock("./origin-ca-client", () => ({
+  createOriginCaCertificate: vi.fn(),
+  getOriginCaCertificate: vi.fn(),
+  listOriginCaCertificates: vi.fn(),
+  revokeOriginCaCertificate: (token: string, id: string) => revokeOriginCaCertificate(token, id),
+}));
 vi.mock("../../lib/system-jobs", () => ({
   scheduleSystemJob: vi.fn(async () => {}),
 }));
 vi.mock("../../lib/background-work", () => ({
   trackBackgroundWork: (p: Promise<unknown>) => p,
+}));
+vi.mock("../credentials/credential.service", () => ({
+  readCredentialSecrets: vi.fn((credential: { id: string } | undefined) =>
+    credential ? { apiToken: `tok_${credential.id}` } : {},
+  ),
 }));
 
 const { sweepDiscovery, sweepServerDiscovery, startDiscoverySweep, runInServerQueue } = await import("./discovery-sweep");
@@ -78,6 +119,13 @@ function enable(serverId: string, organizationId: string | null, settings?: Part
 
 beforeEach(() => {
   vi.clearAllMocks();
+  cleanupRepo.findStaleIssuedForServer.mockResolvedValue([]);
+  sweepCredentialRepo.findById.mockResolvedValue(undefined);
+  sweepDomainRepo.getTlsPolicy.mockResolvedValue(undefined);
+  auditRepos.findOriginCaActiveDomainsForServer.mockResolvedValue([]);
+  auditRepos.ensureOperation.mockResolvedValue({ created: true, operation: { id: "dtop_a" } });
+  readServerDomainCert.mockResolvedValue({ domain: "x", verified: true, fingerprint: "fp" });
+  revokeOriginCaCertificate.mockResolvedValue(undefined);
   state.enabled = [];
   state.settingsByServer = {};
   state.servers = {};
@@ -350,5 +398,111 @@ describe("startDiscoverySweep", () => {
     await vi.waitFor(() => expect(jobRun).toBeDefined());
     const jobSummary = await jobRun!();
     expect(jobSummary).toMatchObject({ servers: 2, failed: 0, repaired: 2, retained: 2, requeued: 2 });
+  });
+
+});
+
+describe("replaced-certificate cleanup", () => {
+  it("revokes STALE exclusively-managed certificates and records the replacement", async () => {
+    enable("srv_gc", "org_1");
+    cleanupRepo.findStaleIssuedForServer.mockResolvedValue([{ id: "dti_old", certificateId: "ca_replaced", domainId: "dom_1" }]);
+    sweepDomainRepo.getTlsPolicy.mockResolvedValue({ tlsCfCredentialId: "cred_gc" });
+    sweepCredentialRepo.findById.mockResolvedValue({ id: "cred_gc", provider: "cloudflare", secretsEnc: "enc1:tok" });
+    const summary = await sweepServerDiscovery("srv_gc", "org_1");
+    expect(revokeOriginCaCertificate).toHaveBeenCalledWith(expect.any(String), "ca_replaced");
+    expect(cleanupRepo.markRevokedAfterReplacement).toHaveBeenCalledWith("dti_old");
+    expect(summary.revokedCertificates).toBe(1);
+    expect(summary.failed).toEqual([]);
+  });
+
+  it("skips rows whose credential is gone or no longer cloudflare (the certificate expires naturally)", async () => {
+    enable("srv_gc2", "org_1");
+    cleanupRepo.findStaleIssuedForServer.mockResolvedValue([{ id: "dti_x", certificateId: "ca_x", domainId: "dom_1" }]);
+    sweepDomainRepo.getTlsPolicy.mockResolvedValue({ tlsCfCredentialId: "cred_gone" });
+    sweepCredentialRepo.findById.mockResolvedValue(undefined);
+    const summary = await sweepServerDiscovery("srv_gc2", "org_1");
+    expect(revokeOriginCaCertificate).not.toHaveBeenCalled();
+    expect(summary.revokedCertificates).toBeUndefined();
+    expect(summary.failed).toEqual([]);
+  });
+
+  it("a revocation failure reports certificate-cleanup without failing the other stages", async () => {
+    enable("srv_gc3", "org_1");
+    cleanupRepo.findStaleIssuedForServer.mockResolvedValue([{ id: "dti_y", certificateId: "ca_y", domainId: "dom_1" }]);
+    sweepDomainRepo.getTlsPolicy.mockResolvedValue({ tlsCfCredentialId: "cred_gc" });
+    sweepCredentialRepo.findById.mockResolvedValue({ id: "cred_gc", provider: "cloudflare", secretsEnc: "enc1:tok" });
+    revokeOriginCaCertificate.mockRejectedValue(new Error("provider unreachable"));
+    const summary = await sweepServerDiscovery("srv_gc3", "org_1");
+    expect(summary.failed).toContain("certificate-cleanup");
+    expect(summary.scan?.ok).toBe(true);
+    expect(summary.reconcile?.ok).toBe(true);
+  });
+
+});
+
+describe("periodic certificate audit (Edge repair independent of route reapplication)", () => {
+  const inventory = (over: Record<string, unknown> = {}) => ({
+    id: "dom_1",
+    hostname: "app.example.com",
+    tlsCertificateFingerprint: "db:fp",
+    sslExpiresAt: new Date(Date.now() + 300 * 86_400_000),
+    ...over,
+  });
+
+  it("a server rebuild that LOST the cert files enqueues the repair worker", async () => {
+    enable("srv_a", "org_1");
+    auditRepos.findOriginCaActiveDomainsForServer.mockResolvedValue([inventory()]);
+    readServerDomainCert.mockResolvedValue({ domain: "app.example.com", verified: false, reason: "missing" });
+    sweepDomainRepo.getTlsPolicy.mockResolvedValue({ tlsProvider: "cloudflare-origin-ca", tlsPolicyGeneration: 4 });
+    const summary = await sweepServerDiscovery("srv_a", "org_1");
+    expect(summary.certAuditScheduled).toBe(1);
+    expect(auditRepos.ensureOperation).toHaveBeenCalledWith(
+      expect.objectContaining({ hostname: "app.example.com", provider: "cloudflare-origin-ca", policyGeneration: 4 }),
+    );
+    expect(summary.failed).toEqual([]);
+  });
+
+  it("a MISMATCHED served fingerprint also audits into repair", async () => {
+    enable("srv_a2", "org_1");
+    auditRepos.findOriginCaActiveDomainsForServer.mockResolvedValue([inventory()]);
+    readServerDomainCert.mockResolvedValue({ domain: "app.example.com", verified: true, fingerprint: "wrong:fp" });
+    const summary = await sweepServerDiscovery("srv_a2", "org_1");
+    expect(summary.certAuditScheduled).toBe(1);
+  });
+
+  it("healthy edge material and transient read failures do NOT enqueue", async () => {
+    enable("srv_a3", "org_1");
+    auditRepos.findOriginCaActiveDomainsForServer.mockResolvedValue([inventory(), inventory({ id: "dom_2" })]);
+    readServerDomainCert
+      .mockResolvedValueOnce({ domain: "app.example.com", verified: true, fingerprint: "db:fp" })
+      .mockResolvedValueOnce({ domain: "app.example.com", verified: false, reason: "read_error" });
+    const summary = await sweepServerDiscovery("srv_a3", "org_1");
+    expect(summary.certAuditScheduled).toBe(0);
+    expect(auditRepos.ensureOperation).not.toHaveBeenCalled();
+  });
+
+  it("the GC revokes with the ISSUING credential reference, not the current policy credential", async () => {
+    enable("srv_a4", "org_1");
+    cleanupRepo.findStaleIssuedForServer.mockResolvedValue([
+      { id: "dti_cred", certificateId: "ca_old", domainId: "dom_1", credentialId: "cred_issuing" },
+    ]);
+    sweepDomainRepo.getTlsPolicy.mockResolvedValue({ tlsCfCredentialId: "cred_current" });
+    sweepCredentialRepo.findById.mockResolvedValue({ id: "cred_issuing", provider: "cloudflare" });
+    await sweepServerDiscovery("srv_a4", "org_1");
+    // The ISSUING credential is looked up and used — not cred_current.
+    expect(sweepCredentialRepo.findById).toHaveBeenCalledWith("org_1", "cred_issuing");
+    expect(revokeOriginCaCertificate).toHaveBeenCalledWith("tok_cred_issuing", "ca_old");
+  });
+
+  it("legacy rows without a credential reference fall back to the current policy credential", async () => {
+    enable("srv_a5", "org_1");
+    cleanupRepo.findStaleIssuedForServer.mockResolvedValue([
+      { id: "dti_legacy", certificateId: "ca_legacy", domainId: "dom_1", credentialId: null },
+    ]);
+    sweepDomainRepo.getTlsPolicy.mockResolvedValue({ tlsCfCredentialId: "cred_current" });
+    sweepCredentialRepo.findById.mockResolvedValue({ id: "cred_current", provider: "cloudflare" });
+    await sweepServerDiscovery("srv_a5", "org_1");
+    expect(sweepCredentialRepo.findById).toHaveBeenCalledWith("org_1", "cred_current");
+    expect(revokeOriginCaCertificate).toHaveBeenCalledWith("tok_cred_current", "ca_legacy");
   });
 });

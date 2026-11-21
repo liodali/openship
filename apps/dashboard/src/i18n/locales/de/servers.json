@@ -1298,7 +1298,14 @@
       "error": "Zertifikat fehlgeschlagen",
       "none": "Kein Zertifikat",
       "provisioning": "Zertifikat wird ausgestellt",
-      "expired": "Zertifikat abgelaufen"
+      "expired": "Zertifikat abgelaufen",
+      "providerLetsencrypt": "Let's Encrypt",
+      "providerCloudflareOriginCa": "Cloudflare Origin CA",
+      "opQueued": "in Warteschlange",
+      "opRunning": "laufend",
+      "opDeferred": "wartet",
+      "opError": "Wiederholung",
+      "waitingBackend": "wartet auf Backend"
     },
     "strategy": {
       "network-ip": "Controllernetzwerk",

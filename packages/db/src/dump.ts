@@ -489,6 +489,28 @@ const TABLES: ReadonlyArray<TableSpec> = [
     hasOrganizationId: false,
   },
   {
+    // Origin CA issuance inventory (plan §3): durable encrypted intent +
+    // candidate state, server-Edge work like discovery_binding — never
+    // travels in org/project remaps (and its key_enc column must never leave
+    // the instance that encrypted it).
+    sqlName: "discovery_tls_issuance",
+    table: schema.discoveryTlsIssuance,
+    scopes: [{ in: "instance", via: "all-rows" }],
+    hasOrganizationId: false,
+  },
+  {
+    // The durable TLS operation queue (paced issuance). Instance-scope only,
+    // exactly like discovery_binding/discovery_settings: operations reference
+    // a server Edge and its policy generation, so a project/org promotion to
+    // ANOTHER control plane must not carry them — the destination enqueues its
+    // own work against its own Edge. Certificates and policy metadata travel
+    // server-scoped owners already; the operation rows are instance-local work.
+    sqlName: "discovery_tls_operation",
+    table: schema.discoveryTlsOperation,
+    scopes: [{ in: "instance", via: "all-rows" }],
+    hasOrganizationId: false,
+  },
+  {
     sqlName: "mail_servers",
     table: schema.mailServers,
     scopes: [{ in: "instance", via: "all-rows" }],
@@ -1199,6 +1221,12 @@ export const ENCRYPTED_COLUMNS: ReadonlyArray<EncryptedColumnSpec> = [
   // it is undecryptable off-instance and must be lifted into the passphrase bundle.
   { table: "server_github_auth", column: "tokenEncrypted" },
   { table: "server_github_auth", column: "serverKeyPrivateEncrypted" },
+  // Origin CA issuance intent: the pending PRIVATE KEY for a certificate
+  // request, sealed with the enc1 envelope. Undecryptable off-instance (same
+  // BETTER_AUTH_SECRET-derived key as credential secrets) — cross-host moves
+  // strip it to the "" sentinel; the issuance row then self-heals (the
+  // recovery path retires an unreadable intent and re-issues).
+  { table: "discovery_tls_issuance", column: "keyEnc" },
   // NOT NULL with no default, so the restore-side redaction writes the "" sentinel
   // when no bundle is supplied — same shape as env_var.value.
   { table: "github_deploy_key", column: "privateKeyEncrypted" },
@@ -1592,6 +1620,14 @@ export function assertDumpSelfContained(dump: DatabaseDump): void {
     // a VICTIM's domain would otherwise attach a rate-limit / ban rule to their
     // hostname (traffic denial on someone else's site).
     domainId: "domain",
+    // domain.tlsCfCredentialId — the per-domain Cloudflare Origin CA credential
+    // (docs/cloudflare-origin-ca-discovery-plan.md). `credential` travels in an
+    // organization dump (org-scoped catalogued table), so a legitimate dump is
+    // self-contained: the domain's credential row ships beside it and gets
+    // remapped with the org. A crafted dump pointing tlsCfCredentialId at a
+    // VICTIM tenant's credential would otherwise adopt their Cloudflare token
+    // for issuance — rejected here exactly like destinationId above.
+    tlsCfCredentialId: "credential",
     // webhook_source / project_connection / personal_access_token_grant are
     // instance-scope only and never travel on a remap dump, so any value here could
     // only be a pre-existing cross-tenant parent. Rejected defensively, exactly as

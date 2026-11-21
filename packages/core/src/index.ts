@@ -12,6 +12,7 @@ export * from "./compose-namespace";
 export * from "./compose-spec";
 export * from "./container-hosts";
 export * from "./discovery-config";
+export * from "./discovery-tls";
 export * from "./env-file";
 export * from "./object-storage";
 export * from "./constants";

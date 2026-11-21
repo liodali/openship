@@ -114,6 +114,44 @@ describe("discovery container view", () => {
     expect(JSON.stringify(view)).not.toContain("helm");
   });
 
+  it("passes the TLS declaration keys through the narrow filter into the parser", async () => {
+    const { parseDiscoveryDeclaration } = await import("@repo/core");
+    const tlsInspect = inspect({
+      Config: {
+        Image: "my-app:v2",
+        Env: [
+          "OPENSHIP_DISCOVERY=true",
+          "OPENSHIP_SERVICE_ID=my-app",
+          "OPENSHIP_DOMAIN=app.example.com",
+          "OPENSHIP_PORT=3000",
+          "OPENSHIP_TLS_PROVIDER=cloudflare-origin-ca",
+          "OPENSHIP_TLS_WILDCARD=*.example.com",
+          "OPENSHIP_NETWORK=frontend", // two bridges attached: pick one
+          "DATABASE_URL=postgres://secrets", // still filtered out
+        ],
+        Labels: {
+          "openship.tls.provider": "cloudflare-origin-ca",
+          "openship.tls.wildcard": "*.example.com",
+        },
+      },
+    });
+    const view = discoveryContainerViewFromDockerInspect(tlsInspect, "abc123");
+    expect(view.env).toContain("OPENSHIP_TLS_PROVIDER=cloudflare-origin-ca");
+    expect(view.env).toContain("OPENSHIP_TLS_WILDCARD=*.example.com");
+    expect(view.labels["openship.tls.provider"]).toBe("cloudflare-origin-ca");
+    expect(view.labels["openship.tls.wildcard"]).toBe("*.example.com");
+    const result = parseDiscoveryDeclaration({
+      env: view.env,
+      labels: view.labels,
+      networks: view.networks.map((n) => ({ ...n, driver: "bridge" })),
+    });
+    expect(result.eligible).toBe(true);
+    if (result.eligible) {
+      expect(result.declaration.tlsProvider).toBe("cloudflare-origin-ca");
+      expect(result.declaration.tlsWildcard).toBe("*.example.com");
+    }
+  });
+
   it("reports fresh running state and normalized status", () => {
     const running = discoveryContainerViewFromDockerInspect(inspect(), "abc123");
     expect(running.running).toBe(true);
