@@ -112,13 +112,22 @@ export function ServiceTlsDrawer({
   const id = useId();
 
   // The domain's persisted policy (desired/installed provider, provenance,
-  // Cloudflare references) — reloaded after every mutation so the form
-  // reflects saved state, while a FAILED mutation never touches the draft.
+  // Cloudflare references) — reloaded after every mutation, and POLLED while
+  // certificate work is in flight: a queued operation can complete while the
+  // drawer sits open, and the installed-provider/transition readouts must
+  // follow the worker's outcome without a user action. The interval is
+  // key-stable per work-state so the resource's effect only re-arms on a
+  // transition, never per render.
+  const activeOperation =
+    service.tlsOperation && service.tlsOperation.state !== "complete" ? service.tlsOperation : null;
+  const tlsWorkActive = !!activeOperation || service.tls?.sslStatus === "provisioning";
+  const policyInterval = useCallback(() => (tlsWorkActive ? 5_000 : 0), [tlsWorkActive]);
   const policyRes = useScopedResource(
     useCallback(
       () => discoveryApi.serviceTls(serverId, service.serviceKey),
       [serverId, service.serviceKey],
     ),
+    policyInterval,
   );
   // Saved Cloudflare credentials (names + status only — secrets never leave
   // the credentials flow) and the provider schema for the inline add form.
@@ -149,12 +158,22 @@ export function ServiceTlsDrawer({
   const saveMutation = useDrawerMutation();
   const ensureMutation = useDrawerMutation();
 
-  // Seed the form from the persisted policy each time it (re)loads — the
-  // resource only refetches after mount, scope change, or a successful
-  // mutation, so user edits are never clobbered by a failure.
+  /**
+   * True once the operator has touched a form field since the last seed or
+   * save. Background policy reads (the in-flight-work poll above) must
+   * PRESERVE those unsaved edits — only a successful save, which persists the
+   * draft, may re-seed the form from server truth.
+   */
+  const userEdited = useRef(false);
+
+  // Seed the form from the persisted policy each time it (re)loads, EXCEPT
+  // while the operator holds unsaved edits: the resource refetches after a
+  // mutation, a scope change, and the work-completion poll, and none of those
+  // may clobber a draft the user is still editing. A FAILED save never
+  // refetches at all, so its draft survives by construction.
   useEffect(() => {
     const policy = policyRes.data;
-    if (!policy) return;
+    if (!policy || userEdited.current) return;
     setProvider(policy.provider);
     setCredentialId(policy.cloudflare?.credentialId ?? "");
     setZoneId(policy.cloudflare?.zoneId ?? "");
@@ -216,6 +235,9 @@ export function ServiceTlsDrawer({
       discoveryApi.configureServiceTls(serverId, service.serviceKey, input),
     );
     if (!saved) return; // inline error retained; the draft is untouched
+    // The draft just became server truth: re-arm seeding so the refreshed
+    // policy lands in the form (identical values for a plain re-save).
+    userEdited.current = false;
     setSavedNote(true);
     policyRes.refresh();
     onChanged();
@@ -241,10 +263,10 @@ export function ServiceTlsDrawer({
     onChanged();
   }
 
-  const activeOperation =
-    service.tlsOperation && service.tlsOperation.state !== "complete" ? service.tlsOperation : null;
   /** Durable operation state in the drawer's own wording (the chip title
-   *  vocabulary stays on the card; here the state leads the line). */
+   *  vocabulary stays on the card; here the state leads the line). `activeOperation`
+   *  itself is computed beside the policy resource — the work-in-flight poll
+   *  keys on it. */
   const operationStateLabel = (
     state: DiscoveryService["tlsOperation"] extends infer T
       ? T extends { state: infer S }
@@ -334,6 +356,9 @@ export function ServiceTlsDrawer({
               onSaved={(credential) => {
                 setAddingCredential(false);
                 held.refresh();
+                // A freshly created credential is an unsaved selection: the
+                // same edit-preservation rule applies to it.
+                userEdited.current = true;
                 setCredentialId(credential.id);
               }}
             />
@@ -404,6 +429,7 @@ export function ServiceTlsDrawer({
                     triggerClassName="bg-muted/60 hover:bg-muted"
                     value={provider}
                     onChange={(value) => {
+                      userEdited.current = true;
                       setProvider(value as ProviderChoice);
                       saveMutation.clearError();
                       setSavedNote(false);
@@ -437,6 +463,7 @@ export function ServiceTlsDrawer({
                           triggerClassName="bg-muted/60 hover:bg-muted"
                           value={credentialId}
                           onChange={(value) => {
+                            userEdited.current = true;
                             setCredentialId(value);
                             saveMutation.clearError();
                           }}
@@ -472,6 +499,7 @@ export function ServiceTlsDrawer({
                         dir="ltr"
                         value={zoneId}
                         onChange={(event) => {
+                          userEdited.current = true;
                           setZoneId(event.target.value.trim());
                           saveMutation.clearError();
                         }}
@@ -491,6 +519,7 @@ export function ServiceTlsDrawer({
                         triggerClassName="bg-muted/60 hover:bg-muted"
                         value={validity}
                         onChange={(value) => {
+                          userEdited.current = true;
                           setValidity(value);
                           saveMutation.clearError();
                         }}

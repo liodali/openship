@@ -796,6 +796,84 @@ describe("DiscoveryCard", () => {
     root.unmount();
   });
 
+  it("the default-provider select RE-ENABLES once the saved value lands — another change needs no reload", async () => {
+    // The PUT succeeds and the confirming read returns the new default: the
+    // optimistic draft must clear, or the control stays disabled until the
+    // page is reopened.
+    let saved = "letsencrypt";
+    discoveryApi.tlsSettings.mockImplementation(async () => ({ defaultProvider: saved }));
+    discoveryApi.configureTlsSettings.mockImplementation(
+      async (_serverId: string, input: { defaultProvider: string }) => {
+        saved = input.defaultProvider;
+        return input;
+      },
+    );
+    const { root } = mount(<DiscoveryCard serverId="srv_1" />);
+    await act(async () => {});
+    const trigger = () =>
+      document.querySelector('button[aria-label="Default TLS provider"]') as HTMLButtonElement;
+    expect(trigger()).not.toBeNull();
+    expect(trigger().disabled).toBe(false);
+    // First change: Let's Encrypt → Cloudflare.
+    await act(async () => {
+      trigger().click();
+    });
+    const cloudflareOption = Array.from(document.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("Cloudflare Origin CA"),
+    );
+    await act(async () => {
+      (cloudflareOption as HTMLButtonElement).click();
+    });
+    await act(async () => {}); // PUT + confirming read land
+    expect(discoveryApi.configureTlsSettings).toHaveBeenCalledWith("srv_1", {
+      defaultProvider: "cloudflare-origin-ca",
+    });
+    // The draft cleared with the refreshed value: usable again, showing the
+    // SAVED default — not a stuck optimistic hold.
+    expect(trigger().disabled).toBe(false);
+    expect(trigger().textContent).toContain("Cloudflare Origin CA");
+    // A second change goes through without reopening anything.
+    await act(async () => {
+      trigger().click();
+    });
+    const letsEncryptOption = Array.from(document.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("Let's Encrypt"),
+    );
+    await act(async () => {
+      (letsEncryptOption as HTMLButtonElement).click();
+    });
+    await act(async () => {});
+    expect(discoveryApi.configureTlsSettings).toHaveBeenLastCalledWith("srv_1", {
+      defaultProvider: "letsencrypt",
+    });
+    expect(trigger().disabled).toBe(false);
+    root.unmount();
+  });
+
+  it("a FAILED defaults read degrades to the error with Retry, never to an editable unknown", async () => {
+    discoveryApi.tlsSettings.mockRejectedValueOnce(
+      new ApiError(502, "Bad Gateway", { error: "The server returned an invalid response." }),
+    );
+    const { root } = mount(<DiscoveryCard serverId="srv_1" />);
+    await act(async () => {});
+    const text = TEXT(document.body);
+    expect(text).toContain("The server returned an invalid response.");
+    expect(text).toContain("Retry");
+    // No select is offered on unknown state.
+    expect(document.querySelector('button[aria-label="Default TLS provider"]')).toBeNull();
+    // Recovery: the retry re-reads and the control returns.
+    discoveryApi.tlsSettings.mockResolvedValue({ defaultProvider: "letsencrypt" });
+    const retry = Array.from(document.querySelectorAll("button")).find(
+      (b) => b.textContent?.trim() === "Retry",
+    );
+    await act(async () => {
+      (retry as HTMLButtonElement).click();
+    });
+    await act(async () => {});
+    expect(document.querySelector('button[aria-label="Default TLS provider"]')).not.toBeNull();
+    root.unmount();
+  });
+
   it("a REJECTED server default change reverts to the saved value and surfaces the failure", async () => {
     discoveryApi.configureTlsSettings.mockRejectedValueOnce(
       new ApiError(403, "Forbidden", { error: "server admin required" }),

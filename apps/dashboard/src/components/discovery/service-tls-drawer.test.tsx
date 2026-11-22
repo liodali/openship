@@ -491,4 +491,139 @@ describe("ServiceTlsDrawer", () => {
     expect(discoveryApi.serviceTls).toHaveBeenCalledTimes(2);
     root.unmount();
   });
+
+  it("follows an in-flight operation to completion — the installed provider updates with no user action", async () => {
+    // A queued operation can finish while the drawer sits open: the policy is
+    // polled while work is active, so the installed-provider/transition
+    // readouts follow the worker instead of freezing at the pre-queue state.
+    vi.useFakeTimers();
+    const running = service({
+      tlsOperation: {
+        operationId: "dtop_1",
+        state: "running",
+        source: "exact",
+        provider: "cloudflare-origin-ca",
+        reason: null,
+        attempts: 1,
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      },
+    });
+    discoveryApi.serviceTls
+      .mockResolvedValueOnce(cloudflarePolicy({ activeProvider: "letsencrypt", state: "pending" }))
+      .mockResolvedValue(
+        cloudflarePolicy({ activeProvider: "cloudflare-origin-ca", state: "active" }),
+      );
+    const { root } = mount(drawer(running));
+    await act(async () => {});
+    let text = TEXT(document.body);
+    expect(text).toContain("Moving to Cloudflare Origin CA");
+    expect(text).toContain("keeps serving until the new one is installed");
+
+    // The worker completes in the background: the next poll lands the new
+    // policy and the stale transition disappears.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_100);
+    });
+    expect(discoveryApi.serviceTls).toHaveBeenCalledTimes(2);
+    text = TEXT(document.body);
+    expect(text).not.toContain("Moving to");
+    expect(text).not.toContain("keeps serving until the new one is installed");
+
+    // The card's row catches up (operation gone): the poll stands down — no
+    // further reads while the drawer idles at the settled state.
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <ToastProvider>
+            <ModalProvider>{drawer(service())}</ModalProvider>
+          </ToastProvider>
+        </I18nProvider>,
+      );
+    });
+    await act(async () => {});
+    const settled = discoveryApi.serviceTls.mock.calls.length;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15_000);
+    });
+    expect(discoveryApi.serviceTls.mock.calls.length).toBe(settled);
+    root.unmount();
+  });
+
+  it("a background policy refresh PRESERVES unsaved form edits", async () => {
+    // The completion poll must not clobber a draft the operator is still
+    // editing: only a successful save may re-seed the form.
+    vi.useFakeTimers();
+    const running = service({
+      tlsOperation: {
+        operationId: "dtop_1",
+        state: "running",
+        source: "exact",
+        provider: "cloudflare-origin-ca",
+        reason: null,
+        attempts: 1,
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      },
+    });
+    discoveryApi.serviceTls.mockResolvedValueOnce(cloudflarePolicy()).mockResolvedValue(
+      cloudflarePolicy({
+        cloudflare: {
+          credentialId: "cred_cf",
+          zoneId: "zone_9",
+          zoneName: "example.com",
+          validityDays: 365,
+        },
+      }),
+    );
+    const { root } = mount(drawer(running));
+    await act(async () => {});
+    // The operator is mid-edit (zone typed, validity untouched at its seeded
+    // 90 days) when the background poll lands a CHANGED policy.
+    const zone = document.querySelector<HTMLInputElement>('input[placeholder^="b2f04038"]');
+    await act(async () => {
+      const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      setValue.call(zone, "zone_edited");
+      zone!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_100);
+    });
+    expect(discoveryApi.serviceTls).toHaveBeenCalledTimes(2);
+    expect(zone!.value).toBe("zone_edited"); // the draft survived the refresh
+    const validityTrigger = Array.from(document.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("90 days"),
+    );
+    expect(validityTrigger).toBeDefined(); // validity kept its seeded 90, not the polled 365
+    root.unmount();
+  });
+
+  it("a SUCCESSFUL save re-seeds the form from the saved policy (the edit flag clears)", async () => {
+    discoveryApi.serviceTls.mockResolvedValueOnce(cloudflarePolicy()).mockResolvedValueOnce(
+      cloudflarePolicy({
+        cloudflare: {
+          credentialId: "cred_cf",
+          zoneId: "zone_saved",
+          zoneName: "example.com",
+          validityDays: 90,
+        },
+      }),
+    );
+    const { root } = mount(drawer(service()));
+    await act(async () => {});
+    const zone = document.querySelector<HTMLInputElement>('input[placeholder^="b2f04038"]');
+    await act(async () => {
+      const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      setValue.call(zone, "zone_edited");
+      zone!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const save = BUTTON((label) => label.includes("Save configuration"));
+    await act(async () => {
+      save!.click();
+    });
+    await act(async () => {});
+    // The save persisted the draft; the post-save refresh re-seeds the form
+    // from server truth (a later server-side change is now visible).
+    expect(discoveryApi.serviceTls).toHaveBeenCalledTimes(2);
+    expect(zone!.value).toBe("zone_saved");
+    root.unmount();
+  });
 });

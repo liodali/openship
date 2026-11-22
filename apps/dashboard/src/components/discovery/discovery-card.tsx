@@ -3,7 +3,7 @@
 import { Icon as UiIcon } from "@repo/ui/icons";
 
 import Link from "next/link";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { discoveryApi, type DiscoveryService, type DiscoveryStatus } from "@/lib/api";
 import {
   isPermissionError,
@@ -139,8 +139,18 @@ export function DiscoveryCard({ serverId, manageHref }: { serverId: string; mana
   const tlsDefaults = useScopedResource(
     useCallback(() => discoveryApi.tlsSettings(serverId), [serverId]),
   );
-  /** Optimistic draft of the default provider; reverted when the PUT fails. */
+  /**
+   * Optimistic draft of the default provider. It holds the choice while the
+   * PUT and its confirmation read are in flight, and is cleared by the effect
+   * below once the SAVED value lands (or immediately when the PUT fails) —
+   * otherwise the select would stay disabled forever after a successful save.
+   */
   const [tlsDefaultDraft, setTlsDefaultDraft] = useState<string | null>(null);
+  useEffect(() => {
+    if (tlsDefaultDraft && tlsDefaults.data?.defaultProvider === tlsDefaultDraft) {
+      setTlsDefaultDraft(null);
+    }
+  }, [tlsDefaultDraft, tlsDefaults.data]);
 
   const configured = !!d.status?.settings.enabled;
 
@@ -154,6 +164,8 @@ export function DiscoveryCard({ serverId, manageHref }: { serverId: string; mana
         );
         if (res.ok) {
           showToast(s.serverTls.saved, "success", s.toastTitle);
+          // The refresh's landing clears the draft (the effect above), which
+          // re-enables the select with the now-persisted value.
           tlsDefaults.refresh();
         } else {
           // Rejected (permission or otherwise): the draft reverts to the
@@ -409,6 +421,7 @@ export function DiscoveryCard({ serverId, manageHref }: { serverId: string; mana
                 loading={tlsDefaults.loading}
                 busy={d.busyKey !== null}
                 onSave={saveTlsDefault}
+                onRetry={tlsDefaults.refresh}
               />
             )}
             <LifecycleNotes />
@@ -604,7 +617,8 @@ function ServiceRow({
  * existing domain's provider, and no Cloudflare credential or zone is stored
  * at server scope — the hint says both. The select stays usable for
  * read-only viewers of the card (the write surfaces its own permission
- * error on attempt; frontend visibility is not the enforcement).
+ * error on attempt; frontend visibility is not the enforcement). A failed
+ * read degrades to the error with Retry, never to an editable unknown.
  */
 function ServerTlsDefaults({
   saved,
@@ -613,15 +627,18 @@ function ServerTlsDefaults({
   loading,
   busy,
   onSave,
+  onRetry,
 }: {
   /** The last SAVED default provider, or null before the first read lands. */
   saved: "letsencrypt" | "cloudflare-origin-ca" | null;
-  /** Optimistic in-flight choice; null = show the saved value. */
+  /** Optimistic in-flight choice; null = show the saved value. Cleared by the
+   *  caller once the saved value lands, so the control stays usable. */
   draft: string | null;
   loadError: string | null;
   loading: boolean;
   busy: boolean;
   onSave: (next: "letsencrypt" | "cloudflare-origin-ca") => void;
+  onRetry(): void;
 }) {
   const { t } = useI18n();
   const s = t.servers.discovery;
@@ -634,9 +651,18 @@ function ServerTlsDefaults({
           <p className="mt-0.5 text-[12px] text-muted-foreground">{s.serverTls.hint}</p>
         </div>
         {loadError ? (
-          <p role="alert" className="text-[12px] text-danger break-words min-w-0">
-            {loadError}
-          </p>
+          <div className="flex items-center gap-2 min-w-0" role="alert">
+            <p className="text-[12px] text-danger break-words min-w-0">{loadError}</p>
+            <button
+              type="button"
+              onClick={onRetry}
+              disabled={busy || loading}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-muted/60 px-3 py-2 text-[12px] font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 shrink-0"
+            >
+              <UiIcon name="refresh" className="size-3.5" />
+              {s.retry}
+            </button>
+          </div>
         ) : (
           <CustomSelect
             aria-label={s.serverTls.label}
