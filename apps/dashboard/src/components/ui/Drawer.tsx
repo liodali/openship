@@ -15,6 +15,7 @@ export function Drawer({
   closeLabel = "Close panel",
   contentKey,
   width = "560px",
+  closeDisabled = false,
   children,
 }: {
   isOpen: boolean;
@@ -23,6 +24,9 @@ export function Drawer({
   closeLabel?: string;
   contentKey?: string;
   width?: string;
+  /** Guard the close control while a write is in flight (backdrop and Escape
+   *  are the caller's onClose to guard). The button stays visible, inert. */
+  closeDisabled?: boolean;
   children: ReactNode;
 }) {
   const reducedMotion = useReducedMotion();
@@ -121,6 +125,7 @@ export function Drawer({
           size="icon"
           aria-label={closeLabel}
           onClick={onClose}
+          disabled={closeDisabled}
           className="absolute right-4 top-4 z-10 rounded-full"
         >
           <Icon name="close" />

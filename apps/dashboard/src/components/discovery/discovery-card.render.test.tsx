@@ -34,12 +34,39 @@ const discoveryApi = vi.hoisted(() => ({
   suppress: vi.fn(),
   unsuppress: vi.fn(),
   forget: vi.fn(),
+  tlsSettings: vi.fn(),
+  configureTlsSettings: vi.fn(),
+  serviceTls: vi.fn(),
+  configureServiceTls: vi.fn(),
+  ensureTls: vi.fn(),
 }));
 
 vi.mock("@/lib/api", async (importOriginal) => {
   const original = await importOriginal<typeof import("@/lib/api")>();
   return { ...original, discoveryApi };
 });
+
+/** Saved-credential reads for the drawer's Cloudflare selector (no secrets). */
+const credentialsApi = vi.hoisted(() => ({
+  providers: vi.fn(),
+  list: vi.fn(),
+}));
+vi.mock("@/lib/api/credentials", async (importOriginal) => {
+  const original = await importOriginal<typeof import("@/lib/api/credentials")>();
+  return { ...original, credentialsApi };
+});
+
+// The scoped-resource hook's identity inputs: a fixed session and scope keep
+// the drawer's reads deterministic without real auth traffic.
+vi.mock("@/lib/auth-client", () => ({
+  useSession: () => ({
+    data: { user: { id: "user_1" }, session: { activeOrganizationId: "" } },
+  }),
+}));
+vi.mock("@/context/CloudResourceContext", () => ({
+  useCloudResourceKey: () => "local",
+  useCloudResourceReady: () => true,
+}));
 
 function service(over: Partial<DiscoveryService> = {}): DiscoveryService {
   return {
@@ -65,13 +92,22 @@ function service(over: Partial<DiscoveryService> = {}): DiscoveryService {
     desiredGeneration: 2,
     appliedGeneration: 2,
     updatedAt: "2026-01-01T00:00:00.000Z",
-    tls: { hostname: "app.example.com", verified: true, sslStatus: "active", sslExpiresAt: null, sslIssuer: null },
+    tls: {
+      hostname: "app.example.com",
+      verified: true,
+      sslStatus: "active",
+      sslExpiresAt: null,
+      sslIssuer: null,
+    },
     tlsOperation: null,
     ...over,
   };
 }
 
-function status(over: Partial<DiscoveryStatus["settings"]> = {}, services: DiscoveryService[] = []): DiscoveryStatus {
+function status(
+  over: Partial<DiscoveryStatus["settings"]> = {},
+  services: DiscoveryService[] = [],
+): DiscoveryStatus {
   return {
     settings: {
       serverId: "srv_1",
@@ -95,7 +131,8 @@ function renderHtml(root: Root, ui: React.ReactElement) {
   return html;
 }
 
-const TEXT = (node: { textContent: string | null }) => (node.textContent ?? "").replace(/\s+/g, " ");
+const TEXT = (node: { textContent: string | null }) =>
+  (node.textContent ?? "").replace(/\s+/g, " ");
 
 function mount(ui: React.ReactElement): { root: Root; host: HTMLElement } {
   const host = document.createElement("div");
@@ -120,7 +157,52 @@ beforeEach(() => {
   discoveryApi.forget.mockResolvedValue({ forgotten: true });
   discoveryApi.suppress.mockResolvedValue(service({ suppressed: true }));
   discoveryApi.unsuppress.mockResolvedValue(service({ suppressed: false }));
-  discoveryApi.rescan.mockResolvedValue({ serverId: "srv_1", failed: [], scan: { scanned: 1, ok: true }, reconcile: null, repair: null });
+  discoveryApi.rescan.mockResolvedValue({
+    serverId: "srv_1",
+    failed: [],
+    scan: { scanned: 1, ok: true },
+    reconcile: null,
+    repair: null,
+  });
+  // Server TLS defaults: the compact row loads once and never fails here.
+  discoveryApi.tlsSettings.mockResolvedValue({ defaultProvider: "letsencrypt" });
+  discoveryApi.configureTlsSettings.mockImplementation(
+    async (_serverId: string, input: { defaultProvider: string }) => input,
+  );
+  // The per-service TLS drawer's policy read (exercised by its own suite).
+  discoveryApi.serviceTls.mockResolvedValue({
+    hostname: "app.example.com",
+    provider: "letsencrypt",
+    activeProvider: null,
+    selectionSource: "default",
+    state: "pending",
+    cloudflare: null,
+    error: null,
+  });
+  discoveryApi.configureServiceTls.mockResolvedValue({
+    hostname: "app.example.com",
+    provider: "letsencrypt",
+    activeProvider: null,
+    selectionSource: "explicit",
+    state: "pending",
+    cloudflare: null,
+    error: null,
+  });
+  discoveryApi.ensureTls.mockResolvedValue({
+    outcome: "queued",
+    hostname: "app.example.com",
+    operationId: "dtop_x",
+  });
+  // Credential catalogue: Cloudflare present, one saved credential.
+  credentialsApi.providers.mockResolvedValue({
+    data: [{ id: "cloudflare", name: "Cloudflare", fields: [], providerKind: "dns" }],
+  });
+  credentialsApi.list.mockResolvedValue({
+    data: [
+      { id: "cred_cf", provider: "cloudflare", name: "zone token", status: "active" },
+      { id: "cred_other", provider: "docker-registry", name: "ghcr", status: "active" },
+    ],
+  });
 });
 
 afterEach(() => {
@@ -130,66 +212,132 @@ afterEach(() => {
 describe("routePhase derivation", () => {
   it("never reads 'active' from a running container alone", () => {
     // Container running + API-visible, but the first apply has not happened.
-    expect(routePhase(service({ applyState: "pending", appliedGeneration: 0, tls: null }))).toBe("pending");
+    expect(routePhase(service({ applyState: "pending", appliedGeneration: 0, tls: null }))).toBe(
+      "pending",
+    );
   });
 
   it("never reads 'active' for a STOPPED backend even when generations match", () => {
     // The reconciler records markApplied AFTER writing the unavailable (503)
     // vhost — matching generations + containerRunning:false is a retained
     // route, not a serving one.
-    expect(routePhase(service({ containerRunning: false, applyState: "applied" }))).toBe("retained");
+    expect(routePhase(service({ containerRunning: false, applyState: "applied" }))).toBe(
+      "retained",
+    );
   });
 
   it("does not claim 'Unavailable' before the retained vhost write is confirmed", () => {
     // A stopped backend whose 503 write FAILED is a failed apply, not a
     // retained route.
-    expect(routePhase(service({ containerRunning: false, applyState: "error", applyError: "edge down" }))).toBe("failed");
+    expect(
+      routePhase(
+        service({ containerRunning: false, applyState: "error", applyError: "edge down" }),
+      ),
+    ).toBe("failed");
     // One whose write is still queued/in flight is reconciling.
-    expect(routePhase(service({ containerRunning: false, applyState: "pending", desiredGeneration: 3, appliedGeneration: 2 }))).toBe("reconciling");
+    expect(
+      routePhase(
+        service({
+          containerRunning: false,
+          applyState: "pending",
+          desiredGeneration: 3,
+          appliedGeneration: 2,
+        }),
+      ),
+    ).toBe("reconciling");
     // A conflict-blocked route never reads as retained either.
     expect(routePhase(service({ containerRunning: false, applyState: "blocked" }))).toBe("blocked");
     // Only the confirmed outcome (applied, generations matching — markApplied
     // runs after the edge write) reads as the retained unavailable form.
-    expect(routePhase(service({ containerRunning: false, applyState: "applied" }))).toBe("retained");
+    expect(routePhase(service({ containerRunning: false, applyState: "applied" }))).toBe(
+      "retained",
+    );
   });
 
   it("a MISSING or INVALID BLOCKED backend reads blocked, never 'Unavailable'", () => {
     // The reconciler removes blocked routes outright (never 503-retained) and
     // only then clears withdrawalPending — the cleared flag confirms REMOVAL,
     // so the missing/invalid retained branch must not capture these rows.
-    expect(routePhase(service({ observationStatus: "missing", applyState: "blocked" }))).toBe("blocked");
-    expect(routePhase(service({ observationStatus: "invalid", applyState: "blocked" }))).toBe("blocked");
+    expect(routePhase(service({ observationStatus: "missing", applyState: "blocked" }))).toBe(
+      "blocked",
+    );
+    expect(routePhase(service({ observationStatus: "invalid", applyState: "blocked" }))).toBe(
+      "blocked",
+    );
     // Unblocked missing rows keep the confirmed retained reading.
-    expect(routePhase(service({ observationStatus: "missing", applyState: "applied" }))).toBe("retained");
+    expect(routePhase(service({ observationStatus: "missing", applyState: "applied" }))).toBe(
+      "retained",
+    );
   });
 
   it("reads retired rows when discovery is disabled, never active", () => {
     // Disable schedules withdrawals, the reconciler retires routes outright,
     // and markWithdrawn only clears the flag — the row keeps applied history,
     // so without the settings check it would render "Route active".
-    expect(routePhase(service({ applyState: "applied" }), { discoveryEnabled: false })).toBe("retired");
-    expect(routePhase(service({ applyState: "applied", withdrawalPending: true }), { discoveryEnabled: false })).toBe("withdrawing");
+    expect(routePhase(service({ applyState: "applied" }), { discoveryEnabled: false })).toBe(
+      "retired",
+    );
+    expect(
+      routePhase(service({ applyState: "applied", withdrawalPending: true }), {
+        discoveryEnabled: false,
+      }),
+    ).toBe("withdrawing");
     // Nothing ever applied on a disabled server has no route truth to state.
-    expect(routePhase(service({ applyState: "pending", appliedGeneration: 0, tls: null }), { discoveryEnabled: false })).toBe("unknown");
+    expect(
+      routePhase(service({ applyState: "pending", appliedGeneration: 0, tls: null }), {
+        discoveryEnabled: false,
+      }),
+    ).toBe("unknown");
   });
 
   it("ranks confirmed truths: withdrawal > suppression > retired > retained > gap > applied", () => {
     expect(routePhase(service({ withdrawalPending: true, suppressed: true }))).toBe("withdrawing");
-    expect(routePhase(service({ suppressed: true, observationStatus: "missing" }))).toBe("suppressed");
-    expect(routePhase(service({ observationStatus: "missing", applyState: "applied" }))).toBe("retained");
+    expect(routePhase(service({ suppressed: true, observationStatus: "missing" }))).toBe(
+      "suppressed",
+    );
+    expect(routePhase(service({ observationStatus: "missing", applyState: "applied" }))).toBe(
+      "retained",
+    );
     expect(routePhase(service({ desiredGeneration: 3, appliedGeneration: 2 }))).toBe("reconciling");
     expect(routePhase(service())).toBe("active");
     // A NEVER-applied missing backend is not "retained" — nothing existed to retain.
-    expect(routePhase(service({ observationStatus: "missing", applyState: "pending", appliedGeneration: 0, tls: null }))).toBe("pending");
+    expect(
+      routePhase(
+        service({
+          observationStatus: "missing",
+          applyState: "pending",
+          appliedGeneration: 0,
+          tls: null,
+        }),
+      ),
+    ).toBe("pending");
   });
 });
 
 describe("discoveryNeedsPolling", () => {
   it("polls while reconciliation, withdrawal, retry, or issuance is pending", () => {
-    expect(discoveryNeedsPolling(status({}, [service({ desiredGeneration: 3, appliedGeneration: 2 })]))).toBe(true);
+    expect(
+      discoveryNeedsPolling(status({}, [service({ desiredGeneration: 3, appliedGeneration: 2 })])),
+    ).toBe(true);
     expect(discoveryNeedsPolling(status({}, [service({ withdrawalPending: true })]))).toBe(true);
-    expect(discoveryNeedsPolling(status({}, [service({ applyState: "error", applyError: "x" })]))).toBe(true);
-    expect(discoveryNeedsPolling(status({}, [service({ tls: { hostname: "h", verified: false, sslStatus: "provisioning", sslExpiresAt: null, sslIssuer: null } })]))).toBe(true);
+    expect(
+      discoveryNeedsPolling(status({}, [service({ applyState: "error", applyError: "x" })])),
+    ).toBe(true);
+    expect(
+      discoveryNeedsPolling(
+        status({}, [
+          service({
+            tls: {
+              hostname: "h",
+              verified: false,
+              sslStatus: "provisioning",
+              sslExpiresAt: null,
+              sslIssuer: null,
+            },
+          }),
+        ]),
+      ),
+    ).toBe(true);
     expect(discoveryNeedsPolling(status({}, [service()]))).toBe(false);
   });
 
@@ -226,13 +374,43 @@ describe("DiscoveryCard", () => {
   });
 
   it("renders confirmed route phases as chips, never as 'active' from a running container", async () => {
-    discoveryApi.status.mockResolvedValue(status({}, [
-      service(),
-      service({ serviceKey: "id:gap", id: "dsb_2", hostname: "gap.example.com", containerName: "gap", desiredGeneration: 3, appliedGeneration: 2 }),
-      service({ serviceKey: "id:gone", id: "dsb_3", hostname: "gone.example.com", containerName: "gone", observationStatus: "missing", applyState: "applied" }),
-      service({ serviceKey: "id:sup", id: "dsb_4", hostname: "sup.example.com", containerName: "sup", suppressed: true, containerRunning: true }),
-      service({ serviceKey: "id:stopped", id: "dsb_5", hostname: "stopped.example.com", containerName: "stopped", containerRunning: false, applyState: "applied" }),
-    ]));
+    discoveryApi.status.mockResolvedValue(
+      status({}, [
+        service(),
+        service({
+          serviceKey: "id:gap",
+          id: "dsb_2",
+          hostname: "gap.example.com",
+          containerName: "gap",
+          desiredGeneration: 3,
+          appliedGeneration: 2,
+        }),
+        service({
+          serviceKey: "id:gone",
+          id: "dsb_3",
+          hostname: "gone.example.com",
+          containerName: "gone",
+          observationStatus: "missing",
+          applyState: "applied",
+        }),
+        service({
+          serviceKey: "id:sup",
+          id: "dsb_4",
+          hostname: "sup.example.com",
+          containerName: "sup",
+          suppressed: true,
+          containerRunning: true,
+        }),
+        service({
+          serviceKey: "id:stopped",
+          id: "dsb_5",
+          hostname: "stopped.example.com",
+          containerName: "stopped",
+          containerRunning: false,
+          applyState: "applied",
+        }),
+      ]),
+    );
     const { root } = mount(<DiscoveryCard serverId="srv_1" />);
     await act(async () => {});
     const text = TEXT(document.body);
@@ -246,11 +424,26 @@ describe("DiscoveryCard", () => {
   });
 
   it("renders the hostname as an external link in every phase — including the retained unavailable page", async () => {
-    discoveryApi.status.mockResolvedValue(status({}, [
-      service(),
-      service({ serviceKey: "id:stopped", id: "dsb_2", hostname: "stopped.example.com", containerName: "stopped", containerRunning: false, applyState: "applied" }),
-      service({ serviceKey: "id:sup", id: "dsb_3", hostname: "sup.example.com", containerName: "sup", suppressed: true }),
-    ]));
+    discoveryApi.status.mockResolvedValue(
+      status({}, [
+        service(),
+        service({
+          serviceKey: "id:stopped",
+          id: "dsb_2",
+          hostname: "stopped.example.com",
+          containerName: "stopped",
+          containerRunning: false,
+          applyState: "applied",
+        }),
+        service({
+          serviceKey: "id:sup",
+          id: "dsb_3",
+          hostname: "sup.example.com",
+          containerName: "sup",
+          suppressed: true,
+        }),
+      ]),
+    );
     const { root } = mount(<DiscoveryCard serverId="srv_1" />);
     await act(async () => {});
 
@@ -317,7 +510,9 @@ describe("DiscoveryCard", () => {
   it("confirms before disabling, then configures enabled:false", async () => {
     const { root } = mount(<DiscoveryCard serverId="srv_1" />);
     await act(async () => {});
-    const switches = Array.from(document.querySelectorAll('button[aria-label="Container discovery"]'));
+    const switches = Array.from(
+      document.querySelectorAll('button[aria-label="Container discovery"]'),
+    );
     expect(switches.length).toBeGreaterThan(0);
     await act(async () => {
       (switches[0] as HTMLButtonElement).click();
@@ -325,7 +520,9 @@ describe("DiscoveryCard", () => {
     // Confirmation modal first — no mutation yet.
     expect(discoveryApi.configure).not.toHaveBeenCalled();
     expect(TEXT(document.body)).toContain("Disable and remove routes");
-    const confirm = Array.from(document.querySelectorAll("button")).find((b) => b.textContent?.includes("Disable and remove routes"));
+    const confirm = Array.from(document.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("Disable and remove routes"),
+    );
     await act(async () => {
       (confirm as HTMLButtonElement).click();
     });
@@ -349,21 +546,30 @@ describe("DiscoveryCard", () => {
     discoveryApi.status.mockResolvedValue(status({}, [service()]));
     let releaseForget: (() => void) | null = null;
     discoveryApi.forget.mockImplementation(
-      () => new Promise<{ forgotten: boolean }>((resolve) => { releaseForget = () => resolve({ forgotten: true }); }),
+      () =>
+        new Promise<{ forgotten: boolean }>((resolve) => {
+          releaseForget = () => resolve({ forgotten: true });
+        }),
     );
     const { root } = mount(<DiscoveryCard serverId="srv_1" />);
     await act(async () => {});
-    const trigger = document.querySelector('button[aria-label="Service actions"]') as HTMLButtonElement;
+    const trigger = document.querySelector(
+      'button[aria-label="Service actions"]',
+    ) as HTMLButtonElement;
     await act(async () => {
       trigger.click();
     });
-    const forgetItem = Array.from(document.querySelectorAll("button")).find((b) => b.textContent?.includes("Forget"));
+    const forgetItem = Array.from(document.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("Forget"),
+    );
     await act(async () => {
       (forgetItem as HTMLButtonElement).click();
     });
     // Modal first.
     expect(discoveryApi.forget).not.toHaveBeenCalled();
-    const confirm = Array.from(document.querySelectorAll("button")).find((b) => b.textContent?.includes("Forget service"));
+    const confirm = Array.from(document.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("Forget service"),
+    );
     await act(async () => {
       (confirm as HTMLButtonElement).click();
     });
@@ -374,7 +580,9 @@ describe("DiscoveryCard", () => {
     await act(async () => {
       trigger.click();
     });
-    const forgetAgain = Array.from(document.querySelectorAll("button")).find((b) => b.textContent?.includes("Forget"));
+    const forgetAgain = Array.from(document.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("Forget"),
+    );
     await act(async () => {
       if (forgetAgain) forgetAgain.click();
     });
@@ -415,7 +623,10 @@ describe("DiscoveryCard", () => {
       failed: [],
       scan: { scanned: 3, ok: true },
       reconcile: {
-        applied: [], removed: [], retained: [], withdrawals: [],
+        applied: [],
+        removed: [],
+        retained: [],
+        withdrawals: [],
         failed: [{ serviceKey: "id:my-app", reason: "edge down" }],
         ok: false,
       },
@@ -423,7 +634,9 @@ describe("DiscoveryCard", () => {
     });
     const { root } = mount(<DiscoveryCard serverId="srv_1" />);
     await act(async () => {});
-    const rescanButton = Array.from(document.querySelectorAll("button")).find((b) => b.textContent?.includes("Rescan"));
+    const rescanButton = Array.from(document.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("Rescan"),
+    );
     await act(async () => {
       (rescanButton as HTMLButtonElement).click();
     });
@@ -437,7 +650,9 @@ describe("DiscoveryCard", () => {
   it("a clean rescan still shows success", async () => {
     const { root } = mount(<DiscoveryCard serverId="srv_1" />);
     await act(async () => {});
-    const rescanButton = Array.from(document.querySelectorAll("button")).find((b) => b.textContent?.includes("Rescan"));
+    const rescanButton = Array.from(document.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("Rescan"),
+    );
     await act(async () => {
       (rescanButton as HTMLButtonElement).click();
     });
@@ -450,11 +665,15 @@ describe("DiscoveryCard", () => {
     // documented summary (and the network can fail) — either way the card
     // must report a failure, not toast "Rescan complete" for an UNKNOWN sweep.
     discoveryApi.rescan.mockRejectedValue(
-      new ApiError(502, "Invalid discovery response", { error: "The server returned an invalid response." }),
+      new ApiError(502, "Invalid discovery response", {
+        error: "The server returned an invalid response.",
+      }),
     );
     const { root } = mount(<DiscoveryCard serverId="srv_1" />);
     await act(async () => {});
-    const rescanButton = Array.from(document.querySelectorAll("button")).find((b) => b.textContent?.includes("Rescan"));
+    const rescanButton = Array.from(document.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("Rescan"),
+    );
     await act(async () => {
       (rescanButton as HTMLButtonElement).click();
     });
@@ -466,7 +685,9 @@ describe("DiscoveryCard", () => {
 
   it("polls only while reconciliation is pending, and stops after unmount", async () => {
     vi.useFakeTimers();
-    discoveryApi.status.mockResolvedValueOnce(status({}, [service({ desiredGeneration: 3, appliedGeneration: 2 })]));
+    discoveryApi.status.mockResolvedValueOnce(
+      status({}, [service({ desiredGeneration: 3, appliedGeneration: 2 })]),
+    );
     discoveryApi.status.mockResolvedValue(status({}, [service()]));
     const { root } = mount(<DiscoveryCard serverId="srv_1" />);
     await act(async () => {}); // flush the initial read so the pending state settles
@@ -493,9 +714,13 @@ describe("DiscoveryCard", () => {
     // must be discarded — a slow poll must never overwrite fresher data.
     discoveryApi.status.mockResolvedValue(status({ enabled: false }, []));
     let releaseSlow: ((v: DiscoveryStatus) => void) | null = null;
-    const slow = new Promise<DiscoveryStatus>((resolve) => { releaseSlow = resolve; });
+    const slow = new Promise<DiscoveryStatus>((resolve) => {
+      releaseSlow = resolve;
+    });
     discoveryApi.status.mockImplementationOnce(() => slow); // request 1 (the mount read)
-    discoveryApi.status.mockResolvedValueOnce(status({ enabled: true }, [service({ hostname: "fresh.example.com" })])); // request 2
+    discoveryApi.status.mockResolvedValueOnce(
+      status({ enabled: true }, [service({ hostname: "fresh.example.com" })]),
+    ); // request 2
 
     const { root } = mount(<DiscoveryCard serverId="srv_1" />);
     await act(async () => {});
@@ -514,6 +739,118 @@ describe("DiscoveryCard", () => {
     });
     expect(TEXT(document.body)).toContain("fresh.example.com");
     expect(TEXT(document.body)).not.toContain("stale.example.com");
+    root.unmount();
+  });
+
+  it("every service's menu offers Configure TLS, which opens the per-service drawer", async () => {
+    discoveryApi.status.mockResolvedValue(status({}, [service()]));
+    const { root } = mount(<DiscoveryCard serverId="srv_1" />);
+    await act(async () => {});
+    const trigger = document.querySelector(
+      'button[aria-label="Service actions"]',
+    ) as HTMLButtonElement;
+    await act(async () => {
+      trigger.click();
+    });
+    const item = Array.from(document.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("Configure TLS"),
+    );
+    expect(item).toBeDefined();
+    await act(async () => {
+      (item as HTMLButtonElement).click();
+    });
+    // The drawer opened and loaded THIS service's policy (the key travels as
+    // the stable identity; the api module owns URL encoding).
+    expect(discoveryApi.serviceTls).toHaveBeenCalledWith("srv_1", "id:my-app");
+    expect(TEXT(document.body)).toContain("Managed HTTPS for app.example.com");
+    root.unmount();
+  });
+
+  it("the server TLS default row loads once and PUTs the choice, toasting on success", async () => {
+    const { root } = mount(<DiscoveryCard serverId="srv_1" />);
+    await act(async () => {});
+    expect(discoveryApi.tlsSettings).toHaveBeenCalledWith("srv_1");
+    const text = TEXT(document.body);
+    expect(text).toContain("Default TLS provider");
+    // New enrollments only, and nothing Cloudflare stored at server scope.
+    expect(text).toContain("newly enrolled domains only");
+    // The select trigger shows the SAVED default.
+    const selectTrigger = Array.from(document.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("Let's Encrypt"),
+    );
+    expect(selectTrigger).toBeDefined();
+    // Choose Cloudflare through the select's menu surface.
+    await act(async () => {
+      (selectTrigger as HTMLButtonElement).click();
+    });
+    const cloudflareOption = Array.from(document.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("Cloudflare Origin CA"),
+    );
+    await act(async () => {
+      (cloudflareOption as HTMLButtonElement).click();
+    });
+    expect(discoveryApi.configureTlsSettings).toHaveBeenCalledWith("srv_1", {
+      defaultProvider: "cloudflare-origin-ca",
+    });
+    expect(TEXT(document.body)).toContain("Server default saved");
+    root.unmount();
+  });
+
+  it("a REJECTED server default change reverts to the saved value and surfaces the failure", async () => {
+    discoveryApi.configureTlsSettings.mockRejectedValueOnce(
+      new ApiError(403, "Forbidden", { error: "server admin required" }),
+    );
+    const { root } = mount(<DiscoveryCard serverId="srv_1" />);
+    await act(async () => {});
+    const selectTrigger = Array.from(document.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("Let's Encrypt"),
+    );
+    await act(async () => {
+      (selectTrigger as HTMLButtonElement).click();
+    });
+    const cloudflareOption = Array.from(document.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("Cloudflare Origin CA"),
+    );
+    await act(async () => {
+      (cloudflareOption as HTMLButtonElement).click();
+    });
+    // The permission failure reaches the operator; the select never keeps the
+    // unwritten value.
+    expect(TEXT(document.body)).toContain(
+      "You don't have permission to manage discovery on this server.",
+    );
+    root.unmount();
+  });
+
+  it("a drawer mutation refreshes the card's service state (operation/expiry follow)", async () => {
+    discoveryApi.status.mockResolvedValue(status({}, [service()]));
+    const { root } = mount(<DiscoveryCard serverId="srv_1" />);
+    await act(async () => {});
+    const trigger = document.querySelector(
+      'button[aria-label="Service actions"]',
+    ) as HTMLButtonElement;
+    await act(async () => {
+      trigger.click();
+    });
+    const item = Array.from(document.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("Configure TLS"),
+    );
+    await act(async () => {
+      (item as HTMLButtonElement).click();
+    });
+    await act(async () => {});
+    const statusCallsBefore = discoveryApi.status.mock.calls.length;
+    // Any drawer mutation calls onChanged → the card re-reads its status so
+    // the row's TLS operation state follows the server-side outcome.
+    const ensureButton = Array.from(document.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("Ensure certificate"),
+    );
+    await act(async () => {
+      (ensureButton as HTMLButtonElement).click();
+    });
+    await act(async () => {});
+    expect(discoveryApi.ensureTls).toHaveBeenCalledWith("srv_1", "id:my-app");
+    expect(discoveryApi.status.mock.calls.length).toBeGreaterThan(statusCallsBefore);
     root.unmount();
   });
 });

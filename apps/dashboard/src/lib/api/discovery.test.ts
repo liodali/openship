@@ -37,20 +37,18 @@ describe("discoveryApi", () => {
       undefined,
     );
     discoveryApi.service("srv_1", "id:my-app", { signal: expect.any(AbortSignal) });
-    expect(api.get).toHaveBeenCalledWith(
-      "discovery/servers/srv_1/discovery/services/id%3Amy-app",
-      { signal: expect.any(AbortSignal) },
-    );
+    expect(api.get).toHaveBeenCalledWith("discovery/servers/srv_1/discovery/services/id%3Amy-app", {
+      signal: expect.any(AbortSignal),
+    });
   });
 
   it("TLS configuration APIs ride the same URL rules", () => {
     discoveryApi.tlsSettings("srv_1");
     expect(api.get).toHaveBeenCalledWith("discovery/servers/srv_1/discovery/tls", undefined);
     discoveryApi.configureTlsSettings("srv_1", { defaultProvider: "cloudflare-origin-ca" });
-    expect(api.put).toHaveBeenCalledWith(
-      "discovery/servers/srv_1/discovery/tls",
-      { defaultProvider: "cloudflare-origin-ca" },
-    );
+    expect(api.put).toHaveBeenCalledWith("discovery/servers/srv_1/discovery/tls", {
+      defaultProvider: "cloudflare-origin-ca",
+    });
     discoveryApi.serviceTls("srv_1", "id:my-app");
     expect(api.get).toHaveBeenCalledWith(
       "discovery/servers/srv_1/discovery/services/id%3Amy-app/tls",
@@ -62,7 +60,24 @@ describe("discoveryApi", () => {
     });
     expect(api.put).toHaveBeenCalledWith(
       "discovery/servers/srv_1/discovery/services/compose%3Aproj%2Fserv/tls",
-      { provider: "cloudflare-origin-ca", cloudflare: { credentialId: "cred_1", zoneId: "zone_1" } },
+      {
+        provider: "cloudflare-origin-ca",
+        cloudflare: { credentialId: "cred_1", zoneId: "zone_1" },
+      },
+      { timeout: 30_000, dedupe: false },
+    );
+    // The ensure action rides the same single-segment rule: a Compose key's
+    // slash MUST stay percent-encoded or the router matches it as a separator.
+    discoveryApi.ensureTls("srv_1", "compose:proj/serv");
+    expect(api.post).toHaveBeenCalledWith(
+      "discovery/servers/srv_1/discovery/services/compose%3Aproj%2Fserv/tls/ensure",
+      {},
+      { timeout: 30_000, dedupe: false },
+    );
+    discoveryApi.ensureTls("srv_1", "id:my-app");
+    expect(api.post).toHaveBeenCalledWith(
+      "discovery/servers/srv_1/discovery/services/id%3Amy-app/tls/ensure",
+      {},
       { timeout: 30_000, dedupe: false },
     );
   });
@@ -98,11 +113,10 @@ describe("discoveryApi", () => {
       repair: null,
     });
     await discoveryApi.rescan("srv_1");
-    expect(api.post).toHaveBeenCalledWith(
-      "discovery/servers/srv_1/discovery/rescan",
-      undefined,
-      { timeout: 180_000, dedupe: false },
-    );
+    expect(api.post).toHaveBeenCalledWith("discovery/servers/srv_1/discovery/rescan", undefined, {
+      timeout: 180_000,
+      dedupe: false,
+    });
   });
 
   it("rejects an HTTP 200 rescan body that is not the documented summary", async () => {
@@ -117,9 +131,6 @@ describe("discoveryApi", () => {
 
   it("sends the enable/disable toggle as the JSON body of the PUT", () => {
     discoveryApi.configure("srv_1", { enabled: false });
-    expect(api.put).toHaveBeenCalledWith(
-      "discovery/servers/srv_1/discovery",
-      { enabled: false },
-    );
+    expect(api.put).toHaveBeenCalledWith("discovery/servers/srv_1/discovery", { enabled: false });
   });
 });

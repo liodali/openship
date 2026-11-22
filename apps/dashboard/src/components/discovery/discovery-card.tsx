@@ -3,18 +3,21 @@
 import { Icon as UiIcon } from "@repo/ui/icons";
 
 import Link from "next/link";
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import { discoveryApi, type DiscoveryService, type DiscoveryStatus } from "@/lib/api";
 import {
   isPermissionError,
   rescanFailureDetail,
   useServerDiscovery,
 } from "@/hooks/useServerDiscovery";
+import { useScopedResource } from "@/hooks/use-scoped-resource";
 import { useI18n, interpolate } from "@/components/i18n-provider";
 import { useToast } from "@/context/ToastContext";
 import { useModal } from "@/context/ModalContext";
 import { Switch } from "@/components/ui/Switch";
 import DropdownMenu from "@/components/ui/DropdownMenu";
+import { CustomSelect } from "@/components/ui/CustomSelect";
+import { ServiceTlsDrawer } from "./service-tls-drawer";
 
 /**
  * Server container discovery (docs/docker-service-discovery-plan.md, step 6).
@@ -61,7 +64,10 @@ export type DiscoveryRoutePhase =
   | "pending"
   | "unknown";
 
-export function routePhase(s: DiscoveryService, opts: { discoveryEnabled?: boolean } = {}): DiscoveryRoutePhase {
+export function routePhase(
+  s: DiscoveryService,
+  opts: { discoveryEnabled?: boolean } = {},
+): DiscoveryRoutePhase {
   const discoveryEnabled = opts.discoveryEnabled ?? true;
   if (s.withdrawalPending) return "withdrawing";
   if (s.suppressed) return "suppressed";
@@ -125,14 +131,52 @@ export function DiscoveryCard({ serverId, manageHref }: { serverId: string; mana
   const { showModal, hideModal } = useModal();
   const d = useServerDiscovery(serverId);
 
+  /** The service whose "Configure TLS" drawer is open (identity + row state). */
+  const [tlsService, setTlsService] = useState<DiscoveryService | null>(null);
+
+  // Server managed-TLS defaults (new enrollments only). Read-gated like the
+  // card itself; the WRITE surfaces its own permission error on attempt.
+  const tlsDefaults = useScopedResource(
+    useCallback(() => discoveryApi.tlsSettings(serverId), [serverId]),
+  );
+  /** Optimistic draft of the default provider; reverted when the PUT fails. */
+  const [tlsDefaultDraft, setTlsDefaultDraft] = useState<string | null>(null);
+
   const configured = !!d.status?.settings.enabled;
+
+  const saveTlsDefault = useCallback(
+    (next: "letsencrypt" | "cloudflare-origin-ca") => {
+      if (d.busyKey) return;
+      setTlsDefaultDraft(next);
+      void (async () => {
+        const res = await d.runAction("tls-default", () =>
+          discoveryApi.configureTlsSettings(serverId, { defaultProvider: next }),
+        );
+        if (res.ok) {
+          showToast(s.serverTls.saved, "success", s.toastTitle);
+          tlsDefaults.refresh();
+        } else {
+          // Rejected (permission or otherwise): the draft reverts to the
+          // last SAVED value — the select must not advertise a write that
+          // did not land.
+          setTlsDefaultDraft(null);
+          if (res.error) {
+            showToast(res.permission ? s.permissionDenied : res.error, "error", s.toastTitle);
+          }
+        }
+      })();
+    },
+    [d, serverId, s, showToast, tlsDefaults],
+  );
 
   const toggle = useCallback(
     (next: boolean) => {
       if (d.busyKey) return;
       const run = () =>
         void (async () => {
-          const res = await d.runAction("configure", () => discoveryApi.configure(serverId, { enabled: next }));
+          const res = await d.runAction("configure", () =>
+            discoveryApi.configure(serverId, { enabled: next }),
+          );
           if (res.ok) {
             showToast(next ? s.toast.enabled : s.toast.disabled, "success", s.toastTitle);
           } else if (res.error) {
@@ -190,9 +234,21 @@ export function DiscoveryCard({ serverId, manageHref }: { serverId: string; mana
     (kind: "suppress" | "unsuppress" | "forget", service: DiscoveryService) => {
       if (d.busyKey) return;
       const copy = {
-        suppress: { title: s.confirm.suppressTitle, message: s.confirm.suppressMessage, confirm: s.confirm.suppressConfirm, done: s.toast.suppressed, variant: "danger" },
+        suppress: {
+          title: s.confirm.suppressTitle,
+          message: s.confirm.suppressMessage,
+          confirm: s.confirm.suppressConfirm,
+          done: s.toast.suppressed,
+          variant: "danger",
+        },
         unsuppress: null,
-        forget: { title: interpolate(s.confirm.forgetTitle, { service: service.hostname }), message: s.confirm.forgetMessage, confirm: s.confirm.forgetConfirm, done: s.toast.forgotten, variant: "danger" },
+        forget: {
+          title: interpolate(s.confirm.forgetTitle, { service: service.hostname }),
+          message: s.confirm.forgetMessage,
+          confirm: s.confirm.forgetConfirm,
+          done: s.toast.forgotten,
+          variant: "danger",
+        },
       }[kind];
 
       const run = () =>
@@ -239,6 +295,12 @@ export function DiscoveryCard({ serverId, manageHref }: { serverId: string; mana
   );
 
   const services = d.status?.services ?? [];
+  // The drawer's row view: the card's CURRENT status row when present, the
+  // opening snapshot as a fallback (a forgotten service keeps its drawer
+  // readable from the captured identity).
+  const currentTlsService = tlsService
+    ? (services.find((row) => row.serviceKey === tlsService.serviceKey) ?? tlsService)
+    : null;
 
   return (
     <div className="bg-card rounded-2xl">
@@ -270,7 +332,10 @@ export function DiscoveryCard({ serverId, manageHref }: { serverId: string; mana
               title={d.busyKey ? s.busyHint : undefined}
               className="inline-flex items-center gap-2 rounded-lg bg-muted/30 px-3 py-2 text-[12px] font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
             >
-              <UiIcon name={d.rescanning ? "spinner" : "refresh"} className={`size-3.5 ${d.rescanning ? "animate-spin" : ""}`} />
+              <UiIcon
+                name={d.rescanning ? "spinner" : "refresh"}
+                className={`size-3.5 ${d.rescanning ? "animate-spin" : ""}`}
+              />
               {d.rescanning ? s.rescanning : s.rescan}
             </button>
           )}
@@ -278,7 +343,12 @@ export function DiscoveryCard({ serverId, manageHref }: { serverId: string; mana
             <span className="text-[12px] font-medium text-muted-foreground">
               {configured ? s.enabledLabel : s.disabledLabel}
             </span>
-            <Switch checked={configured} onChange={toggle} disabled={d.busyKey !== null} ariaLabel={s.title} />
+            <Switch
+              checked={configured}
+              onChange={toggle}
+              disabled={d.busyKey !== null}
+              ariaLabel={s.title}
+            />
           </div>
         </div>
       </div>
@@ -310,7 +380,9 @@ export function DiscoveryCard({ serverId, manageHref }: { serverId: string; mana
             {d.status.settings.lastScanError && (
               <div className="rounded-xl border border-warning-border bg-warning-bg px-4 py-3">
                 <p className="text-[12px] font-medium text-foreground">{s.scanFailedLabel}</p>
-                <p className="mt-1 text-[12px] text-muted-foreground break-words">{d.status.settings.lastScanError}</p>
+                <p className="mt-1 text-[12px] text-muted-foreground break-words">
+                  {d.status.settings.lastScanError}
+                </p>
               </div>
             )}
             {services.length === 0 ? (
@@ -324,14 +396,38 @@ export function DiscoveryCard({ serverId, manageHref }: { serverId: string; mana
                     busyKey={d.busyKey}
                     discoveryEnabled={d.status?.settings.enabled ?? false}
                     onAction={(kind) => serviceAction(kind, service)}
+                    onConfigureTls={() => setTlsService(service)}
                   />
                 ))}
               </ul>
+            )}
+            {d.status && (
+              <ServerTlsDefaults
+                saved={tlsDefaults.data?.defaultProvider ?? null}
+                draft={tlsDefaultDraft}
+                loadError={tlsDefaults.error}
+                loading={tlsDefaults.loading}
+                busy={d.busyKey !== null}
+                onSave={saveTlsDefault}
+              />
             )}
             <LifecycleNotes />
           </div>
         )}
       </div>
+
+      {tlsService && (
+        <ServiceTlsDrawer
+          serverId={serverId}
+          service={currentTlsService ?? tlsService}
+          onClose={() => setTlsService(null)}
+          // After a mutation the card re-reads its status; the row snapshot the
+          // drawer displays is recomputed from that status below, so the
+          // operation/expiry readouts follow the server-side outcome instead
+          // of the pre-mutation capture.
+          onChanged={() => void d.refresh({ silent: true })}
+        />
+      )}
     </div>
   );
 }
@@ -341,11 +437,13 @@ function ServiceRow({
   busyKey,
   discoveryEnabled,
   onAction,
+  onConfigureTls,
 }: {
   service: DiscoveryService;
   busyKey: string | null;
   discoveryEnabled: boolean;
   onAction: (kind: "suppress" | "unsuppress" | "forget") => void;
+  onConfigureTls(): void;
 }) {
   const { t } = useI18n();
   const s = t.servers.discovery;
@@ -367,9 +465,14 @@ function ServiceRow({
               className="group inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md text-sm font-medium text-foreground transition-colors hover:text-primary focus-visible:outline-2 focus-visible:outline-ring"
             >
               <span className="truncate">{service.hostname}</span>
-              <UiIcon name="external-link" className="size-3.5 shrink-0 text-muted-foreground transition-colors group-hover:text-primary" />
+              <UiIcon
+                name="external-link"
+                className="size-3.5 shrink-0 text-muted-foreground transition-colors group-hover:text-primary"
+              />
             </a>
-            <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${PHASE_TONE[phase]}`}>
+            <span
+              className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${PHASE_TONE[phase]}`}
+            >
               {s.routeState[phase]}
             </span>
             {service.tls && (
@@ -380,7 +483,9 @@ function ServiceRow({
                 <UiIcon name={service.tls.verified ? "verified" : "lock"} className="size-3" />
                 {tlsLabel(service, s.tlsState)}
                 {tlsProviderLabel(service, s.tlsState) && (
-                  <span className="text-muted-foreground/70">· {tlsProviderLabel(service, s.tlsState)}</span>
+                  <span className="text-muted-foreground/70">
+                    · {tlsProviderLabel(service, s.tlsState)}
+                  </span>
                 )}
               </span>
             )}
@@ -410,15 +515,33 @@ function ServiceRow({
           </div>
         </div>
         <div className="flex items-center gap-2">
-          {busyKey === `forget:${service.serviceKey}` || busyKey === `suppress:${service.serviceKey}` || busyKey === `unsuppress:${service.serviceKey}` ? (
+          {busyKey === `forget:${service.serviceKey}` ||
+          busyKey === `suppress:${service.serviceKey}` ||
+          busyKey === `unsuppress:${service.serviceKey}` ? (
             <UiIcon name="spinner" className="size-4 animate-spin text-muted-foreground" />
           ) : null}
           <DropdownMenu
             triggerLabel={s.actionsLabel}
             actions={[
+              {
+                id: "configure-tls",
+                label: s.serviceLabel.configureTls,
+                icon: <UiIcon name="lock" className="size-4" />,
+                onClick: onConfigureTls,
+              },
               service.suppressed
-                ? { id: "unsuppress", label: s.serviceLabel.unsuppress, icon: <UiIcon name="check" className="size-4" />, onClick: () => onAction("unsuppress") }
-                : { id: "suppress", label: s.serviceLabel.suppress, icon: <UiIcon name="eye-off" className="size-4" />, onClick: () => onAction("suppress") },
+                ? {
+                    id: "unsuppress",
+                    label: s.serviceLabel.unsuppress,
+                    icon: <UiIcon name="check" className="size-4" />,
+                    onClick: () => onAction("unsuppress"),
+                  }
+                : {
+                    id: "suppress",
+                    label: s.serviceLabel.suppress,
+                    icon: <UiIcon name="eye-off" className="size-4" />,
+                    onClick: () => onAction("suppress"),
+                  },
               {
                 id: "forget",
                 label: s.serviceLabel.forget,
@@ -454,7 +577,9 @@ function ServiceRow({
       )}
       {phase === "retained" && (
         <p className="mt-3 text-[12px] text-muted-foreground">
-          {service.observationStatus === "invalid" ? s.routeHints.retainedInvalid : s.routeHints.retained}
+          {service.observationStatus === "invalid"
+            ? s.routeHints.retainedInvalid
+            : s.routeHints.retained}
         </p>
       )}
       {phase === "suppressed" && (
@@ -473,6 +598,65 @@ function ServiceRow({
   );
 }
 
+/**
+ * The server's managed-TLS default (new enrollments only). A compact row with
+ * the same select the per-domain form uses; changing it never switches an
+ * existing domain's provider, and no Cloudflare credential or zone is stored
+ * at server scope — the hint says both. The select stays usable for
+ * read-only viewers of the card (the write surfaces its own permission
+ * error on attempt; frontend visibility is not the enforcement).
+ */
+function ServerTlsDefaults({
+  saved,
+  draft,
+  loadError,
+  loading,
+  busy,
+  onSave,
+}: {
+  /** The last SAVED default provider, or null before the first read lands. */
+  saved: "letsencrypt" | "cloudflare-origin-ca" | null;
+  /** Optimistic in-flight choice; null = show the saved value. */
+  draft: string | null;
+  loadError: string | null;
+  loading: boolean;
+  busy: boolean;
+  onSave: (next: "letsencrypt" | "cloudflare-origin-ca") => void;
+}) {
+  const { t } = useI18n();
+  const s = t.servers.discovery;
+  const value = (draft ?? saved ?? "letsencrypt") as "letsencrypt" | "cloudflare-origin-ca";
+  return (
+    <div className="rounded-xl bg-muted/20 px-4 py-3">
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <div className="min-w-0">
+          <p className="text-[12px] font-medium text-muted-foreground">{s.serverTls.label}</p>
+          <p className="mt-0.5 text-[12px] text-muted-foreground">{s.serverTls.hint}</p>
+        </div>
+        {loadError ? (
+          <p role="alert" className="text-[12px] text-danger break-words min-w-0">
+            {loadError}
+          </p>
+        ) : (
+          <CustomSelect
+            aria-label={s.serverTls.label}
+            variant="filled"
+            triggerClassName="bg-muted/60 hover:bg-muted"
+            value={value}
+            onChange={(next) => onSave(next as "letsencrypt" | "cloudflare-origin-ca")}
+            options={[
+              { value: "letsencrypt", label: s.tlsState.providerLetsencrypt },
+              { value: "cloudflare-origin-ca", label: s.tlsState.providerCloudflareOriginCa },
+            ]}
+            disabled={busy || loading || draft !== null}
+            className="shrink-0"
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
 function LifecycleNotes() {
   const { t } = useI18n();
   const s = t.servers.discovery.lifecycle;
@@ -483,7 +667,10 @@ function LifecycleNotes() {
       <ul className="mt-1.5 space-y-1">
         {notes.map((note, i) => (
           <li key={i} className="text-[12px] text-muted-foreground flex gap-2">
-            <span className="mt-[7px] size-1 rounded-full bg-muted-foreground/50 shrink-0" aria-hidden />
+            <span
+              className="mt-[7px] size-1 rounded-full bg-muted-foreground/50 shrink-0"
+              aria-hidden
+            />
             {note}
           </li>
         ))}
@@ -500,7 +687,14 @@ function backendState(s: DiscoveryService): "running" | "stopped" | "missing" | 
 
 function tlsLabel(
   service: DiscoveryService,
-  t: { verified: string; issued: string; provisioning: string; expired: string; error: string; none: string },
+  t: {
+    verified: string;
+    issued: string;
+    provisioning: string;
+    expired: string;
+    error: string;
+    none: string;
+  },
 ): string {
   // The domain row's sslStatus is written by the TLS lifecycle as
   // none | provisioning | active | expired | error — never "issued"/"pending".
@@ -531,7 +725,13 @@ function tlsProviderLabel(
  *  actually is, beyond the certificate material's own sslStatus. */
 function tlsOperationTitle(
   service: DiscoveryService,
-  t: { opQueued: string; opRunning: string; opDeferred: string; opError: string; waitingBackend: string },
+  t: {
+    opQueued: string;
+    opRunning: string;
+    opDeferred: string;
+    opError: string;
+    waitingBackend: string;
+  },
 ): string | undefined {
   const op = service.tlsOperation;
   if (!op || op.state === "complete") return undefined;
@@ -540,9 +740,7 @@ function tlsOperationTitle(
   if (op.state === "error") return t.opError;
   // Deferred: the reason names the waiter (stopped backend, provider
   // configuration, ambiguity recovery) — the operator-facing part of it.
-  const wait = /backend/i.test(op.reason ?? "")
-    ? t.waitingBackend
-    : (op.reason ?? t.opDeferred);
+  const wait = /backend/i.test(op.reason ?? "") ? t.waitingBackend : (op.reason ?? t.opDeferred);
   return `${t.opDeferred}: ${wait}`;
 }
 
@@ -567,7 +765,15 @@ function EmptyLine({ icon, text }: { icon: "eye-off" | "docker"; text: string })
   );
 }
 
-function RetryLine({ text, retryLabel, onRetry }: { text: string; retryLabel: string; onRetry: () => void }) {
+function RetryLine({
+  text,
+  retryLabel,
+  onRetry,
+}: {
+  text: string;
+  retryLabel: string;
+  onRetry: () => void;
+}) {
   return (
     <div className="rounded-xl border border-warning-border bg-warning-bg px-4 py-3 flex items-center justify-between gap-4">
       <p className="text-[12px] text-foreground break-words min-w-0">{text}</p>
