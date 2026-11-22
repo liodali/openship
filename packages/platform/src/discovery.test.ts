@@ -191,17 +191,36 @@ vi.mock("./engine/modules/credentials/credential.service", () => ({ readCredenti
 const tlsVerify = vi.fn(async () =>
   ({ verified: true, expiresAt: new Date(Date.now() + 60 * 86_400_000).toISOString() } as { verified: boolean; expiresAt?: string; reason?: string; detail?: string }),
 );
-vi.mock("./engine/lib/domain-ssl", () => ({
-  manageDomainSsl: (...args: unknown[]) => tlsVerify(...(args as [])),
-  readServerDomainCert: (hostname: string, opts: { serverId: string }) => tlsEdgeRead(hostname, opts),
-  certComfortablyValid: (result: { verified?: boolean; expiresAt?: string | null }) =>
-    !!result.verified && !!result.expiresAt && new Date(result.expiresAt).getTime() > Date.now(),
-  sslIssueLockKey: (hostname: string) => `lock:${hostname}`,
-}));
 
 /** Read-only edge-material read (the Cloudflare skip proof). */
 const tlsEdgeRead = vi.fn(async (_hostname: string, _opts: { serverId: string }) =>
   ({ verified: true, fingerprint: "fp:9", expiresAt: new Date(Date.now() + 30 * 86_400_000).toISOString() }));
+
+/**
+ * The managed vhost's CONFIGURED certificate selection (the skip proof's
+ * route-activation half). Defaults to "expected" — the steady state every
+ * existing skip assumes; drift/unproven tests override per call.
+ */
+type VhostProbeResult =
+  | { status: "expected" }
+  | { status: "drifted"; certPath: string }
+  | { status: "no_tls_listener" }
+  | { status: "no_route" }
+  | { status: "unavailable" }
+  | { status: "unproven" };
+const tlsVhostProbe = vi.fn(
+  async (_hostname: string, _opts: { serverId: string; expectedCertDomain: string }): Promise<VhostProbeResult> =>
+    ({ status: "expected" }),
+);
+vi.mock("./engine/lib/domain-ssl", () => ({
+  manageDomainSsl: (...args: unknown[]) => tlsVerify(...(args as [])),
+  readServerDomainCert: (hostname: string, opts: { serverId: string }) => tlsEdgeRead(hostname, opts),
+  probeServerDomainVhostCert: (hostname: string, opts: { serverId: string; expectedCertDomain: string }) =>
+    tlsVhostProbe(hostname, opts),
+  certComfortablyValid: (result: { verified?: boolean; expiresAt?: string | null }) =>
+    !!result.verified && !!result.expiresAt && new Date(result.expiresAt).getTime() > Date.now(),
+  sslIssueLockKey: (hostname: string) => `lock:${hostname}`,
+}));
 
 const sweep = vi.fn(async () => ({
   serverId: "srv_1",
@@ -285,6 +304,10 @@ beforeEach(() => {
   queueTasks.length = 0;
   deferred.length = 0;
   deferQueue = false;
+  // The managed vhost's configured selection defaults to the steady state
+  // ("expected") so the pre-existing skip behavior is unchanged; drift and
+  // unproven cases override per test.
+  tlsVhostProbe.mockResolvedValue({ status: "expected" });
 });
 
 describe("createDiscoveryOperations", () => {
@@ -519,6 +542,95 @@ describe("createDiscoveryOperations", () => {
       const { data } = await ensure();
       expect(data).toEqual({ outcome: "skipped", reason: "already_valid", hostname: "app.example.com", source: "wildcard" });
       expect(tlsQueueRepo.ensureOperation).not.toHaveBeenCalled();
+      // The skip also proved route activation: the child's vhost must SELECT
+      // the declared pattern directory, and the expected source is the
+      // WILDCARD identity, never the child's own hostname.
+      expect(tlsVhostProbe).toHaveBeenCalledWith("app.example.com", {
+        serverId: "srv_1",
+        expectedCertDomain: "*.example.com",
+      });
+    });
+
+    it("healthy Let's Encrypt files + a vhost still selecting the BOOTSTRAP pair queue repair instead of skipping", async () => {
+      // The drift the material read cannot see: certDir holds healthy exact
+      // material while the managed vhost still names its enrollment bootstrap
+      // pair. A skip here would return already_valid for a route that serves
+      // the wrong certificate forever.
+      state.domainSsl = { sslStatus: "active", verified: true, sslExpiresAt: new Date(Date.now() + 30 * 86_400_000) };
+      tlsVhostProbe.mockResolvedValueOnce({ status: "drifted", certPath: "/etc/letsencrypt/openship-bootstrap/app.example.com/fullchain.pem" });
+      const { data } = await ensure();
+      expect(tlsVerify).toHaveBeenCalled(); // the material proof PASSED…
+      expect(tlsVhostProbe).toHaveBeenCalledWith("app.example.com", { serverId: "srv_1", expectedCertDomain: "app.example.com" });
+      expect(data).toMatchObject({ outcome: "queued" }); // …and the route proof refused the skip
+      expect(tlsQueueRepo.ensureOperation).toHaveBeenCalled();
+    });
+
+    it("healthy Cloudflare files + a vhost selecting an OUTDATED source queue repair (exact and shared)", async () => {
+      state.domainSsl = { sslStatus: "active", verified: true, sslExpiresAt: new Date(Date.now() + 30 * 86_400_000) };
+      state.domainPolicy = {
+        tlsProvider: "cloudflare-origin-ca", tlsActiveProvider: "cloudflare-origin-ca",
+        tlsCfCredentialId: "cred_1", tlsCfZoneId: "zone_1", tlsPolicyGeneration: 2,
+        tlsCertificateId: "ca_9", tlsCertificateFingerprint: "fp:9",
+      };
+      // The recorded fingerprint is what the edge READS — the vhost's
+      // configured selection is the only signal that can disagree.
+      tlsVhostProbe.mockResolvedValueOnce({ status: "drifted", certPath: "/etc/letsencrypt/live/old.example.com/fullchain.pem" });
+      const { data } = await ensure();
+      expect(data).toMatchObject({ outcome: "queued", hostname: "app.example.com" });
+
+      // Same rule for a shared wildcard child whose vhost never switched to
+      // the pattern directory.
+      tlsQueueRepo.ensureOperation.mockClear();
+      state.bindings.set("id:my-app", binding({ tlsDeclaredWildcard: "*.example.com" }));
+      tlsVhostProbe.mockResolvedValueOnce({ status: "drifted", certPath: "/etc/letsencrypt/openship-bootstrap/app.example.com/fullchain.pem" });
+      const wildcard = await ensure();
+      expect(wildcard.data).toMatchObject({ outcome: "queued", hostname: "app.example.com" });
+      expect(tlsQueueRepo.ensureOperation).toHaveBeenCalledWith(
+        expect.objectContaining({ sourceHostname: "*.example.com", source: "wildcard" }),
+      );
+    });
+
+    it("a vhost with NO TLS listener while the inventory says active never skips", async () => {
+      state.domainSsl = { sslStatus: "active", verified: true, sslExpiresAt: new Date(Date.now() + 30 * 86_400_000) };
+      state.domainPolicy = {
+        tlsProvider: "cloudflare-origin-ca", tlsActiveProvider: "cloudflare-origin-ca",
+        tlsCfCredentialId: "cred_1", tlsCfZoneId: "zone_1", tlsPolicyGeneration: 2,
+        tlsCertificateId: "ca_9", tlsCertificateFingerprint: "fp:9",
+      };
+      tlsVhostProbe.mockResolvedValueOnce({ status: "no_tls_listener" });
+      const { data } = await ensure();
+      expect(data).toMatchObject({ outcome: "queued" });
+    });
+
+    it("an UNPROVABLE vhost read queues durable work — never a skip, never a throw", async () => {
+      // A transport blip during the conf read is a RETRYABLE state: the
+      // durable drain re-proves everything (and its own edge read decides
+      // reuse vs repair), so queueing is the honest answer.
+      state.domainSsl = { sslStatus: "active", verified: true, sslExpiresAt: new Date(Date.now() + 30 * 86_400_000) };
+      tlsVhostProbe.mockResolvedValueOnce({ status: "unproven" });
+      const { data } = await ensure();
+      expect(data).toMatchObject({ outcome: "queued" });
+      expect(tlsQueueRepo.ensureOperation).toHaveBeenCalled();
+    });
+
+    it("a MISSING route does not block the skip — route restoration is the repair sweep's own state", async () => {
+      // Activation from durable records would silently no-op for a fully
+      // missing route (no sidecar to re-register from), so queueing TLS work
+      // here would only churn operations; the route repair sweep owns it.
+      state.domainSsl = { sslStatus: "active", verified: true, sslExpiresAt: new Date(Date.now() + 30 * 86_400_000) };
+      tlsVhostProbe.mockResolvedValueOnce({ status: "no_route" });
+      const { data } = await ensure();
+      expect(data).toEqual({ outcome: "skipped", reason: "already_valid", hostname: "app.example.com", source: "exact" });
+      expect(tlsQueueRepo.ensureOperation).not.toHaveBeenCalled();
+    });
+
+    it("an edge with NO vhost signal keeps the files-only skip decision", async () => {
+      // Cloud API / no-edge desktop: no generated config exists to classify,
+      // so the pre-signal proof stands unchanged.
+      state.domainSsl = { sslStatus: "active", verified: true, sslExpiresAt: new Date(Date.now() + 30 * 86_400_000) };
+      tlsVhostProbe.mockResolvedValueOnce({ status: "unavailable" });
+      const { data } = await ensure();
+      expect(data).toEqual({ outcome: "skipped", reason: "already_valid", hostname: "app.example.com", source: "exact" });
     });
 
     it("a Cloudflare edge read that does NOT match the recorded identity queues instead of skipping (bootstrap conflation guard)", async () => {

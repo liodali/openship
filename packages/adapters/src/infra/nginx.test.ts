@@ -7,6 +7,7 @@ import {
   summarizeCertbotFailure,
   VHOST_GENERATION,
   readVhostGeneration,
+  readVhostCertPath,
   renderProxyOptions,
   renderProxyTlsOptions,
   type NginxProviderOptions,
@@ -328,6 +329,148 @@ describe("NginxProvider.readVhostGeneration", () => {
     // step re-registers, resurrecting a vhost an operator just removed.
     const { nginx } = setup({});
     await expect(nginx.readVhostGeneration("app.example.com")).rejects.toThrow();
+  });
+});
+
+describe("NginxProvider.readVhostCertSelection", () => {
+  test("classifies a vhost registered with its EXACT material as the expected source", async () => {
+    const { nginx } = setup({ certDomains: ["app.example.com"] });
+    await nginx.registerRoute(OURS);
+    await expect(
+      nginx.readVhostCertSelection("app.example.com", { expectedCertDomain: "app.example.com" }),
+    ).resolves.toEqual({
+      selection: "expected",
+      certPath: "/etc/letsencrypt/live/app.example.com/fullchain.pem",
+    });
+  });
+
+  test("classifies a child INHERITING a shared wildcard as the expected pattern source", async () => {
+    const { nginx, files } = setup();
+    const wildcardCert = makeTestCert(["*.example.com"]);
+    files.set("/etc/letsencrypt/live/*.example.com/fullchain.pem", wildcardCert.certPem);
+    files.set("/etc/letsencrypt/live/*.example.com/privkey.pem", wildcardCert.keyPem);
+    await nginx.registerRoute(OURS);
+    // The shared-source proof: the child's vhost NAMES the pattern directory.
+    await expect(
+      nginx.readVhostCertSelection("app.example.com", { expectedCertDomain: "*.example.com" }),
+    ).resolves.toMatchObject({ selection: "expected" });
+    // The same conf read against the EXACT source is drift — an exact-first
+    // expectation must not be satisfied by inherited material.
+    await expect(
+      nginx.readVhostCertSelection("app.example.com", { expectedCertDomain: "app.example.com" }),
+    ).resolves.toMatchObject({ selection: "other" });
+  });
+
+  test("a vhost still on the enrollment BOOTSTRAP pair reads as drift, not health", async () => {
+    // The drift the TLS lifecycle could not see: material for the hostname may
+    // be perfectly healthy in certDir while the vhost keeps serving the
+    // bootstrap pair it was enrolled with.
+    const { nginx } = setup({ certDomains: [] });
+    await nginx.registerRoute(OURS);
+    await expect(
+      nginx.readVhostCertSelection("app.example.com", { expectedCertDomain: "app.example.com" }),
+    ).resolves.toMatchObject({
+      selection: "other",
+      certPath: expect.stringContaining("openship-bootstrap"),
+    });
+  });
+
+  test("an operator-rewritten ssl_certificate reads as drift, whatever it points at", async () => {
+    const { nginx, conf, files } = setup({ certDomains: ["app.example.com"] });
+    await nginx.registerRoute(OURS);
+    files.set(
+      `${SITES}/app-example-com.conf`,
+      conf("app-example-com")!.replace(
+        "ssl_certificate /etc/letsencrypt/live/app.example.com/fullchain.pem;",
+        "ssl_certificate /etc/letsencrypt/live/other.example.com/fullchain.pem;",
+      ),
+    );
+    await expect(
+      nginx.readVhostCertSelection("app.example.com", { expectedCertDomain: "app.example.com" }),
+    ).resolves.toMatchObject({
+      selection: "other",
+      certPath: "/etc/letsencrypt/live/other.example.com/fullchain.pem",
+    });
+  });
+
+  test("a managed vhost with no TLS listener is its own answer, not drift-by-path", async () => {
+    const { nginx } = setup();
+    await nginx.registerRoute({ ...PROXY, tls: false });
+    await expect(
+      nginx.readVhostCertSelection("app.example.com", { expectedCertDomain: "app.example.com" }),
+    ).resolves.toEqual({ selection: "no_tls_listener" });
+  });
+
+  test("a MISSING managed vhost answers null — route absence is not certificate drift", async () => {
+    // readVhostGeneration deliberately throws here (its caller re-registers);
+    // this signal's caller must instead leave the route alone, so the two
+    // reads keep different contracts for the same box state.
+    const { nginx } = setup({});
+    await expect(
+      nginx.readVhostCertSelection("app.example.com", { expectedCertDomain: "app.example.com" }),
+    ).resolves.toBeNull();
+  });
+
+  test("an UNREADABLE conf THROWS — unproven stays distinguishable from drift", async () => {
+    const files = new Map<string, string>();
+    const executor = makeExecutor(files, { certDomains: ["app.example.com"] }, [], [], []);
+    const nginx = new NginxProvider({ paths: PATHS, executor });
+    await nginx.registerRoute(OURS);
+    // Break reads for the conf while `exists` still answers true: the exact
+    // mid-sweep transport state the platform must treat as unproven, never
+    // as confirmed drift.
+    const raw = executor as unknown as { readFile: (p: string) => Promise<string> };
+    const original = raw.readFile.bind(executor);
+    raw.readFile = async (p: string) => {
+      if (p === `${SITES}/app-example-com.conf`) throw new Error("EIO: transport blip");
+      return original(p);
+    };
+    await expect(
+      nginx.readVhostCertSelection("app.example.com", { expectedCertDomain: "app.example.com" }),
+    ).rejects.toThrow(/transport blip/);
+  });
+
+  test("commented-out directives never classify — the LIVE directive does", async () => {
+    const { nginx, conf, files } = setup({ certDomains: ["app.example.com"] });
+    await nginx.registerRoute(OURS);
+    const original = conf("app-example-com")!;
+    const directive = "ssl_certificate /etc/letsencrypt/live/app.example.com/fullchain.pem;";
+    files.set(
+      `${SITES}/app-example-com.conf`,
+      original.replace(directive, `# ${directive}\n    ${directive}`),
+    );
+    await expect(
+      nginx.readVhostCertSelection("app.example.com", { expectedCertDomain: "app.example.com" }),
+    ).resolves.toMatchObject({ selection: "expected" });
+
+    // And a conf where ONLY the comment remains has genuinely lost its
+    // listener configuration.
+    files.set(`${SITES}/app-example-com.conf`, original.replace(directive, `# ${directive}`));
+    await expect(
+      nginx.readVhostCertSelection("app.example.com", { expectedCertDomain: "app.example.com" }),
+    ).resolves.toEqual({ selection: "no_tls_listener" });
+  });
+
+  test("the path comparison is normalized and case-insensitive, like the writer's join", async () => {
+    const { nginx, files } = setup({ certDomains: ["app.example.com"] });
+    await nginx.registerRoute(OURS);
+    files.set(
+      `${SITES}/app-example-com.conf`,
+      (files.get(`${SITES}/app-example-com.conf`) ?? "").replace(
+        "ssl_certificate /etc/letsencrypt/live/app.example.com/fullchain.pem;",
+        "ssl_certificate /etc/letsencrypt/live//App.Example.Com/./fullchain.pem;",
+      ),
+    );
+    await expect(
+      nginx.readVhostCertSelection("app.example.com", { expectedCertDomain: "app.example.com" }),
+    ).resolves.toMatchObject({ selection: "expected" });
+  });
+
+  test("readVhostCertPath: no directive in an http-only conf, tabs and extra spaces tolerated", () => {
+    expect(readVhostCertPath("server {\n    listen 80;\n}\n")).toBeNull();
+    expect(
+      readVhostCertPath("server {\n\t ssl_certificate\t /etc/x/fullchain.pem ;\n}\n"),
+    ).toBe("/etc/x/fullchain.pem");
   });
 });
 

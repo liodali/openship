@@ -33,7 +33,7 @@ import {
 } from "./discovery-reconciler";
 import { repairDiscoveryRoutes, type DiscoveryRepairSummary } from "./discovery-repair";
 import { kickDiscoveryTlsQueue } from "./discovery-tls-queue";
-import { readServerDomainCert } from "../../lib/domain-ssl";
+import { probeServerDomainVhostCert, readServerDomainCert } from "../../lib/domain-ssl";
 import { revokeOriginCaCertificate } from "./origin-ca-client";
 import { readCredentialSecrets } from "../credentials/credential.service";
 import { renewDiscoveryWatchers } from "./discovery-watch";
@@ -108,10 +108,14 @@ export function sweepServerDiscovery(
 
 /**
  * Bounded periodic certificate audit: for server domains recording ACTIVE
- * Origin CA inventory, compare the EDGE fingerprint against the database.
- * A mismatch or missing material enqueues the durable worker (whose repair
- * flow re-issues through the full gate chain); transient read failures are
- * ignored — a SSH blip must not spin up re-issuance.
+ * Origin CA inventory, compare the EDGE fingerprint against the database —
+ * and, when the files agree, the managed vhost's CONFIGURED certificate
+ * selection against the expected source. A mismatch or missing material
+ * enqueues the durable worker (whose repair flow re-issues through the full
+ * gate chain); a healthy-files vhost drift (bootstrap, another source, no
+ * TLS listener) enqueues the SAME worker, whose reuse path re-activates the
+ * route without requesting another certificate. Transient read failures are
+ * ignored — an SSH blip must not spin up re-issuance.
  */
 /**
  * Fair-rotation cursor (per server, in-process): each sweep audits the next
@@ -134,15 +138,40 @@ async function auditServerCertificates(serverId: string, organizationId: string)
   let scheduled = 0;
   for (const domainRow of domains) {
     if (!domainRow.tlsCertificateFingerprint) continue;
+    const binding = await repos.discovery.getBindingForDomain(serverId, domainRow.hostname);
+    const wildcard = binding?.tlsDeclaredWildcard ?? null;
     const edge = await readServerDomainCert(domainRow.hostname, { serverId });
-    const healthy =
+    const filesHealthy =
       edge.verified && edge.fingerprint
         ? edge.fingerprint === domainRow.tlsCertificateFingerprint
         : edge.reason === "read_error";
-    if (healthy) continue;
+    if (filesHealthy) {
+      // Healthy files alone are NOT proof the route serves them: the read
+      // above resolves through the certificate directory, so a vhost still
+      // selecting its enrollment bootstrap pair — or an outdated exact/shared
+      // source — reads as healthy while visitors get the wrong certificate.
+      // The managed vhost's CONFIGURED selection decides: CONFIRMED drift
+      // (another source, or no TLS listener at all) enqueues the durable
+      // worker, whose reuse path re-activates the route WITHOUT requesting
+      // another certificate. Everything unproven stays unproven: a missing
+      // route belongs to the route repair sweep (activation would no-op), a
+      // transport failure waits for the next pass, and an edge without the
+      // signal (cloud API) has nothing to classify.
+      let probe: Awaited<ReturnType<typeof probeServerDomainVhostCert>>;
+      try {
+        probe = await probeServerDomainVhostCert(domainRow.hostname, {
+          serverId,
+          expectedCertDomain: (wildcard ?? domainRow.hostname).toLowerCase(),
+        });
+      } catch (error) {
+        // Authorization/ownership refused (row vanished mid-audit): not
+        // drift, and not this sweep's business to repair.
+        reportCaughtError(error, "platform/engine/modules/discovery/discovery-sweep");
+        continue;
+      }
+      if (probe.status !== "drifted" && probe.status !== "no_tls_listener") continue;
+    }
     const policy = await repos.domain.getTlsPolicy(domainRow.id);
-    const binding = await repos.discovery.getBindingForDomain(serverId, domainRow.hostname);
-    const wildcard = binding?.tlsDeclaredWildcard ?? null;
     const { created } = await repos.discoveryTlsQueue.ensureOperation({
       hostname: domainRow.hostname,
       sourceHostname: (wildcard ?? domainRow.hostname).toLowerCase(),

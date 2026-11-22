@@ -79,8 +79,21 @@ vi.mock("./discovery-scanner", () => ({ scanServerDiscovery: scan }));
 vi.mock("./discovery-reconciler", () => ({ reconcileServerDiscovery: reconcile }));
 vi.mock("./discovery-repair", () => ({ repairDiscoveryRoutes: repair }));
 const readServerDomainCert = vi.fn();
+type VhostProbeResult =
+  | { status: "expected" }
+  | { status: "drifted"; certPath: string }
+  | { status: "no_tls_listener" }
+  | { status: "no_route" }
+  | { status: "unavailable" }
+  | { status: "unproven" };
+const probeServerDomainVhostCert = vi.fn(
+  async (_hostname: string, _opts: { serverId: string; expectedCertDomain: string }): Promise<VhostProbeResult> =>
+    ({ status: "expected" }),
+);
 vi.mock("../../lib/domain-ssl", () => ({
   readServerDomainCert: (hostname: string, opts: { serverId: string }) => readServerDomainCert(hostname, opts),
+  probeServerDomainVhostCert: (hostname: string, opts: { serverId: string; expectedCertDomain: string }) =>
+    probeServerDomainVhostCert(hostname, opts),
 }));
 vi.mock("./discovery-watch", () => ({ renewDiscoveryWatchers: renew }));
 vi.mock("./discovery-tls-queue", () => ({ kickDiscoveryTlsQueue: vi.fn() }));
@@ -125,6 +138,9 @@ beforeEach(() => {
   auditRepos.findOriginCaActiveDomainsForServer.mockResolvedValue([]);
   auditRepos.ensureOperation.mockResolvedValue({ created: true, operation: { id: "dtop_a" } });
   readServerDomainCert.mockResolvedValue({ domain: "x", verified: true, fingerprint: "fp" });
+  // The managed vhost's configured selection defaults to the steady state so
+  // the pre-existing audit behavior is unchanged; drift cases override.
+  probeServerDomainVhostCert.mockResolvedValue({ status: "expected" });
   revokeOriginCaCertificate.mockResolvedValue(undefined);
   state.enabled = [];
   state.settingsByServer = {};
@@ -478,6 +494,103 @@ describe("periodic certificate audit (Edge repair independent of route reapplica
       .mockResolvedValueOnce({ domain: "app.example.com", verified: false, reason: "read_error" });
     const summary = await sweepServerDiscovery("srv_a3", "org_1");
     expect(summary.certAuditScheduled).toBe(0);
+    expect(auditRepos.ensureOperation).not.toHaveBeenCalled();
+  });
+
+  it("healthy files + a vhost still selecting its BOOTSTRAP pair enqueue ACTIVATION repair", async () => {
+    // The drift the fingerprint comparison cannot see: certDir holds the
+    // recorded material, the managed vhost never switched to it. The audit
+    // hands the SAME durable worker the activation repair — whose reuse path
+    // re-registers the route and never requests another certificate.
+    enable("srv_drift", "org_1");
+    auditRepos.findOriginCaActiveDomainsForServer.mockResolvedValue([inventory()]);
+    readServerDomainCert.mockResolvedValue({ domain: "app.example.com", verified: true, fingerprint: "db:fp" });
+    probeServerDomainVhostCert.mockResolvedValueOnce({
+      status: "drifted",
+      certPath: "/etc/letsencrypt/openship-bootstrap/app.example.com/fullchain.pem",
+    });
+    sweepDomainRepo.getTlsPolicy.mockResolvedValue({ tlsProvider: "cloudflare-origin-ca", tlsPolicyGeneration: 4 });
+    const summary = await sweepServerDiscovery("srv_drift", "org_1");
+    expect(summary.certAuditScheduled).toBe(1);
+    expect(probeServerDomainVhostCert).toHaveBeenCalledWith("app.example.com", {
+      serverId: "srv_drift",
+      expectedCertDomain: "app.example.com",
+    });
+    expect(auditRepos.ensureOperation).toHaveBeenCalledWith(
+      expect.objectContaining({ hostname: "app.example.com", source: "exact", sourceHostname: "app.example.com" }),
+    );
+    expect(summary.failed).toEqual([]);
+  });
+
+  it("audits a declared WILDCARD consumer against the pattern source, not the child hostname", async () => {
+    enable("srv_drift_w", "org_1");
+    auditRepos.findOriginCaActiveDomainsForServer.mockResolvedValue([inventory()]);
+    readServerDomainCert.mockResolvedValue({ domain: "site1.example.com", verified: true, fingerprint: "db:fp" });
+    auditRepos.getBindingForDomain.mockResolvedValue({ serviceKey: "id:site1", tlsDeclaredWildcard: "*.example.com" });
+    probeServerDomainVhostCert.mockResolvedValueOnce({
+      status: "drifted",
+      certPath: "/etc/letsencrypt/openship-bootstrap/site1.example.com/fullchain.pem",
+    });
+    const summary = await sweepServerDiscovery("srv_drift_w", "org_1");
+    expect(summary.certAuditScheduled).toBe(1);
+    expect(probeServerDomainVhostCert).toHaveBeenCalledWith("app.example.com", {
+      serverId: "srv_drift_w",
+      expectedCertDomain: "*.example.com",
+    });
+    expect(auditRepos.ensureOperation).toHaveBeenCalledWith(
+      expect.objectContaining({ source: "wildcard", sourceHostname: "*.example.com" }),
+    );
+  });
+
+  it("a managed vhost with NO TLS listener enqueues repair as well", async () => {
+    enable("srv_drift_nl", "org_1");
+    auditRepos.findOriginCaActiveDomainsForServer.mockResolvedValue([inventory()]);
+    readServerDomainCert.mockResolvedValue({ domain: "app.example.com", verified: true, fingerprint: "db:fp" });
+    probeServerDomainVhostCert.mockResolvedValueOnce({ status: "no_tls_listener" });
+    const summary = await sweepServerDiscovery("srv_drift_nl", "org_1");
+    expect(summary.certAuditScheduled).toBe(1);
+  });
+
+  it("an UNPROVABLE vhost read never audit-repairs — the next pass re-checks", async () => {
+    // A transport blip during the conf read is retryable, never drift: the
+    // same rule the audit already applies to a read_error edge read.
+    enable("srv_drift_u", "org_1");
+    auditRepos.findOriginCaActiveDomainsForServer.mockResolvedValue([inventory()]);
+    readServerDomainCert.mockResolvedValue({ domain: "app.example.com", verified: true, fingerprint: "db:fp" });
+    probeServerDomainVhostCert.mockResolvedValueOnce({ status: "unproven" });
+    const summary = await sweepServerDiscovery("srv_drift_u", "org_1");
+    expect(summary.certAuditScheduled).toBe(0);
+    expect(auditRepos.ensureOperation).not.toHaveBeenCalled();
+  });
+
+  it("a MISSING route is the repair sweep's own state — the certificate audit leaves it alone", async () => {
+    enable("srv_drift_nr", "org_1");
+    auditRepos.findOriginCaActiveDomainsForServer.mockResolvedValue([inventory()]);
+    readServerDomainCert.mockResolvedValue({ domain: "app.example.com", verified: true, fingerprint: "db:fp" });
+    probeServerDomainVhostCert.mockResolvedValueOnce({ status: "no_route" });
+    const summary = await sweepServerDiscovery("srv_drift_nr", "org_1");
+    expect(summary.certAuditScheduled).toBe(0);
+    expect(auditRepos.ensureOperation).not.toHaveBeenCalled();
+  });
+
+  it("an edge with NO vhost signal (cloud API) never audit-repairs from it", async () => {
+    enable("srv_drift_na", "org_1");
+    auditRepos.findOriginCaActiveDomainsForServer.mockResolvedValue([inventory()]);
+    readServerDomainCert.mockResolvedValue({ domain: "app.example.com", verified: true, fingerprint: "db:fp" });
+    probeServerDomainVhostCert.mockResolvedValueOnce({ status: "unavailable" });
+    const summary = await sweepServerDiscovery("srv_drift_na", "org_1");
+    expect(summary.certAuditScheduled).toBe(0);
+    expect(auditRepos.ensureOperation).not.toHaveBeenCalled();
+  });
+
+  it("a probe that throws (row vanished mid-audit) skips the row without failing the sweep", async () => {
+    enable("srv_drift_th", "org_1");
+    auditRepos.findOriginCaActiveDomainsForServer.mockResolvedValue([inventory()]);
+    readServerDomainCert.mockResolvedValue({ domain: "app.example.com", verified: true, fingerprint: "db:fp" });
+    probeServerDomainVhostCert.mockRejectedValueOnce(new Error("domain row vanished"));
+    const summary = await sweepServerDiscovery("srv_drift_th", "org_1");
+    expect(summary.certAuditScheduled).toBe(0);
+    expect(summary.failed).toEqual([]); // recorded for diagnostics, not a stage failure
     expect(auditRepos.ensureOperation).not.toHaveBeenCalled();
   });
 

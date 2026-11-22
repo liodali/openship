@@ -201,6 +201,7 @@ export type {
   SslProvider,
   ProvisionCertOptions,
   DnsCertificateProvider,
+  VhostCertSelection,
 } from "./infra/types";
 export { createRouteProtection, revokeRouteSessions, assertRouteProtection, type RouteProtection } from "./infra/route-protection";
 export { NginxProvider, VHOST_GENERATION, type NginxProviderOptions, type RateLimitConfig } from "./infra/nginx";
