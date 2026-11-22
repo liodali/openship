@@ -52,6 +52,23 @@ const TEXT = (node: { textContent: string | null }) =>
 const BUTTON = (match: (label: string) => boolean): HTMLButtonElement | undefined =>
   Array.from(document.querySelectorAll("button")).find((b) => match(b.textContent ?? ""));
 
+/**
+ * A server-scoped domain row's TLS state for a Cloudflare-policy story: the
+ * desired provider is Cloudflare, and `active` is whatever is currently
+ * installed ("letsencrypt" while a switch is in flight). The drawer
+ * reconciles its policy read against this row state, so fixtures must carry
+ * it — a row without provider fields would read as a persistent mismatch.
+ */
+const cfTls = (active: "cloudflare-origin-ca" | "letsencrypt") => ({
+  hostname: "app.example.com",
+  verified: true,
+  sslStatus: "active",
+  sslExpiresAt: "2027-02-19T00:00:00.000Z",
+  sslIssuer: "CloudFlare, Inc. Origin CA",
+  tlsProvider: "cloudflare-origin-ca" as const,
+  tlsActiveProvider: active,
+});
+
 function service(over: Partial<DiscoveryService> = {}): DiscoveryService {
   return {
     id: "dsb_1",
@@ -82,6 +99,11 @@ function service(over: Partial<DiscoveryService> = {}): DiscoveryService {
       sslStatus: "active",
       sslExpiresAt: "2027-02-19T00:00:00.000Z",
       sslIssuer: "CloudFlare, Inc. Origin CA",
+      // A real server-scoped domain row always carries its provider state —
+      // the drawer reconciles against it, so the fixture must too (desired
+      // letsencrypt, nothing installed yet, matching the default policy mock).
+      tlsProvider: "letsencrypt",
+      tlsActiveProvider: null,
     },
     tlsOperation: null,
     ...over,
@@ -507,6 +529,7 @@ describe("ServiceTlsDrawer", () => {
         attempts: 1,
         updatedAt: "2026-01-01T00:00:00.000Z",
       },
+      tls: cfTls("letsencrypt"), // the switch is in flight: LE still installed
     });
     discoveryApi.serviceTls
       .mockResolvedValueOnce(cloudflarePolicy({ activeProvider: "letsencrypt", state: "pending" }))
@@ -529,13 +552,14 @@ describe("ServiceTlsDrawer", () => {
     expect(text).not.toContain("Moving to");
     expect(text).not.toContain("keeps serving until the new one is installed");
 
-    // The card's row catches up (operation gone): the poll stands down — no
-    // further reads while the drawer idles at the settled state.
+    // The card's row catches up (operation gone, installed provider now
+    // Cloudflare): the poll stands down — no further reads while the drawer
+    // idles at the settled, converged state.
     await act(async () => {
       root.render(
         <I18nProvider>
           <ToastProvider>
-            <ModalProvider>{drawer(service())}</ModalProvider>
+            <ModalProvider>{drawer(service({ tls: cfTls("cloudflare-origin-ca") }))}</ModalProvider>
           </ToastProvider>
         </I18nProvider>,
       );
@@ -563,6 +587,7 @@ describe("ServiceTlsDrawer", () => {
         attempts: 1,
         updatedAt: "2026-01-01T00:00:00.000Z",
       },
+      tls: cfTls("letsencrypt"), // the switch is in flight: LE still installed
     });
     discoveryApi.serviceTls.mockResolvedValueOnce(cloudflarePolicy()).mockResolvedValue(
       cloudflarePolicy({
@@ -607,7 +632,9 @@ describe("ServiceTlsDrawer", () => {
         },
       }),
     );
-    const { root } = mount(drawer(service()));
+    // The row already reflects the Cloudflare state the policy reports —
+    // the provider-change signal has nothing to heal here.
+    const { root } = mount(drawer(service({ tls: cfTls("cloudflare-origin-ca") })));
     await act(async () => {});
     const zone = document.querySelector<HTMLInputElement>('input[placeholder^="b2f04038"]');
     await act(async () => {
@@ -718,6 +745,58 @@ describe("ServiceTlsDrawer", () => {
     });
     await act(async () => {});
     expect(discoveryApi.serviceTls).toHaveBeenCalledTimes(1);
+    root.unmount();
+  });
+
+  it("RETAINS a row transition observed while the first policy read is pending", async () => {
+    // The race: the card's provider moves while the FIRST policy request is
+    // still in flight. The response that eventually lands is OLDER than the
+    // row — the transition must be retained and compared when the read
+    // arrives, or the stale response wins and "Moving to Cloudflare" sticks
+    // forever (no further row transition ever occurs).
+    const before = service({ tls: cfTls("letsencrypt") });
+    let release: ((value: unknown) => void) | null = null;
+    discoveryApi.serviceTls
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            release = resolve;
+          }),
+      )
+      .mockResolvedValue(
+        cloudflarePolicy({ activeProvider: "cloudflare-origin-ca", state: "active" }),
+      );
+    const { root } = mount(drawer(before));
+    await act(async () => {});
+    expect(discoveryApi.serviceTls).toHaveBeenCalledTimes(1); // first read pending
+
+    // The card's poll lands the NEW row while the read is still pending: the
+    // installed provider is now Cloudflare. Nothing can be compared yet.
+    const after = service({ tls: cfTls("cloudflare-origin-ca") });
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <ToastProvider>
+            <ModalProvider>{drawer(after)}</ModalProvider>
+          </ToastProvider>
+        </I18nProvider>,
+      );
+    });
+    await act(async () => {});
+    expect(discoveryApi.serviceTls).toHaveBeenCalledTimes(1); // no refresh against an unloaded policy
+
+    // The STALE first response lands — older than the row.
+    await act(async () => {
+      release!(cloudflarePolicy({ activeProvider: "letsencrypt", state: "pending" }));
+    });
+    await act(async () => {});
+    // The retained transition is compared against the stale read: it loses,
+    // and the policy re-reads to catch up with the row.
+    expect(discoveryApi.serviceTls).toHaveBeenCalledTimes(2);
+    await act(async () => {});
+    const text = TEXT(document.body);
+    expect(text).not.toContain("Moving to");
+    expect(text).not.toContain("keeps serving until the new one is installed");
     root.unmount();
   });
 });

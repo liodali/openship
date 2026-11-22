@@ -187,14 +187,31 @@ export function ServiceTlsDrawer({
    * entirely between card polls, so no work-active window may exist for the
    * poll above to catch — the card then shows the NEW installed provider
    * while the loaded policy still reflects the old one (stale "Moving to…").
-   * When the row's provider state moves and the loaded policy disagrees,
-   * re-read the policy once. Bounded: one re-read per row transition (the
-   * last-reacted pair), no loop when row and policy persistently disagree,
-   * and no read at all for a convergent row (e.g. this drawer's own save,
-   * whose mutation already refreshed the policy). Unsaved edits survive the
-   * re-read via the seeding guard above.
+   *
+   * Two staleness directions are handled differently:
+   *  - the ROW moved (the card learned a background outcome first): the
+   *    loaded policy is behind → re-read it once;
+   *  - the POLICY moved (this drawer's own ensure/save refresh, or a heal
+   *    landing): the display already holds the newer read → nothing to do;
+   *    the row converges or signals its own transition later.
+   *
+   * A transition observed while the policy is still LOADING is RETAINED, not
+   * consumed: the first response can be OLDER than the row, so the comparison
+   * must run against the row's CURRENT state once loading completes —
+   * otherwise the stale response lands unchallenged and the transition is
+   * lost forever ("Moving to…" sticks).
+   *
+   * Bounded: one heal per row state (cleared on convergence, so a later row
+   * move — including a revert — can heal again), no loop when row and policy
+   * persistently disagree, and no read at all for a convergent row (e.g. the
+   * drawer's own save, whose mutation already refreshed the policy). Unsaved
+   * edits survive every re-read via the seeding guard above.
    */
   const lastRowProviderPair = useRef<string | null>(null);
+  /** A row transition observed while the policy was loading, awaiting comparison. */
+  const retainedRowTransition = useRef<string | null>(null);
+  /** The row state a heal was already requested for (bounded retry + revert support). */
+  const healRequestedForRow = useRef<string | null>(null);
   useEffect(() => {
     // An unenrolled service has no installed provider to track; its policy is
     // the resolved server default, and there is nothing to converge.
@@ -203,15 +220,31 @@ export function ServiceTlsDrawer({
     const loadedPair = policyRes.data
       ? `${policyRes.data.provider}|${policyRes.data.activeProvider ?? ""}`
       : null;
-    if (
-      lastRowProviderPair.current !== null &&
-      lastRowProviderPair.current !== rowPair &&
-      loadedPair !== null &&
-      loadedPair !== rowPair
-    ) {
-      policyRes.refresh();
-    }
+    const rowMoved =
+      lastRowProviderPair.current !== null && lastRowProviderPair.current !== rowPair;
     lastRowProviderPair.current = rowPair;
+
+    if (loadedPair === null) {
+      // The first read is still in flight: nothing to compare against yet.
+      // RETAIN the transition — never advance past it silently.
+      if (rowMoved) retainedRowTransition.current = rowPair;
+      return;
+    }
+    if (loadedPair === rowPair) {
+      // Converged: a later row move — including a revert — may heal again.
+      healRequestedForRow.current = null;
+      return;
+    }
+    // The loaded policy disagrees with the row. Heal only if the ROW moved
+    // (live transition and/or one retained from the loading window): a
+    // policy-side move is the drawer already holding newer truth.
+    const pending = retainedRowTransition.current;
+    retainedRowTransition.current = null;
+    const rowChanged = rowMoved || pending !== null;
+    if (!rowChanged) return;
+    if (healRequestedForRow.current === rowPair) return;
+    healRequestedForRow.current = rowPair;
+    policyRes.refresh();
   }, [service, policyRes.data, policyRes.refresh]);
 
   const busy = saveMutation.busy || ensureMutation.busy || credentialBusy;
