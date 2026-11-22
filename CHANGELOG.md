@@ -4,6 +4,39 @@ All notable changes to OpenShip. Versions follow [semver](https://semver.org);
 the in-app updater surfaces critical advisories from `release-advisories.json`.
 Runtime security notices use the signed feed published from `security-advisories.json`.
 
+## 1.0.1-fork.3
+
+Fork release on top of 1.0.1-fork.2: one discovery TLS correctness fix found by
+remote Podman canary validation — TLS reuse must prove the route serves the
+material, not merely that the resolver can read it.
+
+### Discovery TLS
+
+- Shared-wildcard reuse now activates the REQUESTING child too. The reuse
+  dispatch's health read resolves through certDir, so an inherited
+  parent-wildcard pair satisfies the read the moment any consumer installed
+  it — a child whose live vhost still served its enrollment bootstrap pair
+  read as healthy without serving the pattern, and the reuse path skipped its
+  activation. Activation is an idempotent route re-register, so the child now
+  joins the fan-out unconditionally and "reused" keeps meaning every
+  authorized consumer SERVES the pattern.
+- Exact Cloudflare Origin CA reuse re-registers the route before completing
+  (`activateServerDomainCert`): readable material is not served material — a
+  vhost left on bootstrap (or a route lost after a partial install) is
+  repaired at completion instead of being recorded as active.
+- `tls/ensure` now returns `skipped`/`already_valid` for healthy
+  Cloudflare-managed material (exact and shared wildcard sources) when the
+  domain's recorded certificate identity EQUALS the edge read fingerprint and
+  the certificate is comfortably valid. A bootstrap or foreign pair never
+  skips, and a first-contact domain without recorded identity still queues —
+  matching the documented ensure contract for both providers.
+
+### Upgrade notes
+
+- Rebuild/update the API image; dashboard, edge and CLI are unchanged. No
+  migration (no schema change). Safe to roll back to fork.2 images; the only
+  persisted additions are skip decisions, which carry no state.
+
 ## 1.0.1-fork.2
 
 Fork release on top of the upstream v1.0.1 sync (1.0.1-fork.1): two discovery UX

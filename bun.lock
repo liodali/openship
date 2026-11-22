@@ -15,7 +15,7 @@
     },
     "apps/api": {
       "name": "@repo/api",
-      "version": "1.0.1-fork.2",
+      "version": "1.0.1-fork.3",
       "dependencies": {
         "@better-auth/core": "1.7.15",
         "@better-auth/drizzle-adapter": "1.7.15",
@@ -62,7 +62,7 @@
     },
     "apps/cli": {
       "name": "@repo/cli",
-      "version": "1.0.1-fork.2",
+      "version": "1.0.1-fork.3",
       "bin": {
         "openship": "./dist/node-entry.js",
       },
@@ -144,7 +144,7 @@
     },
     "apps/desktop": {
       "name": "@repo/desktop",
-      "version": "1.0.1-fork.2",
+      "version": "1.0.1-fork.3",
       "dependencies": {
         "@repo/core": "workspace:*",
         "@repo/onboarding": "workspace:*",
@@ -167,11 +167,11 @@
     },
     "apps/email": {
       "name": "@repo/email",
-      "version": "1.0.1-fork.2",
+      "version": "1.0.1-fork.3",
     },
     "apps/web": {
       "name": "@repo/web",
-      "version": "1.0.1-fork.2",
+      "version": "1.0.1-fork.3",
       "dependencies": {
         "@repo/contracts": "workspace:*",
         "@repo/core": "workspace:*",
@@ -325,7 +325,7 @@
     },
     "packages/openship": {
       "name": "openship",
-      "version": "1.0.1-fork.2",
+      "version": "1.0.1-fork.3",
       "bin": {
         "openship": "./dist/node-entry.js",
       },
@@ -350,7 +350,7 @@
     },
     "packages/platform": {
       "name": "@repo/platform",
-      "version": "1.0.1-fork.2",
+      "version": "1.0.1-fork.3",
       "dependencies": {
         "@actions/expressions": "0.3.61",
         "@actions/workflow-parser": "0.3.61",
