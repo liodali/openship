@@ -193,10 +193,15 @@ const tlsVerify = vi.fn(async () =>
 );
 vi.mock("./engine/lib/domain-ssl", () => ({
   manageDomainSsl: (...args: unknown[]) => tlsVerify(...(args as [])),
+  readServerDomainCert: (hostname: string, opts: { serverId: string }) => tlsEdgeRead(hostname, opts),
   certComfortablyValid: (result: { verified?: boolean; expiresAt?: string | null }) =>
     !!result.verified && !!result.expiresAt && new Date(result.expiresAt).getTime() > Date.now(),
   sslIssueLockKey: (hostname: string) => `lock:${hostname}`,
 }));
+
+/** Read-only edge-material read (the Cloudflare skip proof). */
+const tlsEdgeRead = vi.fn(async (_hostname: string, _opts: { serverId: string }) =>
+  ({ verified: true, fingerprint: "fp:9", expiresAt: new Date(Date.now() + 30 * 86_400_000).toISOString() }));
 
 const sweep = vi.fn(async () => ({
   serverId: "srv_1",
@@ -487,6 +492,59 @@ describe("createDiscoveryOperations", () => {
       // The provenance guard short-circuits: no verify, no skip — durable work.
       expect(tlsVerify).not.toHaveBeenCalled();
       expect(data).toMatchObject({ outcome: "queued" });
+    });
+
+    it("skips when healthy Cloudflare-managed exact material is installed and the edge fingerprint EQUALS the recorded certificate", async () => {
+      state.domainSsl = { sslStatus: "active", verified: true, sslExpiresAt: new Date(Date.now() + 30 * 86_400_000) };
+      state.domainPolicy = {
+        tlsProvider: "cloudflare-origin-ca", tlsActiveProvider: "cloudflare-origin-ca",
+        tlsCfCredentialId: "cred_1", tlsCfZoneId: "zone_1", tlsPolicyGeneration: 2,
+        tlsCertificateId: "ca_9", tlsCertificateFingerprint: "fp:9",
+      };
+      const { data } = await ensure();
+      // The skip proved provider provenance AND material identity — no job.
+      expect(tlsEdgeRead).toHaveBeenCalledWith("app.example.com", { serverId: "srv_1" });
+      expect(data).toEqual({ outcome: "skipped", reason: "already_valid", hostname: "app.example.com", source: "exact" });
+      expect(tlsQueueRepo.ensureOperation).not.toHaveBeenCalled();
+    });
+
+    it("skips a wildcard source when the shared certificate identity matches the edge read (source: wildcard)", async () => {
+      state.bindings.set("id:my-app", binding({ tlsDeclaredWildcard: "*.example.com" }));
+      state.domainSsl = { sslStatus: "active", verified: true, sslExpiresAt: new Date(Date.now() + 30 * 86_400_000) };
+      state.domainPolicy = {
+        tlsProvider: "cloudflare-origin-ca", tlsActiveProvider: "cloudflare-origin-ca",
+        tlsCfCredentialId: "cred_1", tlsCfZoneId: "zone_1", tlsPolicyGeneration: 2,
+        tlsCertificateId: "ca_w", tlsCertificateFingerprint: "fp:9",
+      };
+      const { data } = await ensure();
+      expect(data).toEqual({ outcome: "skipped", reason: "already_valid", hostname: "app.example.com", source: "wildcard" });
+      expect(tlsQueueRepo.ensureOperation).not.toHaveBeenCalled();
+    });
+
+    it("a Cloudflare edge read that does NOT match the recorded identity queues instead of skipping (bootstrap conflation guard)", async () => {
+      state.domainSsl = { sslStatus: "active", verified: true, sslExpiresAt: new Date(Date.now() + 30 * 86_400_000) };
+      state.domainPolicy = {
+        tlsProvider: "cloudflare-origin-ca", tlsActiveProvider: "cloudflare-origin-ca",
+        tlsCfCredentialId: "cred_1", tlsCfZoneId: "zone_1", tlsPolicyGeneration: 2,
+        tlsCertificateId: "ca_9", tlsCertificateFingerprint: "fp:9",
+      };
+      // The resolver can read SOME healthy pair (e.g. an inherited wildcard or
+      // leftover material) that is not the certificate the inventory records —
+      // a skip here would strand a vhost still serving foreign material.
+      tlsEdgeRead.mockResolvedValueOnce({ verified: true, fingerprint: "other:fp", expiresAt: new Date(Date.now() + 30 * 86_400_000).toISOString() });
+      const { data } = await ensure();
+      expect(data).toMatchObject({ outcome: "queued" });
+    });
+
+    it("Cloudflare-managed material without a recorded certificate identity (first contact) never skips", async () => {
+      state.domainSsl = { sslStatus: "none", verified: false, sslExpiresAt: null };
+      state.domainPolicy = {
+        tlsProvider: "cloudflare-origin-ca", tlsActiveProvider: null,
+        tlsCfCredentialId: "cred_1", tlsCfZoneId: "zone_1", tlsPolicyGeneration: 2,
+      };
+      const { data } = await ensure();
+      expect(data).toMatchObject({ outcome: "queued" });
+      expect(tlsEdgeRead).not.toHaveBeenCalled();
     });
 
     it("P2: healthy bookkeeping with missing/unusable installed material queues instead of skipping", async () => {

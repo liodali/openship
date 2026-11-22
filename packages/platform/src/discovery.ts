@@ -52,7 +52,7 @@ import type { OperationResult } from "./deployments";
 import { runInServerQueue, sweepServerDiscovery } from "./engine/modules/discovery/discovery-sweep";
 import { kickDiscoveryTlsQueue } from "./engine/modules/discovery/discovery-tls-queue";
 import { preflightCloudflareOriginCa } from "./engine/modules/discovery/tls-preflight";
-import { certComfortablyValid, manageDomainSsl, sslIssueLockKey } from "./engine/lib/domain-ssl";
+import { certComfortablyValid, manageDomainSsl, readServerDomainCert, sslIssueLockKey } from "./engine/lib/domain-ssl";
 import { createProvisionLock } from "./engine/lib/provision-lock";
 import { readCredentialSecrets } from "./engine/modules/credentials/credential.service";
 import {
@@ -343,12 +343,15 @@ export function createDiscoveryOperations(authorization: Authorization): Platfor
       // in two steps, never trusted from database metadata alone:
       //  1. Provider/source provenance: the domain's recorded installed provider
       //     must agree (an old provider's certificate during a pending switch is
-      //     a fallback, not proof); wildcard intent never skips.
+      //     a fallback, not proof).
       //  2. The material itself: a read-only verify against the serving Edge —
       //     sslStatus/expiry columns describe bookkeeping, and a row updated by
       //     a Cloudflare-era issuance can look healthy while the installed
       //     certificate is anything but. An unusable or UNPROVABLE state (edge
       //     unreachable, verify error) queues durable work instead of skipping.
+      // Let's Encrypt exact material is verified through the ACME path below;
+      // Cloudflare-managed material (exact or shared wildcard) has its own
+      // fingerprint-equality block right after it.
       // Due-renewal scheduling stays the scheduler's job; due-soon material
       // still skips (certComfortablyValid uses the same threshold everywhere).
       if (
@@ -367,6 +370,46 @@ export function createDiscoveryOperations(authorization: Authorization): Platfor
             serverId,
           });
           if (installed.verified && certComfortablyValid(installed)) {
+            return {
+              context: ctx,
+              data: { outcome: "skipped", reason: "already_valid", hostname: binding.hostname, source },
+            };
+          }
+        } catch {
+          // Unprovable (edge unreachable etc.): fall through and queue — the
+          // durable drain re-checks eligibility before any order opens.
+        }
+      }
+
+      // Same skip for Cloudflare-managed material (exact or shared wildcard),
+      // with the provider's own proof pair:
+      //  1. Provenance: the domain's RECORDED installed provider must be the
+      //     desired one, with the certificate identity a completed activation
+      //     committed (tlsCertificateId/Fingerprint are set only by that
+      //     commit — never by a queued or deferred operation).
+      //  2. The material itself: a read-only edge read whose fingerprint must
+      //     EQUAL the recorded certificate — a bootstrap pair, a foreign
+      //     wildcard, or another provider's certificate never skips. For a
+      //     wildcard source the read is the inherited shared pair, which is
+      //     exactly what the child must serve; a first-contact child whose
+      //     route still serves bootstrap has no recorded identity yet (or a
+      //     mismatched one) and correctly queues instead of skipping — the
+      //     reuse dispatch re-activates its route before completing.
+      // Due-renewal scheduling stays the scheduler's job, as above.
+      if (
+        provider === "cloudflare-origin-ca" &&
+        policy?.tlsActiveProvider === "cloudflare-origin-ca" &&
+        domainRow.sslStatus === "active" &&
+        domainRow.tlsCertificateId &&
+        domainRow.tlsCertificateFingerprint
+      ) {
+        try {
+          const installed = await readServerDomainCert(binding.hostname, { serverId });
+          if (
+            installed.verified &&
+            installed.fingerprint === domainRow.tlsCertificateFingerprint &&
+            certComfortablyValid(installed)
+          ) {
             return {
               context: ctx,
               data: { outcome: "skipped", reason: "already_valid", hostname: binding.hostname, source },
