@@ -626,4 +626,98 @@ describe("ServiceTlsDrawer", () => {
     expect(zone!.value).toBe("zone_saved");
     root.unmount();
   });
+
+  it("heals a stale transition when the row's installed provider moves BETWEEN polls", async () => {
+    // The reported gap: issuance finished entirely between card polls — no
+    // work-active window existed for the drawer's poll to catch. The card
+    // shows the new installed provider while the drawer still shows "Moving
+    // to…". The row's provider change is the signal: re-read the policy,
+    // preserving unsaved edits.
+    const tls = {
+      hostname: "app.example.com",
+      verified: true,
+      sslStatus: "active",
+      sslExpiresAt: "2027-02-19T00:00:00.000Z",
+      sslIssuer: "CloudFlare, Inc. Origin CA",
+    } as const;
+    const before = service({
+      tls: { ...tls, tlsProvider: "cloudflare-origin-ca", tlsActiveProvider: "letsencrypt" },
+    });
+    discoveryApi.serviceTls
+      .mockResolvedValueOnce(cloudflarePolicy({ activeProvider: "letsencrypt", state: "pending" }))
+      .mockResolvedValue(
+        cloudflarePolicy({ activeProvider: "cloudflare-origin-ca", state: "active" }),
+      );
+    const { root } = mount(drawer(before));
+    await act(async () => {});
+    expect(TEXT(document.body)).toContain("Moving to Cloudflare Origin CA");
+    // The operator is mid-edit when the card's row moves underneath.
+    const zone = document.querySelector<HTMLInputElement>('input[placeholder^="b2f04038"]');
+    await act(async () => {
+      const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      setValue.call(zone, "zone_edited");
+      zone!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    // The card's status poll lands the NEW row: installed provider is now
+    // Cloudflare. The drawer re-reads the policy on the provider change.
+    const after = service({
+      tls: {
+        ...tls,
+        tlsProvider: "cloudflare-origin-ca",
+        tlsActiveProvider: "cloudflare-origin-ca",
+      },
+    });
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <ToastProvider>
+            <ModalProvider>{drawer(after)}</ModalProvider>
+          </ToastProvider>
+        </I18nProvider>,
+      );
+    });
+    await act(async () => {});
+    expect(discoveryApi.serviceTls).toHaveBeenCalledTimes(2);
+    const text = TEXT(document.body);
+    expect(text).not.toContain("Moving to");
+    expect(text).not.toContain("keeps serving until the new one is installed");
+    expect(zone!.value).toBe("zone_edited"); // the unsaved edit survived the heal
+    root.unmount();
+  });
+
+  it("a CONVERGENT row costs no extra policy read (the drawer's own save)", async () => {
+    // After the drawer's save, both the policy (its own refresh) and the
+    // card's row reflect the new state: the provider-change signal must not
+    // fire a redundant third read.
+    const tls = {
+      hostname: "app.example.com",
+      verified: true,
+      sslStatus: "active",
+      sslExpiresAt: "2027-02-19T00:00:00.000Z",
+      sslIssuer: "CloudFlare, Inc. Origin CA",
+    } as const;
+    const providerState = {
+      tlsProvider: "cloudflare-origin-ca" as const,
+      tlsActiveProvider: "cloudflare-origin-ca" as const,
+    };
+    const policy = cloudflarePolicy({ activeProvider: "cloudflare-origin-ca", state: "active" });
+    discoveryApi.serviceTls.mockResolvedValue(policy);
+    const { root } = mount(drawer(service({ tls: { ...tls, ...providerState } })));
+    await act(async () => {});
+    expect(discoveryApi.serviceTls).toHaveBeenCalledTimes(1);
+    // The card refreshes the row with the SAME provider state the loaded
+    // policy already reflects: no extra read.
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <ToastProvider>
+            <ModalProvider>{drawer(service({ tls: { ...tls, ...providerState } }))}</ModalProvider>
+          </ToastProvider>
+        </I18nProvider>,
+      );
+    });
+    await act(async () => {});
+    expect(discoveryApi.serviceTls).toHaveBeenCalledTimes(1);
+    root.unmount();
+  });
 });

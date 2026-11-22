@@ -182,6 +182,38 @@ export function ServiceTlsDrawer({
     );
   }, [policyRes.data]);
 
+  /**
+   * The card's row is the CHEAP background signal: an issuance can finish
+   * entirely between card polls, so no work-active window may exist for the
+   * poll above to catch — the card then shows the NEW installed provider
+   * while the loaded policy still reflects the old one (stale "Moving to…").
+   * When the row's provider state moves and the loaded policy disagrees,
+   * re-read the policy once. Bounded: one re-read per row transition (the
+   * last-reacted pair), no loop when row and policy persistently disagree,
+   * and no read at all for a convergent row (e.g. this drawer's own save,
+   * whose mutation already refreshed the policy). Unsaved edits survive the
+   * re-read via the seeding guard above.
+   */
+  const lastRowProviderPair = useRef<string | null>(null);
+  useEffect(() => {
+    // An unenrolled service has no installed provider to track; its policy is
+    // the resolved server default, and there is nothing to converge.
+    if (!service.tls) return;
+    const rowPair = `${service.tls.tlsProvider ?? ""}|${service.tls.tlsActiveProvider ?? ""}`;
+    const loadedPair = policyRes.data
+      ? `${policyRes.data.provider}|${policyRes.data.activeProvider ?? ""}`
+      : null;
+    if (
+      lastRowProviderPair.current !== null &&
+      lastRowProviderPair.current !== rowPair &&
+      loadedPair !== null &&
+      loadedPair !== rowPair
+    ) {
+      policyRes.refresh();
+    }
+    lastRowProviderPair.current = rowPair;
+  }, [service, policyRes.data, policyRes.refresh]);
+
   const busy = saveMutation.busy || ensureMutation.busy || credentialBusy;
   const requestClose = useCallback(() => {
     // Guard backdrop, Escape and the close button while a write is in flight —
