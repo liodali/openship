@@ -22,6 +22,7 @@ import { AppError, DISCOVERY_TLS_QUEUE, SYSTEM } from "@repo/core";
 import { repos } from "@repo/db";
 import { reportCaughtError } from "@repo/core/diagnostics";
 import {
+  activateServerDomainCert,
   activateSharedWildcardChildren,
   assertDiscoveryBackendFresh,
   DiscoveryBackendUnavailableError,
@@ -401,13 +402,21 @@ async function dispatchWildcardOriginCa(operation: DiscoveryTlsOperation, clock:
         // route was never activated (newly enrolled, or superseded before its
         // own operation ran) stays without TLS unless it is switched to the
         // pattern HERE: reuse would otherwise only commit database inventory.
-        // The requesting child is excluded — its fingerprint just proved it
-        // already serves the pattern.
+        // The REQUESTING CHILD joins the fan-out unconditionally: its health
+        // read was resolved through certDir, where the parent-wildcard pair
+        // satisfies the read the moment ANY consumer installed it — a child
+        // whose live vhost still serves the enrollment bootstrap pair (it was
+        // applied before the pattern material existed) reads as healthy
+        // without serving it. Activation is idempotent (a re-register that
+        // resolves to the pattern rewrites the vhost to it), so including the
+        // child repairs exactly that state; "reused" must mean every
+        // authorized consumer SERVES the pattern, not just that the resolver
+        // can read it.
         const authorized = await withSiblingLocks(async (authorized) =>
           activateSharedWildcardChildren(
             operation.hostname,
             operation.sourceHostname,
-            authorized.filter((h) => h !== childHostname),
+            authorized,
             { serverId: operation.serverId },
           ),
         );
@@ -587,6 +596,14 @@ async function dispatchOriginCaIssuance(operation: DiscoveryTlsOperation, clock:
         credentialId: policy.tlsCfCredentialId,
       });
       if (result.outcome === "reused") {
+        // Reuse proved the exact material is READABLE on the edge — not that
+        // the route references it: the read resolves through certDir, so a
+        // vhost still serving its enrollment bootstrap pair (or a route lost
+        // after a partial install) reads as healthy while visitors get the
+        // bootstrap certificate. Re-activate the route (idempotent
+        // re-register + reload) before completing, so "active" inventory
+        // keeps meaning the route SERVES the recorded certificate.
+        await activateServerDomainCert(operation.hostname, { serverId: operation.serverId });
         await repos.discoveryTlsQueue.completeOperation(operation.id, "reused", now(), WORKER_ID);
         return;
       }

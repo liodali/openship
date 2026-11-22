@@ -68,12 +68,14 @@ const activateSharedWildcardChildren = vi.fn(
   async (_child?: string, _wildcard?: string, _siblings?: string[], _opts?: { serverId: string }) => {},
 );
 const readServerDomainCert = vi.fn();
+const activateServerDomainCert = vi.fn(async (_hostname?: string, _opts?: { serverId: string }) => {});
 vi.mock("../../lib/domain-ssl", () => ({
   manageDomainSsl,
   assertDiscoveryBackendFresh: vi.fn(async () => {}),
   sslIssueLockKey: vi.fn((hostname: string) => `lock:${hostname}`),
   installDiscoveryServerCert: (...args: unknown[]) => installDiscoveryServerCert(...args),
   readServerDomainCert: (hostname: string, opts: { serverId: string }) => readServerDomainCert(hostname, opts),
+  activateServerDomainCert: (hostname: string, opts: { serverId: string }) => activateServerDomainCert(hostname, opts),
   installSharedWildcardCert: (child: string, wildcard: string, cert: { certPem: string; keyPem: string }, opts: { serverId: string; expectedFingerprint: string; children?: string[] }) => installSharedWildcardCert(child, wildcard, cert, opts),
   activateSharedWildcardChildren: (child: string, wildcard: string, siblings: string[], opts: { serverId: string }) => activateSharedWildcardChildren(child, wildcard, siblings, opts),
   DiscoveryBackendUnavailableError: class DiscoveryBackendUnavailableError extends AppError {},
@@ -473,12 +475,17 @@ describe("execution dispatch", () => {
     );
   });
 
-  it("a REUSED healthy Origin CA certificate completes the operation (it is serving)", async () => {
+  it("a REUSED healthy Origin CA certificate re-activates the route before completing (a readable cert is not a served one)", async () => {
     const { clock } = fakeClock();
     ensureOriginCaIssued.mockResolvedValue({ outcome: "reused", fingerprint: "ab", expiresAt: new Date("2030-01-01") });
     const op = operation({ provider: "cloudflare-origin-ca" });
     queue.claimDueOperations.mockResolvedValueOnce([op]).mockResolvedValue([]);
     await drainDiscoveryTlsQueue(clock);
+    // The reuse read resolves through certDir: material can be readable while
+    // the live vhost still serves the enrollment bootstrap pair (or lost the
+    // route after a partial install). The idempotent re-register is what makes
+    // the recorded inventory mean SERVING — before the operation completes.
+    expect(activateServerDomainCert).toHaveBeenCalledWith(op.hostname, { serverId: op.serverId });
     expect(queue.completeOperation).toHaveBeenCalledWith(op.id, "reused", expect.any(Date), expect.any(String));
   });
 
@@ -703,10 +710,13 @@ describe("execution dispatch", () => {
       expect.objectContaining({ activeMaterialHealthy: true, activeCertificateId: "ca_shared" }),
     );
     // Siblings are switched to the pattern BEFORE any inventory commit —
-    // reuse never strands a sibling without TLS (the requesting child is
-    // excluded: its fingerprint just proved it already serves).
+    // reuse never strands a sibling without TLS, and the REQUESTING CHILD
+    // joins the fan-out too: its health read resolves through certDir (an
+    // inherited parent-wildcard pair satisfies it even while the child's
+    // live vhost still serves its enrollment bootstrap pair), so only the
+    // idempotent re-register proves the child actually serves the pattern.
     expect(activateSharedWildcardChildren).toHaveBeenCalledWith(
-      "b.example.com", "*.example.com", ["a.example.com"], { serverId: wildcardOp.serverId },
+      "b.example.com", "*.example.com", ["b.example.com", "a.example.com"], { serverId: wildcardOp.serverId },
     );
     expect(issuanceInventory.markActive).toHaveBeenCalledWith(
       expect.objectContaining({ issuanceId: "dti_w0", domainId: wildcardOp.domainId }),

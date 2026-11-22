@@ -1463,6 +1463,35 @@ export async function installDomainCert(
 }
 
 /**
+ * Re-activate the serving route for a discovered domain's certificate: an
+ * idempotent re-register that resolves the certificate NOW and reloads (a
+ * route already referencing the resolved material rewrites identical config).
+ * The TLS reuse paths need this because a certificate READ is resolved through
+ * certDir — an inherited parent-wildcard pair satisfies it even while the
+ * live vhost still serves the enrollment bootstrap pair — so only a
+ * re-register makes the route reference the material the inventory records.
+ * Read-only failures of the route lookup leave an absent route untouched
+ * (certificate-only enrollment is valid before the first apply).
+ */
+export async function activateServerDomainCert(
+  hostname: string,
+  opts: { serverId: string },
+): Promise<void> {
+  const { owner } = await resolveAuthorizedDomain(hostname, {
+    action: "provision",
+    allowUnverified: true,
+    serverId: opts.serverId,
+  });
+  if (owner.kind !== "server") {
+    throw new ForbiddenError("Server-domain certificate activation is restricted to server-owned domains.");
+  }
+  await assertDiscoveryBackendFresh(owner, hostname);
+  return withSslProvider(owner, async ({ ssl }) => {
+    await ssl.activateCert?.(hostname);
+  });
+}
+
+/**
  * Read the certificate currently on the SERVER edge for a discovered domain
  * (read-only, no lock): the rotation/repair decision's source of truth. The
  * database's active inventory can lie after a server rebuild — the edge is
