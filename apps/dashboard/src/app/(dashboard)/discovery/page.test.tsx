@@ -38,6 +38,9 @@ const h = vi.hoisted(() => ({
   replace: vi.fn(),
   listServers: vi.fn(),
   status: vi.fn(),
+  /** The card's server-default TLS row (loads once per server). */
+  tlsSettings: vi.fn(),
+  configureTlsSettings: vi.fn(),
 }));
 
 vi.mock("next/navigation", () => ({
@@ -67,7 +70,14 @@ vi.mock("@/lib/api", async (importOriginal) => {
   return {
     ...original,
     systemApi: { ...original.systemApi, listServers: h.listServers },
-    discoveryApi: { ...original.discoveryApi, status: h.status },
+    // tlsSettings is mocked too: the card's server-default row loads it once,
+    // and a real read would hit the network from the test environment.
+    discoveryApi: {
+      ...original.discoveryApi,
+      status: h.status,
+      tlsSettings: h.tlsSettings,
+      configureTlsSettings: h.configureTlsSettings,
+    },
   };
 });
 
@@ -183,6 +193,10 @@ beforeEach(() => {
     server({ id: "srv_2", name: "DB server", sshHost: "db.example.com" }),
   ]);
   h.status.mockImplementation((serverId: string) => Promise.resolve(discoveryStatus(serverId)));
+  h.tlsSettings.mockResolvedValue({ defaultProvider: "letsencrypt" });
+  h.configureTlsSettings.mockImplementation(
+    async (_serverId: string, input: { defaultProvider: string }) => input,
+  );
 });
 
 afterEach(async () => {
@@ -224,7 +238,10 @@ describe("/discovery", () => {
     // A pending read for srv_1 that resolves only AFTER the switch.
     let releaseStale: ((v: unknown) => void) | null = null;
     h.status.mockImplementationOnce(
-      () => new Promise((resolve) => { releaseStale = resolve; }),
+      () =>
+        new Promise((resolve) => {
+          releaseStale = resolve;
+        }),
     );
     mount();
     await act(async () => {});
@@ -232,8 +249,8 @@ describe("/discovery", () => {
 
     const trigger = document.querySelector('button[aria-label="Server"]') as HTMLButtonElement;
     await act(async () => trigger.click());
-    const option = Array.from(document.querySelectorAll("button[role='option']")).find(
-      (node) => node.textContent?.includes("DB server"),
+    const option = Array.from(document.querySelectorAll("button[role='option']")).find((node) =>
+      node.textContent?.includes("DB server"),
     ) as HTMLButtonElement;
     await act(async () => option.click());
 
@@ -260,7 +277,10 @@ describe("/discovery", () => {
     let releaseStale: ((v: unknown) => void) | null = null;
     h.status
       .mockImplementationOnce(
-        () => new Promise((resolve) => { releaseStale = resolve; }),
+        () =>
+          new Promise((resolve) => {
+            releaseStale = resolve;
+          }),
       )
       .mockImplementation((serverId: string) =>
         Promise.resolve(discoveryStatus(serverId, "fresh-scope-host.example.com")),
@@ -307,7 +327,11 @@ describe("/discovery", () => {
   it("keeps managed (cloud) servers out of the selector", async () => {
     h.listServers.mockResolvedValue([
       server(),
-      server({ id: "srv_managed", name: "Cloud space", managed: { id: "ws_1" } as ServerInfo["managed"] }),
+      server({
+        id: "srv_managed",
+        name: "Cloud space",
+        managed: { id: "ws_1" } as ServerInfo["managed"],
+      }),
     ]);
     mount();
     await act(async () => {});
@@ -325,7 +349,9 @@ describe("/discovery", () => {
     expect(TEXT()).toContain("network down");
     expect(h.status).not.toHaveBeenCalled();
 
-    const retry = Array.from(document.querySelectorAll("button")).find((b) => b.textContent?.includes("Retry"));
+    const retry = Array.from(document.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("Retry"),
+    );
     h.listServers.mockResolvedValue([server()]);
     await act(async () => retry!.click());
     await act(async () => {});
@@ -346,7 +372,10 @@ describe("/discovery", () => {
   it("shows skeletons while the list loads, not the card of a guessed server", async () => {
     let release: ((v: ServerInfo[]) => void) | null = null;
     h.listServers.mockImplementation(
-      () => new Promise<ServerInfo[]>((resolve) => { release = resolve; }),
+      () =>
+        new Promise<ServerInfo[]>((resolve) => {
+          release = resolve;
+        }),
     );
     mount();
     await act(async () => {});

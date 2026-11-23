@@ -22,6 +22,30 @@ import type { TcpProbeResult } from "../system/reachability";
 
 export type ProjectRouteCleanupResult = "removed" | "absent" | "foreign";
 
+/**
+ * What a managed vhost's CONFIGURATION FILE selects for TLS — the emitted
+ * `ssl_certificate` line, classified against the caller's expected certificate
+ * source (the exact hostname's directory, or a shared wildcard pattern's).
+ *
+ * This is a CONFIG-FILE inspection, deliberately not a live-listener probe:
+ * it proves which pair the managed vhost is written to serve, never that a
+ * running listener actually serves it. Callers must word their outcomes
+ * accordingly ("configured selection"), and pair it with a material read
+ * (fingerprint) when they need proof about the bytes themselves.
+ *
+ *   "expected"        — the vhost selects certDir/<expectedCertDomain>/fullchain.pem.
+ *   "other"          — the vhost selects a DIFFERENT source: the enrollment
+ *                      bootstrap pair, another exact/wildcard directory, or an
+ *                      operator-rewritten path. Confirmed drift.
+ *   "no_tls_listener" — the managed vhost has no ssl_certificate at all (an
+ *                      HTTP-only conf); for a hostname whose TLS is ours this
+ *                      is also drift, but of a different shape.
+ */
+export type VhostCertSelection =
+  | { selection: "expected"; certPath: string }
+  | { selection: "other"; certPath: string }
+  | { selection: "no_tls_listener" };
+
 export interface RoutingProvider {
   /** Dial from the proxy's own network namespace, never the control plane's. */
   probeUpstream?(host: string, port: number): Promise<TcpProbeResult>;
@@ -71,6 +95,39 @@ export interface RoutingProvider {
    * same scope as hasRoute/readRouteState.
    */
   readVhostGeneration?(domain: string): Promise<number | null>;
+
+  /**
+   * The certificate source the domain's MANAGED vhost currently selects, read
+   * from the emitted conf's `ssl_certificate` directive — the drift signal the
+   * TLS lifecycle needs beside {@link readVhostGeneration}.
+   *
+   * Healthy certificate FILES prove nothing about route activation: the read
+   * that reuses material resolves through the certificate directory, so a
+   * vhost still serving its enrollment bootstrap pair (or a certificate the
+   * policy has since replaced) reads as healthy while visitors get the wrong
+   * certificate. This read compares what the conf NAMES against the source the
+   * caller expects (the exact hostname, or the declared shared wildcard
+   * pattern) — see {@link VhostCertSelection} for the honesty contract: it
+   * proves the CONFIGURED selection, never what a running listener serves.
+   *
+   * Answers, all distinguishable:
+   *   - a {@link VhostCertSelection} — the conf exists and was classified;
+   *   - `null` — NO managed vhost exists for the hostname. Not drift: a
+   *     missing route is the route repair sweep's own state, and an
+   *     activation here would be a silent no-op (activation re-registers
+   *     from the sidecar; no sidecar means nothing to re-register).
+   *   - THROWS when the conf exists but cannot be read (transport, vanished
+   *     mid-sweep). "Unproven" is not drift and not health — callers treat a
+   *     throw exactly like their other unprovable reads: queue durable work
+   *     for the ensure API, wait for the next pass for periodic audits.
+   *
+   * Optional: only a provider that keeps generated config on disk can answer —
+   * same scope as hasRoute/readRouteState/readVhostGeneration.
+   */
+  readVhostCertSelection?(
+    domain: string,
+    opts: { expectedCertDomain: string },
+  ): Promise<VhostCertSelection | null>;
 
   /** Project-scoped teardown may preserve a route freshly proven to belong to
    * another project. Unknown ownership must reject. A foreign result also forbids

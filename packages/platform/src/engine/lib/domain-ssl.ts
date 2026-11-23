@@ -171,6 +171,12 @@ export const LOCAL_ACME_SCOPE = "local";
 /** An SSL provider plus the ACME lock scope of the box it drives. */
 interface ResolvedSslProvider {
   ssl: SslProvider;
+  /**
+   * The SAME platform's routing surface — the box that serves the certificate
+   * is the box that owns the vhost, so vhost-conf signals (route activation
+   * proof, cert-path selection) resolve through it, never a second platform.
+   */
+  routing: Platform["routing"];
   /** {@link acmeIssueLockKey} scope — the serving server's id, or "local". */
   lockScope: string;
   /** Present only for a platform this operation resolved and must release. */
@@ -481,9 +487,9 @@ async function recoverIssuedCert(
 async function resolveSslOnly(
   meta: DeploymentMeta,
   organizationId: string,
-): Promise<Pick<ResolvedSslProvider, "ssl" | "ownedPlatform">> {
+): Promise<Pick<ResolvedSslProvider, "ssl" | "routing" | "ownedPlatform">> {
   const { platform } = await resolveDeploymentPlatform(meta, { organizationId });
-  return { ssl: platform.ssl, ownedPlatform: platform };
+  return { ssl: platform.ssl, routing: platform.routing, ownedPlatform: platform };
 }
 
 /**
@@ -708,7 +714,8 @@ async function resolveSslProvider(owner: SslOwner): Promise<ResolvedSslProvider>
       `elsewhere (containerized API, remote deploy target, or a post-takeover host), this action ` +
       `may not reach the edge that serves the domain.`,
   );
-  return { ssl: platform().ssl, lockScope: LOCAL_ACME_SCOPE };
+  const localPlatform = platform();
+  return { ssl: localPlatform.ssl, routing: localPlatform.routing, lockScope: LOCAL_ACME_SCOPE };
 }
 
 export interface DnsHookScripts {
@@ -1511,6 +1518,87 @@ export async function readServerDomainCert(
     throw new ForbiddenError("Server-domain certificate reads are restricted to server-owned domains.");
   }
   return withSslProvider(owner, ({ ssl }) => ssl.verifyCert(hostname));
+}
+
+/**
+ * What the server edge's MANAGED vhost for a discovered domain is CONFIGURED
+ * to serve, compared against the expected certificate source — the
+ * route-activation proof the TLS lifecycle was missing. Material reads
+ * (`readServerDomainCert`, `manageDomainSsl("verify")`) resolve through the
+ * certificate DIRECTORY, so healthy files never prove the route selects them:
+ * a route still on its enrollment bootstrap pair, or pointing at an outdated
+ * exact/shared source, reads as healthy while visitors get the wrong
+ * certificate.
+ *
+ * The signal itself is a CONFIG-FILE inspection (`ssl_certificate` in the
+ * generated conf): it proves the configured selection, never what a running
+ * listener serves — callers must not word outcomes as listener verification.
+ * All answers stay distinguishable so callers can decide between "queue
+ * activation repair", "leave it alone", and "fall back to the files-only
+ * decision":
+ *
+ *  - "expected"         — the managed vhost selects the expected source
+ *                         (exact hostname, or the declared shared wildcard).
+ *  - "drifted"          — the managed vhost CONFIRMABLY selects another source
+ *                         (bootstrap, a foreign directory, an outdated path).
+ *  - "no_tls_listener"  — a managed vhost exists but has no ssl_certificate
+ *                         (an HTTP-only conf for a hostname whose TLS is ours).
+ *  - "no_route"         — no managed vhost at all. NOT drift: restoring a
+ *                         missing route is the repair sweep's own state, and
+ *                         activation would silently no-op (it re-registers
+ *                         from the sidecar, which is gone with the route).
+ *  - "unavailable"      — the serving edge keeps no generated config (cloud
+ *                         API, no-edge desktop): there is no signal, and the
+ *                         files-only decision of the caller's existing proof
+ *                         stands unchanged.
+ *  - "unproven"         — the conf exists but could not be read (transport).
+ *                         Never drift and never health — retryable, and the
+ *                         caller decides like its other unprovable reads.
+ *
+ * Transport failures are REPORTED, not thrown: this is a decision input, and
+ * callers already own the vocabulary for unprovable reads (queue durable work
+ * on the ensure path; skip this cycle on the periodic audit). Authorization
+ * and ownership failures (vanished row, foreign owner) still propagate.
+ */
+export type ServerDomainVhostCertProbe =
+  | { status: "expected" }
+  | { status: "drifted"; certPath: string }
+  | { status: "no_tls_listener" }
+  | { status: "no_route" }
+  | { status: "unavailable" }
+  | { status: "unproven" };
+
+export async function probeServerDomainVhostCert(
+  hostname: string,
+  opts: { serverId: string; expectedCertDomain: string },
+): Promise<ServerDomainVhostCertProbe> {
+  const { owner } = await resolveAuthorizedDomain(hostname, {
+    action: "verify",
+    allowUnverified: true,
+    serverId: opts.serverId,
+  });
+  if (owner.kind !== "server") {
+    throw new ForbiddenError("Server-domain vhost certificate reads are restricted to server-owned domains.");
+  }
+  return withSslProvider(owner, async (provider) => {
+    // Same platform, same resolution: the box that serves the certificate owns
+    // the vhost conf. No signal (cloud API, no-edge desktop) is a clean
+    // "unavailable" — never drift, and never a reason to queue repair work
+    // that could not be classified.
+    if (!provider.routing.readVhostCertSelection) return { status: "unavailable" };
+    try {
+      const selection = await provider.routing.readVhostCertSelection(hostname, {
+        expectedCertDomain: opts.expectedCertDomain,
+      });
+      if (selection === null) return { status: "no_route" };
+      if (selection.selection === "expected") return { status: "expected" };
+      if (selection.selection === "no_tls_listener") return { status: "no_tls_listener" };
+      return { status: "drifted", certPath: selection.certPath };
+    } catch (error) {
+      observeCaughtError(error, "platform/engine/lib/domain-ssl");
+      return { status: "unproven" };
+    }
+  });
 }
 
 /**

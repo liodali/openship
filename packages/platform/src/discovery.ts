@@ -52,7 +52,7 @@ import type { OperationResult } from "./deployments";
 import { runInServerQueue, sweepServerDiscovery } from "./engine/modules/discovery/discovery-sweep";
 import { kickDiscoveryTlsQueue } from "./engine/modules/discovery/discovery-tls-queue";
 import { preflightCloudflareOriginCa } from "./engine/modules/discovery/tls-preflight";
-import { certComfortablyValid, manageDomainSsl, readServerDomainCert, sslIssueLockKey } from "./engine/lib/domain-ssl";
+import { certComfortablyValid, manageDomainSsl, probeServerDomainVhostCert, readServerDomainCert, sslIssueLockKey } from "./engine/lib/domain-ssl";
 import { createProvisionLock } from "./engine/lib/provision-lock";
 import { readCredentialSecrets } from "./engine/modules/credentials/credential.service";
 import {
@@ -329,6 +329,31 @@ export function createDiscoveryOperations(authorization: Authorization): Platfor
       const source = wildcard ? "wildcard" : "exact";
       const sourceHostname = (wildcard ?? binding.hostname).toLowerCase();
 
+      // The route-activation half of every skip proof below: the managed
+      // vhost's CONFIGURED certificate selection must name the expected source
+      // (the exact hostname, or the declared shared wildcard pattern). The
+      // material reads resolve through the certificate directory and cannot
+      // see drift like a vhost still serving its bootstrap pair — this read
+      // can. It never queues on its own; it only REFUSES a skip:
+      //  - expected            → the skip proof is complete;
+      //  - no_route            → not this flow's gap (a missing route is the
+      //                          repair sweep's state; activation would no-op);
+      //  - unavailable         → the edge keeps no generated config (cloud
+      //                          API, no-edge desktop): the files-only proof
+      //                          stands, exactly the pre-signal behavior;
+      //  - drifted | no_tls_listener | unproven → fall through and queue the
+      //    durable repair. The drain re-proves everything; on healthy material
+      //    its reuse path re-activates the route (idempotent re-register +
+      //    reload, preserving targets, retention, protection and pages) and
+      //    never opens another certificate order.
+      const routeSelectsExpectedSource = async (): Promise<boolean> => {
+        const probe = await probeServerDomainVhostCert(binding.hostname, {
+          serverId,
+          expectedCertDomain: sourceHostname,
+        });
+        return probe.status === "expected" || probe.status === "no_route" || probe.status === "unavailable";
+      };
+
       // Cloudflare selection without its per-domain configuration waits in a
       // VISIBLE configuration-required state — no implicit Let's Encrypt
       // fallback, and no operation pretending to make progress.
@@ -340,7 +365,7 @@ export function createDiscoveryOperations(authorization: Authorization): Platfor
       }
 
       // Skip: valid INSTALLED material for the DESIRED provider/source — proven
-      // in two steps, never trusted from database metadata alone:
+      // in three steps, never trusted from database metadata alone:
       //  1. Provider/source provenance: the domain's recorded installed provider
       //     must agree (an old provider's certificate during a pending switch is
       //     a fallback, not proof).
@@ -349,6 +374,17 @@ export function createDiscoveryOperations(authorization: Authorization): Platfor
       //     a Cloudflare-era issuance can look healthy while the installed
       //     certificate is anything but. An unusable or UNPROVABLE state (edge
       //     unreachable, verify error) queues durable work instead of skipping.
+      //  3. Route activation (vhost selection): the material read resolves
+      //     through the certificate DIRECTORY, so healthy files alone never
+      //     prove the route serves them — a vhost still on its enrollment
+      //     bootstrap pair, or pointing at an outdated exact/shared source,
+      //     reads as healthy while visitors get the wrong certificate. The
+      //     managed vhost's CONFIGURED selection must name the expected source
+      //     (config-file inspection, not a live-listener probe; the repair the
+      //     queued work performs — idempotent re-register + reload — is what
+      //     actually converges the listener). A CONFIRMED drift, a vhost with
+      //     no TLS listener, or an unprovable read queues repair; a missing
+      //     route stays the repair sweep's own state and never blocks here.
       // Let's Encrypt exact material is verified through the ACME path below;
       // Cloudflare-managed material (exact or shared wildcard) has its own
       // fingerprint-equality block right after it.
@@ -369,7 +405,11 @@ export function createDiscoveryOperations(authorization: Authorization): Platfor
             allowUnverified: true,
             serverId,
           });
-          if (installed.verified && certComfortablyValid(installed)) {
+          if (
+            installed.verified &&
+            certComfortablyValid(installed) &&
+            (await routeSelectsExpectedSource())
+          ) {
             return {
               context: ctx,
               data: { outcome: "skipped", reason: "already_valid", hostname: binding.hostname, source },
@@ -395,6 +435,11 @@ export function createDiscoveryOperations(authorization: Authorization): Platfor
       //     route still serves bootstrap has no recorded identity yet (or a
       //     mismatched one) and correctly queues instead of skipping — the
       //     reuse dispatch re-activates its route before completing.
+      //  3. Route activation (vhost selection): the inherited/exact read above
+      //     resolves through certDir, so it proves FILES, not the route — the
+      //     child's managed vhost must also SELECT the expected source
+      //     (exact pair or the declared shared pattern), same rule and same
+      //     vocabulary as the Let's Encrypt block above.
       // Due-renewal scheduling stays the scheduler's job, as above.
       if (
         provider === "cloudflare-origin-ca" &&
@@ -408,7 +453,8 @@ export function createDiscoveryOperations(authorization: Authorization): Platfor
           if (
             installed.verified &&
             installed.fingerprint === domainRow.tlsCertificateFingerprint &&
-            certComfortablyValid(installed)
+            certComfortablyValid(installed) &&
+            (await routeSelectsExpectedSource())
           ) {
             return {
               context: ctx,

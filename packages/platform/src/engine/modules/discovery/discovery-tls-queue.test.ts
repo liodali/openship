@@ -62,6 +62,9 @@ vi.mock("@repo/db", () => ({
 
 const manageDomainSsl = vi.fn(async () => ({ verified: true } as { verified: boolean } & Record<string, unknown>));
 
+/** The fresh-backend gate, per-hostname controllable for mixed-state tests. */
+const assertDiscoveryBackendFresh = vi.fn(async (_owner: unknown, _hostname: string): Promise<void> => {});
+
 const installDiscoveryServerCert = vi.fn();
 const installSharedWildcardCert = vi.fn();
 const activateSharedWildcardChildren = vi.fn(
@@ -71,7 +74,7 @@ const readServerDomainCert = vi.fn();
 const activateServerDomainCert = vi.fn(async (_hostname?: string, _opts?: { serverId: string }) => {});
 vi.mock("../../lib/domain-ssl", () => ({
   manageDomainSsl,
-  assertDiscoveryBackendFresh: vi.fn(async () => {}),
+  assertDiscoveryBackendFresh: (owner: unknown, hostname: string) => assertDiscoveryBackendFresh(owner, hostname),
   sslIssueLockKey: vi.fn((hostname: string) => `lock:${hostname}`),
   installDiscoveryServerCert: (...args: unknown[]) => installDiscoveryServerCert(...args),
   readServerDomainCert: (hostname: string, opts: { serverId: string }) => readServerDomainCert(hostname, opts),
@@ -169,6 +172,8 @@ beforeEach(() => {
   readServerDomainCert.mockReset();
   readServerDomainCert.mockResolvedValue({ domain: "x", verified: false, reason: "missing" });
   readServerDomainCert.mockResolvedValue({ domain: "app.example.com", verified: false, reason: "missing" });
+  assertDiscoveryBackendFresh.mockReset();
+  assertDiscoveryBackendFresh.mockImplementation(async () => {});
   revokeOriginCaCertificate.mockResolvedValue(undefined);
   issuanceInventory.findByCertificateId.mockResolvedValue(undefined);
   issuanceInventory.findLiveWildcardIssuance.mockResolvedValue(undefined);
@@ -566,6 +571,105 @@ describe("execution dispatch", () => {
     );
   });
 
+  it("VHOST DRIFT repair: healthy files + a drifted route activate WITHOUT creating another certificate", async () => {
+    // The operation shape the ensure API and the certificate audit now enqueue
+    // when the managed vhost selects the wrong source while the material is
+    // healthy: the dispatch reads the edge, the fingerprint MATCHES, so the
+    // reuse path runs — re-register + reload (idempotent, preserving targets,
+    // retention, protection and pages) — and no installation, no issuance.
+    const { clock } = fakeClock();
+    otherRepos.domainFindById.mockResolvedValue({
+      id: "dom_1",
+      tlsCertificateId: "ca_cur",
+      tlsActiveProvider: "cloudflare-origin-ca",
+      tlsCertificateFingerprint: "cur:fp",
+    });
+    readServerDomainCert.mockResolvedValue({ domain: "app.example.com", verified: true, fingerprint: "cur:fp" });
+    ensureOriginCaIssued.mockResolvedValue({ outcome: "reused", fingerprint: "cur:fp", expiresAt: new Date("2030-01-01") });
+    const op = operation({ provider: "cloudflare-origin-ca" });
+    queue.claimDueOperations.mockResolvedValueOnce([op]).mockResolvedValue([]);
+    await drainDiscoveryTlsQueue(clock);
+    // Files matched the inventory: the health flag stays TRUE (reuse), so the
+    // issuance flow was never asked to create anything.
+    expect(ensureOriginCaIssued).toHaveBeenCalledWith(expect.objectContaining({ activeMaterialHealthy: true }));
+    expect(installDiscoveryServerCert).not.toHaveBeenCalled();
+    expect(issuanceInventory.markSuperseded).not.toHaveBeenCalled();
+    // The ACTIVATION is the repair: the route was re-registered against the
+    // material it should already have been serving.
+    expect(activateServerDomainCert).toHaveBeenCalledWith(op.hostname, { serverId: op.serverId });
+    expect(queue.completeOperation).toHaveBeenCalledWith(op.id, "reused", expect.any(Date), expect.any(String));
+    expect(queue.deferOperation).not.toHaveBeenCalled();
+  });
+
+  it("VHOST DRIFT repair (wildcard): a healthy shared pattern re-activates every consumer, nothing is issued", async () => {
+    const { clock } = fakeClock();
+    const wildcardOp = operation({
+      provider: "cloudflare-origin-ca", source: "wildcard", hostname: "b.example.com", sourceHostname: "*.example.com",
+    });
+    otherRepos.findOriginCaActiveDomainsForServer.mockResolvedValue([
+      { id: "dom_1", tlsCertificateId: "ca_shared", tlsCertificateFingerprint: "w:fp", sslExpiresAt: new Date("2030-01-01") },
+    ]);
+    otherRepos.getBindingsForWildcard.mockResolvedValueOnce([{ hostname: "a.example.com" }]);
+    otherRepos.findDomainsForBindings.mockResolvedValue(new Map([
+      ["a.example.com", {
+        id: "dom_1", manualSsl: false, tlsProvider: "cloudflare-origin-ca", tlsPolicyGeneration: wildcardOp.policyGeneration,
+      }],
+      ["b.example.com", {
+        id: wildcardOp.domainId, manualSsl: false, tlsProvider: "cloudflare-origin-ca", tlsPolicyGeneration: wildcardOp.policyGeneration,
+      }],
+    ]));
+    readServerDomainCert.mockResolvedValue({ domain: "b.example.com", verified: true, fingerprint: "w:fp" });
+    ensureWildcardOriginCaShared.mockResolvedValue({
+      outcome: "reused", issuanceId: "dti_w0", fingerprint: "shared", expiresAt: new Date("2030-01-01"),
+    });
+    queue.claimDueOperations.mockResolvedValueOnce([wildcardOp]).mockResolvedValue([]);
+    await drainDiscoveryTlsQueue(clock);
+    expect(ensureWildcardOriginCaShared).toHaveBeenCalledWith(
+      expect.objectContaining({ activeMaterialHealthy: true, activeCertificateId: "ca_shared" }),
+    );
+    expect(installSharedWildcardCert).not.toHaveBeenCalled();
+    // Every authorized consumer — the driving one included — is switched to
+    // the pattern; that re-register IS the drift repair for the child whose
+    // vhost still served its bootstrap pair.
+    expect(activateSharedWildcardChildren).toHaveBeenCalledWith(
+      "b.example.com", "*.example.com", ["b.example.com", "a.example.com"], { serverId: wildcardOp.serverId },
+    );
+    expect(queue.completeOperation).toHaveBeenCalledWith(wildcardOp.id, "reused", expect.any(Date), expect.any(String));
+  });
+
+  it("VHOST DRIFT work with a STOPPED backend keeps the unavailable behavior — deferred, no activation, no order", async () => {
+    // The same drift-origin operation whose backend stopped in between: the
+    // fresh gate defers with the durable reason (certificate material and
+    // retry state retained), exactly like every other stopped-backend wait.
+    const { clock } = fakeClock();
+    const { DiscoveryBackendUnavailableError } = await import("../../lib/domain-ssl");
+    otherRepos.domainFindById.mockResolvedValue({
+      id: "dom_1",
+      tlsCertificateId: "ca_cur",
+      tlsActiveProvider: "cloudflare-origin-ca",
+      tlsCertificateFingerprint: "cur:fp",
+    });
+    readServerDomainCert.mockResolvedValue({ domain: "app.example.com", verified: true, fingerprint: "cur:fp" });
+    ensureOriginCaIssued.mockResolvedValue({ outcome: "reused", fingerprint: "cur:fp", expiresAt: new Date("2030-01-01") });
+    assertDiscoveryBackendFresh.mockImplementation(async (_owner: unknown, hostname: string) => {
+      throw new DiscoveryBackendUnavailableError(
+        `The discovered backend for ${hostname} is not running; certificate work waits for a running backend.`,
+      );
+    });
+    const op = operation({ provider: "cloudflare-origin-ca" });
+    queue.claimDueOperations.mockResolvedValueOnce([op]).mockResolvedValue([]);
+    await drainDiscoveryTlsQueue(clock);
+    expect(ensureOriginCaIssued).not.toHaveBeenCalled();
+    expect(activateServerDomainCert).not.toHaveBeenCalled();
+    expect(queue.deferOperation).toHaveBeenCalledWith(
+      op.id,
+      expect.stringContaining("not running"),
+      expect.any(Date),
+      expect.any(Date),
+      expect.any(String),
+    );
+  });
+
   it("ROTATION cleanup: the replaced certificate is revoked when exclusively managed and unused", async () => {
     const { clock } = fakeClock();
     // The domain previously held a DIFFERENT, exclusively managed certificate.
@@ -836,6 +940,100 @@ describe("execution dispatch", () => {
       expect.any(Date),
       expect.any(String),
     );
+  });
+
+  it("WILDCARD mixed state: a stopped original requester does NOT pin the pattern — the dispatch drives through a running sibling", async () => {
+    const { clock } = fakeClock();
+    const { DiscoveryBackendUnavailableError } = await import("../../lib/domain-ssl");
+    const wildcardOp = operation({ provider: "cloudflare-origin-ca", source: "wildcard", hostname: "a.example.com", sourceHostname: "*.example.com" });
+    // The operation's ORIGINAL requester is stopped; the sibling runs. The
+    // dedup made every consumer share this one row, so the worker — not the
+    // enqueue path — must be the one that finds the eligible consumer.
+    assertDiscoveryBackendFresh.mockImplementation(async (_owner: unknown, hostname: string) => {
+      if (hostname === "a.example.com") {
+        throw new DiscoveryBackendUnavailableError(
+          "The discovered backend for a.example.com is not running; certificate issuance is deferred until it starts.",
+        );
+      }
+    });
+    otherRepos.getBindingsForWildcard.mockResolvedValue([{ hostname: "b.example.com" }]);
+    const cfRow = (id: string) => ({ id, manualSsl: false, tlsProvider: "cloudflare-origin-ca", tlsPolicyGeneration: wildcardOp.policyGeneration });
+    otherRepos.findDomainsForBindings.mockResolvedValue(new Map([
+      ["a.example.com", cfRow("dom_1")],
+      ["b.example.com", cfRow("dom_2")],
+    ]));
+    otherRepos.findOriginCaActiveDomainsForServer.mockResolvedValue([
+      { id: "dom_2", tlsCertificateId: "ca_shared", tlsCertificateFingerprint: "w:fp", sslExpiresAt: new Date("2030-01-01") },
+    ]);
+    readServerDomainCert.mockResolvedValue({ domain: "b.example.com", verified: true, fingerprint: "w:fp" });
+    ensureWildcardOriginCaShared.mockResolvedValue({ outcome: "reused", issuanceId: "dti_w0", fingerprint: "shared", expiresAt: new Date("2030-01-01") });
+    queue.claimDueOperations.mockResolvedValueOnce([wildcardOp]).mockResolvedValue([]);
+    await drainDiscoveryTlsQueue(clock);
+    // Renewal PROCEEDED through the running sibling — no durable defer.
+    expect(queue.deferOperation).not.toHaveBeenCalled();
+    // The gate covered the requester, then selected the running sibling.
+    expect(assertDiscoveryBackendFresh).toHaveBeenCalledWith(expect.anything(), "a.example.com");
+    expect(assertDiscoveryBackendFresh).toHaveBeenCalledWith(expect.anything(), "b.example.com");
+    // The edge health read and the activation fan-out anchor on the RUNNING consumer...
+    expect(readServerDomainCert).toHaveBeenCalledWith("b.example.com", { serverId: wildcardOp.serverId });
+    expect(activateSharedWildcardChildren).toHaveBeenCalledWith(
+      "b.example.com", "*.example.com", ["a.example.com", "b.example.com"], { serverId: wildcardOp.serverId },
+    );
+    // ...while the stopped requester still joins the authorized fan-out (row-checked) and keeps its own inventory commit.
+    expect(issuanceInventory.markActive).toHaveBeenCalledWith(
+      expect.objectContaining({ issuanceId: "dti_w0", domainId: wildcardOp.domainId }),
+    );
+    expect(queue.completeOperation).toHaveBeenCalledWith(wildcardOp.id, "reused", expect.any(Date), expect.any(String));
+  });
+
+  it("WILDCARD all-stopped consumer set defers with a PATTERN-scoped reason", async () => {
+    const { clock } = fakeClock();
+    const { DiscoveryBackendUnavailableError } = await import("../../lib/domain-ssl");
+    const wildcardOp = operation({ provider: "cloudflare-origin-ca", source: "wildcard", hostname: "a.example.com", sourceHostname: "*.example.com" });
+    assertDiscoveryBackendFresh.mockImplementation(async () => {
+      throw new DiscoveryBackendUnavailableError(
+        "The discovered backend for a.example.com is not running; certificate issuance is deferred until it starts.",
+      );
+    });
+    otherRepos.getBindingsForWildcard.mockResolvedValue([{ hostname: "b.example.com" }]);
+    otherRepos.findDomainsForBindings.mockResolvedValue(new Map([
+      ["a.example.com", { id: "dom_1", manualSsl: false, tlsProvider: "cloudflare-origin-ca", tlsPolicyGeneration: wildcardOp.policyGeneration }],
+      ["b.example.com", { id: "dom_2", manualSsl: false, tlsProvider: "cloudflare-origin-ca", tlsPolicyGeneration: wildcardOp.policyGeneration }],
+    ]));
+    queue.claimDueOperations.mockResolvedValueOnce([wildcardOp]).mockResolvedValue([]);
+    await drainDiscoveryTlsQueue(clock);
+    expect(ensureWildcardOriginCaShared).not.toHaveBeenCalled();
+    expect(installSharedWildcardCert).not.toHaveBeenCalled();
+    expect(activateSharedWildcardChildren).not.toHaveBeenCalled();
+    expect(queue.deferOperation).toHaveBeenCalledWith(
+      wildcardOp.id,
+      expect.stringContaining("No running backend among the consumers of *.example.com"),
+      expect.any(Date),
+      expect.any(Date),
+      expect.any(String),
+    );
+  });
+
+  it("WILDCARD a RUNNING requester keeps first claim — no sibling is probed and nothing re-keys", async () => {
+    const { clock } = fakeClock();
+    const wildcardOp = operation({ provider: "cloudflare-origin-ca", source: "wildcard", hostname: "a.example.com", sourceHostname: "*.example.com" });
+    otherRepos.getBindingsForWildcard.mockResolvedValue([{ hostname: "b.example.com" }]);
+    otherRepos.findDomainsForBindings.mockResolvedValue(new Map([
+      ["a.example.com", { id: "dom_1", manualSsl: false, tlsProvider: "cloudflare-origin-ca", tlsPolicyGeneration: wildcardOp.policyGeneration }],
+      ["b.example.com", { id: "dom_2", manualSsl: false, tlsProvider: "cloudflare-origin-ca", tlsPolicyGeneration: wildcardOp.policyGeneration }],
+    ]));
+    ensureWildcardOriginCaShared.mockResolvedValue({ outcome: "reused", issuanceId: "dti_w0", fingerprint: "shared", expiresAt: new Date("2030-01-01") });
+    queue.claimDueOperations.mockResolvedValueOnce([wildcardOp]).mockResolvedValue([]);
+    await drainDiscoveryTlsQueue(clock);
+    // First claim won: ONLY the requester's backend was gated...
+    expect(assertDiscoveryBackendFresh).toHaveBeenCalledTimes(1);
+    expect(assertDiscoveryBackendFresh).toHaveBeenCalledWith(expect.anything(), "a.example.com");
+    // ...and the dispatch stayed keyed to it (health read + activation anchor).
+    expect(readServerDomainCert).toHaveBeenCalledWith("a.example.com", { serverId: wildcardOp.serverId });
+    expect(activateSharedWildcardChildren).toHaveBeenCalledWith(
+      "a.example.com", "*.example.com", ["a.example.com", "b.example.com"], { serverId: wildcardOp.serverId },
+    );
+    expect(queue.completeOperation).toHaveBeenCalledWith(wildcardOp.id, "reused", expect.any(Date), expect.any(String));
   });
 
   it("WILDCARD ambiguity defers like the exact flow", async () => {

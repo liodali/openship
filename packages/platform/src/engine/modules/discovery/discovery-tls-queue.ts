@@ -258,11 +258,58 @@ async function executeOperation(operation: DiscoveryTlsOperation, clock: TlsQueu
  * (reuse healthy active material — or resume/recover/create, ambiguity-safe).
  */
 /**
+ * The shared-wildcard backend gate: pick the consumer that DRIVES this
+ * dispatch — the first candidate whose backend passes the SAME fresh gate
+ * ACME uses. Candidates arrive in preference order: the operation's
+ * original requester first (a running requester never re-keys the
+ * dispatch), then authorized siblings. The operation row names whichever
+ * consumer's ensure (or due-renewal scheduling) created it, and every
+ * other consumer DEDUPLICATES onto that same row — so a gate on the row's
+ * hostname alone would let ONE stopped requester pin the pattern's renewal
+ * while a sibling runs. An ALL-stopped consumer set defers: with the
+ * requester alone it keeps the exact ACME-era reason, otherwise a
+ * pattern-scoped one.
+ */
+async function selectRunningWildcardConsumer(
+  operation: Pick<DiscoveryTlsOperation, "serverId" | "organizationId" | "hostname" | "sourceHostname">,
+  candidates: string[],
+): Promise<string> {
+  const owner = {
+    kind: "server",
+    serverId: operation.serverId,
+    organizationId: operation.organizationId,
+    isLocal: false,
+    workspaceId: null,
+  } as const;
+  let requesterUnavailable: DiscoveryBackendUnavailableError | undefined;
+  for (const candidate of candidates) {
+    try {
+      await assertDiscoveryBackendFresh(owner, candidate);
+      return candidate;
+    } catch (error) {
+      if (!(error instanceof DiscoveryBackendUnavailableError)) throw error;
+      requesterUnavailable ??= error;
+    }
+  }
+  if (candidates.length > 1) {
+    throw new DiscoveryBackendUnavailableError(
+      `No running backend among the consumers of ${operation.sourceHostname}; shared certificate work waits for a running consumer.`,
+    );
+  }
+  throw requesterUnavailable ??
+    new DiscoveryBackendUnavailableError(
+      `The discovered backend for ${operation.hostname} is not running; certificate work waits for a running backend.`,
+    );
+}
+
+/**
  * The SHARED WILDCARD dispatch: one Origin CA certificate per declared
  * pattern (`*.base`), issued once and shared by every unsuppressed binding
  * declaring it. The edge resolves children through its parent-wildcard
  * lookup, so the shared pair installs ONCE under `certDir/<wildcard>/`;
- * each sharing domain's activation is fenced individually.
+ * each sharing domain's activation is fenced individually. Backend
+ * eligibility is the consumer SET's, not the operation row's (see
+ * {@link selectRunningWildcardConsumer}).
  */
 async function dispatchWildcardOriginCa(operation: DiscoveryTlsOperation, clock: TlsQueueClock): Promise<void> {
   // Lock the PATTERN, not the site: concurrent dispatches for different
@@ -298,20 +345,42 @@ async function dispatchWildcardOriginCa(operation: DiscoveryTlsOperation, clock:
         await defer(operation.id, "The domain's Cloudflare credential has no stored API token; re-enter it through the credentials flow.", operation.attempts, now(), WORKER_ID);
         return;
       }
-      await assertDiscoveryBackendFresh(
-        { kind: "server", serverId: operation.serverId, organizationId: operation.organizationId, isLocal: false, workspaceId: null },
-        operation.hostname,
-      );
+      // Backend eligibility is a CONSUMER-SET property, not the operation
+      // row's: the row names whichever consumer's ensure (or due-renewal
+      // scheduling) created it, and every other consumer DEDUPLICATES onto
+      // that same row — so a fresh gate on the row's hostname alone lets ONE
+      // stopped requester pin the pattern's renewal while a sibling runs.
+      // The sharing set fetched here serves both the gate and the fan-out
+      // below; the original requester keeps first claim (a running
+      // requester never re-keys the dispatch), and only a sibling whose
+      // CURRENT row would authorize the fan-out may drive it (a driver the
+      // fan-out would refuse would strand the install on an unauthorized
+      // consumer). An ALL-stopped consumer set defers — the rule.
+      const sharingBindings = await repos.discovery.getBindingsForWildcard(operation.serverId, operation.sourceHostname);
+      const candidateHostnames = [...new Set([operation.hostname.toLowerCase(), ...sharingBindings.map((b) => b.hostname.toLowerCase())])];
+      const sharingDomains = await repos.discovery.findDomainsForBindings(operation.serverId, candidateHostnames);
+      type SiblingRow = NonNullable<(typeof sharingDomains) extends Map<string, infer R> ? R : never>;
+      const siblingAuthorized = (row: SiblingRow | undefined): boolean =>
+        !!row &&
+        // The lookup is server-scoped: a row here belongs to THIS server,
+        // hence this organization — the server is the org boundary.
+        row.manualSsl !== true && // operator-uploaded material is never replaced by the fan-out
+        row.tlsProvider === "cloudflare-origin-ca" && // policy moved on: the sibling owns its bookkeeping
+        row.tlsPolicyGeneration === operation.policyGeneration; // generation moved on: fenced
+      const consumerHostname = await selectRunningWildcardConsumer(operation, [
+        operation.hostname.toLowerCase(),
+        ...candidateHostnames.slice(1).filter((hostname) => siblingAuthorized(sharingDomains.get(hostname))),
+      ]);
 
-      // Shared-material health on the EDGE, read through the REQUESTING CHILD
-      // (the wildcard pattern has no domain row of its own; the child's
-      // inherited read reports the shared certificate's fingerprint). The
-      // comparison decides reuse vs repair — transient read failures never
-      // trigger a re-issue.
+      // Shared-material health on the EDGE, read through the DRIVING
+      // CONSUMER (the wildcard pattern has no domain row of its own; a
+      // child's inherited read reports the shared certificate's
+      // fingerprint). The comparison decides reuse vs repair — transient
+      // read failures never trigger a re-issue.
       let activeMaterialHealthy = true;
       let activeCertificateId: string | null = null;
       const shared = await repos.domain.findOriginCaActiveDomainsForServer(operation.serverId, { limit: 25 });
-      const edge = await readServerDomainCert(operation.hostname, { serverId: operation.serverId });
+      const edge = await readServerDomainCert(consumerHostname, { serverId: operation.serverId });
       if (edge.verified && edge.fingerprint) {
         const match = shared.find((row) => row.tlsCertificateFingerprint === edge.fingerprint);
         if (match) {
@@ -343,29 +412,18 @@ async function dispatchWildcardOriginCa(operation: DiscoveryTlsOperation, clock:
         activeCertificateId,
         credentialId: policy.tlsCfCredentialId,
       });
-      // The sharing set (every unsuppressed declaring binding + the
-      // requesting child) — needed on BOTH success paths: siblings must
-      // actually SERVE the pattern before any inventory is committed.
-      // But a DECLARING BINDING IS NOT AUTHORIZATION: the fan-out authorizes
-      // each sibling's CURRENT ownership, policy, and generation right here —
-      // before its route or certificate files are touched — because the
-      // sharing query includes blocked ownership conflicts and stale
-      // declarations. A sibling that fails any check is skipped untouched;
-      // its own durable operation re-checks and handles it. Only the
-      // requesting child is pre-authorized (this operation's own gates ran
-      // for it).
-      const sharingBindings = await repos.discovery.getBindingsForWildcard(operation.serverId, operation.sourceHostname);
-      const candidateHostnames = [...new Set([operation.hostname.toLowerCase(), ...sharingBindings.map((b) => b.hostname)])];
-      const sharingDomains = await repos.discovery.findDomainsForBindings(operation.serverId, candidateHostnames);
-      type SiblingRow = NonNullable<(typeof sharingDomains) extends Map<string, infer R> ? R : never>;
-      const siblingAuthorized = (row: SiblingRow | undefined): boolean =>
-        !!row &&
-        // The lookup is server-scoped: a row here belongs to THIS server,
-        // hence this organization — the server is the org boundary.
-        row.manualSsl !== true && // operator-uploaded material is never replaced by the fan-out
-        row.tlsProvider === "cloudflare-origin-ca" && // policy moved on: the sibling owns its bookkeeping
-        row.tlsPolicyGeneration === operation.policyGeneration; // generation moved on: fenced
-      const childHostname = operation.hostname.toLowerCase();
+      // The fan-out's authorization (needed on BOTH success paths: siblings
+      // must actually SERVE the pattern before any inventory is committed).
+      // A DECLARING BINDING IS NOT AUTHORIZATION: the fan-out authorizes each
+      // sibling's CURRENT ownership, policy, and generation — before its
+      // route or certificate files are touched — because the sharing query
+      // includes blocked ownership conflicts and stale declarations. A
+      // sibling that fails any check is skipped untouched; its own durable
+      // operation re-checks and handles it. Only the DRIVING CONSUMER is
+      // pre-authorized (the selection above ran its fresh gate); the
+      // original requester is NOT — a requester whose row moved on must not
+      // have its route switched by a sibling's dispatch.
+      const childHostname = consumerHostname;
       const authorizedSiblings = candidateHostnames.filter(
         (hostname) => hostname === childHostname || siblingAuthorized(sharingDomains.get(hostname)),
       );
@@ -398,30 +456,30 @@ async function dispatchWildcardOriginCa(operation: DiscoveryTlsOperation, clock:
         return descend(0);
       };
       if (result.outcome === "reused") {
-        // The shared pattern is healthy on the edge — but a sibling whose
+        // The shared pattern is healthy on the edge — but a consumer whose
         // route was never activated (newly enrolled, or superseded before its
         // own operation ran) stays without TLS unless it is switched to the
         // pattern HERE: reuse would otherwise only commit database inventory.
-        // The REQUESTING CHILD joins the fan-out unconditionally: its health
-        // read was resolved through certDir, where the parent-wildcard pair
-        // satisfies the read the moment ANY consumer installed it — a child
-        // whose live vhost still serves the enrollment bootstrap pair (it was
-        // applied before the pattern material existed) reads as healthy
-        // without serving it. Activation is idempotent (a re-register that
-        // resolves to the pattern rewrites the vhost to it), so including the
-        // child repairs exactly that state; "reused" must mean every
-        // authorized consumer SERVES the pattern, not just that the resolver
-        // can read it.
+        // Every health read in this dispatch was resolved through certDir,
+        // where the parent-wildcard pair satisfies the read the moment ANY
+        // consumer installed it — a child whose live vhost still serves the
+        // enrollment bootstrap pair (it was applied before the pattern
+        // material existed) reads as healthy without serving it. Activation
+        // is idempotent (a re-register that resolves to the pattern rewrites
+        // the vhost to it), so the fan-out repairs exactly that state for
+        // every authorized consumer; "reused" must mean every authorized
+        // consumer SERVES the pattern, not just that the resolver can read
+        // it.
         const authorized = await withSiblingLocks(async (authorized) =>
           activateSharedWildcardChildren(
-            operation.hostname,
+            consumerHostname,
             operation.sourceHostname,
             authorized,
             { serverId: operation.serverId },
           ),
         );
         if (authorized === null) {
-          await defer(operation.id, `The TLS policy for ${operation.hostname} moved on while its wildcard operation waited; the domain's own dispatch takes over from here.`, operation.attempts, now(), WORKER_ID);
+          await defer(operation.id, `The TLS policy for ${consumerHostname} moved on while its wildcard operation waited; the domain's own dispatch takes over from here.`, operation.attempts, now(), WORKER_ID);
           return;
         }
         // Commit THIS domain's inventory from the issuing row (sharing
@@ -456,14 +514,14 @@ async function dispatchWildcardOriginCa(operation: DiscoveryTlsOperation, clock:
           await defer(operation.id, `The pending private key for ${operation.sourceHostname} could not be unsealed; the issuance was retired and a fresh one follows.`, operation.attempts, now(), WORKER_ID);
           return;
         }
-        // Authorized through the REQUESTING CHILD (the wildcard has no domain
-        // row). Under the sibling locks (freshly re-checked rows), the
-        // material lands in the pattern directory and every AUTHORIZED
-        // sharing route is switched to it — with rollback — before any
-        // inventory below is committed.
+        // Authorized through the DRIVING CONSUMER (the wildcard has no
+        // domain row of its own). Under the sibling locks (freshly
+        // re-checked rows), the material lands in the pattern directory and
+        // every AUTHORIZED sharing route is switched to it — with rollback —
+        // before any inventory below is committed.
         const install = await withSiblingLocks(async (authorized) => {
           const installed = await installSharedWildcardCert(
-            operation.hostname,
+            consumerHostname,
             operation.sourceHostname,
             { certPem: certificatePem, keyPem },
             {
@@ -497,7 +555,7 @@ async function dispatchWildcardOriginCa(operation: DiscoveryTlsOperation, clock:
           return installed;
         });
         if (install === null) {
-          await defer(operation.id, `The TLS policy for ${operation.hostname} moved on while its wildcard operation waited; the domain's own dispatch takes over from here.`, operation.attempts, now(), WORKER_ID);
+          await defer(operation.id, `The TLS policy for ${consumerHostname} moved on while its wildcard operation waited; the domain's own dispatch takes over from here.`, operation.attempts, now(), WORKER_ID);
           return;
         }
         if (!install.result.verified) {

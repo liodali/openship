@@ -21,6 +21,11 @@ const BRAND_NAMES = new Set([
   "OpenShip Desktop",
   "OpenShip Manage",
   "Ruby on Rails",
+  // Certificate/CA product names — CONTRIBUTING's localization rules keep
+  // product names English in every locale, and translating a CA's brand
+  // would be wrong, not incomplete.
+  "Let's Encrypt",
+  "Cloudflare Origin CA",
 ]);
 
 /** Absolute path to the locales dir, resolved relative to this script. */
