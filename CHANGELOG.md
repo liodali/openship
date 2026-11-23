@@ -4,6 +4,48 @@ All notable changes to OpenShip. Versions follow [semver](https://semver.org);
 the in-app updater surfaces critical advisories from `release-advisories.json`.
 Runtime security notices use the signed feed published from `security-advisories.json`.
 
+## 1.0.1-fork.4
+
+Fork release on top of 1.0.1-fork.3: discovery TLS can now see and repair vhost
+certificate-path drift, the shared wildcard renewal gate no longer pins to a
+stopped requester, and each discovered service gets a Configure TLS drawer —
+the first UI for managed TLS configuration.
+
+### Discovery TLS
+
+- **Vhost certificate-path drift detection and repair** (the fork.3 canary
+  follow-up): a new adapter signal (`readVhostCertSelection`) reads the managed
+  vhost's emitted `ssl_certificate` directive and classifies it against the
+  expected exact/shared source — expected / confirmed drift / no TLS listener /
+  no managed route; an unreadable conf throws (unproven is never drift). Both
+  decision paths consume it: the `tls/ensure` skip now requires the vhost's
+  configured selection to match (confirmed drift queues durable work), and the
+  periodic certificate audit enqueues the same worker when files agree with
+  inventory but the vhost points elsewhere — repair re-registers the route
+  without requesting any new certificate. Bounded (5 rows/sweep), cursor-fair,
+  transient read failures wait for the next pass.
+- **Shared wildcard renewal unpinned from a stopped requester**: the dispatch's
+  fresh-backend gate selects an eligible running consumer (original requester
+  first, then row-authorized siblings); an all-stopped set defers with a
+  pattern-scoped reason. One stopped consumer no longer blocks a shared renewal.
+- **Configure TLS UI**: per-service drawer (provider select; Cloudflare saved-
+  credential selector showing names, zone id, discrete validity values; declared
+  wildcard + policy provenance; desired-vs-installed provider during a
+  transition; expiry; durable operation state/reason; service addressing and the
+  controlling labels) plus a server-level default-provider control (new
+  enrollments only). Separate Save (server:admin) and Ensure/Retry
+  (server:write) actions; preflight failures show inline with the draft
+  retained; i18n across all 10 locales.
+
+### Upgrade notes
+
+- Rebuild/update the **API and dashboard** images (edge and CLI unchanged). No
+  migration (no schema change). Safe to roll back to fork.3 images; the only
+  persisted additions are durable operations the audit may enqueue, which the
+  fork.3 reuse path completes harmlessly.
+- Remote validation list (drift repair, audit path, healthy-skip regression,
+  mixed stopped-requester renewal, drawer UI) is in the fork validation recap.
+
 ## 1.0.1-fork.3
 
 Fork release on top of 1.0.1-fork.2: one discovery TLS correctness fix found by
