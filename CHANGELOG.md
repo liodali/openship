@@ -4,6 +4,47 @@ All notable changes to OpenShip. Versions follow [semver](https://semver.org);
 the in-app updater surfaces critical advisories from `release-advisories.json`.
 Runtime security notices use the signed feed published from `security-advisories.json`.
 
+## 1.0.1-fork.6
+
+Fork release on top of 1.0.1-fork.5: the compose template stops chaining the
+edge (and dashboard) to the api via `depends_on` — the fix for the recurring
+"update breaks the edge, reinstall it again" loop on rootless podman hosts.
+
+### CLI / compose install
+
+- **No more edge→api dependency chaining** (`apps/cli/src/lib/compose.ts`):
+  on podman hosts (where the `docker` command is a shim to rootless podman and
+  compose is podman-compose), every `depends_on` becomes a hard podman
+  dependency, and podman refuses to remove a container that dependents
+  reference. Chaining `edge → api (service_healthy)` therefore made EVERY api
+  recreate — i.e. every `openship update` — require removing the edge first,
+  which podman-compose 1.5.0 handles by failing the recreate
+  ("dependent containers must be removed first") and starting the OLD
+  container anyway while exiting 0: the update reported success while the
+  edge stayed stale or was left removed-and-not-recreated. The edge boots
+  from its baked nginx.conf plus mounted vhosts with loopback upstreams —
+  there was never a real startup coupling; the chaining (48bdcd385) was an
+  update-readiness gate. api keeps its postgres/redis `depends_on` (fresh-
+  install boot ordering; those base images rarely change).
+- **Real edge healthcheck** (curl `127.0.0.1:9145/health` against the baked
+  mgmt API; curl ships in the edge image): restores the readiness signal the
+  removed chaining approximated — compose `--wait` (docker hosts) now gates
+  updates on a SERVING edge, and `docker/podman ps` shows (un)healthy
+  instead of a crash-looping edge reading as success.
+
+### Upgrade notes
+
+- **CLI image only** (api/dashboard/edge images unchanged). No migration.
+- After updating the CLI, the next `openship update` / `openship up`
+  regenerates `~/.openship/compose/docker-compose.yml` without the chaining
+  and with the edge healthcheck. Existing installs on podman hosts that were
+  hand-patched already need nothing further; existing docker-host installs
+  pick the fix up on the same regenerate.
+- Rollout verified live on the fork's rootless-podman VPS:
+  `docker compose up -d --force-recreate api` now recreates cleanly (it
+  previously failed the dependent-container removal and kept the stale
+  container), and the recreated edge reports (healthy) under podman.
+
 ## 1.0.1-fork.5
 
 Fork release on top of 1.0.1-fork.4: the Actions controller no longer pins the
