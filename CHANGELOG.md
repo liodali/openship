@@ -4,6 +4,41 @@ All notable changes to OpenShip. Versions follow [semver](https://semver.org);
 the in-app updater surfaces critical advisories from `release-advisories.json`.
 Runtime security notices use the signed feed published from `security-advisories.json`.
 
+## 1.0.1-fork.5
+
+Fork release on top of 1.0.1-fork.4: the Actions controller no longer pins the
+process event loop — the single most impactful reliability fix for busy
+deployments, where the dashboard degraded to 15–30s responses with random 503s
+on auth endpoints.
+
+### Performance / stability
+
+- **Self-pacing Actions controller tick** (`actions/lifecycle`): the controller
+  shares one event loop with the HTTP server, and its fixed 3s tick kept
+  re-firing while a pass was still expensive (slow GitHub, GC pressure, a busy
+  loop). The loop never drained, so interactive requests queued behind
+  background churn: session lookups and Redis calls overran their deadlines
+  (`EVALSHA timed out` warnings are loop-starvation artifacts, not Redis
+  faults), pg-pool connections timed out, and container-events watchers
+  unsubscribed on lease expiry in a self-sustaining sweep-retry churn. The
+  tick's wait is now derived from observed pressure — never shorter than the
+  old 3s, never shorter than the pass itself took, and while the loop is
+  saturated at least 15s (30s ceiling) — so interactive traffic always wins
+  the loop and background throughput is what gets sacrificed first.
+- **Event-loop pressure gauge** (`engine/lib/event-loop-pressure`): a cheap
+  250ms drift gauge exposing `eventLoopLagMaxMs()` / `isLoopSaturated()`.
+  Advisory backpressure for background loops — critical safety work (incident
+  handling, lease expiry) must never gate on it.
+
+### Upgrade notes
+
+- Rebuild/update the **API image only** (dashboard, edge, CLI unchanged). No
+  migration. Safe to roll back to fork.4.
+- After updating, verify recovery with `docker stats openship_api_1`: CPU
+  should sit in the single digits with a quiet estate (the disease was a
+  metronome-stable ~60% single-core burn), and memory should plateau rather
+  than ratchet.
+
 ## 1.0.1-fork.4
 
 Fork release on top of 1.0.1-fork.3: discovery TLS can now see and repair vhost

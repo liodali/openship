@@ -3,6 +3,7 @@ import { AppError } from "@repo/core";
 import { repos } from "@repo/db";
 import { nativeJobsEnabled } from "../../native/execution-policy";
 import { trackBackgroundWork } from "../../lib/background-work";
+import { isLoopSaturated } from "../../lib/event-loop-pressure";
 import { actionController } from "./execution";
 
 let timer: ReturnType<typeof setTimeout> | undefined;
@@ -17,6 +18,25 @@ let runnerProbeAt = 0;
  * connect per destination per pass, short enough that `checkedAt` answers
  * "is this runner alive" between config edits. */
 const RUNNER_PROBE_MS = 5 * 60_000;
+
+/**
+ * Tick cadence. The controller shares the process event loop with the HTTP
+ * server, so a fixed fast tick is a liability: when a pass is expensive
+ * (slow GitHub, busy loop, GC pressure) a 3s period keeps the loop pegged and
+ * interactive requests starve — which is exactly the "dashboard takes 20s +
+ * random 503s" failure mode. So the wait is derived from observed pressure:
+ *
+ *   - never shorter than TICK_MIN_MS (the old 3s cadence, preserved)
+ *   - never shorter than the pass itself took (self-pacing: the period is
+ *     at least the work — a slow pass schedules a slower next pass)
+ *   - while the loop is SATURATED, at least TICK_SATURATED_MS, so
+ *     interactive traffic wins the loop and background throughput is what
+ *     gets sacrificed first
+ *   - never longer than TICK_MAX_MS, so work still progresses
+ */
+const TICK_MIN_MS = 3_000;
+const TICK_MAX_MS = 30_000;
+const TICK_SATURATED_MS = 15_000;
 
 export async function assertActionsTransferReady(): Promise<void> {
   if (
@@ -39,6 +59,7 @@ export function startActionController(): void {
   const abort = (shutdown = new AbortController());
   const tick = () => {
     if (stopped) return;
+    const tickStartedAt = Date.now();
     current = trackBackgroundWork(
       (async () => {
         await (await import("./deployment-gate")).actionDeploymentController.tick();
@@ -84,7 +105,19 @@ export function startActionController(): void {
     void current.finally(() => {
       current = undefined;
       if (!stopped) {
-        timer = setTimeout(tick, 3000);
+        const took = Math.max(0, Date.now() - tickStartedAt);
+        const saturated = isLoopSaturated();
+        const wait = Math.min(
+          TICK_MAX_MS,
+          Math.max(TICK_MIN_MS, took, saturated ? TICK_SATURATED_MS : 0),
+        );
+        if (saturated) {
+          diagnostics.warn(
+            "actions/controller",
+            `Event loop saturated; deferring next actions pass by ${wait}ms`,
+          );
+        }
+        timer = setTimeout(tick, wait);
         timer.unref?.();
       }
     });
