@@ -678,8 +678,16 @@ __OPENSHIP_BUILD_SSH_ENV__
       PORT: "\${DASHBOARD_PORT:-3001}"
       HOSTNAME: "0.0.0.0"
       INTERNAL_API_URL: http://api:\${API_PORT:-4000}
-    depends_on:
-      api: { condition: service_healthy }
+    # Deliberately NO depends_on on the api. The dashboard is coupled to the api at
+    # REQUEST time (INTERNAL_API_URL), never at boot — a Next.js standalone server
+    # starts fine while the api is still coming up and simply 502s for a few seconds.
+    # Under podman-compose, every depends_on becomes a hard podman dependency, and
+    # podman refuses to remove a container that dependents reference: recreating the
+    # api then requires removing the dashboard (and edge) first, which podman-compose
+    # handles by failing the recreate and starting the OLD container anyway (exit 0).
+    # That is exactly the "update leaves a stale api/edge running" trap on rootless
+    # podman hosts (openship-podman-compatibility.md); on docker hosts the ordering
+    # gain is cosmetic at best.
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:'+process.env.PORT+'/',{redirect:'manual'}).then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))"]
       interval: 5s
@@ -700,15 +708,36 @@ __OPENSHIP_BUILD_SSH_ENV__
     restart: unless-stopped
     logging: *default-logging
     network_mode: host
-    depends_on:
-      api: { condition: service_healthy }
-      dashboard: { condition: service_healthy }
+    # Deliberately NO depends_on on the api/dashboard. The edge boots from its BAKED
+    # config plus the mounted sites-enabled vhosts — every upstream is a host-loopback
+    # port (the edge is network_mode: host), so nginx starts and serves fine while the
+    # api/dashboard are still coming up; a request landing in that window gets a brief
+    # 502 that self-heals. Under podman-compose every depends_on becomes a hard podman
+    # dependency, and podman refuses to remove a container that dependents reference —
+    # so chaining edge to api made EVERY api recreate (i.e. every "openship update")
+    # require removing the edge first, which podman-compose handles by failing the
+    # recreate and starting the OLD container anyway (exit 0). Result on rootless
+    # podman hosts: stale api/edge after updates and sites dark until the edge was
+    # reinstalled by hand (openship-podman-compatibility.md).
     volumes:
 ${edgeVolumeYaml("      ")}
+    # Healthcheck that proves the edge is SERVING, not merely running: the mgmt
+    # API (baked nginx.conf, loopback 9145, curl ships in the image) only answers
+    # once real nginx request handling is up. This restores the readiness signal
+    # the removed depends_on used to provide — compose "--wait" (docker hosts)
+    # now gates updates on a serving edge, and docker/podman ps shows
+    # (un)healthy instead of a crash-looping edge reading as success — without
+    # podman's cross-container dependency trap.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-m", "3", "http://127.0.0.1:9145/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
 
 volumes:
   postgres_data:
-  redis_data:
+  redis_data
 `;
 
 /** Persist a stable secret in the compose .env — regenerated only if absent. */
