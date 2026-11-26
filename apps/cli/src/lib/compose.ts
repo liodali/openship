@@ -737,7 +737,7 @@ ${edgeVolumeYaml("      ")}
 
 volumes:
   postgres_data:
-  redis_data
+  redis_data:
 `;
 
 /** Persist a stable secret in the compose .env — regenerated only if absent. */
